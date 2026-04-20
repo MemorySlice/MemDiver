@@ -1,0 +1,6 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include config.json
+recursive-include algorithms/patterns *.json
+recursive-include frontend/dist *

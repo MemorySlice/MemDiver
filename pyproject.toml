@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memdiver"
+version = "0.5.1"
+description = "Interactive platform for identifying and analyzing data structures in memory dumps"
+readme = "README.md"
+license = {text = "Apache 2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Anonymous"},
+]
+keywords = [
+    "memory-analysis",
+    "forensics",
+    "cryptography",
+    "tls",
+    "security",
+    "binary-analysis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "plotly>=5.18.0",
+    "polars>=1.0.0",
+    "duckdb>=1.0.0",
+    "ibis-framework[duckdb]>=9.0.0",
+    "blake3",
+    "zstandard",
+    "lz4",
+    "pyahocorasick>=2.0.0",
+    "numpy>=1.24.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic-settings>=2.0.0",
+    "marimo>=0.8.0",
+    "nicegui>=3.0.0",
+    "mcp>=1.0.0",
+    "kaitaistruct>=0.10",
+]
+
+[project.optional-dependencies]
+experiment = [
+    "frida-tools>=12.0",
+    "memslicer",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.urls]
+Homepage = "https://github.com/monkeywave/MemDiver"
+Issues = "https://github.com/monkeywave/MemDiver/issues"
+
+[project.scripts]
+memdiver = "memdiver.cli:main"
+
+[tool.setuptools]
+package-dir = {"memdiver" = "."}
+packages = [
+    "memdiver",
+    "memdiver.core",
+    "memdiver.engine",
+    "memdiver.algorithms",
+    "memdiver.algorithms.known_key",
+    "memdiver.algorithms.unknown_key",
+    "memdiver.algorithms.patterns",
+    "memdiver.harvester",
+    "memdiver.architect",
+    "memdiver.ui",
+    "memdiver.ui.nicegui",
+    "memdiver.ui.controls",
+    "memdiver.ui.views",
+    "memdiver.ui.components",
+    "memdiver.core.binary_formats",
+    "memdiver.core.binary_formats.kaitai_compiled",
+    "memdiver.msl",
+    "memdiver.mcp_server",
+    "memdiver.api",
+    "memdiver.api.routers",
+    "memdiver.api.ws",
+    "memdiver.api.services",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "--import-mode=importlib"
+
+# tests/ is intentionally excluded from sdist/wheel — fixtures (including
+# the AES sample binary and private dataset paths) must never ship.
+[tool.setuptools.package-data]
+memdiver = [
+    "config.json",
+    "algorithms/patterns/*.json",
+    "frontend/dist/**/*",
+]

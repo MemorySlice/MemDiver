@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* === Light theme (default) === */
+:root {
+  --md-bg-primary: #f7f7f7;
+  --md-bg-secondary: #ffffff;
+  --md-bg-tertiary: #ecedf0;
+  --md-bg-hover: #e8e9eb;
+  --md-bg-selected: #cce5ff;
+
+  --md-text-primary: #212121;
+  --md-text-secondary: #666666;
+  --md-text-muted: #888888;
+  --md-text-bright: #000000;
+
+  --md-accent-blue: #2a6db5;
+  --md-accent-green: #3d7a28;
+  --md-accent-orange: #b05a2e;
+  --md-accent-red: #cc3333;
+  --md-accent-purple: #8b3d85;
+  --md-accent-cyan: #1a8a70;
+
+  --md-byte-key: #cc2222;
+  --md-byte-static: #1a8a70;
+  --md-byte-dynamic: #b87a00;
+  --md-byte-zero: #bfbfbf;
+  --md-byte-ascii: #2a6db5;
+  --md-byte-entropy: #8b3d85;
+  --md-byte-structural: #3d7a28;
+
+  --md-heatmap-present: #1a8a70;
+  --md-heatmap-absent: #cc3333;
+  --md-heatmap-partial: #b87a00;
+  --md-heatmap-na: #cccccc;
+
+  --md-variance-invariant: #cccccc;
+  --md-variance-structural: #3d7a28;
+  --md-variance-pointer: #2a6db5;
+  --md-variance-key-candidate: #cc2222;
+
+  --md-bookmark: #b05a2e;
+  --md-inspect: #8a7a00;
+  --md-inspect-bg: #fffde0;
+  --md-search-hit: #8b3d85;
+  --md-search-hit-bg: #f5e0f5;
+
+  --md-hl-exact-match: #cc2222;
+  --md-hl-entropy: #8b3d85;
+  --md-hl-change-point: #b05a2e;
+  --md-hl-pattern: #a68a00;
+  --md-hl-structure: #3d7a28;
+  --md-hl-search: #2a6db5;
+  --md-hl-differential: #1a8a70;
+  --md-hl-constraint: #8a7a00;
+  --md-hl-strings: #2266aa;
+
+  --md-field-0: #3a7ec0;
+  --md-field-1: #5a8a4a;
+  --md-field-2: #b06a40;
+  --md-field-3: #8a8a30;
+  --md-field-4: #7a50a0;
+  --md-field-5: #2a8a6a;
+  --md-field-6: #b05a40;
+  --md-field-7: #3a80a0;
+
+  --md-chart-paper: #f7f7f7;
+  --md-chart-plot: #ffffff;
+  --md-chart-grid: #e0e0e0;
+  --md-chart-text: #333333;
+
+  --md-border: #d4d4d8;
+  --md-panel-radius: 6px;
+}
+
+/* === Dark theme === */
+.dark {
+  --md-bg-primary: #1e1e1e;
+  --md-bg-secondary: #252526;
+  --md-bg-tertiary: #2d2d30;
+  --md-bg-hover: #2a2d2e;
+  --md-bg-selected: #094771;
+
+  --md-text-primary: #d4d4d4;
+  --md-text-secondary: #808080;
+  --md-text-muted: #6a737d;
+  --md-text-bright: #ffffff;
+
+  --md-accent-blue: #569cd6;
+  --md-accent-green: #6a9955;
+  --md-accent-orange: #ce9178;
+  --md-accent-red: #f44747;
+  --md-accent-purple: #c586c0;
+  --md-accent-cyan: #4ec9b0;
+
+  --md-byte-key: #ff6b6b;
+  --md-byte-static: #4ec9b0;
+  --md-byte-dynamic: #ffd93d;
+  --md-byte-zero: #3d3d3d;
+  --md-byte-ascii: #569cd6;
+  --md-byte-entropy: #c586c0;
+  --md-byte-structural: #6a9955;
+
+  --md-heatmap-present: #4ec9b0;
+  --md-heatmap-absent: #f44747;
+  --md-heatmap-partial: #ffd93d;
+  --md-heatmap-na: #3d3d3d;
+
+  --md-variance-invariant: #3d3d3d;
+  --md-variance-structural: #6a9955;
+  --md-variance-pointer: #569cd6;
+  --md-variance-key-candidate: #ff6b6b;
+
+  --md-bookmark: #ce9178;
+  --md-inspect: #dcdcaa;
+  --md-inspect-bg: #3a3a00;
+  --md-search-hit: #c586c0;
+  --md-search-hit-bg: #3a1a3a;
+
+  --md-hl-exact-match: #ff6b6b;
+  --md-hl-entropy: #c586c0;
+  --md-hl-change-point: #e0a458;
+  --md-hl-pattern: #ffd93d;
+  --md-hl-structure: #6a9955;
+  --md-hl-search: #569cd6;
+  --md-hl-differential: #4ec9b0;
+  --md-hl-constraint: #d7ba7d;
+  --md-hl-strings: #9cdcfe;
+
+  --md-field-0: #569cd6;
+  --md-field-1: #6a9955;
+  --md-field-2: #ce9178;
+  --md-field-3: #dcdcaa;
+  --md-field-4: #b589d6;
+  --md-field-5: #4ec9b0;
+  --md-field-6: #d69d85;
+  --md-field-7: #9cdcfe;
+
+  --md-chart-paper: #1e1e1e;
+  --md-chart-plot: #252526;
+  --md-chart-grid: #3d3d3d;
+  --md-chart-text: #d4d4d4;
+
+  --md-border: #3d3d3d;
+}
+
+/* === Base styles === */
+body {
+  margin: 0;
+  font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
+  background: var(--md-bg-primary);
+  color: var(--md-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === Hex byte classification classes === */
+.hb-key { color: var(--md-byte-key); }
+.hb-static { color: var(--md-byte-static); }
+.hb-dynamic { color: var(--md-byte-dynamic); }
+.hb-zero { color: var(--md-byte-zero); }
+.hb-ascii { color: var(--md-byte-ascii); }
+.hb-entropy { color: var(--md-byte-entropy); }
+.hb-structural { color: var(--md-byte-structural); }
+
+/* === Panel styling === */
+.md-panel {
+  background: var(--md-bg-secondary);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-panel-radius);
+}
+
+/* === Text / background utility classes === */
+.md-text-accent { color: var(--md-accent-blue); }
+.md-text-secondary { color: var(--md-text-secondary); }
+.md-text-muted { color: var(--md-text-muted); }
+.md-bg-secondary { background: var(--md-bg-secondary); }
+
+/* === Scrollbar (dark theme) === */
+.dark ::-webkit-scrollbar { width: 8px; height: 8px; }
+.dark ::-webkit-scrollbar-track { background: var(--md-bg-primary); }
+.dark ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #777; }
+
+/* === High contrast mode === */
+.high-contrast {
+  --md-byte-key: #e60000;
+  --md-byte-static: #007a5e;
+  --md-byte-dynamic: #a06800;
+  --md-byte-zero: #999999;
+  --md-byte-ascii: #0055aa;
+  --md-byte-entropy: #7a2875;
+  --md-byte-structural: #2a6618;
+  --md-border: #888888;
+  --md-text-primary: #111111;
+  --md-text-secondary: #444444;
+}
+
+.dark.high-contrast {
+  --md-byte-key: #ff8080;
+  --md-byte-static: #66ddbb;
+  --md-byte-dynamic: #ffdd55;
+  --md-byte-zero: #555555;
+  --md-byte-ascii: #77bbee;
+  --md-byte-entropy: #dd99dd;
+  --md-byte-structural: #88cc66;
+  --md-border: #888888;
+  --md-text-primary: #eeeeee;
+  --md-text-secondary: #bbbbbb;
+}
+
+/* === Indeterminate progress bar === */
+.md-progress-indeterminate {
+  width: 30%;
+  background: var(--md-accent-blue);
+  animation: md-progress-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes md-progress-slide {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(250%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* === Spinner for buttons/tabs === */
+.md-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: md-spin 0.6s linear infinite;
+}
+
+@keyframes md-spin {
+  to { transform: rotate(360deg); }
+}

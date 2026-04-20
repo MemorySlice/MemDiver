@@ -1,0 +1,28 @@
+{
+    "name": "openssh_ssh2_session_key",
+    "description": "Structural pattern for OpenSSH SSH-2 session key in memory",
+    "applicable_to": {
+        "libraries": ["openssh"],
+        "protocol_versions": ["2"]
+    },
+    "key_spec": {
+        "length": 32,
+        "entropy_min": 7.0
+    },
+    "pattern": {
+        "before": [
+            {
+                "offset": -4,
+                "bytes": "00 00 00 20",
+                "mask": "00 00 00 ff"
+            }
+        ],
+        "after": [
+            {
+                "offset": 32,
+                "bytes": "00 00 00 00",
+                "mask": "00 00 00 00"
+            }
+        ]
+    }
+}

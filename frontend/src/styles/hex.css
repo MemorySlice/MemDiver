@@ -1,0 +1,191 @@
+.hex-row {
+  display: flex;
+  align-items: center;
+  height: 20px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  padding: 0 8px;
+}
+
+.hex-row:hover {
+  background: var(--md-bg-hover);
+}
+
+.hex-offset {
+  color: var(--md-text-secondary);
+  user-select: none;
+  width: 76px;
+  flex-shrink: 0;
+}
+
+.hex-bytes {
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.hex-separator {
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.hex-ascii {
+  display: flex;
+  gap: 0;
+}
+
+.hex-byte {
+  display: inline-block;
+  width: 22px;
+  text-align: center;
+  cursor: default;
+  border-radius: 1px;
+}
+
+.hex-char {
+  display: inline-block;
+  width: 8px;
+  text-align: center;
+  cursor: default;
+  border-radius: 1px;
+}
+
+.hex-byte.selected,
+.hex-char.selected {
+  background: var(--md-bg-selected, #094771);
+}
+
+.hex-byte.cursor,
+.hex-char.cursor {
+  outline: 1px solid var(--md-accent-blue);
+  outline-offset: -1px;
+}
+
+.hex-byte.highlight-exact-match,
+.hex-char.highlight-exact-match {
+  background: color-mix(in srgb, var(--md-hl-exact-match) 25%, transparent);
+  box-shadow: inset 2px 0 0 0 var(--md-hl-exact-match);
+}
+
+.hex-byte.highlight-entropy,
+.hex-char.highlight-entropy {
+  background: color-mix(in srgb, var(--md-hl-entropy) 25%, transparent);
+}
+
+.hex-byte.highlight-change-point,
+.hex-char.highlight-change-point {
+  background: color-mix(in srgb, var(--md-hl-change-point) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-change-point);
+}
+
+.hex-byte.highlight-pattern,
+.hex-char.highlight-pattern {
+  background: color-mix(in srgb, var(--md-hl-pattern) 25%, transparent);
+}
+
+.hex-byte.highlight-structure,
+.hex-char.highlight-structure {
+  background: color-mix(in srgb, var(--md-hl-structure) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-structure);
+}
+
+/* Per-field color cycling for ImHex-style structure highlighting (theme-aware) */
+.hex-byte.field-color-0, .hex-char.field-color-0 { background: color-mix(in srgb, var(--md-field-0) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-0); }
+.hex-byte.field-color-1, .hex-char.field-color-1 { background: color-mix(in srgb, var(--md-field-1) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-1); }
+.hex-byte.field-color-2, .hex-char.field-color-2 { background: color-mix(in srgb, var(--md-field-2) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-2); }
+.hex-byte.field-color-3, .hex-char.field-color-3 { background: color-mix(in srgb, var(--md-field-3) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-3); }
+.hex-byte.field-color-4, .hex-char.field-color-4 { background: color-mix(in srgb, var(--md-field-4) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-4); }
+.hex-byte.field-color-5, .hex-char.field-color-5 { background: color-mix(in srgb, var(--md-field-5) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-5); }
+.hex-byte.field-color-6, .hex-char.field-color-6 { background: color-mix(in srgb, var(--md-field-6) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-6); }
+.hex-byte.field-color-7, .hex-char.field-color-7 { background: color-mix(in srgb, var(--md-field-7) 22%, transparent); box-shadow: inset 0 -2px 0 0 var(--md-field-7); }
+
+.hex-byte.active-field,
+.hex-char.active-field {
+  outline: 2px solid var(--md-accent-blue);
+  outline-offset: -1px;
+  font-weight: bold;
+  z-index: 1;
+}
+
+.hex-byte.highlight-search,
+.hex-char.highlight-search {
+  background: color-mix(in srgb, var(--md-hl-search) 30%, transparent);
+}
+
+.hex-byte.highlight-differential,
+.hex-char.highlight-differential {
+  background: color-mix(in srgb, var(--md-hl-differential) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-differential);
+}
+
+.hex-byte.highlight-constraint,
+.hex-char.highlight-constraint {
+  background: color-mix(in srgb, var(--md-hl-constraint) 25%, transparent);
+  text-decoration: underline double var(--md-hl-constraint);
+}
+
+.hex-byte.highlight-strings,
+.hex-char.highlight-strings {
+  background: color-mix(in srgb, var(--md-hl-strings) 20%, transparent);
+  text-decoration: underline wavy var(--md-hl-strings);
+}
+
+.hex-loading {
+  color: var(--md-text-muted);
+  opacity: 0.4;
+}
+
+/* Consensus overlay colors */
+.hex-byte.consensus-invariant,
+.hex-char.consensus-invariant {
+  opacity: 0.4;
+}
+
+.hex-byte.consensus-structural,
+.hex-char.consensus-structural {
+  color: #6a9955;
+}
+
+.hex-byte.consensus-pointer,
+.hex-char.consensus-pointer {
+  color: #569cd6;
+}
+
+.hex-byte.consensus-key-candidate,
+.hex-char.consensus-key-candidate {
+  color: #ff6b6b;
+  font-weight: bold;
+}
+
+/* --- Neighborhood overlay: field semantic colors --- */
+.hex-byte.nb-static,
+.hex-char.nb-static {
+  background: color-mix(in srgb, #4ec9b0 20%, transparent);
+  box-shadow: inset 0 -2px 0 0 #4ec9b0;
+}
+.hex-byte.nb-key,
+.hex-char.nb-key {
+  background: color-mix(in srgb, #ff6b6b 30%, transparent);
+  box-shadow: inset 0 -2px 0 0 #ff6b6b;
+  font-weight: bold;
+}
+.hex-byte.nb-dynamic,
+.hex-char.nb-dynamic {
+  background: color-mix(in srgb, #f0c674 20%, transparent);
+  box-shadow: inset 0 -2px 0 0 #f0c674;
+}
+
+/* --- Variance heatmap tiers (composited via background-image) --- */
+.hex-byte.var-tier-1,
+.hex-char.var-tier-1 {
+  background-image: linear-gradient(rgba(255,180,80,0.08), rgba(255,180,80,0.08));
+}
+.hex-byte.var-tier-2,
+.hex-char.var-tier-2 {
+  background-image: linear-gradient(rgba(255,140,40,0.18), rgba(255,140,40,0.18));
+}
+.hex-byte.var-tier-3,
+.hex-char.var-tier-3 {
+  background-image: linear-gradient(rgba(255,80,20,0.30), rgba(255,80,20,0.30));
+}

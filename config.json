@@ -1,0 +1,18 @@
+{
+    "dataset_root": ".",
+    "keylog_filename": "keylog.csv",
+    "logging": {
+        "level": "INFO",
+        "file": null
+    },
+    "analysis": {
+        "max_runs": 10,
+        "context_bytes": 256,
+        "default_algorithm": "exact_match"
+    },
+    "ui": {
+        "default_mode": "testing",
+        "hex_bytes_per_row": 16,
+        "max_hex_rows": 64
+    }
+}

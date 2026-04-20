@@ -1,0 +1,6 @@
+{
+    "library": "test_lib",
+    "tls_version": "13",
+    "scenario": "default",
+    "notes": "sample fixture for testing"
+}
