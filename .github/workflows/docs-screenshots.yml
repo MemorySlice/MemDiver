@@ -1,0 +1,108 @@
+name: docs-screenshots
+
+# Nightly Playwright refresh of the 11 baseline screenshots under
+# docs/_static/screenshots/.  If any PNG differs, this workflow opens a
+# pull request for maintainer review.  PR CI (docs.yml) never runs
+# Playwright; it consumes committed baselines only.
+
+on:
+  schedule:
+    # 04:00 UTC daily — after the ordinary quiet hours, well clear of
+    # heavy PyPI / GitHub Actions peak windows.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+  PLAYWRIGHT_VERSION: "1.47.2"
+
+jobs:
+  refresh:
+    name: Regenerate screenshots
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            docs/requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install MemDiver + docs toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[docs]"
+          pip install "playwright==${{ env.PLAYWRIGHT_VERSION }}"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+
+      - name: Install Playwright Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify seed fixtures
+        run: python docs/screenshots/capture.py --verify-seed
+
+      - name: Regenerate all 11 screenshots
+        run: python docs/screenshots/capture.py --update
+
+      - name: Strict Sphinx rebuild (drift check)
+        run: python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+      - name: Open PR on drift
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(docs): nightly screenshot refresh"
+          title: "docs: nightly screenshot refresh"
+          body: |
+            Automated PR opened by `.github/workflows/docs-screenshots.yml` after a nightly Playwright rerun detected pixel differences in one or more of the 11 baseline screenshots under `docs/_static/screenshots/`.
+
+            - **What changed:** PNG diffs under `docs/_static/screenshots/`.
+            - **Action:** verify the new screenshots match the expected UI state before merging.
+            - **If no drift:** this PR is a no-op and closes itself.
+
+            Regenerate locally with:
+
+            ```bash
+            pip install -e ".[docs]" playwright
+            python -m playwright install --with-deps chromium
+            python docs/screenshots/capture.py --update
+            ```
+          branch: docs/nightly-screenshots
+          delete-branch: true
+          add-paths: |
+            docs/_static/screenshots/*.png

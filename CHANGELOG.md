@@ -31,6 +31,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   patterns, and the full `frontend/dist/` tree ship in the sdist.
 - `frontend/dist/**/*` added to `[tool.setuptools.package-data]` so
   `pip install memdiver` ships a working web UI out of the box.
+- Sphinx documentation site under `docs/` (Read the Docs theme, MyST-parser),
+  published to <https://memoryslice.github.io/MemDiver/> via GitHub Pages.
+  Covers quickstart, full user guide, ten-subsystem architecture walkthrough,
+  eight algorithm reference pages, nine visualization pages, `.msl` v1.1.0
+  file-format spec, Oracle interface + examples, and a 12-module Python API
+  reference generated via `autodoc` + `napoleon`.
+- `.github/workflows/docs.yml` — strict Sphinx build on every push and PR,
+  Pages deploy gated to `main` (re-enabled after one-time repo Settings
+  configuration).
+- `.github/workflows/docs-screenshots.yml` — nightly Playwright refresh of
+  the 11 baseline screenshots under `docs/_static/screenshots/`, opening a
+  pull request on visual drift.
+- Logo pipeline: `docs/_static/{logo,logo_simple}.svg` (both with `<title>`,
+  `<desc>`, `role="img"` for accessibility), `docs/_static/favicon.ico`
+  (multi-resolution 16/32/48), `docs/_static/logo_readme.png` (PyPI-safe
+  512×512 raster), regenerator at `scripts/build_logo.py --check`.
+- Playwright screenshot harness under `docs/screenshots/` — `capture.py`
+  (deterministic Chromium driver with 10 flake-reduction techniques),
+  `seed_data.py` (wraps the six `tests/fixtures/generate_*.py` generators),
+  `captions.json` (per-slug alt text + viewport), and
+  `generate_placeholders.py` for fresh clones.
+- `docs` extra (`pip install memdiver[docs]`) pinning Sphinx 7.4,
+  `sphinx-rtd-theme`, `myst-parser`, `sphinx-copybutton`, `sphinx-design`,
+  `sphinxcontrib-mermaid`, `sphinx-argparse`, `cairosvg`, `pillow`.
+- `cli.py` — public `build_parser()` alias exposed for `sphinx-argparse` and
+  external tooling.
+- Repo-root `__init__.py` — `__version__` now resolves dynamically via
+  `importlib.metadata.version("memdiver")` instead of the drifted hard-coded
+  `"0.1.0"`.
+- `pyproject.toml` — canonical project URLs updated to
+  `github.com/MemorySlice/MemDiver`; added a `Documentation` URL pointing at
+  the GitHub Pages site.
+- README overhaul — accurate capability counts (8 algorithms, 20 CLI
+  subcommands, 12 FastAPI routers, 15 MCP tools), Apache-2.0 badge, MCP
+  one-line wiring snippet, IMF research framing, thumbnail gallery linking
+  into the docs site.
 
 ## [0.5.1] — 2026-04-14
 

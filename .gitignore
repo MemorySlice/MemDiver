@@ -21,3 +21,8 @@ tests/fixtures/dataset/
 tests/artifacts/
 *.dump
 *.csv
+
+# Sphinx documentation build output.
+docs/_build/
+docs/api/_autosummary/
+docs/screenshots/_tempdata/

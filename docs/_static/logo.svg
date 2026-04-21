@@ -1,0 +1,354 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" style="background:transparent" role="img" aria-labelledby="logoTitle logoDesc">
+  <title id="logoTitle">MemDiver</title>
+  <desc id="logoDesc">A diver descending toward a golden key inside a teal memory blob, representing process-memory exploration.</desc>
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%" stop-color="#07101f"/>
+      <stop offset="100%" stop-color="#050d18"/>
+    </linearGradient>
+    <linearGradient id="trailGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#00d4aa" stop-opacity="0"/>
+      <stop offset="60%" stop-color="#00d4aa" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#00d4aa" stop-opacity="0.05"/>
+    </linearGradient>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="keyGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="blobGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="blobClip">
+      <path d="M 148.1,82.9 L 132.1,95.1 L 128.9,127.4 L 107.1,143.1 L 90.3,131.3 L 74.1,145.8 L 54.1,144.6 L 34.4,114.9 L 19.1,108.1 L 12.2,73.7 L 26.7,54.8 L 30.8,42.5 L 53.4,14.5 L 64.5,29.3 L 98.5,15.4 L 122.6,19.7 L 127.7,40.8 L 141.7,54.9 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Outer glow halo -->
+  <path d="M 148.1,82.9 L 132.1,95.1 L 128.9,127.4 L 107.1,143.1 L 90.3,131.3 L 74.1,145.8 L 54.1,144.6 L 34.4,114.9 L 19.1,108.1 L 12.2,73.7 L 26.7,54.8 L 30.8,42.5 L 53.4,14.5 L 64.5,29.3 L 98.5,15.4 L 122.6,19.7 L 127.7,40.8 L 141.7,54.9 Z" fill="none" stroke="#00d4aa" stroke-width="6" opacity="0.08" filter="url(#blobGlow)"/>
+
+  <!-- Background blob — transparent outside -->
+  <path d="M 148.1,82.9 L 132.1,95.1 L 128.9,127.4 L 107.1,143.1 L 90.3,131.3 L 74.1,145.8 L 54.1,144.6 L 34.4,114.9 L 19.1,108.1 L 12.2,73.7 L 26.7,54.8 L 30.8,42.5 L 53.4,14.5 L 64.5,29.3 L 98.5,15.4 L 122.6,19.7 L 127.7,40.8 L 141.7,54.9 Z" fill="url(#bgGrad)"/>
+
+  <!-- Binary rain clipped to blob -->
+  <g clip-path="url(#blobClip)" font-family="'Courier New', monospace" font-size="8" letter-spacing="0.5">
+    <text x="6" y="10" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="6" y="20" fill="#00d4aa" opacity="0.58">0</text>
+    <text x="6" y="30" fill="#00d4aa" opacity="0.66">0</text>
+    <text x="6" y="40" fill="#00d4aa" opacity="0.66">1</text>
+    <text x="6" y="50" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="6" y="60" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="6" y="70" fill="#00d4aa" opacity="0.67">0</text>
+    <text x="6" y="80" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="6" y="90" fill="#00d4aa" opacity="0.57">0</text>
+    <text x="6" y="100" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="6" y="110" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="6" y="120" fill="#00d4aa" opacity="0.62">0</text>
+    <text x="6" y="130" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="6" y="140" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="6" y="150" fill="#00d4aa" opacity="0.7">1</text>
+    <text x="16" y="10" fill="#00d4aa" opacity="0.62">0</text>
+    <text x="16" y="20" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="16" y="30" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="16" y="40" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="16" y="50" fill="#00d4aa" opacity="0.66">0</text>
+    <text x="16" y="60" fill="#00d4aa" opacity="0.64">1</text>
+    <text x="16" y="70" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="16" y="80" fill="#00d4aa" opacity="0.56">0</text>
+    <text x="16" y="90" fill="#00d4aa" opacity="0.58">0</text>
+    <text x="16" y="100" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="16" y="110" fill="#00d4aa" opacity="0.64">1</text>
+    <text x="16" y="120" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="16" y="130" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="16" y="140" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="16" y="150" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="26" y="10" fill="#00bbdd" opacity="0.65">0</text>
+    <text x="26" y="20" fill="#00bbdd" opacity="0.59">1</text>
+    <text x="26" y="30" fill="#00bbdd" opacity="0.67">1</text>
+    <text x="26" y="40" fill="#00bbdd" opacity="0.6">0</text>
+    <text x="26" y="50" fill="#00bbdd" opacity="0.69">1</text>
+    <text x="26" y="60" fill="#00bbdd" opacity="0.66">0</text>
+    <text x="26" y="70" fill="#00bbdd" opacity="0.64">0</text>
+    <text x="26" y="80" fill="#00bbdd" opacity="0.57">1</text>
+    <text x="26" y="90" fill="#00bbdd" opacity="0.57">0</text>
+    <text x="26" y="100" fill="#00bbdd" opacity="0.7">0</text>
+    <text x="26" y="110" fill="#00bbdd" opacity="0.57">1</text>
+    <text x="26" y="120" fill="#00bbdd" opacity="0.68">0</text>
+    <text x="26" y="130" fill="#00bbdd" opacity="0.67">1</text>
+    <text x="26" y="140" fill="#00bbdd" opacity="0.68">0</text>
+    <text x="26" y="150" fill="#00bbdd" opacity="0.68">0</text>
+    <text x="36" y="10" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="36" y="20" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="36" y="30" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="36" y="40" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="36" y="50" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="36" y="60" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="36" y="70" fill="#00d4aa" opacity="0.63">1</text>
+    <text x="36" y="80" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="36" y="90" fill="#00d4aa" opacity="0.66">1</text>
+    <text x="36" y="100" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="36" y="110" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="36" y="120" fill="#00d4aa" opacity="0.65">0</text>
+    <text x="36" y="130" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="36" y="140" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="36" y="150" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="46" y="10" fill="#00d4aa" opacity="0.66">1</text>
+    <text x="46" y="20" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="46" y="30" fill="#00d4aa" opacity="0.69">1</text>
+    <text x="46" y="40" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="46" y="50" fill="#00d4aa" opacity="0.69">1</text>
+    <text x="46" y="60" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="46" y="70" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="46" y="80" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="46" y="90" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="46" y="100" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="46" y="110" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="46" y="120" fill="#00d4aa" opacity="0.68">1</text>
+    <text x="46" y="130" fill="#00d4aa" opacity="0.55">1</text>
+    <text x="46" y="140" fill="#00d4aa" opacity="0.65">1</text>
+    <text x="46" y="150" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="56" y="10" fill="#00bbdd" opacity="0.67">0</text>
+    <text x="56" y="20" fill="#00bbdd" opacity="0.65">1</text>
+    <text x="56" y="30" fill="#00bbdd" opacity="0.61">0</text>
+    <text x="56" y="40" fill="#00bbdd" opacity="0.65">1</text>
+    <text x="56" y="50" fill="#00bbdd" opacity="0.57">0</text>
+    <text x="56" y="60" fill="#00bbdd" opacity="0.55">0</text>
+    <text x="56" y="70" fill="#00bbdd" opacity="0.69">1</text>
+    <text x="56" y="80" fill="#00bbdd" opacity="0.63">0</text>
+    <text x="56" y="90" fill="#00bbdd" opacity="0.69">1</text>
+    <text x="56" y="100" fill="#00bbdd" opacity="0.66">1</text>
+    <text x="56" y="110" fill="#00bbdd" opacity="0.62">1</text>
+    <text x="56" y="120" fill="#00bbdd" opacity="0.58">1</text>
+    <text x="56" y="130" fill="#00bbdd" opacity="0.7">0</text>
+    <text x="56" y="140" fill="#00bbdd" opacity="0.56">1</text>
+    <text x="56" y="150" fill="#00bbdd" opacity="0.69">0</text>
+    <text x="66" y="10" fill="#00d4aa" opacity="0.59">1</text>
+    <text x="66" y="20" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="66" y="30" fill="#00d4aa" opacity="0.7">0</text>
+    <text x="66" y="40" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="66" y="50" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="66" y="60" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="66" y="70" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="66" y="80" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="66" y="90" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="66" y="100" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="66" y="110" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="66" y="120" fill="#00d4aa" opacity="0.64">1</text>
+    <text x="66" y="130" fill="#00d4aa" opacity="0.65">1</text>
+    <text x="66" y="140" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="66" y="150" fill="#00d4aa" opacity="0.63">1</text>
+    <text x="76" y="10" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="76" y="20" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="76" y="30" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="76" y="40" fill="#00d4aa" opacity="0.65">1</text>
+    <text x="76" y="50" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="76" y="60" fill="#00d4aa" opacity="0.57">0</text>
+    <text x="76" y="70" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="76" y="80" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="76" y="90" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="76" y="100" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="76" y="110" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="76" y="120" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="76" y="130" fill="#00d4aa" opacity="0.57">0</text>
+    <text x="76" y="140" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="76" y="150" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="86" y="10" fill="#00bbdd" opacity="0.67">0</text>
+    <text x="86" y="20" fill="#00bbdd" opacity="0.66">0</text>
+    <text x="86" y="30" fill="#00bbdd" opacity="0.66">0</text>
+    <text x="86" y="40" fill="#00bbdd" opacity="0.66">0</text>
+    <text x="86" y="50" fill="#00bbdd" opacity="0.57">0</text>
+    <text x="86" y="60" fill="#00bbdd" opacity="0.55">0</text>
+    <text x="86" y="70" fill="#00bbdd" opacity="0.57">1</text>
+    <text x="86" y="80" fill="#00bbdd" opacity="0.64">0</text>
+    <text x="86" y="90" fill="#00bbdd" opacity="0.6">0</text>
+    <text x="86" y="100" fill="#00bbdd" opacity="0.68">0</text>
+    <text x="86" y="110" fill="#00bbdd" opacity="0.58">1</text>
+    <text x="86" y="120" fill="#00bbdd" opacity="0.66">0</text>
+    <text x="86" y="130" fill="#00bbdd" opacity="0.62">0</text>
+    <text x="86" y="140" fill="#00bbdd" opacity="0.58">0</text>
+    <text x="86" y="150" fill="#00bbdd" opacity="0.67">0</text>
+    <text x="96" y="10" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="96" y="20" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="96" y="30" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="96" y="40" fill="#00d4aa" opacity="0.67">0</text>
+    <text x="96" y="50" fill="#00d4aa" opacity="0.59">1</text>
+    <text x="96" y="60" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="96" y="70" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="96" y="80" fill="#00d4aa" opacity="0.57">0</text>
+    <text x="96" y="90" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="96" y="100" fill="#00d4aa" opacity="0.59">1</text>
+    <text x="96" y="110" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="96" y="120" fill="#00d4aa" opacity="0.56">0</text>
+    <text x="96" y="130" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="96" y="140" fill="#00d4aa" opacity="0.68">1</text>
+    <text x="96" y="150" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="106" y="10" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="106" y="20" fill="#00d4aa" opacity="0.64">1</text>
+    <text x="106" y="30" fill="#00d4aa" opacity="0.65">0</text>
+    <text x="106" y="40" fill="#00d4aa" opacity="0.66">0</text>
+    <text x="106" y="50" fill="#00d4aa" opacity="0.66">1</text>
+    <text x="106" y="60" fill="#00d4aa" opacity="0.63">1</text>
+    <text x="106" y="70" fill="#00d4aa" opacity="0.58">0</text>
+    <text x="106" y="80" fill="#00d4aa" opacity="0.7">1</text>
+    <text x="106" y="90" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="106" y="100" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="106" y="110" fill="#00d4aa" opacity="0.62">0</text>
+    <text x="106" y="120" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="106" y="130" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="106" y="140" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="106" y="150" fill="#00d4aa" opacity="0.7">0</text>
+    <text x="116" y="10" fill="#00bbdd" opacity="0.58">1</text>
+    <text x="116" y="20" fill="#00bbdd" opacity="0.57">1</text>
+    <text x="116" y="30" fill="#00bbdd" opacity="0.63">0</text>
+    <text x="116" y="40" fill="#00bbdd" opacity="0.56">1</text>
+    <text x="116" y="50" fill="#00bbdd" opacity="0.6">0</text>
+    <text x="116" y="60" fill="#00bbdd" opacity="0.62">0</text>
+    <text x="116" y="70" fill="#00bbdd" opacity="0.61">0</text>
+    <text x="116" y="80" fill="#00bbdd" opacity="0.58">0</text>
+    <text x="116" y="90" fill="#00bbdd" opacity="0.58">1</text>
+    <text x="116" y="100" fill="#00bbdd" opacity="0.62">0</text>
+    <text x="116" y="110" fill="#00bbdd" opacity="0.69">0</text>
+    <text x="116" y="120" fill="#00bbdd" opacity="0.57">0</text>
+    <text x="116" y="130" fill="#00bbdd" opacity="0.58">0</text>
+    <text x="116" y="140" fill="#00bbdd" opacity="0.58">1</text>
+    <text x="116" y="150" fill="#00bbdd" opacity="0.59">0</text>
+    <text x="126" y="10" fill="#00d4aa" opacity="0.65">0</text>
+    <text x="126" y="20" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="126" y="30" fill="#00d4aa" opacity="0.59">0</text>
+    <text x="126" y="40" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="126" y="50" fill="#00d4aa" opacity="0.62">1</text>
+    <text x="126" y="60" fill="#00d4aa" opacity="0.67">0</text>
+    <text x="126" y="70" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="126" y="80" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="126" y="90" fill="#00d4aa" opacity="0.69">0</text>
+    <text x="126" y="100" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="126" y="110" fill="#00d4aa" opacity="0.55">1</text>
+    <text x="126" y="120" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="126" y="130" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="126" y="140" fill="#00d4aa" opacity="0.61">1</text>
+    <text x="126" y="150" fill="#00d4aa" opacity="0.63">1</text>
+    <text x="136" y="10" fill="#00d4aa" opacity="0.62">0</text>
+    <text x="136" y="20" fill="#00d4aa" opacity="0.6">0</text>
+    <text x="136" y="30" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="136" y="40" fill="#00d4aa" opacity="0.55">1</text>
+    <text x="136" y="50" fill="#00d4aa" opacity="0.68">1</text>
+    <text x="136" y="60" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="136" y="70" fill="#00d4aa" opacity="0.55">0</text>
+    <text x="136" y="80" fill="#00d4aa" opacity="0.58">0</text>
+    <text x="136" y="90" fill="#00d4aa" opacity="0.64">1</text>
+    <text x="136" y="100" fill="#00d4aa" opacity="0.65">0</text>
+    <text x="136" y="110" fill="#00d4aa" opacity="0.57">1</text>
+    <text x="136" y="120" fill="#00d4aa" opacity="0.56">1</text>
+    <text x="136" y="130" fill="#00d4aa" opacity="0.62">1</text>
+    <text x="136" y="140" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="136" y="150" fill="#00d4aa" opacity="0.6">1</text>
+    <text x="146" y="10" fill="#00bbdd" opacity="0.67">1</text>
+    <text x="146" y="20" fill="#00bbdd" opacity="0.63">1</text>
+    <text x="146" y="30" fill="#00bbdd" opacity="0.69">0</text>
+    <text x="146" y="40" fill="#00bbdd" opacity="0.59">0</text>
+    <text x="146" y="50" fill="#00bbdd" opacity="0.59">0</text>
+    <text x="146" y="60" fill="#00bbdd" opacity="0.64">1</text>
+    <text x="146" y="70" fill="#00bbdd" opacity="0.58">0</text>
+    <text x="146" y="80" fill="#00bbdd" opacity="0.63">1</text>
+    <text x="146" y="90" fill="#00bbdd" opacity="0.56">1</text>
+    <text x="146" y="100" fill="#00bbdd" opacity="0.57">1</text>
+    <text x="146" y="110" fill="#00bbdd" opacity="0.59">0</text>
+    <text x="146" y="120" fill="#00bbdd" opacity="0.61">1</text>
+    <text x="146" y="130" fill="#00bbdd" opacity="0.63">1</text>
+    <text x="146" y="140" fill="#00bbdd" opacity="0.64">0</text>
+    <text x="146" y="150" fill="#00bbdd" opacity="0.69">0</text>
+    <text x="156" y="10" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="156" y="20" fill="#00d4aa" opacity="0.64">0</text>
+    <text x="156" y="30" fill="#00d4aa" opacity="0.62">1</text>
+    <text x="156" y="40" fill="#00d4aa" opacity="0.6">1</text>
+    <text x="156" y="50" fill="#00d4aa" opacity="0.65">0</text>
+    <text x="156" y="60" fill="#00d4aa" opacity="0.63">0</text>
+    <text x="156" y="70" fill="#00d4aa" opacity="0.68">0</text>
+    <text x="156" y="80" fill="#00d4aa" opacity="0.61">0</text>
+    <text x="156" y="90" fill="#00d4aa" opacity="0.55">0</text>
+    <text x="156" y="100" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="156" y="110" fill="#00d4aa" opacity="0.55">0</text>
+    <text x="156" y="120" fill="#00d4aa" opacity="0.67">1</text>
+    <text x="156" y="130" fill="#00d4aa" opacity="0.58">1</text>
+    <text x="156" y="140" fill="#00d4aa" opacity="0.67">0</text>
+    <text x="156" y="150" fill="#00d4aa" opacity="0.7">1</text>
+  </g>
+
+  <!-- Dive trail from diver head toward key -->
+  <line x1="72" y1="54" x2="104" y2="104"
+        stroke="url(#trailGrad)" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Bubbles trailing behind diver -->
+  <circle cx="46" cy="40" r="2.0" fill="#00d4aa" opacity="0.28"/>
+  <circle cx="38" cy="32" r="1.4" fill="#4dd9ff" opacity="0.20"/>
+  <circle cx="50" cy="48" r="1.0" fill="#00d4aa" opacity="0.16"/>
+
+  <!--
+    DIVER — scale(0.75), centre at (62,62)
+    Head faces bottom-right (rotate 45°).
+    Pulled inward so fins stay inside blob.
+  -->
+  <g filter="url(#glow)" transform="translate(62, 62) rotate(45) scale(0.75)">
+
+    <!-- FINS -->
+    <path d="M -28,-4 Q -40,-2 -44,4  Q -36,8  -26,4  Z" fill="#009977" opacity="0.95"/>
+    <path d="M -28, 4 Q -40, 6 -44,12 Q -36,14 -26,8  Z" fill="#009977" opacity="0.90"/>
+
+    <!-- LOWER LEGS -->
+    <rect x="-27" y="-7"  width="13" height="6"  rx="3"   fill="#00ccaa"/>
+    <rect x="-27" y=" 3"  width="13" height="6"  rx="3"   fill="#00ccaa"/>
+
+    <!-- THIGHS -->
+    <rect x="-14" y="-8"  width="11" height="7"  rx="3.5" fill="#00ddbb"/>
+    <rect x="-14" y=" 1"  width="11" height="7"  rx="3.5" fill="#00ddbb"/>
+
+    <!-- HIPS -->
+    <rect x="-15" y="-5"  width="7"  height="10" rx="3.5" fill="#00ddbb"/>
+
+    <!-- TORSO -->
+    <rect x="-10" y="-10" width="20" height="20" rx="6"   fill="#00ddbb"/>
+    <rect x=" -5" y=" -8" width="10" height="16" rx="3"   fill="#00c4a8" opacity="0.45"/>
+
+    <!-- OXYGEN TANK -->
+    <rect x=" -8" y="  9" width="14" height="6"  rx="3"   fill="#008877" opacity="0.95"/>
+    <rect x=" -2" y=" 14" width="5"  height="3"  rx="1.5" fill="#006655" opacity="0.9"/>
+
+    <!-- ARMS reaching forward toward key -->
+    <path d="M 8,-8  Q 16,-16 20,-13" stroke="#00ccaa" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+    <circle cx="21" cy="-14" r="3" fill="#00bbaa"/>
+    <path d="M 8, 8  Q 16, 16 20, 13" stroke="#00ccaa" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+    <circle cx="21" cy="14"  r="3" fill="#00bbaa"/>
+
+    <!-- NECK -->
+    <rect x="10" y="-4" width="8" height="8" rx="3" fill="#00ccaa"/>
+
+    <!-- HEAD -->
+    <circle cx="25" cy="0" r="12" fill="#00ddbb"/>
+    <ellipse cx="28" cy="0" rx="9"    ry="7.5" fill="#0a1628" opacity="0.85"/>
+    <ellipse cx="28" cy="0" rx="7"    ry="6"   fill="#003d99" opacity="0.60"/>
+    <ellipse cx="25" cy="-2" rx="2.5" ry="1.5" fill="#66ddff" opacity="0.35"/>
+    <path d="M 18,-11 Q 14,-13 13,-9"  stroke="#009988" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.7"/>
+    <path d="M 18, 11 Q 14, 13 13, 9"  stroke="#009988" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.7"/>
+    <path d="M 22,8 Q 20,13 18,11"     stroke="#007766" stroke-width="2" stroke-linecap="round" fill="none"/>
+    <circle cx="18" cy="11" r="2.8" fill="#009988" opacity="0.95"/>
+    <path d="M 15,-11 Q 25,-15 35,-10" stroke="#00bbaa" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.55"/>
+
+  </g>
+
+  <!-- KEY — moved inward to (106, 108), diagonal -40°, small -->
+  <g filter="url(#keyGlow)" transform="translate(106, 108) rotate(-40)">
+    <circle cx="0" cy="0" r="8"   fill="none" stroke="#ffe566" stroke-width="2.8"/>
+    <circle cx="0" cy="0" r="3.5" fill="none" stroke="#ffe566" stroke-width="2"/>
+    <rect x="7"  y="-2.2" width="20" height="4.5" rx="2.2" fill="#ffe566"/>
+    <rect x="15" y="2.2"  width="4"  height="5.5" rx="1.5" fill="#ffe566"/>
+    <rect x="22" y="2.2"  width="3"  height="4"   rx="1.5" fill="#ffe566"/>
+  </g>
+
+  <!-- Blob border -->
+  <path d="M 148.1,82.9 L 132.1,95.1 L 128.9,127.4 L 107.1,143.1 L 90.3,131.3 L 74.1,145.8 L 54.1,144.6 L 34.4,114.9 L 19.1,108.1 L 12.2,73.7 L 26.7,54.8 L 30.8,42.5 L 53.4,14.5 L 64.5,29.3 L 98.5,15.4 L 122.6,19.7 L 127.7,40.8 L 141.7,54.9 Z" fill="none" stroke="#00d4aa" stroke-width="1.8" opacity="0.30"/>
+
+</svg>

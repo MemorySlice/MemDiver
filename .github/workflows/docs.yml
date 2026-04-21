@@ -1,0 +1,85 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    name: Build Sphinx site
+    runs-on: ubuntu-latest
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            docs/requirements.txt
+
+      - name: Install docs toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+
+      - name: Verify logo raster parity
+        run: python scripts/build_logo.py --check
+
+      - name: Sphinx strict build
+        run: python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+      - name: Upload PR preview artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sphinx-html-pr-${{ github.event.pull_request.number }}
+          path: docs/_build/html
+          retention-days: 14
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    # Gated off for the first green run.  Remove the `if: false` line (or invert
+    # it to the original predicate) once the repository owner has enabled
+    # Settings -> Pages -> Source = "GitHub Actions" and is ready to publish.
+    if: false
+    # Original predicate (re-enable after one-time manual Pages setup):
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

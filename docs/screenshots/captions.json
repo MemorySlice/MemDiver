@@ -1,0 +1,118 @@
+{
+  "locale": "en-US",
+  "viewport_default": {"width": 1440, "height": 900},
+  "viewport_hero": {"width": 1920, "height": 1080},
+  "tolerance_default": 0.005,
+  "shots": [
+    {
+      "slug": "01_landing",
+      "title": "Session landing",
+      "alt": "MemDiver session landing page, listing previously saved analysis sessions.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "verification",
+      "viewport": "hero",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "02_wizard_select_data",
+      "title": "Wizard — select data",
+      "alt": "Wizard step one with a path input and a file-browser modal open over the workspace.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "verification",
+      "viewport": "default",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "03_wizard_analysis",
+      "title": "Wizard — analysis algorithms",
+      "alt": "Wizard step three showing the eight-algorithm checkbox grid with availability dimming.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "04_workspace_default",
+      "title": "Workspace — default layout",
+      "alt": "MemDiver workspace in dark theme showing hex viewer, sidebar with six tabs, detail overlay, and bottom analysis panel.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "hero",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "05_hex_with_overlay",
+      "title": "Hex viewer with structure overlay",
+      "alt": "Hex viewer with a TLS-13 structure overlay highlighting bytes by classification.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.01
+    },
+    {
+      "slug": "06_entropy_tab",
+      "title": "Entropy profile",
+      "alt": "Entropy profile chart with Shannon entropy plotted against byte offset and high-entropy regions shaded red.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.01
+    },
+    {
+      "slug": "07_consensus_tab",
+      "title": "Consensus view",
+      "alt": "Consensus chart — stacked bars showing per-byte classification counts across N dumps.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.01
+    },
+    {
+      "slug": "08_pipeline_oracle",
+      "title": "Pipeline — oracle stage",
+      "alt": "Pipeline oracle-stage wizard showing an uploaded decryption oracle with dry-run dots.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "09_pipeline_run",
+      "title": "Pipeline — run dashboard",
+      "alt": "Live pipeline run dashboard with funnel chart, stage-timing table, and live oracle log.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "hero",
+      "tolerance": 0.01
+    },
+    {
+      "slug": "10_pipeline_results",
+      "title": "Pipeline — results",
+      "alt": "Pipeline results with survivor curve and downloadable artifacts including a Volatility3 plugin.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "default",
+      "tolerance": 0.005
+    },
+    {
+      "slug": "11_theme_triptych",
+      "title": "Theme triptych",
+      "alt": "Three workspace panels side by side in light, dark, and dark-plus-high-contrast themes.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "exploration",
+      "viewport": "hero",
+      "tolerance": 0.01
+    }
+  ]
+}

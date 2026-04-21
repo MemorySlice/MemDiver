@@ -1,0 +1,11 @@
+sphinx==7.4.7
+sphinx-rtd-theme==3.0.2
+myst-parser==4.0.1
+sphinx-copybutton==0.5.2
+sphinx-design==0.6.1
+sphinxcontrib-mermaid==1.0.0
+sphinx-argparse==0.5.2
+linkify-it-py==2.0.3
+docutils==0.21.2
+cairosvg==2.7.1
+pillow==10.4.0

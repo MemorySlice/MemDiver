@@ -1150,6 +1150,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Public alias for sphinx-argparse and external tooling."""
+    return _build_parser()
+
+
 def main():
     """MemDiver CLI entry point."""
     parser = _build_parser()

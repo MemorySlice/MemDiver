@@ -1,0 +1,58 @@
+/* MemDiver documentation — light tweaks on top of sphinx_rtd_theme. */
+
+/* Sidebar logo sizing — keep the diver legible. */
+.wy-side-nav-search img {
+    max-width: 160px;
+    max-height: 160px;
+    padding: 0.25rem;
+    background: transparent;
+}
+
+/* Brand-teal accents, contrast-checked against #fcfcfc (12:1). */
+:root {
+    --memdiver-teal-on-dark: #00d4aa;
+    --memdiver-teal-on-light: #007a63;
+}
+
+a,
+a:visited {
+    color: var(--memdiver-teal-on-light);
+}
+
+a:hover {
+    color: #00a087;
+    text-decoration: underline;
+}
+
+/* Focus-visible ring on all interactive elements (WCAG 2.4.7). */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--memdiver-teal-on-light);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+/* Respect reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* Slightly widen the content column so screenshots breathe. */
+.wy-nav-content {
+    max-width: 1080px;
+}
+
+/* Figure captions — center, subdue. */
+figcaption,
+.caption-text {
+    text-align: center;
+    color: #666;
+    font-style: italic;
+    font-size: 0.9em;
+}
