@@ -1,6 +1,9 @@
 <p align="center">
+  <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/wordmark.svg"
+       alt="MemDiver" height="90" align="middle"/>
   <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/logo_readme.png"
-       alt="MemDiver logo: a diver descending toward a golden key inside a teal memory blob" width="220"/>
+       alt="MemDiver logo: a diver descending toward a golden key inside a teal memory blob"
+       width="220" align="middle"/>
 </p>
 
 <p align="center"><em>Interactive platform for identifying and analyzing data structures in memory dumps.</em></p>

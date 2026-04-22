@@ -38,6 +38,12 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "requires_dataset: mark test as requiring the private mempdumps dataset",
     )
+    # Ensure the synthetic fixture dataset exists before collection.
+    # generate_dataset() is idempotent — returns immediately if the
+    # dataset dir is already populated. Keeps gitignored fixtures
+    # re-materialisable on fresh clones and CI runners.
+    from tests.fixtures.generate_fixtures import generate_dataset
+    generate_dataset()
 
 
 def pytest_collection_modifyitems(

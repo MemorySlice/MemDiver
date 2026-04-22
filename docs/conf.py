@@ -88,6 +88,7 @@ autodoc_typehints = "description"
 autodoc_class_signature = "separated"
 autodoc_preserve_defaults = True
 autodoc_mock_imports = [
+    "numpy",
     "frida_tools",
     "memslicer",
     "duckdb",
