@@ -208,7 +208,7 @@ class OracleRegistry:
     # ------------------------------------------------------------------
 
     def list_examples(self) -> List[Dict[str, Any]]:
-        """Enumerate bundled example oracles under ``docs/oracle_examples/``."""
+        """Enumerate bundled example oracles under ``docs/oracle/examples/``."""
         if not self._examples_dir.is_dir():
             return []
         out: List[Dict[str, Any]] = []

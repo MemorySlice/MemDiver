@@ -107,6 +107,7 @@ packages = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 addopts = "--import-mode=importlib"
+testpaths = ["tests"]
 
 # tests/ is intentionally excluded from sdist/wheel — fixtures (including
 # the AES sample binary and private dataset paths) must never ship.

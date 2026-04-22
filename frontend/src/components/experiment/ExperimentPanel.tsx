@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { ConvergenceChart } from '../charts/ConvergenceChart';
 import { MethodComparisonTable } from '../results/MethodComparisonTable';
 import type { ConvergenceSweepResult } from '../../api/types';
+import { EmptyState } from '@/components/common/EmptyState';
+import { ExperimentIcon } from '@/components/common/Icons';
 
 interface ExperimentPanelProps {
   onRunExperiment?: (config: ExperimentConfig) => void;
@@ -30,6 +32,7 @@ interface ToolResult {
 }
 
 export function ExperimentPanel({ onRunExperiment }: ExperimentPanelProps) {
+  const [showDetails, setShowDetails] = useState(false);
   const [targetScript, setTargetScript] = useState('tests/fixtures/aes_sample_process.py');
   const [numRuns, setNumRuns] = useState(30);
   const [tools, setTools] = useState(['memslicer', 'lldb', 'fridump']);
@@ -40,6 +43,19 @@ export function ExperimentPanel({ onRunExperiment }: ExperimentPanelProps) {
   const [convergenceData, setConvergenceData] = useState<ConvergenceSweepResult | null>(null);
   const [toolResults, setToolResults] = useState<ToolResult[]>([]);
   const [status, setStatus] = useState('');
+
+  if (!showDetails) {
+    return (
+      <EmptyState
+        icon={<ExperimentIcon />}
+        title="Experiment runner (preview)"
+        description="Configure a target script, dump tools, and run count to benchmark detection precision end-to-end. Execution is wired on the CLI; the SPA runner is preview-only."
+        primaryCta={{ label: "Show preview anyway", onClick: () => setShowDetails(true) }}
+        secondary={{ label: "CLI quickstart", href: "/docs/quickstart/experiment.md" }}
+        data-testid="experiment-empty"
+      />
+    );
+  }
 
   const toggleTool = (tool: string) => {
     setTools(prev =>

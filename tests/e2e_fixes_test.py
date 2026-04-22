@@ -8,6 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+
+pytest.importorskip("playwright", reason="Playwright not installed; skipping browser e2e tests.")
+
 from playwright.sync_api import sync_playwright
 
 from tests._paths import artifacts_dir, dataset_root

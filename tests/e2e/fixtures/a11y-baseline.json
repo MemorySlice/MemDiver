@@ -1,0 +1,97 @@
+{
+  "accessibleName": {
+    "bookmarks": [],
+    "dumps": [],
+    "format": [],
+    "structures": [],
+    "sessions": [
+      "<button class=\"px-1 hover:text-[var(--md-accent-red)]\">x</button>"
+    ],
+    "import": [],
+    "analysis": [],
+    "results": [],
+    "strings": [],
+    "verify-key": [],
+    "pipeline": [],
+    "entropy": [],
+    "consensus": [],
+    "live-consensus": [],
+    "architect": [],
+    "experiment": [],
+    "convergence": []
+  },
+  "axe": {
+    "bookmarks": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "dumps": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "format": [
+      "scrollable-region-focusable#.md-panel",
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "structures": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "sessions": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "import": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "analysis": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "results": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "strings": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1",
+      "select-name#select"
+    ],
+    "verify-key": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "pipeline": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "entropy": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "consensus": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "live-consensus": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "architect": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "experiment": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ],
+    "convergence": [
+      "scrollable-region-focusable#div[data-tour-id=\"hex-viewer\"] > .overflow-auto.flex-1"
+    ]
+  },
+  "focusRing": {
+    "bookmarks": [],
+    "dumps": [],
+    "format": [],
+    "structures": [],
+    "sessions": [],
+    "import": [],
+    "analysis": [],
+    "results": [],
+    "strings": [],
+    "verify-key": [],
+    "pipeline": [],
+    "entropy": [],
+    "consensus": [],
+    "live-consensus": [],
+    "architect": [],
+    "experiment": [],
+    "convergence": []
+  }
+}

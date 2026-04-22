@@ -22,9 +22,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
+# Generators sometimes do `from tests.fixtures.X import Y` to share helpers,
+# so the repo root must be importable when this script runs as a subprocess.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 GENERATORS = [
     ("generate_fixtures", "generate_dataset"),
-    ("generate_msl_fixtures", "write_msl_fixture"),
+    # write_msl_fixture(path) expects a file path; ensure_msl_fixtures(root)
+    # is the directory-level entry point that matches the seed-driver contract.
+    ("generate_msl_fixtures", "ensure_msl_fixtures"),
     ("generate_msl_aslr_fixtures", "write_aslr_msl_fixtures"),
     ("generate_aes_fixtures", "generate_dataset"),
     ("generate_aslr_fixtures", "generate_dataset"),
@@ -48,12 +55,15 @@ def seed(root: Path) -> dict[str, str]:
     root.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, str] = {}
 
-    for module_name, _func_name in GENERATORS:
+    for module_name, func_name in GENERATORS:
         module = _load(module_name)
-        # Each generator exposes a `generate_dataset(root)` or similar entry
-        # point; fall back to the module's `__main__` if no conventional name
-        # is present.  Keep lenient so fixture refactors don't break docs CI.
-        entry = getattr(module, "generate_dataset", None) or getattr(module, "write_msl_fixture", None)
+        # Honor the per-module entry point declared in GENERATORS, with a
+        # conventional fallback chain so fixture refactors stay tolerant.
+        entry = (
+            getattr(module, func_name, None)
+            or getattr(module, "generate_dataset", None)
+            or getattr(module, "ensure_msl_fixtures", None)
+        )
         if entry is None:
             # Best-effort: invoke __main__ with seed dir as argv.
             if hasattr(module, "main"):

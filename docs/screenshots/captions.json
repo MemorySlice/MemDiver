@@ -113,6 +113,26 @@
       "mode": "exploration",
       "viewport": "hero",
       "tolerance": 0.01
+    },
+    {
+      "slug": "12_workspace_loaded_dark",
+      "title": "Workspace — MSL loaded (dark)",
+      "alt": "MemDiver workspace with the canonical MSL fixture loaded into the hex viewer — dark theme.",
+      "route": "/",
+      "theme": "dark",
+      "mode": "verification",
+      "viewport": "hero",
+      "tolerance": 0.01
+    },
+    {
+      "slug": "13_workspace_loaded_light",
+      "title": "Workspace — MSL loaded (light)",
+      "alt": "MemDiver workspace with the canonical MSL fixture loaded into the hex viewer — light theme.",
+      "route": "/",
+      "theme": "light",
+      "mode": "verification",
+      "viewport": "hero",
+      "tolerance": 0.01
     }
   ]
 }

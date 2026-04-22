@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "lint:no-hex": "node ../scripts/check-no-hex-literals.mjs",
+    "lint:colour-literals": "node ../scripts/check-no-tailwind-colour-literals.mjs",
+    "lint:colour-literals:update": "node ../scripts/check-no-tailwind-colour-literals.mjs update",
     "preview": "vite preview"
   },
   "dependencies": {

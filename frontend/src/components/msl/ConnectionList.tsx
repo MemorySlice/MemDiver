@@ -48,7 +48,7 @@ export function ConnectionList({ mslPath }: Props) {
       .catch((e) => setError(String(e)));
   }, [mslPath]);
 
-  if (error) return <p className="p-3 text-xs text-red-500">{error}</p>;
+  if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!connections.length) return <p className="p-3 text-xs md-text-muted">No connection table blocks</p>;
 
   return (

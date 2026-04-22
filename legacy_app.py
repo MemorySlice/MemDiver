@@ -1,6 +1,6 @@
-"""MemDiver -- NiceGUI entry point.
+"""MemDiver -- NiceGUI entry point (legacy).
 
-Usage: python app.py
+Usage: python legacy_app.py
 """
 
 import asyncio

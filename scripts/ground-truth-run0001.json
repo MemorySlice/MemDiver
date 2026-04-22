@@ -1,0 +1,137 @@
+{
+  "run_id": "1",
+  "master_key_hex": "ee2813d66ee64fd0a1eb7b2efa58b92f5315fd27e6017d81693e552bf57859a2",
+  "aslr_base": 4194304,
+  "pid": 65219,
+  "dumps": [
+    {
+      "label": "memslicer.msl",
+      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/memslicer.msl",
+      "size_bytes": 220079200,
+      "format": "msl",
+      "region_count": 110,
+      "hits_raw": [
+        1331440,
+        1332080
+      ],
+      "hits_vas": [
+        5743136,
+        5743776
+      ],
+      "hits_vas_error": null,
+      "va_info": {
+        "va": 824634491424,
+        "extra": {
+          "region_base": 824633720832,
+          "region_size": 71303168
+        },
+        "source": "vas"
+      },
+      "strings_bench": {
+        "wall_seconds": 0.401,
+        "returned": 500,
+        "truncated": true,
+        "next_cursor": 1018684
+      }
+    },
+    {
+      "label": "gdb_raw.bin",
+      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gdb_raw.bin",
+      "size_bytes": 217681920,
+      "format": "gdb_raw",
+      "region_count": 13,
+      "hits_raw": [
+        5743136,
+        5743776
+      ],
+      "hits_vas": [
+        5743136,
+        5743776
+      ],
+      "hits_vas_error": null,
+      "va_info": {
+        "va": 824634491424,
+        "extra": {
+          "region_start_va": 824633720832,
+          "region_end_va": 824705024000,
+          "region_perms": "rw-p",
+          "region_path": ""
+        },
+        "source": "raw"
+      },
+      "strings_bench": {
+        "wall_seconds": 0.375,
+        "returned": 500,
+        "truncated": true,
+        "next_cursor": 1018684
+      }
+    },
+    {
+      "label": "lldb_raw.bin",
+      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/lldb_raw.bin",
+      "size_bytes": 217681920,
+      "format": "lldb_raw",
+      "region_count": 13,
+      "hits_raw": [
+        5743136,
+        5743776
+      ],
+      "hits_vas": [
+        5743136,
+        5743776
+      ],
+      "hits_vas_error": null,
+      "va_info": {
+        "va": 824634491424,
+        "extra": {
+          "region_start_va": 824633720832,
+          "region_end_va": 824705024000,
+          "region_perms": "rw-p",
+          "region_path": ""
+        },
+        "source": "raw"
+      },
+      "strings_bench": {
+        "wall_seconds": 0.379,
+        "returned": 500,
+        "truncated": true,
+        "next_cursor": 1018684
+      }
+    },
+    {
+      "label": "gcore.core",
+      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gcore.core",
+      "size_bytes": 2155823640,
+      "format": "gcore",
+      "region_count": 89,
+      "hits_raw": [
+        1476112,
+        1476752
+      ],
+      "hits_vas": [
+        1471008,
+        1471648
+      ],
+      "hits_vas_error": null,
+      "va_info": {
+        "va": 824634491424,
+        "extra": {
+          "seg_vaddr": 824633720832,
+          "seg_filesz": 71303168,
+          "seg_file_offset": 705520
+        },
+        "source": "raw"
+      },
+      "strings_bench": {
+        "wall_seconds": 0.36,
+        "returned": 500,
+        "truncated": true,
+        "next_cursor": 5069949
+      }
+    }
+  ],
+  "session_info": {
+    "pid": 65219,
+    "dump_uuid": "0bf82b6d-54c8-4bf6-9ecf-78511cfd602c"
+  }
+}

@@ -18,7 +18,8 @@ permissions:
 env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"
-  PLAYWRIGHT_VERSION: "1.47.2"
+  # Pin to a real PyPI version. 1.47.2 was a typo (PyPI jumps 1.47.0 → 1.48.0).
+  PLAYWRIGHT_VERSION: "1.47.0"
 
 jobs:
   refresh:

@@ -41,13 +41,13 @@ const WIZARD_STEPS: Array<{ id: WizardStage; label: string }> = [
   { id: "results", label: "Results" },
 ];
 
-const STATUS_BADGE: Record<string, string> = {
-  idle: "bg-gray-700",
-  pending: "bg-blue-700",
-  running: "bg-blue-700",
-  succeeded: "bg-green-700",
-  failed: "bg-red-700",
-  cancelled: "bg-amber-700",
+const STATUS_BADGE_BG: Record<string, string> = {
+  idle: "var(--md-text-muted)",
+  pending: "var(--md-accent-blue)",
+  running: "var(--md-accent-blue)",
+  succeeded: "var(--md-accent-green)",
+  failed: "var(--md-accent-red)",
+  cancelled: "var(--md-accent-orange)",
 };
 
 function Stepper({
@@ -120,9 +120,8 @@ function HeaderBar() {
     <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--md-border)] md-bg-secondary">
       <h2 className="text-sm font-semibold md-text-accent">Pipeline</h2>
       <span
-        className={`inline-block text-[10px] uppercase tracking-wide text-white rounded px-2 py-0.5 ${
-          STATUS_BADGE[status] ?? "bg-gray-700"
-        }`}
+        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-2 py-0.5"
+        style={{ background: STATUS_BADGE_BG[status] ?? "var(--md-text-muted)" }}
       >
         {status}
       </span>

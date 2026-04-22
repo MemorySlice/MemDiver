@@ -15,8 +15,13 @@ from engine.verification import (  # noqa: F401
     HAS_CRYPTO,
 )
 
-# Backward-compatible aliases
-create_verification_ciphertext = AesCbcVerifier().create_ciphertext
+# Backward-compatible wrappers — supply the canonical plaintext/IV defaults
+# so callers can pass the key alone (matches the original helper contract
+# before AesCbcVerifier.create_ciphertext became 3-positional).
+def create_verification_ciphertext(key, plaintext=VERIFICATION_PLAINTEXT,
+                                   iv=VERIFICATION_IV):
+    """Backward-compatible wrapper."""
+    return AesCbcVerifier().create_ciphertext(key, plaintext, iv)
 
 
 def verify_candidate_key(candidate, ciphertext, iv=VERIFICATION_IV,

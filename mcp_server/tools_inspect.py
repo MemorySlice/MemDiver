@@ -19,6 +19,13 @@ logger = logging.getLogger("memdiver.mcp_server.tools_inspect")
 MAX_HEX_LENGTH = 4096
 MAX_ENTROPY_SAMPLES = 200
 MAX_STRING_RESULTS = 500
+# Bytes of read-back overlap between consecutive chunks, so strings that
+# straddle a chunk boundary are still recovered by the next scan. The first
+# TAIL_OVERLAP bytes of every non-initial chunk have already been scanned by
+# the previous chunk, so matches landing inside that prefix are discarded as
+# duplicates. 256 bytes comfortably exceeds any realistic printable run that
+# an operator would reasonably want split across chunks.
+TAIL_OVERLAP = 256
 
 
 def read_hex(
@@ -187,28 +194,107 @@ def extract_strings_tool(
     min_length: int = 4,
     encoding: str = "ascii",
     max_results: int = 500,
+    cursor: int = 0,
+    chunk_size: int = 8 * 1024 * 1024,
 ) -> dict:
-    """Extract printable strings from a dump file."""
+    """Extract printable strings from a dump file via chunked streaming.
+
+    Backward-compatible with the legacy signature: ``offset`` / ``length`` still
+    define the inclusive scan window and the response keeps its historical
+    ``strings`` / ``total_count`` / ``truncated`` fields. Two new knobs drive
+    chunked streaming so large dumps no longer slurp the whole buffer:
+
+    - ``cursor``: absolute byte position to resume from (>= ``offset``). When
+      a previous call returned ``next_cursor`` the client passes it straight
+      back to fetch the next page.
+    - ``chunk_size``: streamed read size in bytes (default 8 MiB). Each chunk
+      is read with a ``TAIL_OVERLAP``-byte read-back overlap so strings that
+      straddle a boundary are still recovered.
+
+    The response is a strict superset of the old shape; ``next_cursor`` is
+    ``None`` once the window is fully scanned and ``window_end`` exposes the
+    resolved end-of-window for UI paging math.
+    """
     path = Path(dump_path)
     if not path.is_file():
         return {"error": f"File not found: {dump_path}"}
 
     max_results = min(max_results, MAX_STRING_RESULTS)
-    with cached_dump_source(path) as source:
-        data = source.read_all() if length == 0 else source.read_range(offset, length)
+    chunk_size = max(chunk_size, TAIL_OVERLAP + 1)
 
-    matches = extract_strings(data, min_length=min_length, encoding=encoding)
-    truncated = len(matches) > max_results
-    matches = matches[:max_results]
+    with cached_dump_source(path) as source:
+        window_end = (offset + length) if length else source.size
+        window_start = max(offset, cursor)
+        results, next_cursor, truncated = _scan_window_for_strings(
+            source, window_start, window_end,
+            min_length, encoding, max_results, chunk_size,
+        )
 
     return {
-        "strings": [
-            {"offset": m.offset, "value": m.value, "encoding": m.encoding, "length": m.length}
-            for m in matches
-        ],
-        "total_count": len(matches) if not truncated else f">{max_results}",
+        "strings": results,
+        "total_count": len(results) if not truncated else f">{max_results}",
         "truncated": truncated,
+        "next_cursor": next_cursor,
+        "window_end": window_end,
     }
+
+
+def _scan_window_for_strings(
+    source,
+    window_start: int,
+    window_end: int,
+    min_length: int,
+    encoding: str,
+    max_results: int,
+    chunk_size: int,
+) -> tuple[list[dict], Optional[int], bool]:
+    """Stream the window in overlapping chunks; return (results, cursor, trunc)."""
+    results: List[dict] = []
+    pos = window_start
+    next_cursor: Optional[int] = None
+    truncated = False
+
+    while pos < window_end:
+        read_len = min(chunk_size + TAIL_OVERLAP, window_end - pos)
+        buf = source.read_range(pos, read_len)
+        if not buf:
+            break
+
+        is_first_chunk = (pos == window_start)
+        matches = extract_strings(buf, min_length=min_length, encoding=encoding)
+        stopped_early, next_cursor = _collect_chunk_matches(
+            matches, pos, is_first_chunk, results, max_results,
+        )
+        if stopped_early:
+            truncated = True
+            break
+
+        pos += chunk_size
+
+    return results, next_cursor, truncated
+
+
+def _collect_chunk_matches(
+    matches,
+    pos: int,
+    is_first_chunk: bool,
+    results: List[dict],
+    max_results: int,
+) -> tuple[bool, Optional[int]]:
+    """Append dedup'd matches; signal early-stop + next_cursor when full."""
+    for m in matches:
+        if not is_first_chunk and m.offset < TAIL_OVERLAP:
+            continue  # already reported by the previous chunk's tail overlap
+        absolute_offset = pos + m.offset
+        results.append({
+            "offset": absolute_offset,
+            "value": m.value,
+            "encoding": m.encoding,
+            "length": m.length,
+        })
+        if len(results) >= max_results:
+            return True, absolute_offset + m.length
+    return False, None
 
 
 def get_session_info(session: ToolSession, msl_path: str) -> dict:

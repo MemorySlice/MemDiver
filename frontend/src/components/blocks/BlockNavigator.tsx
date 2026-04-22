@@ -47,7 +47,7 @@ export function BlockNavigator({ mslPath, onBlockClick }: Props) {
     });
   };
 
-  if (error) return <p className="p-3 text-xs text-red-500">{error}</p>;
+  if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
 
   return (
     <div className="p-3 text-xs space-y-2">

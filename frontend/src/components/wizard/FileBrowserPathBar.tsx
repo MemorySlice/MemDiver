@@ -29,7 +29,7 @@ export function FileBrowserPathBar({
         onBlur={onBlur}
         onKeyDown={onKeyDown}
         placeholder="Type a path and press Enter"
-        className="flex-1 min-w-0 text-xs font-mono bg-transparent border-none outline-none md-text-muted focus:text-[var(--md-text-primary)]"
+        className="flex-1 min-w-0 text-xs font-mono bg-transparent border-none md-text-muted focus:text-[var(--md-text-primary)]"
       />
       <button
         type="button"

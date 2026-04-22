@@ -314,11 +314,51 @@ class MslDumpSource:
         from .msl_helpers import get_region_page_data
         return get_region_page_data(self._reader, region)
 
-def open_dump(path: Path) -> "RawDumpSource | MslDumpSource":
-    """Auto-detect dump format and return appropriate DumpSource."""
+def open_dump(path: Path) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource":  # noqa: F821
+    """Auto-detect dump format and return appropriate DumpSource.
+
+    Dispatch order:
+      1. MSL container (magic bytes).
+      2. ELF core dump (``\\x7fELF`` with ``e_type == ET_CORE``) — handled
+         by :class:`core.dump_sources.gcore.GCoreDumpSource`. Checked
+         before filename-based regioned-raw detection so an unusually
+         named ELF core still takes the correct branch.
+      3. Regioned raw flavours by filename suffix (``.gdb_raw.bin`` /
+         ``.lldb_raw.bin``), optionally resolved from a ``.maps`` path.
+      4. Fallback: opaque :class:`RawDumpSource`.
+    """
     from msl.enums import FILE_MAGIC
-    with open(path, "rb") as f:
-        magic = f.read(8)
-    if magic == FILE_MAGIC:
+    path = Path(path)
+    name = path.name
+
+    # Convenience: user pointed at the .maps sidecar — redirect to its .bin.
+    if name.endswith("gdb_raw.maps") or name.endswith("lldb_raw.maps"):
+        bin_candidate = path.with_suffix(".bin")
+        if bin_candidate.exists():
+            path = bin_candidate
+            name = path.name
+
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(18)
+    except OSError:
+        magic = b""
+
+    if magic[:8] == FILE_MAGIC:
         return MslDumpSource(path)
+
+    # ELF core dump: \x7fELF magic + e_type == ET_CORE (4) at offset 16.
+    if magic[:4] == b"\x7fELF" and len(magic) >= 18:
+        e_type = int.from_bytes(magic[16:18], "little")
+        if e_type == 4:  # ET_CORE
+            from core.dump_sources.gcore import GCoreDumpSource
+            return GCoreDumpSource(path)
+
+    if name.endswith("gdb_raw.bin") and not name.endswith("lldb_raw.bin"):
+        from core.dump_sources.gdb_raw import GdbRawDumpSource
+        return GdbRawDumpSource(path)
+    if name.endswith("lldb_raw.bin"):
+        from core.dump_sources.lldb_raw import LldbRawDumpSource
+        return LldbRawDumpSource(path)
+
     return RawDumpSource(path)

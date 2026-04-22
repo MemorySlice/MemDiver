@@ -44,7 +44,7 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
 
   if (error && examples.length === 0) {
     return (
-      <p className="p-3 text-xs text-red-400">
+      <p className="p-3 text-xs md-text-error">
         Failed to load examples: {error}
       </p>
     );

@@ -33,7 +33,7 @@ export function BookmarkList({ bookmarks, onAdd, onRemove, onSelect }: Props) {
         <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label"
           onKeyDown={(e) => e.key === "Enter" && handleAdd()}
           className="flex-1 px-1 py-0.5 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)]" />
-        <button onClick={handleAdd} className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">+</button>
+        <button onClick={handleAdd} aria-label="Add bookmark" className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">+</button>
       </div>
 
       {bookmarks.length === 0 ? (

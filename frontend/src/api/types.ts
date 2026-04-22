@@ -216,6 +216,8 @@ export interface StringsResponse {
   strings: StringMatch[];
   total_count: number | string;
   truncated: boolean;
+  next_cursor?: number | null;
+  window_end?: number | null;
 }
 
 // --- Convergence ---
@@ -250,6 +252,13 @@ export interface VerifyKeyResult {
   offset: number;
   cipher: string;
   key_hex?: string;
+}
+
+// --- Format detection ---
+export interface FormatSuggestion {
+  format: string;
+  reason: string;
+  magic_ok: boolean;
 }
 
 // --- Auto Export ---

@@ -1,5 +1,11 @@
 import { memo } from "react";
 import { useConsensusStore } from "@/stores/consensus-store";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ConsensusIcon } from "@/components/common/Icons";
+
+interface ConsensusChartProps {
+  onNavigate?: (tab: "analysis") => void;
+}
 
 const CLASS_INFO: { key: string; label: string; color: string; desc: string }[] = [
   { key: "invariant", label: "Invariant", color: "var(--md-accent-green, #4ec9b0)", desc: "Identical across all runs" },
@@ -8,14 +14,19 @@ const CLASS_INFO: { key: string; label: string; color: string; desc: string }[] 
   { key: "key_candidate", label: "Key Candidate", color: "var(--md-accent-red, #f44747)", desc: "High variance (key material)" },
 ];
 
-export const ConsensusChart = memo(function ConsensusChart() {
+export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: ConsensusChartProps = {}) {
   const { available, size, numDumps, counts } = useConsensusStore();
 
   if (!available || !counts || size === 0) {
     return (
-      <p className="p-4 text-sm md-text-muted">
-        No consensus data. Run consensus with 2+ dumps in Exploration mode.
-      </p>
+      <EmptyState
+        icon={<ConsensusIcon />}
+        title="No consensus matrix yet"
+        description="Batch-classifies every byte as invariant, structural, pointer, or key-candidate across a fixed set of dumps. Needs 2+ dumps and a completed analysis run."
+        primaryCta={onNavigate ? { label: "Run analysis", onClick: () => onNavigate("analysis") } : undefined}
+        secondary={{ label: "About consensus", href: "/docs/visualizations/consensus.md" }}
+        data-testid="consensus-empty"
+      />
     );
   }
 

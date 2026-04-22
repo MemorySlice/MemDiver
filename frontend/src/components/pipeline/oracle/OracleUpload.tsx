@@ -123,7 +123,7 @@ export function OracleUpload() {
       </div>
 
       {(localError || error) && (
-        <div className="text-xs text-red-400">
+        <div className="text-xs md-text-error">
           {localError || error}
         </div>
       )}
@@ -157,11 +157,17 @@ export function OracleUpload() {
                       Shape {o.shape}
                     </span>
                     {o.armed ? (
-                      <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-green-700">
+                      <span
+                        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
+                        style={{ background: "var(--md-accent-green)" }}
+                      >
                         Armed
                       </span>
                     ) : (
-                      <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-amber-700">
+                      <span
+                        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
+                        style={{ background: "var(--md-accent-orange)" }}
+                      >
                         Unarmed
                       </span>
                     )}

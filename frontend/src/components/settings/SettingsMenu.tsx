@@ -251,7 +251,7 @@ export function SettingsMenu() {
             </button>
             <button
               onClick={handleReset}
-              className="flex-1 px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors text-red-400"
+              className="flex-1 px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors md-text-error"
             >
               Reset
             </button>

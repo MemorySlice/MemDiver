@@ -1,9 +1,17 @@
 """Data structures for memory dump analysis."""
 
+from __future__ import annotations
+
 import functools
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    # Late import to avoid a cycle: dataset_metadata is a leaf module but
+    # keeping the import behind TYPE_CHECKING makes the dependency edge
+    # visible without forcing it at runtime.
+    from .dataset_metadata import DatasetMeta
 
 
 def deprecated_kwarg(cls, old_name: str, new_name: str):
@@ -71,12 +79,19 @@ class KeyOccurrence:
 
 @dataclass
 class DumpFile:
-    """Metadata for a single dump file."""
+    """Metadata for a single dump file.
+
+    ``kind`` tags the dump flavour so downstream code (discovery, API
+    responses, UI) can branch without re-sniffing magic bytes. Valid
+    values: ``"msl"``, ``"gdb_raw"``, ``"lldb_raw"``, ``"gcore"``,
+    ``"raw"``.
+    """
     path: Path
     timestamp: str
     phase_prefix: str
     phase_name: str
     canonical_phase: Optional[str] = None
+    kind: str = "raw"
 
     @property
     def full_phase(self) -> str:
@@ -89,7 +104,12 @@ class DumpFile:
 
 @dataclass
 class RunDirectory:
-    """A single run directory containing dumps and keylog."""
+    """A single run directory containing dumps and keylog.
+
+    ``meta`` is populated from ``meta.json`` when present (see
+    :func:`core.dataset_metadata.load_run_meta`). Legacy runs without a
+    ``meta.json`` leave it ``None`` — discovery code must tolerate both.
+    """
     path: Path
     library: str
     protocol_version: str
@@ -98,6 +118,7 @@ class RunDirectory:
     secrets: List[CryptoSecret] = field(default_factory=list)
     secret_source: str = "none"
     phase_mappings: Dict[str, str] = field(default_factory=dict)
+    meta: Optional["DatasetMeta"] = None
 
     @property
     def tls_version(self) -> str:

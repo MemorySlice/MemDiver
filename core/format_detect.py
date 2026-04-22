@@ -84,3 +84,53 @@ def detect_format_at_offset(data: bytes, offset: int) -> Optional[str]:
     if offset < 0 or offset >= len(data):
         return None
     return detect_format(data[offset:])
+
+
+def suggest_formats(data: bytes) -> list[dict]:
+    """Ranked parser suggestions. Magic-matched entries first (magic_ok=True).
+
+    TODO: future work should include deep embedded-scan secondary suggestions
+    (e.g. ELF embedded in a larger binary container).
+    """
+    suggestions: list[dict] = []
+    if not data:
+        return suggestions
+
+    for name, (off, magic) in MAGIC_SIGNATURES.items():
+        end = off + len(magic)
+        if len(data) >= end and data[off:end] == magic:
+            classified = _classify_elf(data) if name == "elf" else name
+            suggestions.append({
+                "format": classified,
+                "reason": f"magic at 0x{off:X}",
+                "magic_ok": True,
+            })
+
+    if data[:2] == b"MZ" and len(data) >= 64:
+        try:
+            e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+            if (
+                len(data) >= e_lfanew + 4
+                and data[e_lfanew:e_lfanew + 4] == b"PE\x00\x00"
+            ):
+                suggestions.append({
+                    "format": _classify_pe(data, e_lfanew),
+                    "reason": f"PE signature at 0x{e_lfanew:X}",
+                    "magic_ok": True,
+                })
+        except struct.error:
+            pass
+
+    if len(data) >= 8 and data[:4] == b"\xca\xfe\xba\xbe":
+        try:
+            nfat = struct.unpack_from(">I", data, 4)[0]
+            fat_format = "macho_fat" if nfat <= 30 else "java_class"
+            suggestions.append({
+                "format": fat_format,
+                "reason": "magic at 0x0",
+                "magic_ok": True,
+            })
+        except struct.error:
+            pass
+
+    return suggestions

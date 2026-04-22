@@ -69,7 +69,7 @@ export function ModuleList({ mslPath }: Props) {
     scrollToOffset(target);
   };
 
-  if (error) return <p className="p-3 text-xs text-red-500">{error}</p>;
+  if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!modules.length) return <p className="p-3 text-xs md-text-muted">No modules</p>;
 
   const truncate = (p: string) => (p.length > 40 ? "..." + p.slice(-37) : p);

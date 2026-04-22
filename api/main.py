@@ -53,7 +53,7 @@ async def _lifespan(app: FastAPI):
         progress_bus=progress_bus,
         max_workers=settings.pipeline_max_workers,
     )
-    examples_dir = Path(__file__).parent.parent / "docs" / "oracle_examples"
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
     init_oracle_registry(
         oracle_dir=settings.oracle_dir,
         examples_dir=examples_dir,

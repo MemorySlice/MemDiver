@@ -26,16 +26,16 @@ interface Props {
 
 type DotState = "idle" | "pass" | "fail" | "error";
 
-function dotClass(state: DotState): string {
+function dotStyle(state: DotState): { background: string } {
   switch (state) {
     case "pass":
-      return "bg-green-600";
+      return { background: "var(--md-accent-green)" };
     case "fail":
-      return "bg-red-600";
+      return { background: "var(--md-accent-red)" };
     case "error":
-      return "bg-gray-500";
+      return { background: "var(--md-text-muted)" };
     default:
-      return "bg-[var(--md-bg-hover)]";
+      return { background: "var(--md-bg-hover)" };
   }
 }
 
@@ -89,7 +89,8 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
           <span
             key={i}
             title={`sample ${i}: ${state}`}
-            className={`inline-block w-3 h-3 rounded-full ${dotClass(state)}`}
+            className="inline-block w-3 h-3 rounded-full"
+            style={dotStyle(state)}
           />
         ))}
       </div>

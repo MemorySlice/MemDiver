@@ -79,11 +79,19 @@ def extract_strings(
     min_length: int = 4,
     encoding: str = "ascii",
     max_results: int = 500,
+    cursor: int = 0,
+    chunk_size: int = 8 * 1024 * 1024,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Extract printable strings from a dump file."""
+    """Extract printable strings from a dump file via chunked streaming.
+
+    ``cursor`` resumes a previous paged scan (pass the ``next_cursor`` from the
+    last response). ``chunk_size`` controls how many bytes are read per chunk;
+    larger chunks reduce overhead but raise peak RSS.
+    """
     return tools_inspect.extract_strings_tool(
         session, dump_path, offset, length, min_length, encoding, max_results,
+        cursor=cursor, chunk_size=chunk_size,
     )
 
 
@@ -507,33 +515,68 @@ def list_system_context(
 def detect_format_endpoint(
     dump_path: str,
     offset: int = 0,
+    force_format: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Detect binary format and return navigation tree."""
+    """Detect binary format and return navigation tree.
+
+    When ``force_format`` is provided, the server skips magic-byte
+    detection and uses the caller's choice (validated against the
+    Kaitai registry's available formats).
+    """
     from pathlib import Path
 
+    from core.binary_formats.kaitai_registry import get_kaitai_registry
     from core.binary_formats.navigator import build_nav_tree
     from core.dump_source import open_dump
-    from core.format_detect import detect_format_at_offset
+    from core.format_detect import detect_format_at_offset, suggest_formats
 
     with open_dump(Path(dump_path)) as src:
-        # Read first 64KB for format detection and navigation
-        length = min(65536, src.size - offset)
-        data = src.read_range(offset, length)
+        # Read first 64KB of the raw container for format detection and
+        # navigation.  For MSL sources this is the .msl container bytes,
+        # not the flattened VAS projection — so the container's own
+        # magic ("MEMSLICE") is recognised instead of whatever happens
+        # to live at VAS offset 0 (commonly an ELF header).
+        raw_size = src.size_for("raw") if hasattr(src, "size_for") else src.size
+        length = min(65536, max(0, raw_size - offset))
+        data = src.read_range(offset, length, view="raw")
 
-    fmt = detect_format_at_offset(data, 0)
+    registry = get_kaitai_registry()
+    available = registry.available_formats()
+
+    detected = detect_format_at_offset(data, 0)
+    suggested = suggest_formats(data)
+
+    if force_format is not None:
+        if force_format not in available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown format: {force_format}",
+            )
+        fmt = force_format
+        forced = True
+    else:
+        fmt = detected
+        forced = False
+
     if fmt is None:
-        return {"format": None, "nav_tree": None, "overlays": None}
+        return {
+            "format": None,
+            "detected_format": detected,
+            "forced": forced,
+            "suggested_formats": suggested,
+            "available_formats": available,
+            "nav_tree": None,
+            "overlays": None,
+        }
 
     tree = build_nav_tree(data, fmt)
 
     # Kaitai deep parse for field-level overlays
     overlays = None
     try:
-        from core.binary_formats.kaitai_registry import get_kaitai_registry
         from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
 
-        registry = get_kaitai_registry()
         parsed = registry.parse(fmt, data)
         if parsed:
             adapter = KaitaiOverlayAdapter()
@@ -548,6 +591,10 @@ def detect_format_endpoint(
 
     return {
         "format": fmt,
+        "detected_format": detected,
+        "forced": forced,
+        "suggested_formats": suggested,
+        "available_formats": available,
         "nav_tree": tree.to_dict() if tree else None,
         "overlays": overlays,
     }

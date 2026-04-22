@@ -83,7 +83,7 @@ export function RefinePanel() {
               {i > 0 && <span className="text-zinc-500">&rarr;</span>}
               <span className="bg-zinc-800 px-2 py-0.5 rounded font-mono">
                 N={pt.n}:{" "}
-                <span className="text-emerald-400">{pt.staticCount}</span>/
+                <span className="md-text-success">{pt.staticCount}</span>/
                 <span className="text-zinc-400">
                   {pt.staticCount + pt.dynamicCount}
                 </span>{" "}
@@ -96,12 +96,12 @@ export function RefinePanel() {
 
       {/* Convergence guidance */}
       {converged && (
-        <p className="text-xs text-amber-400">
+        <p className="text-xs md-text-warning">
           Converged &mdash; adding more dumps unlikely to improve the pattern.
         </p>
       )}
       {!converged && history.length >= 2 && (
-        <p className="text-xs text-emerald-400">
+        <p className="text-xs md-text-success">
           Variance still decreasing &mdash; more dumps recommended.
         </p>
       )}

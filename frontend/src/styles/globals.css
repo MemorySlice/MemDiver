@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./tokens.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -21,6 +22,8 @@
   --md-accent-red: #cc3333;
   --md-accent-purple: #8b3d85;
   --md-accent-cyan: #1a8a70;
+  --md-accent-yellow: #a68a00;
+  --md-focus-ring: var(--md-accent-blue);
 
   --md-byte-key: #cc2222;
   --md-byte-static: #1a8a70;
@@ -93,6 +96,8 @@
   --md-accent-red: #f44747;
   --md-accent-purple: #c586c0;
   --md-accent-cyan: #4ec9b0;
+  --md-accent-yellow: #dcdcaa;
+  --md-focus-ring: var(--md-accent-blue);
 
   --md-byte-key: #ff6b6b;
   --md-byte-static: #4ec9b0;
@@ -174,6 +179,15 @@ body {
 .md-text-accent { color: var(--md-accent-blue); }
 .md-text-secondary { color: var(--md-text-secondary); }
 .md-text-muted { color: var(--md-text-muted); }
+.md-text-error { color: var(--md-accent-red); }
+.md-text-warning { color: var(--md-accent-orange); }
+.md-text-success { color: var(--md-accent-green); }
+.md-bg-error-subtle { background-color: color-mix(in srgb, var(--md-accent-red) 18%, transparent); }
+.md-bg-warning-subtle { background-color: color-mix(in srgb, var(--md-accent-orange) 18%, transparent); }
+.md-bg-success-subtle { background-color: color-mix(in srgb, var(--md-accent-green) 18%, transparent); }
+.md-border-error { border-color: var(--md-accent-red); }
+.md-border-warning { border-color: var(--md-accent-orange); }
+.md-border-success { border-color: var(--md-accent-green); }
 .md-bg-secondary { background: var(--md-bg-secondary); }
 
 /* === Scrollbar (dark theme) === */
@@ -181,6 +195,18 @@ body {
 .dark ::-webkit-scrollbar-track { background: var(--md-bg-primary); }
 .dark ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
 .dark ::-webkit-scrollbar-thumb:hover { background: #777; }
+
+/* === Keyboard focus ring (WCAG 2.1 AA) === */
+:where(button, input, select, textarea, a[href], summary,
+       [role="button"], [role="tab"], [role="menuitem"],
+       [role="option"], [role="checkbox"], [role="switch"],
+       [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--md-focus-ring);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+.no-focus-ring:focus-visible,
+[data-virtualized-row]:focus-visible { outline: none; }
 
 /* === High contrast mode === */
 .high-contrast {
@@ -194,6 +220,7 @@ body {
   --md-border: #888888;
   --md-text-primary: #111111;
   --md-text-secondary: #444444;
+  --md-focus-ring: #0044aa;
 }
 
 .dark.high-contrast {
@@ -207,6 +234,7 @@ body {
   --md-border: #888888;
   --md-text-primary: #eeeeee;
   --md-text-secondary: #bbbbbb;
+  --md-focus-ring: #ffd633;
 }
 
 /* === Indeterminate progress bar === */

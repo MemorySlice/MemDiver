@@ -7,19 +7,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Ensure package root is on sys.path for bare imports (matches app.py/run.py pattern)
+# Ensure package root is on sys.path for bare imports (matches legacy_app.py/run.py pattern)
 sys.path.insert(0, str(Path(__file__).parent))
 
 logger = logging.getLogger("memdiver.cli")
 
 
 def _resolve_dump_paths(raw_paths: list) -> list:
-    """Expand directories to .dump/.msl files, pass through individual files."""
-    paths = []
+    """Expand directories to all supported dump flavours; pass through files.
+
+    Recognised extensions inside a run directory:
+      * ``.dump`` and ``.msl`` (legacy + Memory Slice)
+      * ``.gcore.core`` and bare ``.core`` (Linux gcore/ELF core)
+      * ``gdb_raw.bin`` / ``lldb_raw.bin`` (regioned raw dumps)
+    """
+    paths: list[Path] = []
     for p in raw_paths:
         path = Path(p)
         if path.is_dir():
-            paths.extend(sorted(path.glob("*.dump")) + sorted(path.glob("*.msl")))
+            collected: list[Path] = []
+            collected.extend(path.glob("*.dump"))
+            collected.extend(path.glob("*.msl"))
+            collected.extend(path.glob("*.gcore.core"))
+            collected.extend(path.glob("*.core"))
+            collected.extend(path.glob("*gdb_raw.bin"))
+            collected.extend(path.glob("*lldb_raw.bin"))
+            # De-duplicate (``*.gcore.core`` overlaps ``*.core``) and sort.
+            paths.extend(sorted({c.resolve(): c for c in collected}.values()))
         elif path.is_file():
             paths.append(path)
         else:
@@ -122,7 +136,7 @@ def _cmd_app(args: argparse.Namespace) -> int:
     except ImportError:
         _print_missing_package("NiceGUI")
         return 1
-    app_path = str(Path(__file__).parent / "app.py")
+    app_path = str(Path(__file__).parent / "legacy_app.py")
     return subprocess.call([sys.executable, app_path])
 
 

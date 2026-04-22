@@ -3,7 +3,7 @@
 Contract (see the plan's B5 task):
 
 * ``GET  /api/oracles/examples`` — list bundled example oracles from
-  ``docs/oracle_examples/*.py``, including sha256 + detected shape.
+  ``docs/oracle/examples/*.py``, including sha256 + detected shape.
 * ``GET  /api/oracles``            — list uploaded oracles.
 * ``POST /api/oracles/upload``     — multipart upload; only when
   ``MEMDIVER_ORACLE_DIR`` is configured. Writes the file at

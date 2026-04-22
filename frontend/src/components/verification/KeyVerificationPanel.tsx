@@ -151,7 +151,7 @@ export function KeyVerificationPanel() {
           placeholder="Paste hex-encoded ciphertext..."
         />
         {!ciphertextValid && ciphertextHex.length > 0 && (
-          <p className="text-[10px] text-red-400 mt-0.5">Ciphertext must be an even-length hex string.</p>
+          <p className="text-[10px] md-text-error mt-0.5">Ciphertext must be an even-length hex string.</p>
         )}
       </label>
 
@@ -165,7 +165,7 @@ export function KeyVerificationPanel() {
             placeholder="default 000102...0f"
           />
           {!ivValid && (
-            <p className="text-[10px] text-red-400 mt-0.5">Invalid hex.</p>
+            <p className="text-[10px] md-text-error mt-0.5">Invalid hex.</p>
           )}
         </label>
         <label className="block">
@@ -195,7 +195,7 @@ export function KeyVerificationPanel() {
         )}
       </div>
 
-      {error && <p className="text-[10px] text-red-400">{error}</p>}
+      {error && <p className="text-[10px] md-text-error">{error}</p>}
 
       {result && (
         <div className="md-panel p-2 space-y-1">
@@ -205,7 +205,7 @@ export function KeyVerificationPanel() {
               {" "}0x{result.offset.toString(16).toUpperCase()} ({result.cipher})
             </p>
           ) : result.verified === false ? (
-            <p className="text-[11px] text-red-400">
+            <p className="text-[11px] md-text-error">
               No match at offset 0x{result.offset.toString(16).toUpperCase()} ({result.cipher})
             </p>
           ) : (

@@ -2,7 +2,11 @@
 
 import struct
 import pytest
-from core.format_detect import detect_format, detect_format_at_offset
+from core.format_detect import (
+    detect_format,
+    detect_format_at_offset,
+    suggest_formats,
+)
 
 
 class TestDetectFormat:
@@ -127,3 +131,25 @@ class TestDetectFormatAtOffset:
     def test_offset_beyond_data(self):
         data = b"\x7fELF" + b"\x00" * 60
         assert detect_format_at_offset(data, 100) is None
+
+
+class TestSuggestFormats:
+    def test_suggest_formats_msl(self):
+        data = b"MEMSLICE" + b"\x00" * 56
+        out = suggest_formats(data)
+        assert out
+        assert out[0]["format"] == "msl"
+        assert out[0]["magic_ok"] is True
+
+    def test_suggest_formats_elf(self):
+        data = b"\x7fELF\x02" + b"\x00" * 59
+        out = suggest_formats(data)
+        assert out
+        assert out[0]["format"] == "elf64"
+        assert out[0]["magic_ok"] is True
+
+    def test_suggest_formats_empty(self):
+        assert suggest_formats(b"") == []
+
+    def test_suggest_formats_unknown(self):
+        assert suggest_formats(b"\x00" * 64) == []

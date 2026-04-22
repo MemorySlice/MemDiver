@@ -121,10 +121,10 @@ handshake_hash_hex = "aabbcc..."
 
 ## Ready-made templates
 
-- `docs/oracle_examples/generic_aes_gcm.py` — stateless AES-GCM boilerplate.
-- `docs/oracle_examples/gocryptfs.py` — HKDF + AES-GCM verification of a
+- `docs/oracle/examples/generic_aes_gcm.py` — stateless AES-GCM boilerplate.
+- `docs/oracle/examples/gocryptfs.py` — HKDF + AES-GCM verification of a
   gocryptfs file-content key derived from a candidate master key.
-- `docs/oracle_examples/tls13_stub.py` — TLS 1.3 traffic-secret scaffolding
+- `docs/oracle/examples/tls13_stub.py` — TLS 1.3 traffic-secret scaffolding
   (stateful; you fill in the HKDF-Expand-Label derivation).
 
 Copy any of these into your experiment directory, adjust the `config`

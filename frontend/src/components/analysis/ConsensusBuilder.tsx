@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useConsensusIncrementalStore } from "@/stores/consensus-incremental-store";
+import { EmptyState } from "@/components/common/EmptyState";
+import { LiveConsensusIcon } from "@/components/common/Icons";
 
 function Sparkline({ values }: { values: number[] }) {
   if (values.length < 2) {
@@ -85,25 +87,26 @@ export function ConsensusBuilder() {
 
   if (status === "idle" || !sessionId) {
     return (
-      <div className="p-3 text-xs">
-        <h3 className="font-semibold mb-2">Incremental Consensus</h3>
-        <p className="md-text-muted mb-2">
-          Fold dumps into a consensus matrix one at a time. Suitable for live
-          investigations where dumps arrive sequentially.
-        </p>
-        <label className="block mb-1">Consensus size (bytes)</label>
-        <input
-          type="number"
-          value={sizeInput}
-          onChange={(e) => setSizeInput(e.target.value)}
-          className="md-input w-40 mr-2"
-          min={1}
-        />
-        <button onClick={handleBegin} className="md-button-primary">
-          Start session
-        </button>
-        {error && <p className="text-red-500 mt-2">{error}</p>}
-      </div>
+      <EmptyState
+        icon={<LiveConsensusIcon />}
+        title="Fold dumps one at a time"
+        description="Start a session, then drop dumps in as they arrive. Variance, classification, and top offsets recompute after each add. Finalize at N ≥ 2."
+        primaryCta={{ label: "Start session", onClick: handleBegin }}
+        secondary={{ label: "About consensus", href: "/docs/visualizations/consensus.md" }}
+        data-testid="live-consensus-empty"
+      >
+        <label className="flex flex-col items-start gap-1 mt-[var(--space-3)] text-[var(--text-xs)]" style={{ color: "var(--md-text-secondary)" }}>
+          <span>Consensus size (bytes)</span>
+          <input
+            type="number"
+            value={sizeInput}
+            onChange={(e) => setSizeInput(e.target.value)}
+            className="md-input w-40"
+            min={1}
+          />
+        </label>
+        {error && <p className="md-text-error mt-[var(--space-2)]">{error}</p>}
+      </EmptyState>
     );
   }
 
@@ -206,7 +209,7 @@ export function ConsensusBuilder() {
         </button>
       </div>
 
-      {error && <p className="text-red-500 mt-2">{error}</p>}
+      {error && <p className="md-text-error mt-2">{error}</p>}
     </div>
   );
 }

@@ -10,6 +10,8 @@ import {
   type PatternGenResult,
 } from "@/api/client";
 import type { AutoExportResult } from "@/api/types";
+import { EmptyState } from "@/components/common/EmptyState";
+import { ArchitectIcon } from "@/components/common/Icons";
 
 const BTN = "px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-xs";
 const BTN_ACCENT = "px-2 py-1 rounded text-xs bg-[var(--md-accent-blue)] text-white";
@@ -152,6 +154,18 @@ export function ArchitectPlaceholder() {
     URL.revokeObjectURL(url);
   };
 
+  if (!hasDumps) {
+    return (
+      <EmptyState
+        icon={<ArchitectIcon />}
+        title="Build a detection pattern"
+        description="Select a region in the hex viewer, then cross-check it against 2+ loaded dumps to extract a YARA, JSON, or Volatility3 signature."
+        secondary={{ label: "How Architect works", href: "/docs/visualizations/architect.md" }}
+        data-testid="architect-empty"
+      />
+    );
+  }
+
   return (
     <div className="md-panel p-2 space-y-3">
       <div className="flex items-center justify-between">
@@ -171,7 +185,7 @@ export function ArchitectPlaceholder() {
           </button>
         </div>
       </div>
-      {error && <p className="text-[10px] text-red-400">{error}</p>}
+      {error && <p className="text-[10px] md-text-error">{error}</p>}
 
       {mode === "manual" && (
         <>
@@ -189,7 +203,7 @@ export function ArchitectPlaceholder() {
             )}
             <p className="text-[10px] md-text-muted">{dumpPaths.length} dump(s) loaded</p>
             {!hasDumps && (
-              <p className="text-[10px] text-yellow-400">Need 2+ dumps for cross-dump comparison</p>
+              <p className="text-[10px] md-text-warning">Need 2+ dumps for cross-dump comparison</p>
             )}
             <button
               className={BTN}
@@ -280,7 +294,7 @@ export function ArchitectPlaceholder() {
           <div className="text-[10px] space-y-0.5">
             <p>{dumpPaths.length} dump(s) loaded</p>
             {!hasDumps && (
-              <p className="text-yellow-400">Need 2+ dumps for auto-detection</p>
+              <p className="md-text-warning">Need 2+ dumps for auto-detection</p>
             )}
           </div>
 

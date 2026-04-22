@@ -18,6 +18,7 @@ import type {
   ConvergenceSweepResult,
   VerifyKeyResult,
   AutoExportResult,
+  FormatSuggestion,
 } from "./types";
 
 const BASE = ""; // relative -- Vite proxy handles /api/* during dev
@@ -82,15 +83,27 @@ export const getEntropy = (dumpPath: string, offset = 0, length = 0) =>
     `/api/inspect/entropy?dump_path=${encodeURIComponent(dumpPath)}&offset=${offset}&length=${length}`,
   );
 
+export interface StringsOpts {
+  minLength?: number;
+  encoding?: string;
+  maxResults?: number;
+  cursor?: number;
+  chunkSize?: number;
+}
+
 export const extractStrings = (
   dumpPath: string,
-  minLength = 4,
-  encoding = "ascii",
-  maxResults = 500,
-) =>
-  request<StringsResponse>(
-    `/api/inspect/strings?dump_path=${encodeURIComponent(dumpPath)}&min_length=${minLength}&encoding=${encoding}&max_results=${maxResults}`,
-  );
+  opts: StringsOpts = {},
+): Promise<StringsResponse> => {
+  const qs = new URLSearchParams({ dump_path: dumpPath });
+  const { minLength, encoding, maxResults, cursor, chunkSize } = opts;
+  if (minLength !== undefined) qs.set("min_length", String(minLength));
+  if (encoding !== undefined) qs.set("encoding", encoding);
+  if (maxResults !== undefined) qs.set("max_results", String(maxResults));
+  if (cursor !== undefined) qs.set("cursor", String(cursor));
+  if (chunkSize !== undefined) qs.set("chunk_size", String(chunkSize));
+  return request<StringsResponse>(`/api/inspect/strings?${qs.toString()}`);
+};
 
 // Sessions
 export const listSessions = () =>
@@ -156,14 +169,26 @@ export const applyStructure = (dumpPath: string, offset: number, structureName: 
 // Format detection
 export interface FormatResult {
   format: string | null;
+  detected_format?: string | null;
+  forced?: boolean;
+  suggested_formats?: FormatSuggestion[];
+  available_formats?: string[];
   nav_tree: Record<string, unknown> | null;
   overlays: { structure_name: string; base_offset: number; fields: Array<{ field_name: string; offset: number; length: number; display: string; description: string; path: string; valid: boolean }> } | null;
 }
 
-export const detectFormat = (dumpPath: string, offset = 0) =>
-  request<FormatResult>(
-    `/api/inspect/format?dump_path=${encodeURIComponent(dumpPath)}&offset=${offset}`,
-  );
+export const detectFormat = (
+  dumpPath: string,
+  offset = 0,
+  forceFormat?: string,
+) => {
+  const qs = new URLSearchParams({
+    dump_path: dumpPath,
+    offset: String(offset),
+  });
+  if (forceFormat) qs.set("force_format", forceFormat);
+  return request<FormatResult>(`/api/inspect/format?${qs.toString()}`);
+};
 
 // Architect
 export interface CheckStaticResult { static_mask: boolean[]; reference_hex: string; static_ratio: number; anchors: Array<{ start: number; length: number }> }

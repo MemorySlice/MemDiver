@@ -30,6 +30,7 @@ _FORMAT_MAP: dict[str, tuple[str, str]] = {
     "macho64_be": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
     "macho32_be": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
     "macho_fat": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
+    "msl": ("core.binary_formats.kaitai_compiled.msl", "MslV1"),
 }
 
 _KAITAI_AVAILABLE: bool | None = None

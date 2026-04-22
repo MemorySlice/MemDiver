@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/logo_readme.png"
-       alt="MemDiver logo: a diver descending toward a golden key inside a teal memory blob" width="320"/>
+       alt="MemDiver logo: a diver descending toward a golden key inside a teal memory blob" width="220"/>
 </p>
 
 <p align="center"><em>Interactive platform for identifying and analyzing data structures in memory dumps.</em></p>
@@ -15,31 +15,27 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/04_workspace_default.png"
-       alt="MemDiver workspace — hex viewer, sidebar, detail panel, and analysis tab in dark theme" width="900"/>
+  <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/12_workspace_loaded_dark.png"
+       alt="MemDiver workspace with an MSL capture loaded — dark theme" width="49%"/>
+  <img src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/13_workspace_loaded_light.png"
+       alt="MemDiver workspace with an MSL capture loaded — light theme" width="49%"/>
 </p>
+<p align="center"><sub>MemDiver workspace with a sample <code>.msl</code> capture loaded — dark and light themes side by side.</sub></p>
 
-## What it does
+# MemDiver
 
-MemDiver is a browser-based workbench for exploring binary memory dumps. A FastAPI backend drives a React IDA-Pro-style dockable workspace; an optional Marimo sandbox hosts deeper research workflows; an MCP server exposes the same analysis engine to AI assistants. It combines known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis to locate and classify data structures in memory.
+MemDiver is a browser-based workbench for exploring binary memory dumps. A FastAPI backend drives a React dockable workspace, with an optional Marimo sandbox for deeper research workflows and an MCP server that exposes the same analysis engine to AI assistants. For automation and integration into existing pipelines, MemDiver also runs in headless mode via a CLI.
 
-## Why it exists
+It combines known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis to locate and classify data structures in memory.
 
-MemDiver is the research artifact accompanying a submission to the **IMF conference** (IT Security Incident Management &amp; IT Forensics). The accompanying study analyzed ~30K memory dumps across 13 TLS libraries (TLS 1.2 and 1.3) to answer a concrete forensic question: *which TLS secrets survive in process memory, and for how long?* The toolkit generalizes to any "find the structure in the blob" problem — cryptographic keys today, kernel objects or game state tomorrow.
+## Features
 
-## At a glance
+- **Interactive workspace** — React-based dockable UI for hands-on exploration
+- **Research sandbox** — Optional Marimo environment for reproducible notebooks and custom analysis
+- **AI-assisted analysis** — MCP server integration for use with Claude and other assistants
+- **Headless mode** — CLI interface for CI/CD, batch processing, and integration into forensic pipelines
+- **Analysis engine** — Known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis
 
-| Surface | Count | Location |
-|---|---|---|
-| Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
-| CLI subcommands | **20** | [`cli.py`](cli.py) |
-| FastAPI routers | **12** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **15** | [`mcp_server/`](mcp_server/) |
-| Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
-| Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
-| Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
-
-Under the hood: DuckDB `ProjectDB`, `.memdiver` `SessionStore`, Welford incremental consensus, Aho-Corasick multi-pattern scan, Kaitai Struct binary-format parsers, ASLR-aware region alignment, auto-discovered KDF plugins, BYO decryption oracles, first-class Volatility3 plugin emission.
 
 ## Install
 
@@ -70,6 +66,20 @@ memdiver experiment --target path/to/target.py --num-runs 10
 # 5. Marimo research sandbox (houses the 5 deeper visualization views)
 memdiver ui
 ```
+
+## At a glance
+
+| Surface | Count | Location |
+|---|---|---|
+| Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
+| CLI subcommands | **20** | [`cli.py`](cli.py) |
+| FastAPI routers | **12** + WebSocket | [`api/routers/`](api/routers/) |
+| MCP tools | **15** | [`mcp_server/`](mcp_server/) |
+| Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
+| Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
+| Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
+
+Under the hood: DuckDB `ProjectDB`, `.memdiver` `SessionStore`, Welford incremental consensus, Aho-Corasick multi-pattern scan, Kaitai Struct binary-format parsers, ASLR-aware region alignment, auto-discovered KDF plugins, BYO decryption oracles, first-class Volatility3 plugin emission.
 
 ### Wire MemDiver into Claude Desktop / Claude Code
 

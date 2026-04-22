@@ -9,16 +9,34 @@ Tests the complete flow:
 """
 
 import os
+import socket
 import sys
 import json
 import urllib.request
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._paths import artifacts_dir, dataset_root
 
 BASE_URL = "http://127.0.0.1:8080"
+
+
+def _backend_listening(host: str = "127.0.0.1", port: int = 8080) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+if not _backend_listening():
+    pytest.skip(
+        "Backend not running at 127.0.0.1:8080; skipping e2e session-cycle tests.",
+        allow_module_level=True,
+    )
 
 _DS = dataset_root()
 DUMP_PATH = str(

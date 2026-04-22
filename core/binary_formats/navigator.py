@@ -34,6 +34,7 @@ def build_nav_tree(data: bytes, format_name: str) -> Optional[NavNode]:
         "pe64": _build_pe_tree,
         "macho64_le": lambda d: _build_macho_tree(d, 64),
         "macho32_le": lambda d: _build_macho_tree(d, 32),
+        "msl": _build_msl_tree,
     }
     builder = builders.get(format_name)
     if builder is None:
@@ -156,6 +157,56 @@ def _build_macho_tree(data: bytes, bits: int) -> Optional[NavNode]:
         )
         off += cmdsize
     return root
+
+
+def _build_msl_tree(data: bytes) -> Optional[NavNode]:
+    """Build MSL navigation tree: file header + MSLC block list."""
+    if len(data) < 64 or data[0:8] != b"MEMSLICE":
+        return None
+
+    root = NavNode("MSL File Header", 0, 64, "header")
+
+    endianness = data[8] if len(data) > 8 else 0x01
+    fmt = ">I" if endianness == 0x02 else "<I"
+
+    off = 64
+    idx = 0
+    max_children = 1024
+    while off + 8 <= len(data):
+        if data[off:off + 4] != b"MSLC":
+            break
+        try:
+            block_length = struct.unpack_from(fmt, data, off + 8)[0]
+        except (struct.error, IndexError):
+            break
+        if block_length < 80 or off + block_length > len(data):
+            break
+        if idx >= max_children:
+            root.children.append(
+                NavNode("...truncated", off, 0, "section"),
+            )
+            break
+        bt_fmt = ">H" if endianness == 0x02 else "<H"
+        try:
+            bt_raw = struct.unpack_from(bt_fmt, data, off + 4)[0]
+        except (struct.error, IndexError):
+            break
+        label = f"Block[{idx}] {_msl_block_type_name(bt_raw)}"
+        root.children.append(
+            NavNode(label, off, block_length, "section"),
+        )
+        off += block_length
+        idx += 1
+
+    return root
+
+
+def _msl_block_type_name(bt_raw: int) -> str:
+    from msl.enums import BlockType
+    try:
+        return BlockType(bt_raw).name
+    except ValueError:
+        return f"0x{bt_raw:04X}"
 
 
 _ELF_PHDR = {0: "NULL", 1: "LOAD", 2: "DYNAMIC", 3: "INTERP", 4: "NOTE",

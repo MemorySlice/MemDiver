@@ -49,7 +49,7 @@ export function HandleList({ mslPath }: Props) {
     return out;
   }, [handles]);
 
-  if (error) return <p className="p-3 text-xs text-red-500">{error}</p>;
+  if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!handles.length) return <p className="p-3 text-xs md-text-muted">No handle table blocks</p>;
 
   return (

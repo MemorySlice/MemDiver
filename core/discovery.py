@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from .dataset_metadata import load_run_meta
 from .models import DumpFile, RunDirectory
 from .keylog import KeylogParser
 from .phase_normalizer import PhaseNormalizer
@@ -13,13 +14,41 @@ from .protocols import REGISTRY
 
 logger = logging.getLogger("memdiver.discovery")
 
+# Legacy timestamped phase dumps (e.g. ``20240101_120000_1_pre_handshake.msl``).
 DUMP_PATTERN = re.compile(
     r"^(\d{8}_\d{6}_\d+)_(pre|post)_(.+)\.(dump|msl)$"
+)
+
+# Dataset-style dumps without a timestamp prefix (gcore.core, gdb_raw.bin,
+# lldb_raw.bin, memslicer.msl). Matched separately so legacy runs keep their
+# phase parsing while the new corpus gets first-class support.
+DATASET_DUMP_SUFFIXES = (
+    ".gcore.core",
+    ".gdb_raw.bin",
+    ".lldb_raw.bin",
+    ".msl",
+    ".core",
 )
 
 RUN_DIR_PATTERN = re.compile(
     r"^(.+?)_run_(\d+)_(\d+)$"
 )
+
+
+def _infer_dump_kind(path: Path) -> str:
+    """Map a dump filename to a canonical :class:`DumpFile.kind` string."""
+    name = path.name.lower()
+    if name.endswith(".msl"):
+        return "msl"
+    if name.endswith("gdb_raw.bin"):
+        return "gdb_raw"
+    if name.endswith("lldb_raw.bin"):
+        return "lldb_raw"
+    if name.endswith(".core") or name.endswith("gcore.core"):
+        return "gcore"
+    if name.endswith(".dump"):
+        return "raw"
+    return "raw"
 
 
 def _extract_msl_secrets(msl_paths: List[Path]) -> List["CryptoSecret"]:
@@ -48,14 +77,43 @@ class RunDiscovery:
 
     @staticmethod
     def parse_dump_filename(filename: str) -> Optional[DumpFile]:
+        """Parse a phase-style dump filename into a :class:`DumpFile`.
+
+        Returns ``None`` for files that do not match the legacy
+        ``<ts>_<pre|post>_<phase>.<ext>`` pattern. Non-phased dataset
+        dumps (``gcore.core``, ``gdb_raw.bin`` ...) are created directly
+        by :meth:`_build_dataset_dump` instead.
+        """
         m = DUMP_PATTERN.match(filename)
         if not m:
             return None
+        ext = m.group(4).lower()
+        kind = "msl" if ext == "msl" else "raw"
         return DumpFile(
             path=Path(),
             timestamp=m.group(1),
             phase_prefix=m.group(2),
             phase_name=m.group(3),
+            kind=kind,
+        )
+
+    @staticmethod
+    def _build_dataset_dump(path: Path) -> Optional[DumpFile]:
+        """Create a :class:`DumpFile` for a non-phased dataset dump.
+
+        These files have no timestamp or phase markers — we synthesise a
+        ``full`` phase so the rest of the pipeline (which keys everything
+        by ``full_phase``) keeps working.
+        """
+        kind = _infer_dump_kind(path)
+        if kind == "raw":
+            return None
+        return DumpFile(
+            path=path,
+            timestamp="",
+            phase_prefix="full",
+            phase_name=kind,
+            kind=kind,
         )
 
     @staticmethod
@@ -70,9 +128,15 @@ class RunDiscovery:
         """Load a single run directory."""
         parsed = RunDiscovery.parse_run_dirname(run_path.name)
         if not parsed:
-            return None
+            # Dataset-style runs (e.g. ``run_0001``) don't match the legacy
+            # ``<lib>_run_<ver>_<num>`` shape; accept them if they contain a
+            # ``meta.json`` or any recognised dump.
+            if not RunDiscovery._looks_like_dataset_run(run_path):
+                return None
+            library, ver, run_num = run_path.name, "unknown", 0
+        else:
+            library, ver, run_num = parsed
 
-        library, ver, run_num = parsed
         run = RunDirectory(
             path=run_path,
             library=library,
@@ -81,11 +145,11 @@ class RunDiscovery:
         )
 
         for f in sorted(run_path.iterdir()):
-            if f.suffix in (".dump", ".msl") and f.is_file():
-                dump = RunDiscovery.parse_dump_filename(f.name)
-                if dump:
-                    dump.path = f
-                    run.dumps.append(dump)
+            if not f.is_file():
+                continue
+            dump = RunDiscovery._dump_file_for(f)
+            if dump is not None:
+                run.dumps.append(dump)
 
         keylog_path = run_path / keylog_filename
         if keylog_path.exists():
@@ -101,9 +165,31 @@ class RunDiscovery:
                 if run.secrets:
                     run.secret_source = "msl_hints"
 
+        # Attach per-run meta.json (None when absent — legacy runs are ok).
+        run.meta = load_run_meta(run_path)
+
         logger.debug("Loaded run %s: %d dumps, %d secrets (%s)", run_path.name, len(run.dumps), len(run.secrets), run.secret_source)
 
         return run
+
+    @staticmethod
+    def _dump_file_for(path: Path) -> Optional[DumpFile]:
+        """Dispatch a single file to legacy or dataset-style parsing."""
+        legacy = RunDiscovery.parse_dump_filename(path.name)
+        if legacy is not None:
+            legacy.path = path
+            return legacy
+        return RunDiscovery._build_dataset_dump(path)
+
+    @staticmethod
+    def _looks_like_dataset_run(run_path: Path) -> bool:
+        """True when a non-conforming dir still looks like a dataset run."""
+        if (run_path / "meta.json").is_file():
+            return True
+        for suffix in DATASET_DUMP_SUFFIXES:
+            if any(run_path.glob(f"*{suffix}")):
+                return True
+        return False
 
     @staticmethod
     def _resolve_library_dir(library_dir: Path) -> Path:

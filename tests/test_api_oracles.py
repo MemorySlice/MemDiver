@@ -49,7 +49,7 @@ def build_oracle(cfg):
 
 @pytest.fixture
 def examples_dir():
-    return Path(__file__).parent.parent / "docs" / "oracle_examples"
+    return Path(__file__).parent.parent / "docs" / "oracle" / "examples"
 
 
 @pytest.fixture
@@ -212,7 +212,7 @@ def test_router_returns_503_when_disabled(tmp_path, monkeypatch):
 
     from api.services.oracle_registry import init_oracle_registry
 
-    examples_dir = Path(__file__).parent.parent / "docs" / "oracle_examples"
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
     init_oracle_registry(oracle_dir=None, examples_dir=examples_dir)
     try:
         from fastapi import FastAPI
@@ -242,7 +242,7 @@ def test_router_full_round_trip(tmp_path):
     from api.routers.oracles import router
     from api.services.oracle_registry import init_oracle_registry
 
-    examples_dir = Path(__file__).parent.parent / "docs" / "oracle_examples"
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
     init_oracle_registry(
         oracle_dir=tmp_path / "oracles",
         examples_dir=examples_dir,

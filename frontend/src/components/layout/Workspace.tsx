@@ -106,7 +106,7 @@ function Toolbar() {
 }
 
 type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import";
-type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "verify-key" | "pipeline";
+export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "verify-key" | "pipeline";
 
 function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>("bookmarks");
@@ -123,6 +123,7 @@ function Sidebar() {
             key={t}
             onClick={() => setSideTab(t)}
             title={t}
+            data-testid={`tab-${t}`}
             className={`flex-1 text-xs py-1.5 capitalize transition-colors truncate px-1 ${
               sideTab === t ? "bg-[var(--md-bg-hover)]" : "md-text-secondary hover:bg-[var(--md-bg-hover)]"
             }`}
@@ -397,6 +398,7 @@ function BottomTabs() {
           <button
             key={t}
             onClick={() => setTab(t)}
+            data-testid={`tab-${t}`}
             className={`text-xs px-2 py-0.5 capitalize transition-colors flex items-center ${
               tab === t
                 ? "font-semibold border-b-2 border-[var(--md-accent-blue)] bg-[var(--md-bg-hover)] rounded-t"
@@ -438,7 +440,7 @@ function BottomTabs() {
             <StringsPanel dumpPath={dumpPath} />
           )
         )}
-        {tab === "consensus" && <ConsensusChart />}
+        {tab === "consensus" && <ConsensusChart onNavigate={setTab} />}
         {tab === "live-consensus" && <ConsensusBuilder />}
         {tab === "architect" && <ArchitectPlaceholder />}
         {tab === "experiment" && <ExperimentPanel />}
