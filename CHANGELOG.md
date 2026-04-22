@@ -23,7 +23,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `pip install memdiver[experiment]` extra, pinning `frida-tools>=12.0` and
   `memslicer` for the dump-collection flow.
 - GitHub Actions workflows:
-  - `ci.yml` — pytest matrix (Python 3.10 / 3.11 / 3.12) on push / PR.
+  - `ci.yml` — pytest matrix (Python 3.11 / 3.12) on push / PR.
   - `publish.yml` — OIDC trusted publishing to PyPI on `v*` tag push, plus
     TestPyPI dry-runs via `workflow_dispatch`. Includes a `npm ci && npm run
     build` step so the React bundle is baked into every wheel.
