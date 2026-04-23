@@ -41,7 +41,7 @@ export default defineConfig({
       },
     },
     {
-      command: `npm --prefix frontend run dev -- --port ${FRONTEND_PORT} --strictPort`,
+      command: `npm --prefix frontend run dev -- --port ${FRONTEND_PORT} --strictPort --host 127.0.0.1`,
       cwd: REPO_ROOT,
       url: `http://127.0.0.1:${FRONTEND_PORT}`,
       timeout: 120_000,
