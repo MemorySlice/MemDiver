@@ -7,6 +7,8 @@
  * visually legible. CSS-only transitions — no framer-motion.
  */
 
+import type { JSX } from "react";
+
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { FunnelCounts } from "@/stores/pipeline-store";
 

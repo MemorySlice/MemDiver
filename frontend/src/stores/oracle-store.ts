@@ -59,7 +59,7 @@ async function guarded<T>(
   }
 }
 
-export const useOracleStore = create<OracleState>((set, get) => ({
+export const useOracleStore = create<OracleState>((set) => ({
   examples: [],
   uploaded: [],
   selectedOracleId: null,

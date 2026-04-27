@@ -1,0 +1,54 @@
+{
+  "task_id": "fixture-gocryptfs",
+  "kind": "pipeline",
+  "status": "succeeded",
+  "params": {
+    "oracle": "gocryptfs",
+    "n_values": [
+      1,
+      3,
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "stages": [
+    {
+      "name": "consensus",
+      "status": "succeeded",
+      "pct": 1.0,
+      "msg": "consensus complete",
+      "started_at": 1776969148.546669,
+      "ended_at": 1776969178.546669
+    },
+    {
+      "name": "reduce",
+      "status": "succeeded",
+      "pct": 1.0,
+      "msg": "reduce complete",
+      "started_at": 1776969148.5466702,
+      "ended_at": 1776969178.5466702
+    },
+    {
+      "name": "brute_force",
+      "status": "succeeded",
+      "pct": 1.0,
+      "msg": "brute_force complete",
+      "started_at": 1776969148.5466712,
+      "ended_at": 1776969178.5466712
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "nsweep-report.json",
+      "relpath": "nsweep/report.json",
+      "media_type": "application/json"
+    }
+  ],
+  "created_at": 1776969138.5466712,
+  "started_at": 1776969148.5466712,
+  "ended_at": 1776969198.5466712,
+  "error": null,
+  "schema_version": 1
+}

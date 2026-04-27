@@ -6,6 +6,8 @@
  * are shown in seconds; smaller values stay in milliseconds.
  */
 
+import type { JSX } from "react";
+
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { StageTimings } from "@/stores/pipeline-store";
 

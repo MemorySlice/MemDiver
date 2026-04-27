@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ChartBackend } from "@/components/charts/types";
 
 const SETTINGS_VERSION = 1;
 
@@ -10,6 +11,15 @@ export interface DisplaySettings {
   hexUpperCase: boolean;
   showAsciiColumn: boolean;
   fontSize: "xs" | "sm" | "base";
+  /**
+   * Renderer for the 4 user-facing charts (EntropyChart, VarianceMap,
+   * VasChart, SurvivorCurve). "plotly" is the default, full-featured
+   * interactive backend. "svg" is a lightweight hand-rolled backend
+   * without pan/zoom but with a ~2.3 MB smaller bundle for users who
+   * don't need Plotly. See frontend/src/components/charts/*.tsx for
+   * per-chart dispatchers.
+   */
+  chartBackend: ChartBackend;
 }
 
 export interface AnalysisSettings {
@@ -44,6 +54,7 @@ const DEFAULT_DISPLAY: DisplaySettings = {
   hexUpperCase: false,
   showAsciiColumn: true,
   fontSize: "xs",
+  chartBackend: "plotly",
 };
 
 const DEFAULT_ANALYSIS: AnalysisSettings = {
@@ -109,6 +120,19 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: "memdiver-settings",
       version: SETTINGS_VERSION,
+      // Deep-merge persisted state over defaults so newly added fields
+      // (e.g. display.chartBackend) pick up their default value for
+      // users who already have a stored settings blob.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<SettingsState>;
+        return {
+          ...current,
+          ...p,
+          display: { ...current.display, ...(p.display ?? {}) },
+          analysis: { ...current.analysis, ...(p.analysis ?? {}) },
+          general: { ...current.general, ...(p.general ?? {}) },
+        };
+      },
     },
   ),
 );

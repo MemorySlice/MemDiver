@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { Page, ViewportSize } from "@playwright/test";
@@ -235,4 +235,135 @@ export function consensusFixtureDumps(): string[] {
   return names
     .map((n) => path.join(base, n))
     .filter((p) => existsSync(p));
+}
+
+/**
+ * Pre-computed gocryptfs n-sweep fixture for shots 09 and 10.
+ *
+ * Produced offline by `scripts/precompute_pipeline_fixtures.py` against
+ * the gocryptfs reference dataset — commit the three JSONs under
+ * tests/e2e/fixtures/pipeline/ so the screenshot tests don't need a
+ * live 20-min compute.
+ */
+export const PIPELINE_FIXTURE_DIR = path.join(
+  REPO_ROOT,
+  "tests",
+  "e2e",
+  "fixtures",
+  "pipeline",
+);
+
+export interface PipelineFixture {
+  events: Array<Record<string, unknown>>;
+  record: Record<string, unknown>;
+  summary: Record<string, unknown>;
+}
+
+export function loadPipelineFixture(): PipelineFixture | null {
+  const eventsPath = path.join(PIPELINE_FIXTURE_DIR, "nsweep_events.json");
+  const recordPath = path.join(PIPELINE_FIXTURE_DIR, "run_record.json");
+  const summaryPath = path.join(PIPELINE_FIXTURE_DIR, "summary.json");
+  if (!existsSync(eventsPath) || !existsSync(recordPath)) return null;
+  return {
+    events: JSON.parse(readFileSync(eventsPath, "utf8")),
+    record: JSON.parse(readFileSync(recordPath, "utf8")),
+    summary: existsSync(summaryPath)
+      ? JSON.parse(readFileSync(summaryPath, "utf8"))
+      : {},
+  };
+}
+
+/**
+ * Route backend pipeline calls to a static mock record so PipelinePanel
+ * doesn't reset the store when it tries to rehydrate a fixture taskId.
+ * Must be called before navigation.
+ */
+export async function routePipelineToFixture(
+  page: Page,
+  taskId: string,
+  fixture: PipelineFixture,
+): Promise<void> {
+  await page.route(`**/api/pipeline/runs/${taskId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...fixture.record, task_id: taskId }),
+    });
+  });
+  // Long-poll fallback (used by useTaskProgress when WS isn't
+  // available) returns empty — we push events via evaluate() instead.
+  await page.route(`**/api/tasks/${taskId}/events*`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ events: [] }),
+    });
+  });
+}
+
+/**
+ * Drain a list of fixture events into the pipeline store via the
+ * DEV-only window.__usePipelineStore hook. Must be called AFTER the app
+ * has mounted (i.e., after the first navigation + wait).
+ *
+ * @param cutoffType  If set, events of that type and later are skipped.
+ *                    Use "nsweep_point" to produce a "mid-run" state for
+ *                    shot 09 (stages started, no n-sweep data yet).
+ */
+/**
+ * Seed `settings.display.chartBackend` in the zustand-persisted
+ * `memdiver-settings` key before the app hydrates, so the chart
+ * dispatchers pick up the chosen renderer on first render.
+ */
+export async function primeChartBackend(
+  page: Page,
+  backend: "plotly" | "svg",
+): Promise<void> {
+  await page.addInitScript(
+    ({ key, backend }) => {
+      try {
+        const existing = localStorage.getItem(key);
+        const parsed = existing
+          ? JSON.parse(existing)
+          : { state: { display: {}, analysis: {}, general: {} }, version: 1 };
+        parsed.state = parsed.state ?? {};
+        parsed.state.display = {
+          ...(parsed.state.display ?? {}),
+          chartBackend: backend,
+        };
+        parsed.version = parsed.version ?? 1;
+        localStorage.setItem(key, JSON.stringify(parsed));
+      } catch {
+        /* opaque origin */
+      }
+    },
+    { key: "memdiver-settings", backend },
+  );
+}
+
+export async function injectPipelineEvents(
+  page: Page,
+  events: Array<Record<string, unknown>>,
+  cutoffType?: string,
+): Promise<void> {
+  const filtered = cutoffType
+    ? events.slice(
+        0,
+        events.findIndex((e) => e.type === cutoffType) === -1
+          ? events.length
+          : events.findIndex((e) => e.type === cutoffType),
+      )
+    : events;
+  await page.evaluate((evts) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store = (window as any).__usePipelineStore;
+    if (!store) return;
+    for (const ev of evts) {
+      try {
+        store.getState().ingestEvent(ev);
+      } catch {
+        /* tolerate: malformed synthetic events never crash the app */
+      }
+    }
+  }, filtered);
 }

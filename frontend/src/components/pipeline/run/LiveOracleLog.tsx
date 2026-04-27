@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import type { JSX } from "react";
 
 import { usePipelineStore } from "@/stores/pipeline-store";
 

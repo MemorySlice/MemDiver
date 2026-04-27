@@ -1,0 +1,116 @@
+{
+  "total_dumps": 100,
+  "first_hit_n": 1,
+  "first_hit_offset": 5743136,
+  "headline": "At N=1, 1174920 candidates survived, 1 decrypted in 0.23s at offset 0x57a220.",
+  "points": [
+    {
+      "n": 1,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 194482176,
+        "aligned": 194482176,
+        "high_entropy": 1174920
+      },
+      "candidates_tried": 22561,
+      "hits": 1,
+      "hit_offset": 5743136,
+      "timing_ms": {
+        "consensus": 149.33,
+        "reduce": 138243.52,
+        "brute_force": 228.75
+      },
+      "fallback_entropy_only": true
+    },
+    {
+      "n": 3,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 2099450,
+        "aligned": 1599168,
+        "high_entropy": 420505
+      },
+      "candidates_tried": 2,
+      "hits": 0,
+      "hit_offset": null,
+      "timing_ms": {
+        "consensus": 1135.45,
+        "reduce": 141501.09,
+        "brute_force": 0.34
+      },
+      "fallback_entropy_only": false
+    },
+    {
+      "n": 5,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 2851728,
+        "aligned": 1805291,
+        "high_entropy": 329461
+      },
+      "candidates_tried": 23,
+      "hits": 0,
+      "hit_offset": null,
+      "timing_ms": {
+        "consensus": 1650.11,
+        "reduce": 141035.8,
+        "brute_force": 0.85
+      },
+      "fallback_entropy_only": false
+    },
+    {
+      "n": 10,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 4357897,
+        "aligned": 2165546,
+        "high_entropy": 340163
+      },
+      "candidates_tried": 1936,
+      "hits": 0,
+      "hit_offset": null,
+      "timing_ms": {
+        "consensus": 2468.89,
+        "reduce": 141719.48,
+        "brute_force": 17.8
+      },
+      "fallback_entropy_only": false
+    },
+    {
+      "n": 15,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 4300722,
+        "aligned": 1993358,
+        "high_entropy": 171085
+      },
+      "candidates_tried": 4563,
+      "hits": 0,
+      "hit_offset": null,
+      "timing_ms": {
+        "consensus": 1802.24,
+        "reduce": 138258.63,
+        "brute_force": 39.6
+      },
+      "fallback_entropy_only": false
+    },
+    {
+      "n": 20,
+      "stages": {
+        "total_bytes": 194482176,
+        "variance": 4538468,
+        "aligned": 1773112,
+        "high_entropy": 82435
+      },
+      "candidates_tried": 3683,
+      "hits": 0,
+      "hit_offset": null,
+      "timing_ms": {
+        "consensus": 2334.84,
+        "reduce": 139275.36,
+        "brute_force": 33.91
+      },
+      "fallback_entropy_only": false
+    }
+  ]
+}

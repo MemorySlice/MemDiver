@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useHexStore } from "@/stores/hex-store";
+import { useConsensusStore } from "@/stores/consensus-store";
 import { HexRow } from "./HexRow";
 import { HexToolbar } from "./HexToolbar";
 import { HexLegend } from "./HexLegend";
@@ -42,6 +43,13 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // Drives re-render on chunk arrivals and rotates getByteAtStable's
   // identity so HexRow's memo invalidates. See hex-store.chunkVersion.
   const chunkVersion = useHexStore((s) => s.chunkVersion);
+
+  // Consensus overlay state. When overlayEnabled, visible rows fetch
+  // per-byte classifications from the backend; each byte picks up a
+  // consensus-* CSS class defined in hex.css:140-156.
+  const overlayEnabled = useConsensusStore((s) => s.overlayEnabled);
+  const pageClassifications = useConsensusStore((s) => s.pageClassifications);
+  const inFlightClassificationsRef = useRef<Set<number>>(new Set());
 
   const activeFieldRange = useMemo(() => {
     if (activeFieldOffset === null || !activeOverlay) return null;
@@ -99,6 +107,33 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     useHexStore.getState().ensureChunksLoaded(firstVisibleIndex, lastVisibleIndex);
   }, [firstVisibleIndex, lastVisibleIndex]);
 
+  // Fetch per-byte consensus classifications for the currently visible
+  // rows whenever the overlay is on and a row's range is not yet cached.
+  // Deduped via an in-flight Set so scroll bursts don't multi-fire.
+  useEffect(() => {
+    if (!overlayEnabled) return;
+    if (firstVisibleIndex < 0) return;
+    const pages = useConsensusStore.getState().pageClassifications;
+    const inFlight = inFlightClassificationsRef.current;
+    for (let idx = firstVisibleIndex; idx <= lastVisibleIndex; idx++) {
+      const rowOffset = idx * BYTES_PER_ROW;
+      if (pages.has(rowOffset)) continue;
+      if (inFlight.has(rowOffset)) continue;
+      inFlight.add(rowOffset);
+      useConsensusStore
+        .getState()
+        .fetchRange(rowOffset, BYTES_PER_ROW)
+        .catch(() => {
+          // Consensus may be unavailable (404 before runConsensus
+          // has completed). Silently skip; bytes render without the
+          // overlay class, matching their pre-overlay appearance.
+        })
+        .finally(() => {
+          inFlight.delete(rowOffset);
+        });
+    }
+  }, [overlayEnabled, firstVisibleIndex, lastVisibleIndex, pageClassifications]);
+
   useEffect(() => {
     if (scrollTarget !== null) {
       virtualizer.scrollToIndex(scrollTarget, { align: "center" });
@@ -135,6 +170,21 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     // No dep needed — reads from getState() on each call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
+  );
+
+  const getClassificationAtStable = useCallback(
+    // pageClassifications dep rotates this callback's identity on
+    // fetchRange resolution so HexRow's memo invalidates and visible
+    // rows repaint with the new overlay classes. Mirrors the
+    // getByteAtStable / chunkVersion pattern above.
+    (offset: number): number | undefined => {
+      void pageClassifications;
+      const rowStart = Math.floor(offset / BYTES_PER_ROW) * BYTES_PER_ROW;
+      const byteInRow = offset - rowStart;
+      const row = useConsensusStore.getState().pageClassifications.get(rowStart);
+      return row?.[byteInRow];
+    },
+    [pageClassifications]
   );
 
   const handleMouseDown = useCallback(
@@ -216,6 +266,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
                 regionIndex={regionIndex}
                 activeFieldStart={activeFieldRange?.start ?? null}
                 activeFieldEnd={activeFieldRange?.end ?? null}
+                overlayEnabled={overlayEnabled}
+                getClassificationAt={getClassificationAtStable}
               />
             </div>
           ))}

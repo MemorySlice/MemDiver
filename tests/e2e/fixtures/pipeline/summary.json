@@ -1,0 +1,14 @@
+{
+  "headline": "At N=1, 1174920 candidates survived, 1 decrypted in 0.23s at offset 0x57a220.",
+  "first_hit_n": 1,
+  "first_hit_offset_hex": "0x57a220",
+  "total_dumps": 100,
+  "n_values": [
+    1,
+    3,
+    5,
+    10,
+    15,
+    20
+  ]
+}

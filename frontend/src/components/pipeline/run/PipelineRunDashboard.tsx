@@ -4,6 +4,8 @@
  * auto-loads the first consensus source on a cold pipeline tab.
  */
 
+import type { JSX } from "react";
+
 import { useAppStore } from "@/stores/app-store";
 import { useHexStore } from "@/stores/hex-store";
 import { usePipelineStore, type HitRecord } from "@/stores/pipeline-store";

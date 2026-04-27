@@ -1,0 +1,13 @@
+# Gocryptfs oracle config for n-sweep over the reference
+# `dataset_gocryptfs` fixture. The sample ciphertext must be a file
+# encrypted by the same gocryptfs instance whose master key we're
+# recovering from memory — any encrypted content file under the vault's
+# cipher/ dir works. Each candidate 32-byte key derives a content key
+# via HKDF-SHA256 and is verified by AES-GCM decrypting block 0.
+#
+# Dataset-relative path: run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg
+# (a single 183-byte encrypted file produced by the dataset builder).
+#
+# This file is consumed by `scripts/precompute_pipeline_fixtures.py`
+# to pre-render README shots 09 and 10 with authentic n-sweep output.
+sample_ciphertext = "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg"

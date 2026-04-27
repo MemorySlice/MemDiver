@@ -26,6 +26,9 @@ import {
   takeTriptychPart,
   consensusFixtureDumps,
   waitForHexBytes,
+  loadPipelineFixture,
+  routePipelineToFixture,
+  injectPipelineEvents,
 } from "./screenshots-helpers";
 
 test.describe("README screenshots", () => {
@@ -158,18 +161,37 @@ test.describe("README screenshots", () => {
     await waitForHexBytes(page);
     await switchToExplorationMode(page);
     await page.locator(tab("entropy")).first().click();
-    // Wait for the "Loading entropy data..." paragraph to DISAPPEAR —
-    // that's the definitive signal that the 60–120 s cold compute
-    // finished. Then one more settle tick for Plotly to paint.
+    // Wait for the entropy tab to reach a terminal render state — the
+    // loader must be gone AND one of the two expected end states must
+    // be present: Plotly painted the chart ("Entropy Profile" title),
+    // OR the ErrorBoundary fallback ("Entropy chart failed to render.").
+    // The AND condition eliminates the flake window where the loader
+    // has vanished but Plotly hasn't mounted yet.
     await page
       .waitForFunction(
-        () => !document.body.textContent?.includes("Loading entropy data"),
+        () => {
+          const t = document.body.textContent ?? "";
+          if (t.includes("Loading entropy data")) return false;
+          return (
+            t.includes("Entropy Profile") ||
+            t.includes("Entropy chart failed to render.")
+          );
+        },
         undefined,
         { timeout: 240_000 },
       )
       .catch(() => {});
     await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(1_000);
+    // E2E tightening (Phase 10). The chartBackend defaults to "plotly"
+    // and Phase 3 fixed react-plotly.js default-import interop, so we
+    // can now REQUIRE a real Plotly render — if `.js-plotly-plot` is
+    // missing the screenshot is captured showing the ErrorBoundary
+    // fallback, which means a future regression shipped silently.
+    // Fail fast instead.
+    await expect(page.locator(".js-plotly-plot").first()).toBeVisible({
+      timeout: 15_000,
+    });
     await injectStableStyles(page);
     await takeShot(page, "06_entropy_tab");
     await context.close();
@@ -248,40 +270,90 @@ test.describe("README screenshots", () => {
     await context.close();
   });
 
-  // -------- 09 pipeline run dashboard (seeded state) --------
+  // -------- 09 pipeline run dashboard (fixture-seeded) --------
+  //
+  // When the precomputed gocryptfs fixture is present, we mock the
+  // backend's getPipelineRun endpoint to return the fixture record
+  // (so PipelinePanel's rehydration path replays stage_start/stage_end
+  // events into the stepper) and inject stage events up to but not
+  // including nsweep_point (so the run looks "mid-flight"). When the
+  // fixture is absent, fall back to the original mock taskId state —
+  // the test remains green even on checkouts without the fixture
+  // committed.
   test("09_pipeline_run (light, hero)", async ({ browser }) => {
     const context = await browser.newContext({ viewport: VIEWPORT_HERO });
     const page = await context.newPage();
+    const fixture = loadPipelineFixture();
     await primeAll(page, { theme: "light", mode: "exploration" });
-    await seedPipelineStore(page, {
-      stage: "running",
-      form: {},
-      taskId: "mock-task-running",
-      lastSeq: 42,
-    });
+    if (fixture) {
+      const taskId = String(fixture.record.task_id ?? "fixture-gocryptfs");
+      // Running status — don't let the backfill finish the stepper.
+      await routePipelineToFixture(page, taskId, {
+        ...fixture,
+        record: { ...fixture.record, status: "running" },
+      });
+      await seedPipelineStore(page, {
+        stage: "running",
+        form: {},
+        taskId,
+        lastSeq: 0,
+      });
+    } else {
+      await seedPipelineStore(page, {
+        stage: "running",
+        form: {},
+        taskId: "mock-task-running",
+        lastSeq: 42,
+      });
+    }
     await enterWorkspaceWithMsl(page);
     await waitForHexBytes(page);
     await page.locator(tab("pipeline")).first().click();
+    if (fixture) {
+      // Cut at nsweep_point so the stepper shows stages started but the
+      // survivor curve hasn't populated yet — mid-run feel.
+      await injectPipelineEvents(page, fixture.events, "nsweep_point");
+    }
     await page.waitForTimeout(1_500);
     await injectStableStyles(page);
     await takeShot(page, "09_pipeline_run");
     await context.close();
   });
 
-  // -------- 10 pipeline results (seeded state) --------
+  // -------- 10 pipeline results (fixture-seeded) --------
+  //
+  // Full fixture replay: stages + all nsweep_points + terminal done.
+  // The SurvivorCurve (Plotly or SVG, per user's chartBackend setting)
+  // renders real multi-trace data on a log-y axis, including the
+  // oracle-hit star at the first N where the key verified.
   test("10_pipeline_results (light, default)", async ({ browser }) => {
     const context = await browser.newContext({ viewport: VIEWPORT_DEFAULT });
     const page = await context.newPage();
+    const fixture = loadPipelineFixture();
     await primeAll(page, { theme: "light", mode: "exploration" });
-    await seedPipelineStore(page, {
-      stage: "results",
-      form: {},
-      taskId: "mock-task-succeeded",
-      lastSeq: 99,
-    });
+    if (fixture) {
+      const taskId = String(fixture.record.task_id ?? "fixture-gocryptfs");
+      await routePipelineToFixture(page, taskId, fixture);
+      await seedPipelineStore(page, {
+        stage: "results",
+        form: {},
+        taskId,
+        lastSeq: 0,
+      });
+    } else {
+      await seedPipelineStore(page, {
+        stage: "results",
+        form: {},
+        taskId: "mock-task-succeeded",
+        lastSeq: 99,
+      });
+    }
     await enterWorkspaceWithMsl(page);
     await waitForHexBytes(page);
     await page.locator(tab("pipeline")).first().click();
+    if (fixture) {
+      await injectPipelineEvents(page, fixture.events);
+    }
     await page.waitForTimeout(1_500);
     await injectStableStyles(page);
     await takeShot(page, "10_pipeline_results");

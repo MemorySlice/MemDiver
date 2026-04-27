@@ -114,7 +114,16 @@ Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](htt
 |---|---|---|---|
 | <img alt="Workspace thumbnail" src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/04_workspace_default.png" width="220"> | <img alt="Hex viewer thumbnail" src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/05_hex_with_overlay.png" width="220"> | <img alt="Entropy profile thumbnail" src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/06_entropy_tab.png" width="220"> | <img alt="Consensus view thumbnail" src="https://raw.githubusercontent.com/MemorySlice/MemDiver/main/docs/_static/screenshots/07_consensus_tab.png" width="220"> |
 
-Screenshots regenerate deterministically via the Playwright harness under [`docs/screenshots/`](docs/screenshots/).
+Screenshots regenerate deterministically via the Playwright harness under [`docs/screenshots/`](docs/screenshots/). Pipeline shots 09 and 10 use precomputed n-sweep fixtures produced by [`scripts/precompute_pipeline_fixtures.py`](scripts/precompute_pipeline_fixtures.py) against the gocryptfs reference dataset.
+
+### Chart backend
+
+The four analysis charts — Entropy, Variance Map, VAS, and the Pipeline Survivor Curve — ship with two interchangeable renderers:
+
+- **Plotly** (default) — full interactive experience with pan/zoom/legend-toggle and a ~2.3 MB bundle.
+- **SVG** — hand-rolled React + SVG with hover tooltips but no pan/zoom, zero runtime dependencies, code-split so users who stay on SVG never download the Plotly chunk.
+
+Switch via **Settings → Display → Chart backend**. The preference persists per-browser. No reload required. Both backends share the same theme tokens so dark/light/high-contrast behaviour is identical.
 
 ## Where to go next
 

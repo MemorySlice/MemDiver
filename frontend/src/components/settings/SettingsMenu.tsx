@@ -3,6 +3,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useTheme } from "@/providers/ThemeProvider";
 import { downloadJsonFile } from "@/utils/download";
 import { useTourController } from "@/ftue/useTourController";
+import type { ChartBackend } from "@/components/charts/types";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -189,6 +190,17 @@ export function SettingsMenu() {
                 { value: "base", label: "Normal" },
               ]}
               onChange={(v) => settings.updateDisplay({ fontSize: v as "xs" | "sm" | "base" })}
+            />
+            <SelectRow
+              label="Chart Backend"
+              value={settings.display.chartBackend}
+              options={[
+                { value: "plotly", label: "Plotly (interactive)" },
+                { value: "svg", label: "SVG (lightweight)" },
+              ]}
+              onChange={(v) =>
+                settings.updateDisplay({ chartBackend: v as ChartBackend })
+              }
             />
           </Section>
 

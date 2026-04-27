@@ -7,6 +7,14 @@ import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
 const VAR_TIER_LOW = 50;
 const VAR_TIER_HIGH = 200;
 
+/** Backend ByteClass codes → CSS class; see hex.css:140-156. */
+const CONSENSUS_CLASSES = [
+  "consensus-invariant",
+  "consensus-structural",
+  "consensus-pointer",
+  "consensus-key-candidate",
+] as const;
+
 interface HexRowProps {
   rowOffset: number;
   getByteAt: (offset: number) => number | undefined;
@@ -19,6 +27,8 @@ interface HexRowProps {
   bytesPerRow?: number;
   activeFieldStart?: number | null;
   activeFieldEnd?: number | null;
+  overlayEnabled?: boolean;
+  getClassificationAt?: (offset: number) => number | undefined;
 }
 
 export const HexRow = memo(function HexRow({
@@ -33,6 +43,8 @@ export const HexRow = memo(function HexRow({
   bytesPerRow = 16,
   activeFieldStart = null,
   activeFieldEnd = null,
+  overlayEnabled = false,
+  getClassificationAt,
 }: HexRowProps) {
   const hexCells: ReactElement[] = [];
   const asciiCells: ReactElement[] = [];
@@ -85,6 +97,13 @@ export const HexRow = memo(function HexRow({
       if (varianceVal >= VAR_TIER_HIGH) classes.push("var-tier-3");
       else if (varianceVal >= VAR_TIER_LOW) classes.push("var-tier-2");
       else classes.push("var-tier-1");
+    }
+
+    if (overlayEnabled && getClassificationAt) {
+      const code = getClassificationAt(byteOffset);
+      if (code !== undefined && code >= 0 && code < CONSENSUS_CLASSES.length) {
+        classes.push(CONSENSUS_CLASSES[code]);
+      }
     }
 
     if (!loaded) classes.push("hex-loading");

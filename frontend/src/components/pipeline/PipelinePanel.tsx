@@ -228,29 +228,68 @@ export default function PipelinePanel() {
   // When a persisted taskId rehydrates from localStorage but the user
   // has since gone and deleted the backend task (or restarted the
   // server), fetch the canonical record once to sync our local status.
+  //
+  // When the task is already terminal on load (e.g. the user was away,
+  // came back after completion), the WebSocket backfill won't fire — so
+  // we manually replay the saved `record.stages` as synthetic
+  // stage_start / stage_end events. Without this, the stepper jumps
+  // straight to the terminal badge with an empty funnel; with it, the
+  // full stage history repaints as if we'd watched it live.
   useEffect(() => {
     if (!taskId) return;
     let cancelled = false;
     void getPipelineRun(taskId)
       .then((record) => {
         if (cancelled) return;
-        // The WebSocket backfill on reconnect will push the full
-        // event history; this fetch is only for the case where
-        // the record exists but no new events have been emitted
-        // since the store hydrated (e.g. already-terminal task).
-        if (
+        const isTerminal =
           record.status === "succeeded" ||
           record.status === "failed" ||
-          record.status === "cancelled"
-        ) {
+          record.status === "cancelled";
+        if (!isTerminal) return;
+
+        // Replay stage history. Use a local seq cursor advanced past
+        // `lastSeq` so the reducer's "already seen" check never drops
+        // a synthetic event.
+        let seq = lastSeq;
+        for (const stage of record.stages ?? []) {
+          const startTs = stage.started_at ?? record.started_at ?? record.created_at;
           ingestEvent({
             task_id: taskId,
-            type: record.status === "succeeded" ? "done" : "error",
-            seq: lastSeq + 1,
-            ts: Date.now() / 1000,
-            error: record.error ?? undefined,
+            type: "stage_start",
+            stage: stage.name,
+            seq: ++seq,
+            ts: startTs ?? Date.now() / 1000,
+            msg: stage.msg ?? null,
           });
+          // If the stage itself finished, emit stage_end too. Stages
+          // that were mid-flight when the task aborted stay at their
+          // last-known pct/msg.
+          if (
+            stage.status === "succeeded" ||
+            stage.status === "failed" ||
+            stage.status === "cancelled"
+          ) {
+            const endTs = stage.ended_at ?? startTs;
+            ingestEvent({
+              task_id: taskId,
+              type: "stage_end",
+              stage: stage.name,
+              seq: ++seq,
+              ts: endTs ?? Date.now() / 1000,
+              pct: 1,
+              msg: stage.msg ?? null,
+            });
+          }
         }
+
+        // Finally, emit the terminal event so `status` flips.
+        ingestEvent({
+          task_id: taskId,
+          type: record.status === "succeeded" ? "done" : "error",
+          seq: ++seq,
+          ts: Date.now() / 1000,
+          error: record.error ?? undefined,
+        });
       })
       .catch(() => {
         // Backend forgot about this task; reset the store so the
