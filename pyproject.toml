@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.5.2"
+version = "0.5.5"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
