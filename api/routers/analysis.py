@@ -11,11 +11,16 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from algorithms.base import AnalysisContext
 from algorithms.registry import get_registry
-from api.dependencies import get_tool_session
+from api.dependencies import (
+    get_tool_session,
+    task_manager_or_503 as _task_manager_or_503,
+)
 from api.models import (
     AnalyzeFileRequest,
     AnalyzeRequestAPI,
     AutoExportRequest,
+    BatchRunRequest,
+    BatchRunResponse,
     ConsensusRequest,
     ConvergenceRequest,
     VerifyKeyRequest,
@@ -70,8 +75,8 @@ def run_consensus(
         for src in sources:
             try:
                 src.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to close dump source: %s", exc)
 
     # Cache in session for range queries
     session._consensus_cache = cm
@@ -239,17 +244,41 @@ def list_patterns():
                     "applicable_to": data.get("applicable_to", {}),
                 })
             except Exception:
+                logger.exception("Failed to load pattern %s", f.name)
                 patterns.append({"filename": f.name, "name": f.stem, "description": "Error loading", "applicable_to": {}})
     return {"patterns": patterns}
 
 
-@router.post("/batch")
-def run_batch():
-    """Run batch analysis (stub — full implementation in Phase B)."""
-    return {
-        "status": "not_implemented",
-        "message": "Batch analysis via ProcessPool will be added in Phase B",
+@router.post("/batch", response_model=BatchRunResponse)
+def run_batch(request: BatchRunRequest):
+    """Submit a batch analysis task and return a task_id.
+
+    Mirrors :func:`api.routers.pipeline.run_pipeline_endpoint`: the
+    request is translated into JSON-friendly worker params, dispatched
+    to the TaskManager's ProcessPool via
+    ``engine.batch_task_runner.run_batch``, and a ``task_id`` is
+    returned immediately. Progress streams over ``/ws/tasks/{task_id}``
+    and the aggregated batch result is downloadable as the
+    ``batch_result`` artifact via the same artifact contract the
+    pipeline endpoint uses.
+    """
+    manager = _task_manager_or_503()
+    worker_params: dict = {
+        "task_root": str(manager.artifact_store.root),
+        "jobs": [job.model_dump() for job in request.jobs],
+        "output_format": request.output_format,
+        "workers": request.workers,
     }
+    record = manager.submit(
+        kind="batch",
+        params=worker_params,
+        runner_dotted="engine.batch_task_runner.run_batch",
+        stage_names=["batch"],
+    )
+    return BatchRunResponse(
+        task_id=record.task_id,
+        status=record.status.value,
+    )
 
 
 @router.post("/convergence")

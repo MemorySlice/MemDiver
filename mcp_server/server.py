@@ -78,7 +78,7 @@ def create_server():
         min_length: int = 4, encoding: str = "ascii", max_results: int = 500,
     ) -> str:
         """Extract printable strings from a dump file."""
-        return json.dumps(tools_inspect.extract_strings_tool(
+        return json.dumps(tools_inspect._extract_strings(
             _session, dump_path, offset, length, min_length, encoding, max_results,
         ))
 

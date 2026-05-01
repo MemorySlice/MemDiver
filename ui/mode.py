@@ -41,7 +41,6 @@ class ModeManager:
         "cross_library",
         "differential_diff",
         "consensus_view",
-        "architect_view",
     ]
 
     def __init__(self, initial_mode: str = TESTING):

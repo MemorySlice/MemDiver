@@ -32,7 +32,10 @@ class KDFRegistry:
             try:
                 mod = importlib.import_module(mod_name)
             except ImportError as exc:
-                logger.debug("Skipping %s: %s", mod_name, exc)
+                if "No module named" in str(exc):
+                    logger.debug("Optional KDF module not found: %s", mod_name)
+                else:
+                    logger.warning("Failed to import KDF module %s: %s", mod_name, exc)
                 continue
 
             for attr_name in dir(mod):

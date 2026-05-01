@@ -4,6 +4,7 @@ import { downloadJsonFile } from "@/utils/download";
 import { useHexStore } from "@/stores/hex-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { autoDetectStructure, applyStructure } from "@/api/client";
+import { notifyError } from "@/utils/errorNotifier";
 
 interface StructureEntry {
   name: string;
@@ -48,7 +49,12 @@ export function StructureList() {
     fetch("/api/structures/list")
       .then((r) => r.json())
       .then(setStructures)
-      .catch(() => {})
+      .catch((err) =>
+        notifyError(
+          `Failed to load structures: ${err instanceof Error ? err.message : String(err)}`,
+          "structure-list",
+        ),
+      )
       .finally(() => setLoading(false));
   }, []);
 
@@ -65,8 +71,11 @@ export function StructureList() {
         totalSize: res.structure.total_size,
         fields: res.structure.fields,
       });
-    } catch {
-      // silently ignore
+    } catch (err) {
+      notifyError(
+        `Failed to apply structure: ${err instanceof Error ? err.message : String(err)}`,
+        "structure-apply",
+      );
     } finally {
       setApplyingName(null);
     }
@@ -98,7 +107,13 @@ export function StructureList() {
 
   const handleDelete = (name: string) => {
     fetch(`/api/structures/${encodeURIComponent(name)}`, { method: "DELETE" })
-      .then((r) => { if (r.ok) reload(); });
+      .then((r) => { if (r.ok) reload(); })
+      .catch((err) =>
+        notifyError(
+          `Failed to delete structure: ${err instanceof Error ? err.message : String(err)}`,
+          "structure-delete",
+        ),
+      );
   };
 
   if (loading) {

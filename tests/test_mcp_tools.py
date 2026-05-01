@@ -161,13 +161,13 @@ class TestGetEntropy:
 class TestExtractStrings:
     def test_extract_strings_basic(self, session):
         dump = next((FIXTURE_ROOT / "TLS12" / "scenario_a" / "openssl" / "openssl_run_12_1").glob("*.dump"))
-        result = tools_inspect.extract_strings_tool(session, str(dump))
+        result = tools_inspect._extract_strings(session, str(dump))
         assert "strings" in result
         assert "total_count" in result
         assert "truncated" in result
 
     def test_extract_strings_missing_file(self, session):
-        result = tools_inspect.extract_strings_tool(session, "/nonexistent.dump")
+        result = tools_inspect._extract_strings(session, "/nonexistent.dump")
         assert "error" in result
 
 

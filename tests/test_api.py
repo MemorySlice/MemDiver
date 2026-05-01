@@ -198,10 +198,15 @@ def test_cancel_task_returns_503_without_manager(client):
 
 
 def test_batch_analysis_stub(client):
+    """The batch endpoint now requires a real BatchRunRequest body (Phase B).
+
+    A bodyless POST should be rejected by Pydantic with HTTP 422 — the
+    legacy 'not_implemented' stub at this path was replaced by a
+    TaskManager-backed runner; see ``tests/test_api_analysis.py`` for
+    the full lifecycle coverage.
+    """
     resp = client.post("/api/analysis/batch")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "not_implemented"
+    assert resp.status_code == 422
 
 
 # ---- Session save ----

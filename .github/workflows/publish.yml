@@ -5,6 +5,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+env:
+  # Force checkout/setup-node/setup-python to run their internal scripts on
+  # Node 24 instead of the deprecated Node 20 runtime. See
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build sdist + wheel

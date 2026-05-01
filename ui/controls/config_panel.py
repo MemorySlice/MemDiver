@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Any, Tuple
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.controls.config")
 
 
@@ -23,22 +25,22 @@ def create_config_controls(mo, state: Any) -> Tuple:
         initial_path=state.dataset_root or str(Path.home()),
         selection_mode="directory",
         multiple=False,
-        label="Dataset Root",
+        label=_("Dataset Root"),
     )
     keylog_input = mo.ui.text(
         value=state.keylog_filename,
-        label="Keylog Filename (optional)",
-        placeholder="Leave empty to skip",
+        label=_("Keylog Filename (optional)"),
+        placeholder=_("Leave empty to skip"),
     )
     template_dropdown = mo.ui.dropdown(
         options=list_template_names(),
         value=state.template_name,
-        label="Keylog Template",
+        label=_("Keylog Template"),
     )
     scan_button = mo.ui.button(
         value=0,
         on_click=lambda v: v + 1,
-        label="Scan Dataset",
+        label=_("Scan Dataset"),
         kind="success",
     )
     return dataset_browser, keylog_input, template_dropdown, scan_button

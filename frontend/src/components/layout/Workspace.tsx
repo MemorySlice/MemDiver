@@ -37,6 +37,7 @@ import { NeighborhoodOverlayPanel } from "@/components/hex/NeighborhoodOverlayPa
 import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { NotificationStack } from "@/components/NotificationStack";
 import { ConsensusChart } from "@/components/charts/ConsensusChart";
 import { ArchitectPlaceholder } from "@/components/research/ArchitectPlaceholder";
 import { StringsPanel } from "@/components/strings/StringsPanel";
@@ -45,6 +46,7 @@ import { ConvergenceChart } from "@/components/charts/ConvergenceChart";
 import { KeyVerificationPanel } from "@/components/verification/KeyVerificationPanel";
 import PipelinePanel from "@/components/pipeline/PipelinePanel";
 import { usePipelineStore } from "@/stores/pipeline-store";
+import { notifyError } from "@/utils/errorNotifier";
 
 function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal" | "vertical" }) {
   const isHorizontal = orientation === "horizontal";
@@ -385,7 +387,14 @@ function BottomTabs() {
     setEntropyLoading(true);
     getEntropy(dumpPath)
       .then((d) => { if (!cancelled) setEntropyData(d); })
-      .catch(() => { if (!cancelled) setEntropyData(null); })
+      .catch((err) => {
+        if (!cancelled) setEntropyData(null);
+        notifyError(
+          `Entropy fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          "entropy",
+          { severity: "warning" },
+        );
+      })
       .finally(() => { if (!cancelled) setEntropyLoading(false); });
     return () => { cancelled = true; };
   }, [tab, dumpPath]);
@@ -527,6 +536,7 @@ export function Workspace() {
           <BottomTabs />
         </Panel>
       </Group>
+      <NotificationStack />
     </div>
   );
 }

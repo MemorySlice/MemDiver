@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Tuple
 
+from ui.locales import _
 from ui.mode import ModeManager
 
 logger = logging.getLogger("memdiver.ui.controls.analysis")
@@ -24,17 +25,17 @@ def create_analysis_controls(mo, mode_manager: ModeManager) -> Tuple:
     algo_dropdown = mo.ui.dropdown(
         options=algorithms,
         value=algorithms[0] if algorithms else "exact_match",
-        label="Algorithm",
+        label=_("Algorithm"),
     )
     run_button = mo.ui.button(
         value=0,
         on_click=lambda v: v + 1,
-        label="Run Analysis",
+        label=_("Run Analysis"),
         kind="success",
     )
     mode_toggle = mo.ui.switch(
         value=mode_manager.is_research,
-        label="Research Mode",
+        label=_("Research Mode"),
     )
     return algo_dropdown, run_button, mode_toggle
 

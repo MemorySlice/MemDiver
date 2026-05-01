@@ -11,6 +11,10 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
+  # Force checkout/setup-node/setup-python to run their internal scripts on
+  # Node 24 instead of the deprecated Node 20 runtime. See
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build:
@@ -60,12 +64,7 @@ jobs:
           path: docs/_build/html
 
   deploy:
-    # Gated off for the first green run.  Remove the `if: false` line (or invert
-    # it to the original predicate) once the repository owner has enabled
-    # Settings -> Pages -> Source = "GitHub Actions" and is ready to publish.
-    if: false
-    # Original predicate (re-enable after one-time manual Pages setup):
-    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest

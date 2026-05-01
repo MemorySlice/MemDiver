@@ -2,6 +2,7 @@
 import datetime
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -167,7 +168,7 @@ class DumpOrchestrator:
     def _dump_lldb(pid: int, output_path: Path) -> bool:
         script = (
             'import lldb; t=lldb.debugger.GetSelectedTarget(); p=t.GetProcess()\n'
-            f'f=open("{output_path}","wb")\n'
+            f'f=open({shlex.quote(str(output_path))},"wb")\n'
             'for i in range(p.GetNumMemoryRegions()):\n'
             ' info=lldb.SBMemoryRegionInfo(); p.GetMemoryRegionAtIndex(i,info)\n'
             ' if info.IsReadable():\n'
@@ -176,9 +177,12 @@ class DumpOrchestrator:
             '   err=lldb.SBError(); d=p.ReadMemory(info.GetRegionBase(),sz,err)\n'
             '   if err.Success() and d: f.write(d)\n'
             'f.close()\n')
-        subprocess.run(["lldb", "-p", str(pid), "-o", f"script {script}",
-                        "-o", "detach", "-o", "quit"],
-                       capture_output=True, timeout=60)
+        result = subprocess.run(["lldb", "-p", str(pid), "-o", f"script {script}",
+                                 "-o", "detach", "-o", "quit"],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            logger.error("lldb subprocess failed: %s", result.stderr)
+            return False
         return output_path.exists() and output_path.stat().st_size > 0
 
     @staticmethod

@@ -1,6 +1,7 @@
 """CRUD endpoints for structure definitions."""
 
 from __future__ import annotations
+import asyncio
 import json
 from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -71,6 +72,8 @@ def delete_structure(name: str):
 async def import_ksy(file: UploadFile = File(...)):
     """Import a Kaitai Struct .ksy format definition file."""
     content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="ksy exceeds 10 MiB cap")
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -85,7 +88,7 @@ async def import_ksy(file: UploadFile = File(...)):
         )
 
     try:
-        doc = yaml.safe_load(text)
+        doc = await asyncio.to_thread(yaml.safe_load, text)
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
 
@@ -105,7 +108,7 @@ async def import_ksy(file: UploadFile = File(...)):
 
     filename = f"{meta_id}.ksy"
     dest = formats_dir / filename
-    dest.write_text(text, encoding="utf-8")
+    await asyncio.to_thread(dest.write_text, text, encoding="utf-8")
 
     return {"name": meta_id, "filename": filename, "message": "Imported successfully"}
 

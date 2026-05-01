@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from core.dataset_metadata import load_run_meta
 from core.dump_source import open_dump
-from mcp_server.tools_inspect import extract_strings_tool, get_session_info
+from mcp_server.tools_inspect import _extract_strings as extract_strings_tool, get_session_info
 
 
 RUN_DIR = Path(

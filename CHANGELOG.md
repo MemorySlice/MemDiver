@@ -68,6 +68,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one-line wiring snippet, IMF research framing, thumbnail gallery linking
   into the docs site.
 
+### Deferred follow-ups
+- **React i18n retrofit** — NiceGUI was localized via `ui/locales.py` +
+  `ui/locales/en.json` in this pass; the React SPA still hardcodes
+  user-facing strings (e.g. `frontend/src/components/wizard/Wizard.tsx`,
+  panel labels, button text). Recommend `react-i18next` with JSON namespaces
+  sharing the `locales/` convention. Out of scope for the remediation pass.
+- **`user_regex` confidence calibration** —
+  `algorithms/unknown_key/user_regex.py:48` returns `min(total / 10.0, 1.0)`,
+  an arbitrary heuristic that inflates confidence on dense matches.
+  Track a calibration task: parameterize the divisor via context, or
+  compute confidence per-pattern from match density × pattern complexity.
+- **e2e dataset gate** — 24 of 25 Playwright specs in `tests/e2e/specs/`
+  skip when no private dataset is mounted (`test.skip(!datasetAvailable, ...)`).
+  CI cannot exercise the SPA without it. Track a task to either (a) build a
+  minimal synthetic `.msl` fixture under `tests/e2e/fixtures/synthetic_msl/`
+  or (b) tag specs `requires-dataset` and document the CI strategy.
+
 ## [0.5.1] — 2026-04-14
 
 - TLS polymorphic structures + FTUE tour framework

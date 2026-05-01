@@ -1,12 +1,15 @@
 """Pattern-based algorithm that loads JSON structural patterns."""
 
 import json
+import logging
 from pathlib import Path
 from typing import List
 
 from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
 from algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
 from core.constants import UNKNOWN_KEY
+
+logger = logging.getLogger(__name__)
 
 
 class PatternMatchAlgorithm(BaseAlgorithm):
@@ -27,7 +30,8 @@ class PatternMatchAlgorithm(BaseAlgorithm):
             try:
                 with open(json_file) as f:
                     self._patterns.append(json.load(f))
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as exc:
+                logger.warning("Failed to load pattern file %s: %s", json_file, exc)
                 continue
 
     def run(self, dump_data: bytes, context: AnalysisContext) -> AlgorithmResult:

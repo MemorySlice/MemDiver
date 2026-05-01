@@ -97,14 +97,14 @@ export function PipelineRunDashboard(): JSX.Element {
   return (
     <div className="space-y-3 text-xs md-text-secondary">
       {status === "failed" && (
-        <div className="md-panel p-3 border border-red-700 md-text-error">
+        <div className="md-panel p-3 border md-border-error md-text-error">
           <div className="font-semibold mb-0.5">Pipeline failed</div>
           <div className="font-mono">{error ?? "unknown error"}</div>
         </div>
       )}
 
       {status === "cancelled" && (
-        <div className="md-panel p-3 border border-amber-700 md-text-warning">
+        <div className="md-panel p-3 border md-border-warning md-text-warning">
           Task cancelled.
         </div>
       )}

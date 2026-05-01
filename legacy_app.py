@@ -15,6 +15,7 @@ if str(_root) not in sys.path:
 from nicegui import ui, app  # noqa: E402
 
 from core.log import setup_logging  # noqa: E402
+from ui.locales import _  # noqa: E402
 from ui.state import AppState  # noqa: E402
 from ui.mode import ModeManager  # noqa: E402
 
@@ -84,14 +85,14 @@ def main():
                 b64 = load_logo_b64()
                 if b64:
                     ui.image(f'data:image/svg+xml;base64,{b64}').classes('w-20 h-20')
-                ui.label('MemDiver').classes('text-4xl font-bold')
+                ui.label(_('MemDiver')).classes('text-4xl font-bold')
             ui.spinner('dots', size='xl').classes('mt-8')
             messages = {
-                'first_run': 'Setting up for first use...',
-                'restore': 'Restoring previous session...',
-                'normal': 'Starting...',
+                'first_run': _('Setting up for first use...'),
+                'restore': _('Restoring previous session...'),
+                'normal': _('Starting...'),
             }
-            ui.label(messages.get(startup, 'Starting...')).classes('text-gray-400 mt-4')
+            ui.label(messages.get(startup, _('Starting...'))).classes('text-gray-400 mt-4')
 
         if startup == 'restore':
             try:

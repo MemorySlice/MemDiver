@@ -78,7 +78,6 @@ class ProgressBus:
     def __init__(self, ring_size: int = DEFAULT_RING_SIZE) -> None:
         self._ring_size = ring_size
         self._channels: Dict[str, _TaskChannel] = {}
-        self._lock = asyncio.Lock()
 
     # ----- publisher side --------------------------------------------------
 

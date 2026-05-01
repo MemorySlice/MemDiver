@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScanRequest(BaseModel):
@@ -71,3 +71,41 @@ class AutoExportRequest(BaseModel):
     name: str = "memdiver_pattern"
     align: bool = True
     context: int = 32
+
+
+class BatchJobDTO(BaseModel):
+    """JSON-friendly DTO for one batch job.
+
+    Mirrors the fields of ``core.input_schemas.AnalyzeRequest`` but with
+    ``library_dirs: list[str]`` instead of ``list[Path]`` so it
+    serializes cleanly across the wire and across the multiprocessing
+    queue boundary. The worker (``engine.batch_task_runner.run_batch``)
+    re-hydrates each DTO into a real ``AnalyzeRequest``, which is the
+    point at which dataclass __post_init__ validates the directories
+    exist.
+    """
+
+    library_dirs: list[str] = Field(..., min_length=1)
+    phase: str = Field(..., min_length=1)
+    protocol_version: str = Field(..., min_length=1)
+    keylog_filename: str = "keylog.csv"
+    template_name: str = "Auto-detect"
+    max_runs: int = Field(default=10, ge=1)
+    normalize: bool = False
+    expand_keys: bool = True
+    algorithms: list[str] | None = None
+
+
+class BatchRunRequest(BaseModel):
+    """Request body for ``POST /api/analysis/batch``."""
+
+    jobs: list[BatchJobDTO] = Field(..., min_length=1)
+    output_format: str = "json"
+    workers: int = Field(default=1, ge=1, le=32)
+
+
+class BatchRunResponse(BaseModel):
+    """Response for a freshly-submitted batch task."""
+
+    task_id: str
+    status: str

@@ -42,7 +42,7 @@ def read_hex_raw(
     session: ToolSession = Depends(get_tool_session),
 ):
     """Read raw bytes from a dump file as base64."""
-    return tools_inspect.read_hex_raw(session, dump_path, offset, length, view=view)
+    return tools_inspect._read_hex_raw(session, dump_path, offset, length, view=view)
 
 
 @router.get("/resolve-va")
@@ -52,7 +52,7 @@ def resolve_va(
     session: ToolSession = Depends(get_tool_session),
 ):
     """Translate a virtual address to file and VAS offsets (MSL only)."""
-    return tools_inspect.resolve_va(session, dump_path, va)
+    return tools_inspect._resolve_va(session, dump_path, va)
 
 
 @router.get("/entropy")
@@ -89,7 +89,7 @@ def extract_strings(
     last response). ``chunk_size`` controls how many bytes are read per chunk;
     larger chunks reduce overhead but raise peak RSS.
     """
-    return tools_inspect.extract_strings_tool(
+    return tools_inspect._extract_strings(
         session, dump_path, offset, length, min_length, encoding, max_results,
         cursor=cursor, chunk_size=chunk_size,
     )

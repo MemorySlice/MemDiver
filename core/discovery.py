@@ -67,8 +67,10 @@ def _extract_msl_secrets(msl_paths: List[Path]) -> List["CryptoSecret"]:
                 if key not in seen:
                     seen.add(key)
                     secrets.append(s)
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to extract key hints from %s: %s", p, exc)
         except Exception:
-            logger.warning("Failed to extract key hints from %s", p)
+            logger.exception("Unexpected error extracting secrets from %s", p)
     return secrets
 
 

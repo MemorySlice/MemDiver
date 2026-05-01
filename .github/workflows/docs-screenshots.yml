@@ -6,10 +6,11 @@ name: docs-screenshots
 # Playwright; it consumes committed baselines only.
 
 on:
-  schedule:
-    # 04:00 UTC daily — after the ordinary quiet hours, well clear of
-    # heavy PyPI / GitHub Actions peak windows.
-    - cron: "0 4 * * *"
+  # Nightly cron currently disabled — re-add the `schedule:` block below
+  # to resume automatic refreshes.  Manual runs still work via the
+  # "Run workflow" button on the Actions tab.
+  #   schedule:
+  #     - cron: "0 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -20,6 +21,10 @@ env:
   NODE_VERSION: "20"
   # Pin to a real PyPI version. 1.47.2 was a typo (PyPI jumps 1.47.0 → 1.48.0).
   PLAYWRIGHT_VERSION: "1.47.0"
+  # Force checkout/setup-node/setup-python to run their internal scripts on
+  # Node 24 instead of the deprecated Node 20 runtime. See
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   refresh:
@@ -87,6 +92,14 @@ jobs:
       - name: Open PR on drift
         uses: peter-evans/create-pull-request@v6
         with:
+          # Fine-grained PAT (Contents: write, Pull requests: write) on
+          # MemorySlice/MemDiver. Needed because the org disables
+          # "Allow GitHub Actions to create and approve pull requests"
+          # at the org level, so the default GITHUB_TOKEN cannot create
+          # the PR. Stored as a repo secret; rotate every 180 days by
+          # regenerating the PAT and overwriting SCREENSHOT_PR_TOKEN at
+          # Settings → Secrets and variables → Actions.
+          token: ${{ secrets.SCREENSHOT_PR_TOKEN }}
           commit-message: "chore(docs): nightly screenshot refresh"
           title: "docs: nightly screenshot refresh"
           body: |

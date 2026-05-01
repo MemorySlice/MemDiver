@@ -112,6 +112,7 @@ def create_app() -> FastAPI:
         consensus,
         dataset,
         dumps,
+        experiment,
         inspect,
         oracles,
         path,
@@ -133,6 +134,7 @@ def create_app() -> FastAPI:
     app.include_router(consensus.router, prefix="/api/consensus", tags=["consensus"])
     app.include_router(oracles.router, prefix="/api/oracles", tags=["oracles"])
     app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
+    app.include_router(experiment.router, prefix="/api/experiment", tags=["experiment"])
 
     from api.ws.progress import router as ws_router
 

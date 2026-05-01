@@ -5,6 +5,12 @@ on:
     branches: [main, master]
   pull_request:
 
+env:
+  # Force checkout/setup-node/setup-python to run their internal scripts on
+  # Node 24 instead of the deprecated Node 20 runtime. See
+  # https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -45,9 +51,28 @@ jobs:
       # (a) those offenders are migrated, or (b) the script grows a
       # baseline-lock mode matching the colour-literal check.
 
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'tests/e2e/**'
+              - '.github/workflows/ci.yml'
+
   a11y:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: |
+      needs.changes.outputs.frontend == 'true' &&
+      (github.event_name == 'pull_request' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

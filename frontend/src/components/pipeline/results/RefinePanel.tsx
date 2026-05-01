@@ -10,6 +10,7 @@ import { refinePipeline } from "@/api/pipeline";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useHexStore } from "@/stores/hex-store";
 import { inferNeighborhoodFields } from "@/utils/infer-neighborhood-fields";
+import { notifyError } from "@/utils/errorNotifier";
 
 export function RefinePanel() {
   const taskId = usePipelineStore((s) => s.taskId);
@@ -55,7 +56,10 @@ export function RefinePanel() {
         });
       }
     } catch (err) {
-      console.error("Refine failed:", err);
+      notifyError(
+        `Refine failed: ${err instanceof Error ? err.message : String(err)}`,
+        "pipeline-refine",
+      );
     } finally {
       setLoading(false);
       setPaths("");

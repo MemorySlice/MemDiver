@@ -74,4 +74,22 @@ test.describe("workspace tab smoke", () => {
 
     guards.assertClean();
   });
+
+  test("experiment panel renders form controls", async ({ page }) => {
+    const guards = installErrorGuards(page);
+    await enterWorkspaceWithMsl(page);
+
+    // The experiment tab is gated to exploration mode in the verification
+    // boot path; we directly assert the panel mounts when its testid is
+    // available rather than running the experiment (which needs a target).
+    const experimentTab = page.locator(tab("experiment")).first();
+    if (await experimentTab.count()) {
+      await experimentTab.click();
+      await expect(page.getByTestId("experiment-panel")).toBeVisible();
+      await expect(page.getByTestId("experiment-target")).toBeVisible();
+      await expect(page.getByTestId("experiment-run")).toBeVisible();
+    }
+
+    guards.assertClean();
+  });
 });

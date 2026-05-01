@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp_server import tools_inspect
-from mcp_server.tools_inspect import TAIL_OVERLAP, extract_strings_tool
+from mcp_server.tools_inspect import TAIL_OVERLAP, _extract_strings as extract_strings_tool
 
 
 class _DummySession:

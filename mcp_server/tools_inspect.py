@@ -60,7 +60,7 @@ def read_hex(
     }
 
 
-def read_hex_raw(
+def _read_hex_raw(
     session: ToolSession,
     dump_path: str,
     offset: int = 0,
@@ -98,7 +98,7 @@ def read_hex_raw(
     }
 
 
-def resolve_va(
+def _resolve_va(
     session: ToolSession,
     dump_path: str,
     va: int,
@@ -186,7 +186,7 @@ def get_entropy(
     }
 
 
-def extract_strings_tool(
+def _extract_strings(
     session: ToolSession,
     dump_path: str,
     offset: int = 0,
