@@ -2,8 +2,13 @@ name: Publish to PyPI
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   # Force checkout/setup-node/setup-python to run their internal scripts on
@@ -12,8 +17,46 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  detect-bump:
+    name: Detect version bump on main
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      bumped: ${{ steps.detect.outputs.bumped }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - id: detect
+        run: |
+          set -euo pipefail
+          new=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if git cat-file -e HEAD~1:pyproject.toml 2>/dev/null; then
+            git show HEAD~1:pyproject.toml > /tmp/prev.toml
+            old=$(python -c 'import tomllib; print(tomllib.load(open("/tmp/prev.toml","rb"))["project"]["version"])')
+          else
+            old=""
+          fi
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          if [ "$new" != "$old" ]; then
+            echo "bumped=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build sdist + wheel
+    needs: [detect-bump]
+    if: |
+      always() && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.detect-bump.outputs.bumped == 'true'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,9 +104,13 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: [detect-bump, build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: |
+      always() && needs.build.result == 'success' && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        needs.detect-bump.outputs.bumped == 'true'
+      )
     environment:
       name: pypi
       url: https://pypi.org/p/memdiver
@@ -75,3 +122,29 @@ jobs:
           name: python-package-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  tag-release:
+    name: Tag release on main bump
+    needs: [detect-bump, publish-pypi]
+    if: |
+      needs.publish-pypi.result == 'success' &&
+      needs.detect-bump.outputs.bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          V: ${{ needs.detect-bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "Tag v$V already exists; nothing to do."
+            exit 0
+          fi
+          git tag -a "v$V" -m "Release v$V"
+          git push origin "v$V"
