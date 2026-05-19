@@ -1,4 +1,4 @@
-"""MSL format data types (Memory Slice spec v1.1.0).
+"""MSL format data types (Memory Slice Specification v1.0.0 — binary format 1.1).
 
 Dataclasses for parsed MSL file structures. Enum definitions are in enums.py.
 """

@@ -1,6 +1,7 @@
 """Tests for :class:`core.dump_sources._regioned_base._RegionedRawSource`
 and the gdb/lldb dispatchers."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -10,11 +11,16 @@ from core.dump_sources.gdb_raw import GdbRawDumpSource
 from core.dump_sources.lldb_raw import LldbRawDumpSource
 
 
-_DATASET_RUN = Path(
-    "/Users/danielbaier/research/projects/github/issues/"
-    "2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/"
-    "gocryptfs/dataset_gocryptfs/run_0001"
-)
+# Tests requiring a real captured dataset look under
+# ``MEMDIVER_FIXTURE_ROOT/gocryptfs/run_0001``. Set the env var to your
+# local dataset root, or run the gocryptfs experiment harness to
+# generate captures. If the env var is unset or the files are missing,
+# these tests are skipped via @pytest.mark.skipif below.
+_FIXTURE_ROOT = Path(os.environ.get(
+    "MEMDIVER_FIXTURE_ROOT",
+    str(Path(__file__).parent / "fixtures" / "datasets"),
+))
+_DATASET_RUN = _FIXTURE_ROOT / "gocryptfs" / "run_0001"
 _GDB_BIN = _DATASET_RUN / "gdb_raw.bin"
 _LLDB_BIN = _DATASET_RUN / "lldb_raw.bin"
 

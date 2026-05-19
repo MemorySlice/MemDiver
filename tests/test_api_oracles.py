@@ -72,7 +72,7 @@ def disabled_registry(tmp_path, examples_dir):
 def test_list_examples_returns_bundled_oracles(registry, examples_dir):
     examples = registry.list_examples()
     names = {e["filename"] for e in examples}
-    # All three example oracles from the Phase 25 DFRWS deliverables.
+    # All three example oracles from the Phase 25 deliverables.
     assert {"gocryptfs.py", "generic_aes_gcm.py", "tls13_stub.py"} <= names
     for ex in examples:
         assert ex["shape"] in (1, 2)

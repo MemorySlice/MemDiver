@@ -11,7 +11,7 @@ Legacy Python-side UI layer. Two shells:
 
 - Prototyping new analysis math (reactive cells, inline plotly).
 - Ad-hoc dump inspection where writing TypeScript + React would be overkill.
-- Reproducing paper figures from raw dumps.
+- Reproducing standard analysis views from raw dumps.
 
 ## When to prefer the React SPA
 

@@ -55,13 +55,22 @@ def _read_padded_str(buf: bytes, offset: int, length: int) -> str:
 def decode_memory_region(
     hdr: MslBlockHeader, payload: bytes, byte_order: str
 ) -> MslMemoryRegion:
-    """Decode Memory Region payload (type 0x0001, spec Table 11)."""
+    """Decode Memory Region payload (type 0x0001, spec Table 11).
+
+    Per MSL Specification v1.0.0 §14.2 (Consumer rule 10), reject
+    PageSizeLog2 outside [10, 40] (1 KB to 1 TB pages).
+    """
     bo = byte_order
     base_addr = struct.unpack_from(f"{bo}Q", payload, 0)[0]
     region_size = struct.unpack_from(f"{bo}Q", payload, 8)[0]
     protection = payload[0x10]
     region_type = payload[0x11]
     page_size_log2 = payload[0x12]
+    if not (10 <= page_size_log2 <= 40):
+        raise MslParseError(
+            f"page_size_log2={page_size_log2} out of spec range [10, 40] "
+            f"(MSL Specification v1.0.0 §5.1, §14.2 rule 10)"
+        )
     timestamp_ns = struct.unpack_from(f"{bo}Q", payload, 0x18)[0]
     page_size = 1 << page_size_log2
     num_pages = region_size // page_size if page_size > 0 else 0

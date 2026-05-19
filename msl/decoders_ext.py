@@ -4,14 +4,15 @@ WARNING — SPECULATIVE LAYOUTS
 -----------------------------
 The decoders for block types 0x0011 (THREAD_CONTEXT), 0x0012 (FILE_DESCRIPTOR),
 0x0013 (NETWORK_CONNECTION), 0x0014 (ENVIRONMENT_BLOCK), and 0x0015
-(SECURITY_TOKEN) use GUESSED layouts — the MSL v1.1 specification (§4.3, Table 9)
-RESERVES these type codes and explicitly states that producers MUST NOT emit
-them until their payloads are defined in a future spec version. Conformant MSL
-files therefore never contain them, and the layouts below have not been
-validated against any authoritative reference.
+(SECURITY_TOKEN) use GUESSED layouts — the Memory Slice Specification v1.0.0
+(binary format 1.1, §4.3, Table 9) RESERVES these type codes and explicitly
+states that producers MUST NOT emit them until their payloads are defined in
+a future spec version. Conformant MSL files therefore never contain them, and
+the layouts below have not been validated against any authoritative reference.
 
-If/when spec ≥ v1.2 defines these block types, re-verify every decoder in this
-file against the new spec tables and update both the layouts and any tests.
+If/when a future spec version defines these block types, re-verify every
+decoder in this file against the new spec tables and update both the
+layouts and any tests.
 Until then, these decoders are latent: `MslReader.collect_*()` methods will
 return empty lists on real captures, and any non-empty result must be treated
 as speculative. The SYSTEM_CONTEXT (0x0050) decoder implements the full spec

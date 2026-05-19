@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache 2.0"}
 requires-python = ">=3.11"
 authors = [
-    {name = "Anonymous"},
+    {name = "MemorySlice contributors"},
 ]
 keywords = [
     "memory-analysis",
@@ -65,7 +65,7 @@ docs = [
     "sphinx-argparse>=0.5",
     "linkify-it-py>=2.0.3",
     "cairosvg>=2.7",
-    "pillow>=10.4",
+    "pillow>=10.4,<12",
 ]
 
 [project.urls]

@@ -361,6 +361,11 @@ def write_msl_from_raw(
         os_type=OSType.UNKNOWN, arch_type=ArchType.UNKNOWN, imported=True,
     )
     ts = 0 if deterministic_ts else time.time_ns()
+    # MSL Specification v1.0.0 §5.1 requires region_size % page_size == 0.
+    page_size = 4096
+    pad = (-len(data)) % page_size
+    if pad:
+        data = data + b"\x00" * pad
     writer.add_memory_region(0, data, timestamp_ns=ts)
     writer.add_end_of_capture()
     writer.write()

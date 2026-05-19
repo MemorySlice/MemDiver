@@ -1,4 +1,4 @@
-"""MSL format constants and enumerations (Memory Slice spec v1.1.0).
+"""MSL format constants and enumerations (Memory Slice Specification v1.0.0 — binary format 1.1).
 
 Magic bytes and all IntEnum/IntFlag types from the specification tables.
 """

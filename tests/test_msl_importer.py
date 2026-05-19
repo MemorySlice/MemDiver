@@ -68,7 +68,7 @@ def test_import_run_directory(tmp_path):
 
 def test_roundtrip_readback(tmp_path):
     """Import, read back with MslReader, verify region data matches."""
-    data = b"\xCA\xFE" * 256  # 512 bytes
+    data = b"\xCA\xFE" * 256  # 512 bytes — not page-aligned
     dump_path = tmp_path / "roundtrip.dump"
     dump_path.write_bytes(data)
 
@@ -80,7 +80,12 @@ def test_roundtrip_readback(tmp_path):
         assert len(regions) == 1
         r = regions[0]
         assert r.base_addr == 0
-        assert r.region_size == len(data)
+        # MSL Specification v1.0.0 §5.1: region_size MUST be a multiple of
+        # page_size. The importer zero-pads to the next page boundary; the
+        # original file size is preserved in IMPORT_PROVENANCE.orig_file_size.
+        assert r.region_size == 4096  # padded from 512 to one 4096 page
+        prov = reader.collect_import_provenance()
+        assert prov[0].orig_file_size == len(data)
         # Read the actual data bytes from the region
         # Writer uses ceiling division for page count
         num_pages = (r.region_size + r.page_size - 1) // r.page_size

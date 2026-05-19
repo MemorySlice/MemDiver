@@ -6,7 +6,7 @@
   "dumps": [
     {
       "label": "memslicer.msl",
-      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/memslicer.msl",
+      "path": "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/memslicer.msl",
       "size_bytes": 220079200,
       "format": "msl",
       "region_count": 110,
@@ -36,7 +36,7 @@
     },
     {
       "label": "gdb_raw.bin",
-      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gdb_raw.bin",
+      "path": "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/gdb_raw.bin",
       "size_bytes": 217681920,
       "format": "gdb_raw",
       "region_count": 13,
@@ -68,7 +68,7 @@
     },
     {
       "label": "lldb_raw.bin",
-      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/lldb_raw.bin",
+      "path": "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/lldb_raw.bin",
       "size_bytes": 217681920,
       "format": "lldb_raw",
       "region_count": 13,
@@ -100,7 +100,7 @@
     },
     {
       "label": "gcore.core",
-      "path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gcore.core",
+      "path": "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/gcore.core",
       "size_bytes": 2155823640,
       "format": "gcore",
       "region_count": 89,

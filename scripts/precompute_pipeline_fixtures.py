@@ -25,14 +25,16 @@ import argparse
 import json
 import subprocess
 import sys
+import os
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RUNS_DIR = (
-    "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/"
-    "2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs"
-)
+# Set MEMDIVER_FIXTURE_ROOT to your local dataset root.
+DEFAULT_RUNS_DIR = str(Path(os.environ.get(
+    "MEMDIVER_FIXTURE_ROOT",
+    str(REPO_ROOT / "tests" / "fixtures" / "datasets"),
+)) / "gocryptfs")
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "tests/e2e/fixtures/pipeline"
 
 

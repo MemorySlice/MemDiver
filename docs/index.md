@@ -15,7 +15,7 @@ myst:
 **Interactive platform for identifying and analyzing data structures in memory dumps.**
 
 :::{note}
-MemDiver is the research artifact accompanying a submission to the **IMF conference** (IT Security Incident Management &amp; IT Forensics). The accompanying study analyzed ~30K memory dumps across 13 TLS libraries (TLS 1.2 and 1.3) to answer a concrete forensic question: *which TLS secrets survive in process memory, and for how long?*
+MemDiver is an interactive memory-dump structure-analysis platform built for forensic researchers and analysts. The accompanying study analyzed ~30K memory dumps across 13 TLS libraries (TLS 1.2 and 1.3) to answer a concrete forensic question: *which TLS secrets survive in process memory, and for how long?*
 :::
 
 ## What it does
@@ -104,7 +104,7 @@ architecture/index
 
 algorithms/index
 visualizations/index
-file_formats/msl_v1_1_0
+file_formats/msl_v1_0_0
 file_formats/dataset_layout
 oracle/interface
 oracle/examples

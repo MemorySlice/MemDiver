@@ -58,17 +58,29 @@ def import_raw_dump(
 ) -> ImportResult:
     """Convert a raw .dump file to .msl format."""
     raw_data = raw_path.read_bytes()
+    orig_size = len(raw_data)
     writer = MslWriter(
         output_path, pid=pid, os_type=os_type, arch_type=arch_type
     )
 
+    # MSL Specification v1.0.0 §5.1 mandates that RegionSize be a multiple
+    # of PageSize. Raw .dump files are an arbitrary number of bytes, so we
+    # zero-pad up to the next page boundary. Importer-injected padding is
+    # transparent because the original size is recorded in the
+    # IMPORT_PROVENANCE block's `orig_file_size` field.
+    page_size = 1 << page_size_log2
+    pad = (-orig_size) % page_size
+    region_data = raw_data + b"\x00" * pad if pad else raw_data
+
     region_uuid = writer.add_memory_region(
-        0, raw_data, page_size_log2=page_size_log2
+        0, region_data, page_size_log2=page_size_log2
     )
 
     hints_written = 0
     if secrets:
         for secret in secrets:
+            # Search the original bytes (key offsets reference the original
+            # file; padding is appended past the end and won't shift hits).
             offset = raw_data.find(secret.secret_value)
             if offset >= 0:
                 writer.add_key_hint(
@@ -83,7 +95,7 @@ def import_raw_dump(
     writer.add_import_provenance(
         source_format=0x01,
         tool_name="memdiver",
-        orig_file_size=len(raw_data),
+        orig_file_size=orig_size,
         note=f"Imported from {raw_path.name}",
     )
     writer.add_end_of_capture()
@@ -94,7 +106,7 @@ def import_raw_dump(
         output_path=output_path,
         regions_written=1,
         key_hints_written=hints_written,
-        total_bytes=len(raw_data),
+        total_bytes=orig_size,
     )
 
 

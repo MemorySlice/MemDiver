@@ -199,10 +199,18 @@ def create_server():
     return mcp
 
 
-def main(transport: str = "stdio") -> None:
-    """Entry point for the MCP server."""
+def main(transport: str = "stdio", port: int = 8080) -> None:
+    """Entry point for the MCP server.
+
+    For ``transport == "sse"``, ``port`` selects the SSE listener port.
+    For stdio transport the port argument is ignored.
+    """
     from core.log import setup_logging
     setup_logging(level="WARNING")
 
     server = create_server()
-    server.run(transport=transport)
+    if transport == "sse":
+        # FastMCP's run() accepts the port via keyword for SSE transport.
+        server.run(transport=transport, port=port)
+    else:
+        server.run(transport=transport)

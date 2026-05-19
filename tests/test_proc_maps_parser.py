@@ -1,5 +1,6 @@
 """Tests for :mod:`core.proc_maps_parser`."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -13,11 +14,14 @@ from core.proc_maps_parser import (
 from msl.enums import RegionType
 
 
-_REAL_MAPS = Path(
-    "/Users/danielbaier/research/projects/github/issues/"
-    "2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/"
-    "gocryptfs/dataset_gocryptfs/run_0001/gdb_raw.maps"
-)
+# Test using a real captured proc/maps file. Set MEMDIVER_FIXTURE_ROOT
+# to the local dataset root, or generate captures with the experiment
+# harness. If the file is missing, the dependent test is skipped.
+_FIXTURE_ROOT = Path(os.environ.get(
+    "MEMDIVER_FIXTURE_ROOT",
+    str(Path(__file__).parent / "fixtures" / "datasets"),
+))
+_REAL_MAPS = _FIXTURE_ROOT / "gocryptfs" / "run_0001" / "gdb_raw.maps"
 
 
 def test_parse_basic_line() -> None:

@@ -150,6 +150,20 @@ ui/             Marimo research sandbox (houses the 5 deeper views) + legacy Nic
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```
 
+## Memory Slice format
+
+MemDiver reads and writes the open **Memory Slice (.msl)** container — a
+self-describing, integrity-chained snapshot format for process memory and
+sidecar metadata. The on-disk layout, capability bits, and conformance
+fixtures live in the dedicated specification repository so other tools can
+interoperate without depending on MemDiver itself:
+
+- **Specification & fixtures** — <https://github.com/MemorySlice/memslice-spec>
+
+The Python reader/writer in `msl/` tracks that spec; see
+[docs/file_formats/msl_v1_0_0.md](docs/file_formats/msl_v1_0_0.md) for the
+in-repo summary used by this codebase.
+
 ## Release process (maintainers)
 
 1. Bump `version` in `pyproject.toml` and move the `[Unreleased]` block in `CHANGELOG.md` under a new version heading.
@@ -164,14 +178,10 @@ Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## Citation
 
-If MemDiver supports your research, please cite the accompanying IMF conference submission. Author attribution is withheld during double-blind review; this entry will be updated once camera-ready.
+A formal citation (DOI) will be minted when the accompanying study is
+published. Until then, please cite the GitHub Releases page for the specific
+MemDiver version you used:
 
-```bibtex
-@software{memdiver2026,
-  author = {Anonymous},
-  title  = {MemDiver: Interactive Memory-Dump Structure Analysis},
-  year   = {2026},
-  url    = {https://github.com/MemorySlice/MemDiver},
-  note   = {Artifact accompanying an IMF (IT Security Incident Management \& IT Forensics) conference submission}
-}
-```
+  https://github.com/MemorySlice/MemDiver/releases
+
+and reference the project URL `https://github.com/MemorySlice/MemDiver`.

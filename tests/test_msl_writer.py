@@ -15,7 +15,12 @@ from msl.writer import MslWriter
 
 @pytest.fixture
 def sample_data():
-    return b"\xAA" * 32 + b"\xBB" * 32 + bytes(range(256)) * 15
+    # MSL Specification v1.0.0 §5.1 requires RegionSize to be a multiple
+    # of PageSize. Default page_size_log2=12 → page_size=4096, so we use
+    # exactly one page of mixed bytes here.
+    return (b"\xAA" * 32 + b"\xBB" * 32
+            + bytes(range(256)) * 15
+            + b"\x00" * (4096 - 32 - 32 - 256 * 15))
 
 
 def test_write_minimal(tmp_path, sample_data):

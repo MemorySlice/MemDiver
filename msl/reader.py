@@ -87,17 +87,42 @@ class MslReader:
             raise MslParseError("Reader not opened")
         return self._file_header
 
+    # MSL Specification v1.0.0 (binary format 1.x). Reader rejects unknown
+    # major versions per spec §3.4 ("Unknown major version: SHOULD reject").
+    SUPPORTED_MAJOR_VERSION = 1
+    KNOWN_MAX_MINOR_VERSION = 1
+
     def _parse_file_header(self) -> MslFileHeader:
         buf = self._mmap
         if buf[0:8] != FILE_MAGIC:
             raise MslParseError(f"Bad magic: {bytes(buf[0:8])!r}")
         endianness = buf[8]
-        if endianness not in (Endianness.LITTLE, Endianness.BIG):
-            raise MslParseError(f"Invalid endianness: 0x{endianness:02X}")
-        self._byte_order = "<" if endianness == Endianness.LITTLE else ">"
+        # Spec §3.1: "v1.1: MUST be 0x01. Other values MUST cause rejection."
+        if endianness != Endianness.LITTLE:
+            raise MslParseError(
+                f"Invalid Endianness 0x{endianness:02X}; MSL Specification "
+                f"v1.0.0 requires 0x01 (little-endian)"
+            )
+        self._byte_order = "<"
         bo = self._byte_order
         header_size = buf[9]
         version = struct.unpack_from(f"{bo}H", buf, 0x0A)[0]
+        version_major = (version >> 8) & 0xFF
+        version_minor = version & 0xFF
+        # Spec §3.4: reject unknown major version; warn (don't reject) on
+        # unknown minor of known major.
+        if version_major != self.SUPPORTED_MAJOR_VERSION:
+            raise MslParseError(
+                f"Unsupported MSL major version {version_major}; this build "
+                f"supports major version {self.SUPPORTED_MAJOR_VERSION} "
+                f"(MSL Specification v1.0.0, binary format 1.x)"
+            )
+        if version_minor > self.KNOWN_MAX_MINOR_VERSION:
+            logger.warning(
+                "MSL minor version %d is newer than the highest known minor "
+                "(%d); parsing best-effort per spec §3.4 forward-compat rule",
+                version_minor, self.KNOWN_MAX_MINOR_VERSION,
+            )
         flags = struct.unpack_from(f"{bo}I", buf, 0x0C)[0]
         cap_bitmap = struct.unpack_from(f"{bo}Q", buf, 0x10)[0]
         dump_uuid = UUID(bytes=bytes(buf[0x18:0x28]))
@@ -108,8 +133,8 @@ class MslReader:
         clock_source = buf[0x38]
         hdr = MslFileHeader(
             endianness=endianness, header_size=header_size,
-            version_major=(version >> 8) & 0xFF,
-            version_minor=version & 0xFF,
+            version_major=version_major,
+            version_minor=version_minor,
             flags=flags, cap_bitmap=cap_bitmap,
             dump_uuid=dump_uuid, timestamp_ns=timestamp_ns,
             os_type=os_type, arch_type=arch_type,

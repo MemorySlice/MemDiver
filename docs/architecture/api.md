@@ -18,6 +18,7 @@ FastAPI backend. Serves the built React bundle at `/` and the Marimo notebook at
 | `/api/consensus` | Incremental Welford consensus sessions. |
 | `/api/oracles` | BYO-oracle registry (gated by `MEMDIVER_ORACLE_DIR`). |
 | `/api/pipeline` | Phase-25 pipeline orchestration. |
+| `/api/experiment` | SPA experiment runner — spawn target, dump, analyze per tool, verify, emit Volatility3 plugins. |
 | `/ws/tasks/{id}` | WebSocket progress stream (ring buffer + HTTP fallback). |
 | `/api/tasks/{id}/events` | HTTP backfill endpoint registered by the same WS router; returns buffered events when the WebSocket ring has rolled past a client's last-seen sequence. |
 | `/api/notebook/status` | Top-level status probe reporting whether the Marimo notebook mount at `/notebook` is available. |

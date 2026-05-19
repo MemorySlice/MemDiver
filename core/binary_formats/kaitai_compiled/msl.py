@@ -1,8 +1,8 @@
 """Hand-rolled Kaitai Struct parser for Memory Slice (.msl) files.
 
-Implements the Memory Slice v1.1.0 container format (see
-``docs/file_formats/msl_v1_1_0.md``) as a pair of ``KaitaiStruct``
-classes.  Tracks field positions via ``_debug`` dicts so
+Implements the Memory Slice Specification v1.0.0 container format (binary
+format 1.1; see ``docs/file_formats/msl_v1_0_0.md``) as a pair of
+``KaitaiStruct`` classes.  Tracks field positions via ``_debug`` dicts so
 ``KaitaiOverlayAdapter`` can emit hex-viewer overlays identical to the
 compiled Kaitai parsers used for ELF / PE / Mach-O.
 """

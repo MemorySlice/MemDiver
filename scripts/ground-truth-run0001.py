@@ -37,11 +37,15 @@ from core.dump_source import open_dump
 from mcp_server.tools_inspect import _extract_strings as extract_strings_tool, get_session_info
 
 
-RUN_DIR = Path(
-    "/Users/danielbaier/research/projects/github/issues/"
-    "2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/"
-    "gocryptfs/dataset_gocryptfs/run_0001"
-)
+import os
+
+# Set MEMDIVER_FIXTURE_ROOT to your local dataset root (the directory
+# that contains gocryptfs/run_0001/...). Falls back to a repo-relative
+# default for portability across machines.
+RUN_DIR = Path(os.environ.get(
+    "MEMDIVER_FIXTURE_ROOT",
+    str(Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "datasets"),
+)) / "gocryptfs" / "run_0001"
 
 
 class _StubSession:

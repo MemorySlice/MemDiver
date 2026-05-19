@@ -7,8 +7,21 @@ The experiment harness spawns a target process, lets it reach a known state, and
 | Backend | Output | Install |
 |---|---|---|
 | `memslicer` | `.msl` | `pip install memdiver[experiment]` (ships `memslicer` binary) |
-| `lldb` | `.dump` | OS package — Xcode CLT on macOS, `apt install lldb` on Debian/Ubuntu |
+| `lldb` | `.dump` | OS package (see below) |
 | `fridump` | `.dump` | `pip install memdiver[experiment]` (pulls `frida-tools`) |
+
+### LLDB install per OS
+
+```bash
+# macOS  (LLDB ships with Xcode Command Line Tools)
+xcode-select --install
+
+# Debian / Ubuntu
+sudo apt install lldb
+
+# Fedora / RHEL
+sudo dnf install lldb
+```
 
 :::{note}
 `fridump` is a Frida-based bulk memory dumper. It is **not** the same as friTap, despite the name similarity.

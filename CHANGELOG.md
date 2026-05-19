@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **MSL implementation declares conformance with the official Memory Slice
+  Specification v1.0.0** (<https://github.com/MemorySlice/memslice-spec>):
+  - Reader rejects unknown MSL major versions per spec §3.4 and rejects any
+    Endianness byte other than `0x01` per spec §3.1 (strict consumer rules).
+  - Writer now sets the Capability Bitmap accurately per spec §9 (MUST), with
+    bits OR'd in for every emitted data category (MemoryRegions, ModuleList,
+    CryptoHints, RelatedDumps, ProcessIdentity, SystemContext, Process /
+    Network / Handle tables).
+  - Writer validates `PageSizeLog2 ∈ [10, 40]` and `RegionSize % PageSize == 0`
+    per spec §5.1; the decoder rejects out-of-range `PageSizeLog2` per
+    spec §14.2 rule 10.
+  - Writer adds full Investigation-mode support per spec §6: Process Identity
+    (Block 0), Module List Index + Module Entry children (Block 1), System
+    Context (Block 2), and Process/Connection/Handle table children. Block
+    ordering is enforced at `write()` time.
+  - Writer emits the spec's three-state page model (CAPTURED / FAILED /
+    UNMAPPED) when `add_memory_region(..., page_states=...)` is supplied;
+    legacy callers without `page_states` continue to get all-CAPTURED maps.
+  - `msl/importer.py` zero-pads raw `.dump` inputs to a page boundary so
+    imported regions satisfy spec §5.1; the original size is preserved in
+    `IMPORT_PROVENANCE.orig_file_size`.
+  - Documentation file `docs/file_formats/msl_v1_1_0.md` renamed to
+    `msl_v1_0_0.md` to reflect the spec document version (the on-wire
+    binary format byte at file header offset `0x0A` remains `0x0101`,
+    which the spec calls "format 1.1").
 - **Extras collapsed** to two groups: `[experiment]` (frida-tools + memslicer)
   and `[dev]` (pytest, pytest-asyncio, httpx). `marimo`, `nicegui`, `mcp`, and
   `kaitaistruct` are now part of the base install — the `[notebook]`,
@@ -65,8 +90,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the GitHub Pages site.
 - README overhaul — accurate capability counts (8 algorithms, 20 CLI
   subcommands, 12 FastAPI routers, 15 MCP tools), Apache-2.0 badge, MCP
-  one-line wiring snippet, IMF research framing, thumbnail gallery linking
-  into the docs site.
+  one-line wiring snippet, thumbnail gallery linking into the docs site.
 
 ### Deferred follow-ups
 - **React i18n retrofit** — NiceGUI was localized via `ui/locales.py` +

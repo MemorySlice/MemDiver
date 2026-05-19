@@ -10,4 +10,8 @@
 #
 # This file is consumed by `scripts/precompute_pipeline_fixtures.py`
 # to pre-render README shots 09 and 10 with authentic n-sweep output.
-sample_ciphertext = "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/mempdumps/dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg"
+#
+# Replace ${MEMDIVER_FIXTURE_ROOT} with the absolute path to your local
+# dataset root before using this config. The placeholder lets us ship a
+# portable example without hardcoding any author's machine layout.
+sample_ciphertext = "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg"

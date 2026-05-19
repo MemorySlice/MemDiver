@@ -1,6 +1,6 @@
 # msl/
 
-Memory Slice (`.msl`) format — a hand-rolled, mmap-backed, struct-based container for process-memory snapshots. See [](../file_formats/msl_v1_1_0.md) for the on-disk spec.
+Memory Slice (`.msl`) format — a hand-rolled, mmap-backed, struct-based container for process-memory snapshots. See [](../file_formats/msl_v1_0_0.md) for the on-disk spec (Memory Slice Specification v1.0.0, binary format 1.1).
 
 - `MslReader` — mmap, endian-aware, encrypted-flag rejection, zstd/lz4 block decompression, BLAKE3 prev-hash chain integrity, cached per-block collectors.
 - `MslWriter` — MemDiver is a first-class writer; `END_OF_CAPTURE.file_hash` finalized via streaming digest.

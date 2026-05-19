@@ -10,8 +10,8 @@ from importlib.metadata import version as _version
 sys.path.insert(0, os.path.abspath(".."))
 
 project = "MemDiver"
-author = "Anonymous"
-copyright = "2026, Anonymous"
+author = "MemorySlice contributors"
+copyright = "2024-present, MemorySlice contributors"
 
 try:
     release = _version("memdiver")

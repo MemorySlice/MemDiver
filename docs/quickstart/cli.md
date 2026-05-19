@@ -4,7 +4,7 @@ MemDiver exposes a single console script `memdiver` with 20 subcommands. The thr
 
 ```bash
 # One-shot analysis on a library directory
-memdiver analyze <library_dirs> --phase pre_abort --protocol-version TLS13
+memdiver analyze <library_dirs> --phase post_handshake_end --protocol-version TLS13
 
 # Dataset sweep
 memdiver scan --root /path/to/dataset
@@ -12,6 +12,13 @@ memdiver scan --root /path/to/dataset
 # Batch of analysis jobs
 memdiver batch --config batch.json
 ```
+
+:::{tip}
+Run `memdiver scan --root <dataset>` first to see which phases your dataset
+actually contains. Canonical phases are defined in
+`core/phase_normalizer.py:CANONICAL_PHASE_ORDER`
+(`pre_handshake_end`, `post_handshake_end`, `pre_close`, `post_close`, …).
+:::
 
 ## Complete subcommand list
 

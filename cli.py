@@ -197,7 +197,7 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
         _print_missing_package("The 'mcp' package")
         return 1
     transport = "sse" if args.sse else "stdio"
-    mcp_main(transport=transport)
+    mcp_main(transport=transport, port=getattr(args, "port", 8080))
     return 0
 
 
