@@ -13,6 +13,59 @@ sys.path.insert(0, str(Path(__file__).parent))
 logger = logging.getLogger("memdiver.cli")
 
 
+def _decrypt_parent_parser() -> argparse.ArgumentParser:
+    """Shared parent parser for encrypted-MSL decryption flags (spec §10).
+
+    Attach via ``parents=[_decrypt_parent_parser()]`` to any subcommand that
+    opens a dump, so it accepts a key for AES/XChaCha-encrypted .msl files.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    g = p.add_argument_group("encrypted MSL (spec §10)")
+    g.add_argument("--key-file", help="32-byte raw content-encryption key file "
+                                      "(KeyEncap=None, KDF=None)")
+    g.add_argument("--passphrase", help="Passphrase for Argon2id-derived key "
+                                        "(KeyEncap=None, KDF=Argon2id)")
+    g.add_argument("--kem-key-file", help="Recipient private key file for "
+                                          "X25519/ML-KEM/hybrid key encapsulation")
+    return p
+
+
+def _key_material_from_args(args: argparse.Namespace) -> dict:
+    """Build the open_dump() key-material kwargs from decryption CLI flags.
+
+    Returns a dict with key/passphrase/kem_private_key (all None when no
+    decryption flags were supplied), suitable for ``open_dump(path, **kw)``.
+    """
+    key = None
+    if getattr(args, "key_file", None):
+        key = Path(args.key_file).read_bytes()
+    kem_private = None
+    if getattr(args, "kem_key_file", None):
+        kem_private = Path(args.kem_key_file).read_bytes()
+    passphrase = None
+    if getattr(args, "passphrase", None):
+        passphrase = args.passphrase.encode("utf-8")
+    return {"key": key, "passphrase": passphrase, "kem_private_key": kem_private}
+
+
+def _warn_tag_status(source) -> None:
+    """Print a user-facing line about an encrypted dump's AEAD verification.
+
+    Green = verified, red = failed/missing key. Plaintext dumps say nothing.
+    """
+    from msl.enums import TagStatus
+    status = getattr(source, "tag_status", TagStatus.NOT_ENCRYPTED)
+    if status == TagStatus.VALID:
+        print("memdiver: AEAD verified — encrypted dump decrypted successfully",
+              file=sys.stderr)
+    elif status == TagStatus.CORRUPTED:
+        print("memdiver: ERROR — AEAD verification FAILED (wrong key or tampered file)",
+              file=sys.stderr)
+    elif status == TagStatus.MISSING_KEY:
+        print("memdiver: ERROR — dump is encrypted; supply --key-file / "
+              "--passphrase / --kem-key-file", file=sys.stderr)
+
+
 def _resolve_dump_paths(raw_paths: list) -> list:
     """Expand directories to all supported dump flavours; pass through files.
 
@@ -288,7 +341,8 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
         return 1
 
     logger.info("Building consensus from %d dumps", len(dump_paths))
-    sources = [open_dump(p) for p in dump_paths]
+    key_material = _key_material_from_args(args)
+    sources = [open_dump(p, **key_material) for p in dump_paths]
     try:
         cm = ConsensusVector()
         cm.build_from_sources(sources, normalize=args.normalize)
@@ -397,7 +451,8 @@ def _cmd_consensus_add(args: argparse.Namespace) -> int:
     state, welford = _load_welford_session(state_path)
     size = int(state["size"])
 
-    with open_dump(Path(args.dump)) as source:
+    with open_dump(Path(args.dump), **_key_material_from_args(args)) as source:
+        _warn_tag_status(source)
         data = source.read_all()[:size]
     if len(data) < size:
         print(
@@ -456,7 +511,8 @@ def _cmd_search_reduce(args: argparse.Namespace) -> int:
     _state, welford = _load_welford_session(state_path)
     variance = welford.variance()
 
-    with open_dump(Path(args.reference_dump)) as source:
+    with open_dump(Path(args.reference_dump), **_key_material_from_args(args)) as source:
+        _warn_tag_status(source)
         reference_data = source.read_all()[: len(variance)]
 
     result = reduce_search_space(
@@ -478,7 +534,8 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
     from core.dump_source import open_dump
     from engine.brute_force import run_brute_force, write_result
 
-    with open_dump(Path(args.dump)) as source:
+    with open_dump(Path(args.dump), **_key_material_from_args(args)) as source:
+        _warn_tag_status(source)
         reference_data = source.read_all()
 
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
@@ -531,7 +588,10 @@ def _cmd_n_sweep(args: argparse.Namespace) -> int:
     )
     oracle = load_oracle(Path(args.oracle), oracle_config)
 
-    sources = [open_dump(p).__enter__() for p in dump_paths]
+    km = _key_material_from_args(args)
+    sources = [open_dump(p, **km).__enter__() for p in dump_paths]
+    if sources:
+        _warn_tag_status(sources[0])
     try:
         result = run_nsweep(
             sources,
@@ -568,7 +628,8 @@ def _cmd_emit_plugin(args: argparse.Namespace) -> int:
     from core.dump_source import open_dump
     from engine.vol3_emit import emit_plugin_from_hits_file
 
-    with open_dump(Path(args.reference)) as source:
+    with open_dump(Path(args.reference), **_key_material_from_args(args)) as source:
+        _warn_tag_status(source)
         reference_data = source.read_all()
 
     out = emit_plugin_from_hits_file(
@@ -619,6 +680,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
         return 1
 
+    key_material = _key_material_from_args(args)
+
     try:
         if args.auto:
             result = auto_export_pattern(
@@ -628,6 +691,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 align=getattr(args, "align", False),
                 context=getattr(args, "context", 32),
                 min_static_ratio=args.min_static_ratio,
+                key_material=key_material,
             )
         else:
             if args.offset is None or args.length is None:
@@ -636,6 +700,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
+            if any(key_material.values()):
+                print(
+                    "memdiver: note — manual --offset/--length export reads raw "
+                    "file bytes; decryption flags apply only to --auto",
+                    file=sys.stderr,
+                )
             result = manual_export_pattern(
                 dump_paths,
                 offset=args.offset,
@@ -667,6 +737,41 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"Exported {result['format']} to {args.output}", file=sys.stderr)
     else:
         print(content)
+    return 0
+
+
+def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
+    """Generate a KEM keypair for encrypted-MSL recipients (spec §10.4).
+
+    Writes the public key (shared with producers) and the private key (used
+    later via ``--kem-key-file`` to decrypt). Hybrid keys are the
+    concatenation of the X25519 and ML-KEM-768 halves.
+    """
+    from msl.crypto import (MslCryptoError, kem_generate_keypair,
+                            kem_is_available)
+    from msl.enums import KeyEncap
+
+    mechanisms = {
+        "X25519": KeyEncap.X25519,
+        "ML-KEM-768": KeyEncap.ML_KEM_768,
+        "ML-KEM-1024": KeyEncap.ML_KEM_1024,
+        "X25519+ML-KEM-768": KeyEncap.X25519_ML_KEM_768,
+    }
+    mech = mechanisms[args.mechanism]
+    if not kem_is_available(mech):
+        print(f"memdiver: {args.mechanism} unavailable; install the post-quantum "
+              f"extra: pip install memdiver[crypto]", file=sys.stderr)
+        return 1
+    try:
+        public_key, private_key = kem_generate_keypair(mech)
+    except MslCryptoError as exc:
+        print(f"memdiver: {exc}", file=sys.stderr)
+        return 1
+    Path(args.public_out).write_bytes(public_key)
+    Path(args.private_out).write_bytes(private_key)
+    print(f"memdiver: wrote {args.public_out} ({len(public_key)}B public) and "
+          f"{args.private_out} ({len(private_key)}B private) for {args.mechanism}",
+          file=sys.stderr)
     return 0
 
 
@@ -983,7 +1088,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # app (legacy NiceGUI — bundled in base install)
     sub.add_parser("app", help="Launch legacy NiceGUI application")
     # consensus
-    cs = sub.add_parser("consensus", help="Build consensus matrix from dumps")
+    cs = sub.add_parser("consensus", help="Build consensus matrix from dumps",
+                        parents=[_decrypt_parent_parser()])
     cs.add_argument("dumps", nargs="+", help="Dump file paths or directories")
     cs.add_argument("--normalize", action="store_true", help="ASLR-aware normalization")
     cs.add_argument("--min-length", type=int, default=16,
@@ -1014,6 +1120,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ca = sub.add_parser(
         "consensus-add",
         help="Fold one dump into an existing incremental consensus session",
+        parents=[_decrypt_parent_parser()],
     )
     ca.add_argument("--state", required=True, help="Path to session state JSON")
     ca.add_argument("dump", help="Path to a .dump or .msl file")
@@ -1029,6 +1136,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sr = sub.add_parser(
         "search-reduce",
         help="Reduce candidate set: variance → alignment → entropy",
+        parents=[_decrypt_parent_parser()],
     )
     sr.add_argument("--state", required=True, help="Path to consensus state JSON")
     sr.add_argument("--reference-dump", required=True,
@@ -1046,6 +1154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     bf = sub.add_parser(
         "brute-force",
         help="Iterate candidates through a user oracle script",
+        parents=[_decrypt_parent_parser()],
     )
     bf.add_argument("--candidates", required=True, help="candidates.json from search-reduce")
     bf.add_argument("--dump", required=True, help="Reference dump file")
@@ -1064,6 +1173,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ns = sub.add_parser(
         "n-sweep",
         help="Sweep N=1..N_max; emit survivor-count curve + oracle hits",
+        parents=[_decrypt_parent_parser()],
     )
     ns.add_argument("--runs-dir", required=True, help="Directory containing run_* subdirs")
     ns.add_argument("--dump-glob", default="*.msl", help="Glob under each run")
@@ -1086,6 +1196,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ep = sub.add_parser(
         "emit-plugin",
         help="Emit a Volatility3 plugin from a brute-force hit neighborhood",
+        parents=[_decrypt_parent_parser()],
     )
     ep.add_argument("--hit", required=True, help="hits.json from brute-force")
     ep.add_argument("--reference", required=True, help="Reference dump file")
@@ -1100,7 +1211,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.add_argument("-o", "--output", required=True, help="Output .py file path")
     ep.add_argument("-v", "--verbose", action="store_true")
     # export
-    ex = sub.add_parser("export", help="Export pattern as YARA/JSON/Volatility3")
+    ex = sub.add_parser("export", help="Export pattern as YARA/JSON/Volatility3",
+                        parents=[_decrypt_parent_parser()])
     ex.add_argument("dumps", nargs="+", help="Dump file paths or directories")
     ex.add_argument("--offset", type=lambda x: int(x, 0), default=None,
                     help="Region offset (hex or decimal)")
@@ -1118,6 +1230,21 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Use alignment-filtered candidates for auto-detection")
     ex.add_argument("-o", "--output", help="Output file path")
     ex.add_argument("-v", "--verbose", action="store_true")
+    # gen-kem-key
+    gk = sub.add_parser(
+        "gen-kem-key",
+        help="Generate a KEM keypair for encrypted-MSL recipients (spec §10.4)",
+    )
+    gk.add_argument("--mechanism", required=True,
+                    choices=["X25519", "ML-KEM-768", "ML-KEM-1024",
+                             "X25519+ML-KEM-768"],
+                    help="Key encapsulation mechanism")
+    gk.add_argument("--public-out", required=True,
+                    help="Output path for the recipient public key")
+    gk.add_argument("--private-out", required=True,
+                    help="Output path for the recipient private key "
+                         "(use later via --kem-key-file)")
+    gk.add_argument("-v", "--verbose", action="store_true")
     # import
     im = sub.add_parser("import", help="Import raw .dump to .msl")
     im.add_argument("dump_file", help="Raw dump file path")
@@ -1192,6 +1319,7 @@ def main():
         "brute-force": _cmd_brute_force,
         "n-sweep": _cmd_n_sweep,
         "emit-plugin": _cmd_emit_plugin,
+        "gen-kem-key": _cmd_gen_kem_key,
     }
     handler = handlers.get(args.command)
     if handler is None:

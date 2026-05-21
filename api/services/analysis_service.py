@@ -111,6 +111,7 @@ def auto_export_pattern(
     align: bool = True,
     context: int = 32,
     min_static_ratio: float = 0.3,
+    key_material: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Run the full auto-export pipeline and return the export payload.
 
@@ -124,6 +125,9 @@ def auto_export_pattern(
             detected volatile region.
         min_static_ratio: Minimum ratio of static bytes required for a
             pattern to be emitted by ``PatternGenerator``.
+        key_material: Optional decryption kwargs (``key``/``passphrase``/
+            ``kem_private_key``) forwarded to ``open_dump`` so encrypted
+            ``.msl`` inputs can be read (spec §10).
 
     Returns:
         A dict with keys ``format``, ``content``, ``pattern`` and
@@ -158,7 +162,8 @@ def auto_export_pattern(
     from contextlib import ExitStack
 
     with ExitStack() as stack:
-        sources = [stack.enter_context(open_dump(p)) for p in paths]
+        sources = [stack.enter_context(open_dump(p, **(key_material or {})))
+                   for p in paths]
 
         cm = ConsensusVector()
         cm.build_from_sources(sources)

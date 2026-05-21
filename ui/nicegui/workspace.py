@@ -43,6 +43,26 @@ def _render_toolbar(state, mode_mgr):
         create_theme_toggle()
 
 
+_TAG_STATUS_COLORS = {"valid": "green", "corrupted": "red", "missing_key": "orange"}
+
+
+def _probe_tag_status(path: str):
+    """Best-effort AEAD tag-status string for a single .msl file (spec §10).
+
+    Returns the TagStatus value string, or ``None`` when the file is not an
+    MSL container or cannot be opened. Advisory only — never raises.
+    """
+    if not path or not path.endswith(".msl"):
+        return None
+    try:
+        from core.dump_source import open_dump
+        with open_dump(Path(path)) as src:
+            status = getattr(src, "tag_status", None)
+            return status.value if status is not None else None
+    except Exception:  # noqa: BLE001 - advisory signal only
+        return None
+
+
 def _render_left_panel(state):
     """Left navigation panel -- data tree and secrets list."""
     with ui.column().classes('w-full h-full p-2'):
@@ -55,6 +75,12 @@ def _render_left_panel(state):
                 ui.label(_('Protocol: {name} {version}').format(name=state.protocol_name, version=state.protocol_version)).classes('text-sm')
             if state.scenario:
                 ui.label(_('Scenario: {scenario}').format(scenario=state.scenario)).classes('text-sm')
+        tag_status = _probe_tag_status(state.single_file_path)
+        if tag_status and tag_status != "not_encrypted":
+            with ui.row().classes('items-center gap-1'):
+                ui.label(_('AEAD:')).classes('text-xs text-gray-400')
+                ui.badge(tag_status.replace("_", " ").upper(),
+                         color=_TAG_STATUS_COLORS.get(tag_status, "grey")).classes('text-xs')
 
 
 def _render_bottom_panel(state, mode_mgr):

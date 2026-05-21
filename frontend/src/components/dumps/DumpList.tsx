@@ -2,6 +2,8 @@ import { useDumpStore } from "../../stores/dump-store";
 import { useConsensusStore } from "../../stores/consensus-store";
 import { useAppStore } from "@/stores/app-store";
 import { AddDumpButton } from "./AddDumpButton";
+import { TagStatusBadge } from "./TagStatusBadge";
+import { TagStatusUnlock } from "./TagStatusUnlock";
 
 function formatSize(bytes: number): string {
   if (bytes === 0) return "--";
@@ -72,7 +74,11 @@ export function DumpList() {
                   >
                     {d.format}
                   </span>
+                  <TagStatusBadge status={d.tagStatus} />
                 </div>
+                {d.tagStatus === "missing_key" && (
+                  <TagStatusUnlock dumpId={d.id} />
+                )}
               </div>
 
               <label

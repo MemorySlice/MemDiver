@@ -17,7 +17,7 @@ import pytest
 from msl.enums import (BLOCK_HEADER_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
                        BlockType, PageState)
 from msl.reader import MslReader
-from msl.types import MslEncryptedError, MslParseError
+from msl.types import MslParseError
 from msl.writer import (CapBit, ConnectionTableEntry, HandleTableEntry,
                         ModuleEntrySpec, MslWriter, ProcessTableEntry)
 
@@ -87,16 +87,16 @@ def test_accept_unknown_minor_with_warning(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
-# §3.1 ENCRYPTED flag — reader rejects (writer does not emit)
+# §3.2 / §14.2(15) ENCRYPTED flag requires HeaderSize=128
 # ---------------------------------------------------------------------------
 
-def test_reject_encrypted_files(tmp_path):
-    """Spec §3.1 + §10: ENCRYPTED flag means full-container AEAD; we don't
-    decrypt, so reader raises MslEncryptedError per project policy."""
-    p = tmp_path / "encrypted.msl"
-    # Bit 2 = ENCRYPTED in HeaderFlag
-    p.write_bytes(_craft_header(flags=1 << 2))
-    with pytest.raises(MslEncryptedError):
+def test_reject_encrypted_with_wrong_header_size(tmp_path):
+    """Spec §3.2 + §14.2(15): an encrypted file MUST declare HeaderSize=128.
+    _craft_header emits HeaderSize=64, so a header with the ENCRYPTED flag
+    but the base 64-byte size is malformed and MUST be rejected."""
+    p = tmp_path / "encrypted_bad_hs.msl"
+    p.write_bytes(_craft_header(flags=1 << 2))  # bit 2 = ENCRYPTED, HeaderSize=64
+    with pytest.raises(MslParseError, match="HeaderSize=128"):
         with MslReader(p) as _:
             pass
 

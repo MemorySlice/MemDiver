@@ -6,6 +6,7 @@ export function AddDumpButton() {
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(false);
   const addDump = useDumpStore((s) => s.addDump);
+  const fetchTagStatus = useDumpStore((s) => s.fetchTagStatus);
 
   const handleAdd = async () => {
     const trimmed = path.trim();
@@ -15,7 +16,8 @@ export function AddDumpButton() {
     setLoading(true);
     try {
       const info = await getPathInfo(trimmed);
-      addDump({ path: trimmed, name, size: info.file_size ?? 0, format });
+      const id = addDump({ path: trimmed, name, size: info.file_size ?? 0, format });
+      if (format === "msl") void fetchTagStatus(id);
     } catch {
       addDump({ path: trimmed, name, size: 0, format });
     } finally {

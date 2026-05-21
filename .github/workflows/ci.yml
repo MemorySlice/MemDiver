@@ -29,6 +29,26 @@ jobs:
       - name: Run pytest
         run: python -m pytest -q
 
+  # Exercises the post-quantum KEM paths (ML-KEM / hybrid) which are gated
+  # behind the optional [crypto] extra and skipped in the main `test` job.
+  # liboqs-python builds the native liboqs C library via CMake at install
+  # time, so cmake/ninja are required. Kept separate so a liboqs build
+  # break can't mask core test failures.
+  test-crypto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install liboqs build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Install memdiver with dev + crypto extras
+        run: python -m pip install -e '.[dev,crypto]'
+      - name: Run post-quantum KEM tests
+        run: python -m pytest -q tests/test_msl_crypto.py tests/test_msl_encryption.py
+
   frontend-lint:
     runs-on: ubuntu-latest
     steps:

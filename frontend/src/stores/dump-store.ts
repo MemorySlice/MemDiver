@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { getTagStatus, probeTagStatusWithKey } from "@/api/client";
+import type { TagStatus } from "@/api/types";
 
 export interface DumpEntry {
   id: string;
@@ -7,6 +9,7 @@ export interface DumpEntry {
   size: number;
   format: "raw" | "msl";
   sameProcess: boolean;
+  tagStatus?: TagStatus;
 }
 
 interface DumpState {
@@ -25,6 +28,11 @@ interface DumpState {
   setViewMode: (mode: "single" | "comparison" | "overlay") => void;
   toggleAslrNormalize: () => void;
   toggleSameProcess: (id: string) => void;
+  fetchTagStatus: (id: string) => Promise<void>;
+  unlockTagStatus: (
+    id: string,
+    secret: { passphrase?: string; key_hex?: string; kem_key_hex?: string },
+  ) => Promise<TagStatus>;
   setSelectedDumps: (ids: string[]) => void;
   toggleDumpVisibility: (id: string) => void;
   clearAll: () => void;
@@ -83,6 +91,33 @@ export const useDumpStore = create<DumpState>((set, get) => ({
         d.id === id ? { ...d, sameProcess: !d.sameProcess } : d,
       ),
     })),
+
+  fetchTagStatus: async (id) => {
+    const dump = get().dumps.find((d) => d.id === id);
+    if (!dump || dump.format !== "msl") return;
+    try {
+      const { tag_status } = await getTagStatus(dump.path);
+      set((state) => ({
+        dumps: state.dumps.map((d) =>
+          d.id === id ? { ...d, tagStatus: tag_status } : d,
+        ),
+      }));
+    } catch {
+      // Tag status is advisory; leave undefined on failure.
+    }
+  },
+
+  unlockTagStatus: async (id, secret) => {
+    const dump = get().dumps.find((d) => d.id === id);
+    if (!dump) throw new Error("Dump not found");
+    const { tag_status } = await probeTagStatusWithKey(dump.path, secret);
+    set((state) => ({
+      dumps: state.dumps.map((d) =>
+        d.id === id ? { ...d, tagStatus: tag_status } : d,
+      ),
+    }));
+    return tag_status;
+  },
 
   setSelectedDumps: (ids) =>
     set({ selectedDumpIds: ids }),

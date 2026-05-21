@@ -96,7 +96,10 @@ class MslDumpSource:
     UI endpoints pass ``view="raw"`` to inspect the container.
     """
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *,
+                 key: "bytes | None" = None,
+                 passphrase: "bytes | None" = None,
+                 kem_private_key: "bytes | None" = None):
         self._path = path
         self._reader = None
         self._size: int = -1
@@ -104,6 +107,10 @@ class MslDumpSource:
         # caller (see borrow_reader).
         self._borrowed: bool = False
         self._raw_reader: "DumpReader | None" = None
+        # Key material for encrypted .msl files (spec §10); None for plaintext.
+        self._key = key
+        self._passphrase = passphrase
+        self._kem_private_key = kem_private_key
 
     @classmethod
     def borrow_reader(cls, path: Path, reader) -> "MslDumpSource":
@@ -174,9 +181,19 @@ class MslDumpSource:
 
     def open(self) -> None:
         from msl.reader import MslReader
-        self._reader = MslReader(self._path)
+        self._reader = MslReader(
+            self._path, key=self._key, passphrase=self._passphrase,
+            kem_private_key=self._kem_private_key,
+        )
         self._reader.open()
         self._size = -1
+
+    @property
+    def tag_status(self):
+        """AEAD tag-verification status of the underlying reader (spec §10).
+        TagStatus.NOT_ENCRYPTED for plaintext files."""
+        from msl.enums import TagStatus
+        return self._reader.tag_status if self._reader is not None else TagStatus.NOT_ENCRYPTED
 
     def close(self) -> None:
         if self._raw_reader is not None:
@@ -314,7 +331,10 @@ class MslDumpSource:
         from .msl_helpers import get_region_page_data
         return get_region_page_data(self._reader, region)
 
-def open_dump(path: Path) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource":  # noqa: F821
+def open_dump(path: Path, *,
+              key: "bytes | None" = None,
+              passphrase: "bytes | None" = None,
+              kem_private_key: "bytes | None" = None) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource":  # noqa: F821
     """Auto-detect dump format and return appropriate DumpSource.
 
     Dispatch order:
@@ -326,6 +346,9 @@ def open_dump(path: Path) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource |
       3. Regioned raw flavours by filename suffix (``.gdb_raw.bin`` /
          ``.lldb_raw.bin``), optionally resolved from a ``.maps`` path.
       4. Fallback: opaque :class:`RawDumpSource`.
+
+    Key material (key / passphrase / kem_private_key) is forwarded to
+    encrypted .msl containers (spec §10); it is ignored for other formats.
     """
     from msl.enums import FILE_MAGIC
     path = Path(path)
@@ -345,7 +368,8 @@ def open_dump(path: Path) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource |
         magic = b""
 
     if magic[:8] == FILE_MAGIC:
-        return MslDumpSource(path)
+        return MslDumpSource(path, key=key, passphrase=passphrase,
+                             kem_private_key=kem_private_key)
 
     # ELF core dump: \x7fELF magic + e_type == ET_CORE (4) at offset 16.
     if magic[:4] == b"\x7fELF" and len(magic) >= 18:

@@ -162,3 +162,85 @@ def test_missing_file_404(client, tmp_path):
     missing = tmp_path / "does_not_exist.msl"
     resp = client.get("/api/inspect/processes", params={"msl_path": str(missing)})
     assert resp.status_code == 404
+
+
+# -- AEAD tag-status endpoint (spec §10) --
+
+def test_tag_status_plaintext(client, msl_path):
+    resp = client.get("/api/inspect/tag-status", params={"msl_path": msl_path})
+    assert resp.status_code == 200
+    assert resp.json() == {"tag_status": "not_encrypted"}
+
+
+def test_tag_status_encrypted_missing_key(client, tmp_path):
+    import os
+    from msl.writer import MslEncryptionConfig, MslWriter
+    out = tmp_path / "enc.msl"
+    w = MslWriter(out, pid=7,
+                  encryption=MslEncryptionConfig(raw_key=os.urandom(32)))
+    w.add_memory_region(0x1000, b"\xAB" * 4096)
+    w.add_end_of_capture()
+    w.write()
+    resp = client.get("/api/inspect/tag-status", params={"msl_path": str(out)})
+    assert resp.status_code == 200
+    assert resp.json() == {"tag_status": "missing_key"}
+
+
+def test_tag_status_rejects_non_msl(client, tmp_path):
+    not_msl = tmp_path / "file.dump"
+    not_msl.write_bytes(b"not msl")
+    resp = client.get("/api/inspect/tag-status", params={"msl_path": str(not_msl)})
+    assert resp.status_code == 400
+
+
+def _write_passphrase_msl(path):
+    from msl.enums import KdfType, KeyEncap
+    from msl.writer import MslEncryptionConfig, MslWriter
+    cfg = MslEncryptionConfig(kdf_type=KdfType.ARGON2ID, key_encap=KeyEncap.NONE,
+                              passphrase=b"correct horse")
+    w = MslWriter(path, pid=7, encryption=cfg)
+    w.add_memory_region(0x1000, b"\xAB" * 4096)
+    w.add_end_of_capture()
+    w.write()
+
+
+def test_tag_status_keyed_valid(client, tmp_path):
+    import pytest as _pytest
+    from msl import crypto
+    from msl.enums import KdfType
+    if not crypto.kdf_is_available(KdfType.ARGON2ID):
+        _pytest.skip("argon2-cffi not installed")
+    out = tmp_path / "pass.msl"
+    _write_passphrase_msl(out)
+    resp = client.post("/api/inspect/tag-status",
+                       json={"msl_path": str(out), "passphrase": "correct horse"})
+    assert resp.status_code == 200
+    assert resp.json() == {"tag_status": "valid"}
+
+
+def test_tag_status_keyed_wrong_passphrase_corrupted(client, tmp_path):
+    import pytest as _pytest
+    from msl import crypto
+    from msl.enums import KdfType
+    if not crypto.kdf_is_available(KdfType.ARGON2ID):
+        _pytest.skip("argon2-cffi not installed")
+    out = tmp_path / "pass2.msl"
+    _write_passphrase_msl(out)
+    resp = client.post("/api/inspect/tag-status",
+                       json={"msl_path": str(out), "passphrase": "wrong"})
+    assert resp.status_code == 200
+    assert resp.json() == {"tag_status": "corrupted"}
+
+
+def test_tag_status_keyed_bad_hex_400(client, tmp_path):
+    out = tmp_path / "enc2.msl"
+    import os
+    from msl.writer import MslEncryptionConfig, MslWriter
+    w = MslWriter(out, pid=7,
+                  encryption=MslEncryptionConfig(raw_key=os.urandom(32)))
+    w.add_memory_region(0x1000, b"\xAB" * 4096)
+    w.add_end_of_capture()
+    w.write()
+    resp = client.post("/api/inspect/tag-status",
+                       json={"msl_path": str(out), "key_hex": "zzzz"})
+    assert resp.status_code == 400

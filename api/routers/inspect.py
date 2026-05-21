@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from api.dependencies import get_tool_session
 from core.dump_source import ViewMode
@@ -250,6 +251,18 @@ def _handle_type_name(value: int) -> str:
 from contextlib import contextmanager
 
 
+def _validate_msl_path(msl_path: str):
+    """Resolve an MSL path, raising HTTP 400/404 for bad suffix or missing file."""
+    from pathlib import Path
+
+    path = Path(msl_path)
+    if path.suffix != ".msl":
+        raise HTTPException(status_code=400, detail="Not a valid MSL file")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
+    return path
+
+
 @contextmanager
 def _open_msl(msl_path: str):
     """Validate MSL suffix and open via cached reader (shared helper).
@@ -259,20 +272,72 @@ def _open_msl(msl_path: str):
     manager's __enter__, we must wrap the whole yield — not just the
     cached_msl_reader() call.
     """
-    from pathlib import Path
-
     from api.services.reader_cache import cached_msl_reader
 
-    path = Path(msl_path)
-    if path.suffix != ".msl":
-        raise HTTPException(status_code=400, detail="Not a valid MSL file")
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
+    path = _validate_msl_path(msl_path)
     try:
         with cached_msl_reader(path) as reader:
             yield reader
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
+
+
+@router.get("/tag-status")
+def get_tag_status(
+    msl_path: str,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Report the AEAD tag-verification status of an MSL file (spec §10).
+
+    Returns one of ``not_encrypted`` / ``valid`` / ``corrupted`` /
+    ``missing_key``. This read-only path opens the file through the shared
+    path-keyed cache without key material, so encrypted files report
+    ``missing_key``; distinguishing ``valid`` from ``corrupted`` for an
+    encrypted file requires the keyed POST variant.
+    """
+    with _open_msl(msl_path) as reader:
+        return {"tag_status": reader.tag_status.value}
+
+
+class TagStatusUnlockRequest(BaseModel):
+    """Key material for a keyed AEAD tag-status probe. All secrets optional."""
+    msl_path: str
+    passphrase: str | None = None
+    key_hex: str | None = None
+    kem_key_hex: str | None = None
+
+
+@router.post("/tag-status")
+def probe_tag_status_with_key(
+    body: TagStatusUnlockRequest,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Probe AEAD tag status with caller-supplied key material (spec §10).
+
+    Opens an UNCACHED reader with the supplied key/passphrase/KEM private
+    key, reads the verification outcome, and closes immediately. Key
+    material is never cached or logged. A wrong key surfaces as
+    ``corrupted`` rather than an error.
+    """
+    from msl.enums import TagStatus
+    from msl.reader import MslReader
+    from msl.types import MslAuthError, MslCryptoError
+
+    path = _validate_msl_path(body.msl_path)
+
+    try:
+        key = bytes.fromhex(body.key_hex) if body.key_hex else None
+        kem_private = bytes.fromhex(body.kem_key_hex) if body.kem_key_hex else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key material encoding")
+    passphrase = body.passphrase.encode("utf-8") if body.passphrase else None
+
+    try:
+        with MslReader(path, key=key, passphrase=passphrase,
+                       kem_private_key=kem_private) as reader:
+            return {"tag_status": reader.tag_status.value}
+    except (MslAuthError, MslCryptoError):
+        return {"tag_status": TagStatus.CORRUPTED.value}
 
 
 def _format_addr(family: int, raw: bytes) -> str:

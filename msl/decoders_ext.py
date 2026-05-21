@@ -33,8 +33,10 @@ import struct
 from dataclasses import dataclass
 from typing import List
 
-from .enums import BlockType
-from .types import MslBlockHeader, MslGenericBlock
+from .enums import BlockType, POINTER_GRAPH_INTEGRITY_FLAG
+from .hashing import hash_bytes
+from .types import (MslBlockHeader, MslGenericBlock, MslPointerGraph,
+                    MslPointerGraphEdge, MslPointerGraphNode)
 
 logger = logging.getLogger("memdiver.msl.decoders_ext")
 
@@ -273,6 +275,108 @@ def decode_system_context(
         )
     except Exception:
         return decode_generic(hdr, payload, byte_order)
+
+# -- POINTER_GRAPH appendix decoder (0x1003) --
+
+
+def decode_pointer_graph(
+    hdr: MslBlockHeader, payload: bytes, byte_order: str,
+) -> "MslPointerGraph | MslGenericBlock":
+    """Decode a POINTER_GRAPH appendix payload (type 0x1003).
+
+    Layout (see docs/file_formats/msl_v1_0_0.md):
+      Header (16 bytes): node_count(u32), edge_count(u32), flags(u32),
+                         reserved(u32)
+      Nodes (variable): each is 12 bytes header + pad8(label_len) bytes
+      Edges (variable): each is 12 bytes header + pad8(metadata_len) bytes
+      Trailer (optional, 32 bytes): BLAKE3 of (header + nodes + edges)
+        when (flags & POINTER_GRAPH_INTEGRITY_FLAG) is set
+    """
+    try:
+        bo = byte_order
+        node_count, edge_count, pg_flags = struct.unpack_from(
+            f"{bo}III", payload, 0,
+        )
+        # +0x0C reserved u32 ignored
+        offset = 0x10
+
+        nodes: List[MslPointerGraphNode] = []
+        for idx in range(node_count):
+            if offset + 0x0C > len(payload):
+                raise ValueError(f"truncated node {idx}")
+            node_kind = payload[offset]
+            # +0x01 reserved u8
+            label_len = struct.unpack_from(f"{bo}H", payload, offset + 0x02)[0]
+            value = struct.unpack_from(f"{bo}Q", payload, offset + 0x04)[0]
+            label_off = offset + 0x0C
+            label_adv = _pad8(label_len) if label_len > 0 else 0
+            if label_off + label_adv > len(payload):
+                raise ValueError(f"truncated node {idx} label")
+            label = _read_padded_str(payload, label_off, label_len)
+            nodes.append(MslPointerGraphNode(
+                node_kind=node_kind, value=value, label=label,
+            ))
+            offset = label_off + label_adv
+
+        edges: List[MslPointerGraphEdge] = []
+        for idx in range(edge_count):
+            if offset + 0x0C > len(payload):
+                raise ValueError(f"truncated edge {idx}")
+            src_idx, dst_idx = struct.unpack_from(f"{bo}II", payload, offset)
+            edge_kind = payload[offset + 0x08]
+            # +0x09 reserved u8
+            metadata_len = struct.unpack_from(
+                f"{bo}H", payload, offset + 0x0A,
+            )[0]
+            meta_off = offset + 0x0C
+            meta_adv = _pad8(metadata_len) if metadata_len > 0 else 0
+            if meta_off + meta_adv > len(payload):
+                raise ValueError(f"truncated edge {idx} metadata")
+            metadata = _read_padded_str(payload, meta_off, metadata_len)
+            edges.append(MslPointerGraphEdge(
+                src_idx=src_idx, dst_idx=dst_idx,
+                edge_kind=edge_kind, metadata=metadata,
+            ))
+            offset = meta_off + meta_adv
+
+        appendix_hash = None
+        if pg_flags & POINTER_GRAPH_INTEGRITY_FLAG:
+            if offset + 32 > len(payload):
+                raise ValueError("truncated appendix integrity trailer")
+            appendix_hash = bytes(payload[offset:offset + 32])
+            # Spec: trailer is BLAKE3 over header + nodes + edges (everything
+            # before the trailer). Bubble the stored hash up; let the caller
+            # decide whether to verify it.
+
+        return MslPointerGraph(
+            block_header=hdr,
+            nodes=tuple(nodes),
+            edges=tuple(edges),
+            appendix_hash=appendix_hash,
+        )
+    except Exception as exc:
+        logger.warning("Falling back to generic for POINTER_GRAPH: %s", exc)
+        return decode_generic(hdr, payload, byte_order)
+
+
+def verify_pointer_graph_integrity(graph: "MslPointerGraph",
+                                   raw_payload: bytes) -> bool:
+    """Verify a POINTER_GRAPH appendix's self-integrity trailer.
+
+    Returns True when:
+      - the appendix did not carry a trailer (no claim to verify), OR
+      - the stored BLAKE3 matches a fresh hash of (header + nodes + edges).
+    Returns False only when a trailer was present and the hash doesn't
+    match. Caller supplies the raw on-disk payload (not the decoded
+    dataclass) so the verifier can recompute over the exact same bytes
+    the producer hashed.
+    """
+    if graph.appendix_hash is None:
+        return True
+    if len(raw_payload) < 32:
+        return False
+    return hash_bytes(raw_payload[:-32]) == graph.appendix_hash
+
 
 # -- Collection helper --
 

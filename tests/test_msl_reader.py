@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from msl.enums import BlockType, Endianness, FILE_MAGIC
 from msl.reader import MslReader
-from msl.types import MslEncryptedError, MslParseError
+from msl.types import MslParseError
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -111,18 +111,22 @@ def test_bad_magic_raises(tmp_path):
         MslReader(p).open()
 
 
-def test_encrypted_raises(tmp_path):
+def test_encrypted_without_key_reports_missing_key(tmp_path):
+    """Opening an encrypted file without a key no longer raises (Phase C):
+    it sets tag_status=MISSING_KEY and exposes no plaintext blocks."""
+    from msl.enums import TagStatus
     data = bytearray(generate_msl_file())
     # Set Encrypted flag (bit 2) in Flags at offset 0x0C
     flags = struct.unpack_from("<I", data, 0x0C)[0]
     flags |= 0x04  # ENCRYPTED
     struct.pack_into("<I", data, 0x0C, flags)
-    # Set HeaderSize to 128
+    # Set HeaderSize to 128 (spec §3.2 requires this when encrypted)
     data[9] = 128
     p = tmp_path / "encrypted.msl"
     p.write_bytes(bytes(data))
-    with pytest.raises(MslEncryptedError, match="Encrypted"):
-        MslReader(p).open()
+    with MslReader(p) as reader:
+        assert reader.tag_status == TagStatus.MISSING_KEY
+        assert list(reader.iter_blocks()) == []  # no plaintext exposed
 
 
 def test_too_small_raises(tmp_path):

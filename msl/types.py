@@ -5,7 +5,7 @@ Dataclasses for parsed MSL file structures. Enum definitions are in enums.py.
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 from uuid import UUID
 
 from .enums import (
@@ -29,11 +29,17 @@ class MslEncryptedError(ValueError):
 class MslParseError(ValueError):
     """Raised on MSL format parsing errors."""
 
+class MslAuthError(ValueError):
+    """Raised when AEAD tag verification fails — wrong key or tampering (spec §10)."""
+
+class MslCryptoError(ValueError):
+    """Raised when a cipher/KDF/KEM is unsupported or its backing library is absent."""
+
 # -- File and Block Headers --
 
 @dataclass(frozen=True)
 class MslFileHeader:
-    """Parsed MSL file header (spec Table 2, 64 or 128 bytes)."""
+    """Parsed MSL file header (spec Table 3, 64 or 128 bytes)."""
     endianness: int
     header_size: int
     version_major: int
@@ -46,6 +52,8 @@ class MslFileHeader:
     arch_type: int
     pid: int
     clock_source: int
+    block_count: int = 0   # 0 = unknown/streaming (spec §3.1)
+    hash_algo: int = 0     # integrity hash selector (spec Table 12); 0 = BLAKE3
 
     @property
     def imported(self) -> bool:
@@ -58,6 +66,20 @@ class MslFileHeader:
     @property
     def encrypted(self) -> bool:
         return bool(self.flags & HeaderFlag.ENCRYPTED)
+
+
+@dataclass(frozen=True)
+class MslEncryptionParams:
+    """Parsed encryption extension header (spec Table 5, bytes 0x40-0x7F)."""
+    enc_algo: int       # EncAlgo
+    kdf_type: int       # KdfType
+    key_encap: int      # KeyEncap
+    kdf_time: int
+    kdf_memory: int
+    kdf_lanes: int
+    kem_ct_len: int
+    nonce: bytes        # 24-byte Nonce field (cipher uses a prefix)
+    kdf_salt: bytes     # 16-byte KDF salt
 
 
 @dataclass(frozen=True)
@@ -385,3 +407,56 @@ class MslGenericBlock:
     """Fallback container for block types without a dedicated decoder."""
     block_header: MslBlockHeader
     payload: bytes
+
+
+# -- POINTER_GRAPH appendix (0x1003) — MemDiver extension --
+
+@dataclass(frozen=True)
+class MslPointerGraphNode:
+    """Single node in a POINTER_GRAPH appendix.
+
+    `value` holds either a virtual address, a file/region offset, or a
+    symbol identifier depending on `node_kind` (see enums.NodeKind).
+    `label` is an optional UTF-8 name (e.g., symbol name).
+    """
+    node_kind: int   # NodeKind value
+    value: int       # interpretation depends on node_kind
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class MslPointerGraphEdge:
+    """Single directed edge between two nodes in a POINTER_GRAPH appendix.
+
+    `src_idx` / `dst_idx` index into the parent graph's `nodes` tuple.
+    `metadata` is an optional UTF-8 free-form annotation (call count,
+    confidence label, etc.) — readers may ignore unknown formats.
+    """
+    src_idx: int
+    dst_idx: int
+    edge_kind: int   # EdgeKind value
+    metadata: str = ""
+
+
+@dataclass(frozen=True)
+class MslPointerGraph:
+    """POINTER_GRAPH appendix payload (type 0x1003).
+
+    A plaintext appendix block emitted *after* End-of-Capture (and after
+    the AEAD Tag for encrypted containers). Lives outside the BLAKE3
+    block chain (block header `prev_hash` is zero). The appendix carries
+    its own optional self-integrity BLAKE3 (`appendix_hash`), independent
+    of the main container's chain.
+
+    A reader that doesn't recognize block type 0x1003 stops at EoC and
+    safely ignores the appendix — fully backward compatible.
+    """
+    block_header: MslBlockHeader
+    nodes: Tuple[MslPointerGraphNode, ...] = ()
+    edges: Tuple[MslPointerGraphEdge, ...] = ()
+    # Trailing 32-byte BLAKE3 over (header + nodes + edges) when the
+    # producer set POINTER_GRAPH_INTEGRITY_FLAG; None when the producer
+    # opted out of emitting integrity. `None` is "no claim made", NOT
+    # "corruption detected" — to actually verify a present hash, call
+    # decoders_ext.verify_pointer_graph_integrity(graph, raw_payload).
+    appendix_hash: Optional[bytes] = None

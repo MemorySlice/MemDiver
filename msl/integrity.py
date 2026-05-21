@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .enums import BLOCK_HEADER_SIZE, BLOCK_MAGIC
+from .enums import BLOCK_HEADER_SIZE, BLOCK_MAGIC, BlockType
 from .hashing import hash_bytes
 from .types import MslParseError
 
@@ -23,18 +23,27 @@ class IntegrityReport:
 def verify_chain(reader) -> IntegrityReport:
     """Verify the block chain integrity of an open MslReader.
 
-    Walks all blocks, computing blake3 hash of each block's raw bytes
-    and comparing to the next block's prev_hash field.
+    Walks all in-chain blocks, computing blake3 hash of each block's raw
+    bytes and comparing to the next block's prev_hash field. Stops after
+    End-of-Capture: anything beyond EoC is a MemDiver appendix
+    (POINTER_GRAPH 0x1003) that lives outside the chain by design and
+    carries its own optional self-integrity hash.
     """
     report = IntegrityReport()
-    buf = reader._mmap
+    buf = reader._buf
     if buf is None:
         report.valid = False
-        report.errors.append("Reader not opened")
+        report.errors.append("Reader not opened (or encrypted without a key)")
         return report
 
+    # Encrypted files (spec §14.2 rule 16): skip PrevHash verification — all
+    # PrevHash fields are zero by mandate (§10.6) and integrity is provided by
+    # the AEAD tag, already verified at open() (reader.tag_status). We still
+    # walk the decrypted blocks to count them.
+    skip_prev_hash = bool(reader.file_header.encrypted)
+
     prev_hash = b'\x00' * 32  # first block has zero prev_hash
-    offset = reader.file_header.header_size
+    offset = reader._buf_base
     file_size = len(buf)
 
     while offset + BLOCK_HEADER_SIZE <= file_size:
@@ -54,8 +63,8 @@ def verify_chain(reader) -> IntegrityReport:
             report.broken_at = offset
             break
 
-        # Check prev_hash matches expected
-        if hdr.prev_hash != prev_hash:
+        # Check prev_hash matches expected (plaintext files only)
+        if not skip_prev_hash and hdr.prev_hash != prev_hash:
             report.valid = False
             report.errors.append(
                 f"Hash mismatch at block 0x{offset:X}: "
@@ -68,5 +77,7 @@ def verify_chain(reader) -> IntegrityReport:
         prev_hash = hash_bytes(bytes(buf[offset:end]))
         report.block_count += 1
         offset = end
+        if hdr.block_type == BlockType.END_OF_CAPTURE:
+            break
 
     return report

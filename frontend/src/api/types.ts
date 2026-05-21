@@ -261,6 +261,9 @@ export interface FormatSuggestion {
   magic_ok: boolean;
 }
 
+// --- AEAD tag status (spec §10) ---
+export type TagStatus = "not_encrypted" | "valid" | "corrupted" | "missing_key";
+
 // --- Auto Export ---
 export interface AutoExportResult {
   format: string;

@@ -19,6 +19,7 @@ import type {
   VerifyKeyResult,
   AutoExportResult,
   FormatSuggestion,
+  TagStatus,
 } from "./types";
 
 const BASE = ""; // relative -- Vite proxy handles /api/* during dev
@@ -150,6 +151,20 @@ export const listModules = (mslPath: string) =>
   request<Array<{ path: string; base_addr: number; size: number; version: string }>>(
     `/api/inspect/modules?msl_path=${encodeURIComponent(mslPath)}`,
   );
+
+export const getTagStatus = (mslPath: string) =>
+  request<{ tag_status: TagStatus }>(
+    `/api/inspect/tag-status?msl_path=${encodeURIComponent(mslPath)}`,
+  );
+
+export const probeTagStatusWithKey = (
+  mslPath: string,
+  secret: { passphrase?: string; key_hex?: string; kem_key_hex?: string },
+) =>
+  request<{ tag_status: TagStatus }>("/api/inspect/tag-status", {
+    method: "POST",
+    body: JSON.stringify({ msl_path: mslPath, ...secret }),
+  });
 
 // Structure inspection
 export const autoDetectStructure = (dumpPath: string, offset: number, protocol?: string) =>
