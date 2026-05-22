@@ -4,6 +4,8 @@ import base64
 import logging
 from pathlib import Path
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.components.header")
 
 _LOGO_RELATIVE = "misc/memdiver_icon_final.svg"
@@ -60,7 +62,7 @@ def render_header(mo):
         f'{logo_html}'
         f'<div>'
         f'<div style="{title_style}">MemDiver</div>'
-        f'<div style="{subtitle_style}">Memory Dump Analysis Platform</div>'
+        f'<div style="{subtitle_style}">{_("Memory Dump Analysis Platform")}</div>'
         f'</div>'
         f'</div>'
     )

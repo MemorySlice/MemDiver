@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.components.setup_wizard")
 
 
@@ -55,12 +57,12 @@ def _run_install() -> tuple[bool, str]:
             timeout=120,
         )
         if result.returncode == 0:
-            return True, "Installation successful! Please restart MemDiver to activate."
-        return False, f"Installation failed:\n{result.stderr[-500:]}"
+            return True, _("Installation successful! Please restart MemDiver to activate.")
+        return False, _("Installation failed:\n{error}").format(error=result.stderr[-500:])
     except subprocess.TimeoutExpired:
-        return False, "Installation timed out after 120 seconds."
+        return False, _("Installation timed out after 120 seconds.")
     except Exception as e:
-        return False, f"Installation error: {e}"
+        return False, _("Installation error: {error}").format(error=e)
 
 
 def render_setup_wizard(mo, install_btn, skip_btn):
@@ -87,7 +89,7 @@ def render_setup_wizard(mo, install_btn, skip_btn):
         if success:
             return mo.callout(
                 mo.vstack([
-                    mo.md("**Analysis history is ready!**"),
+                    mo.md(_("**Analysis history is ready!**")),
                     mo.md(message),
                 ]),
                 kind="success",
@@ -95,9 +97,9 @@ def render_setup_wizard(mo, install_btn, skip_btn):
         else:
             return mo.callout(
                 mo.vstack([
-                    mo.md("**Installation issue**"),
+                    mo.md(_("**Installation issue**")),
                     mo.md(message),
-                    mo.md(f"You can also install manually: `{hint}`"),
+                    mo.md(_("You can also install manually: `{hint}`").format(hint=hint)),
                 ]),
                 kind="danger",
             )
@@ -111,16 +113,18 @@ def render_setup_wizard(mo, install_btn, skip_btn):
 
     # Default: show the wizard
     content = mo.vstack([
-        mo.md("**Unlock persistent analysis history**"),
+        mo.md(_("**Unlock persistent analysis history**")),
         mo.md(
-            "MemDiver can save your analysis results across sessions using a "
-            "local database. This requires two optional packages (DuckDB + "
-            "Ibis) — a one-time install, no configuration needed."
+            _(
+                "MemDiver can save your analysis results across sessions using a "
+                "local database. This requires two optional packages (DuckDB + "
+                "Ibis) — a one-time install, no configuration needed."
+            )
         ),
         mo.hstack(
             [
                 install_btn,
-                mo.md(f"&nbsp; or install manually: `{hint}`"),
+                mo.md(_("&nbsp; or install manually: `{hint}`").format(hint=hint)),
             ],
             justify="start",
             gap=0.5,
@@ -128,7 +132,7 @@ def render_setup_wizard(mo, install_btn, skip_btn):
         mo.hstack(
             [
                 skip_btn,
-                mo.md("&nbsp; _(you can enable this later in settings)_"),
+                mo.md(_("&nbsp; _(you can enable this later in settings)_")),
             ],
             justify="start",
             gap=0.5,
@@ -146,13 +150,13 @@ def create_wizard_buttons(mo):
     install_btn = mo.ui.button(
         value=0,
         on_click=lambda v: v + 1,
-        label="Install now",
+        label=_("Install now"),
         kind="success",
     )
     skip_btn = mo.ui.button(
         value=0,
         on_click=lambda v: v + 1,
-        label="Skip for now",
+        label=_("Skip for now"),
         kind="warn",
     )
     return install_btn, skip_btn

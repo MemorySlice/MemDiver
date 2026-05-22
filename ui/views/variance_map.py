@@ -3,6 +3,8 @@
 import logging
 from typing import Any, List, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.variance_map")
 
 
@@ -10,7 +12,7 @@ def render_variance_map(
     mo,
     variance_data: List[float],
     classifications: Optional[List[str]] = None,
-    title: str = "Cross-Run Variance Map",
+    title: str = _("Cross-Run Variance Map"),
     step: int = 1,
 ) -> Any:
     """Render variance map using Plotly.
@@ -28,10 +30,10 @@ def render_variance_map(
     try:
         import plotly.graph_objects as go
     except ImportError:
-        return mo.md("*Plotly not available for variance map.*")
+        return mo.md(_("*Plotly not available for variance map.*"))
 
     if not variance_data:
-        return mo.md("*No variance data to display.*")
+        return mo.md(_("*No variance data to display.*"))
 
     # Subsample for performance
     offsets = list(range(0, len(variance_data), step))
@@ -55,19 +57,19 @@ def render_variance_map(
     fig.add_trace(go.Bar(
         x=offsets, y=values,
         marker_color=colors or "#569cd6",
-        name="Variance",
+        name=_("Variance"),
     ))
 
     # Classification threshold lines
     fig.add_hline(y=100, line_dash="dot", line_color=cs.VARIANCE_STRUCTURAL,
-                  annotation_text="Structural")
+                  annotation_text=_("Structural"))
     fig.add_hline(y=3000, line_dash="dot", line_color=cs.VARIANCE_POINTER,
-                  annotation_text="Pointer")
+                  annotation_text=_("Pointer"))
 
     fig.update_layout(
         title=title,
-        xaxis_title="Offset (bytes)",
-        yaxis_title="Variance",
+        xaxis_title=_("Offset (bytes)"),
+        yaxis_title=_("Variance"),
         yaxis_type="log",
         template="plotly_dark",
         paper_bgcolor="#1e1e1e",

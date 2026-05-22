@@ -3,6 +3,8 @@
 import asyncio
 from typing import Optional
 
+from ui.locales import _
+
 
 async def with_progress(output, message: str, coro):
     """Run a coroutine while showing a progress spinner.
@@ -25,8 +27,10 @@ async def with_progress(output, message: str, coro):
         return await coro
 
 
-def spinner_html(message: str = "Loading...") -> str:
+def spinner_html(message: str = None) -> str:
     """Generate HTML for a loading spinner."""
+    if message is None:
+        message = _("Loading...")
     return (
         f'<div style="display:flex; align-items:center; gap:8px; padding:12px;">'
         f'<div style="width:20px; height:20px; border:2px solid #569cd6; '

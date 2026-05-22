@@ -3,6 +3,8 @@
 import logging
 from typing import Any, List, Optional, Tuple
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.entropy_chart")
 
 
@@ -11,7 +13,7 @@ def render_entropy_chart(
     profile: List[Tuple[int, float]],
     key_offsets: Optional[List[Tuple[int, int, str]]] = None,
     threshold: float = 7.5,
-    title: str = "Entropy Profile",
+    title: str = _("Entropy Profile"),
 ) -> Any:
     """Render an interactive entropy profile chart using Plotly.
 
@@ -28,10 +30,10 @@ def render_entropy_chart(
     try:
         import plotly.graph_objects as go
     except ImportError:
-        return mo.md("*Plotly not available for entropy chart.*")
+        return mo.md(_("*Plotly not available for entropy chart.*"))
 
     if not profile:
-        return mo.md("*No entropy data to display.*")
+        return mo.md(_("*No entropy data to display.*"))
 
     offsets = [p[0] for p in profile]
     entropies = [p[1] for p in profile]
@@ -42,7 +44,7 @@ def render_entropy_chart(
     fig.add_trace(go.Scatter(
         x=offsets, y=entropies,
         mode="lines",
-        name="Entropy",
+        name=_("Entropy"),
         line=dict(color="#569cd6", width=1),
         fill="tozeroy",
         fillcolor="rgba(86, 156, 214, 0.1)",
@@ -53,7 +55,7 @@ def render_entropy_chart(
         y=threshold,
         line_dash="dash",
         line_color="#f44747",
-        annotation_text=f"Threshold ({threshold})",
+        annotation_text=_("Threshold ({threshold})").format(threshold=threshold),
     )
 
     # Key region markers
@@ -69,8 +71,8 @@ def render_entropy_chart(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Offset (bytes)",
-        yaxis_title="Entropy (bits/byte)",
+        xaxis_title=_("Offset (bytes)"),
+        yaxis_title=_("Entropy (bits/byte)"),
         yaxis_range=[0, 8.5],
         template="plotly_dark",
         paper_bgcolor="#1e1e1e",

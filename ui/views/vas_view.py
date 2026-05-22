@@ -5,28 +5,29 @@ from typing import Any, Dict, List
 
 from ui.components import color_scheme as _cs
 from ui.components.html_builder import format_size as _format_size
+from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.vas_view")
 
 # RegionType enum value -> (label, color)
 _REGION_COLORS: Dict[int, tuple] = {
-    0x00: ("Unknown", _cs.TEXT_SECONDARY),
-    0x01: ("Heap", _cs.VAS_HEAP),
-    0x02: ("Stack", _cs.VAS_STACK),
-    0x03: ("Image", _cs.VAS_IMAGE),
-    0x04: ("Mapped", _cs.VAS_MAPPED),
-    0x05: ("Anonymous", _cs.VAS_ANONYMOUS),
-    0x06: ("Shared", _cs.VAS_SHARED),
-    0xFF: ("Other", _cs.TEXT_SECONDARY),
+    0x00: (_("Unknown"), _cs.TEXT_SECONDARY),
+    0x01: (_("Heap"), _cs.VAS_HEAP),
+    0x02: (_("Stack"), _cs.VAS_STACK),
+    0x03: (_("Image"), _cs.VAS_IMAGE),
+    0x04: (_("Mapped"), _cs.VAS_MAPPED),
+    0x05: (_("Anonymous"), _cs.VAS_ANONYMOUS),
+    0x06: (_("Shared"), _cs.VAS_SHARED),
+    0xFF: (_("Other"), _cs.TEXT_SECONDARY),
 }
 
 
 def _region_label(region_type: int) -> str:
-    return _REGION_COLORS.get(region_type, ("Unknown", "#808080"))[0]
+    return _REGION_COLORS.get(region_type, (_("Unknown"), "#808080"))[0]
 
 
 def _region_color(region_type: int) -> str:
-    return _REGION_COLORS.get(region_type, ("Unknown", "#808080"))[1]
+    return _REGION_COLORS.get(region_type, (_("Unknown"), "#808080"))[1]
 
 
 def _protection_str(prot: int) -> str:
@@ -59,12 +60,12 @@ def render_vas_map(mo, vas_entries, regions=None) -> Any:
         Plotly figure wrapped in mo.ui.plotly, or fallback message.
     """
     if not vas_entries:
-        return mo.md("*No VAS map data available.*")
+        return mo.md(_("*No VAS map data available.*"))
 
     try:
         import plotly.graph_objects as go
     except ImportError:
-        return mo.md("*Plotly required for VAS map visualization.*")
+        return mo.md(_("*Plotly required for VAS map visualization.*"))
 
     if regions is None:
         regions = []
@@ -83,13 +84,23 @@ def render_vas_map(mo, vas_entries, regions=None) -> Any:
         labels.append(f"0x{entry.base_addr:X} [{rtype}]")
         sizes.append(entry.region_size)
         colors.append(color)
+        status = _("Captured") if captured else _("Not captured")
         hovers.append(
-            f"Base: 0x{entry.base_addr:X}<br>"
-            f"Size: {_format_size(entry.region_size)}<br>"
-            f"Type: {rtype}<br>"
-            f"Protection: {prot}<br>"
-            f"Path: {entry.mapped_path or '—'}<br>"
-            f"Status: {'Captured' if captured else 'Not captured'}"
+            _(
+                "Base: 0x{base:X}<br>"
+                "Size: {size}<br>"
+                "Type: {rtype}<br>"
+                "Protection: {prot}<br>"
+                "Path: {path}<br>"
+                "Status: {status}"
+            ).format(
+                base=entry.base_addr,
+                size=_format_size(entry.region_size),
+                rtype=rtype,
+                prot=prot,
+                path=entry.mapped_path or "—",
+                status=status,
+            )
         )
 
     fig = go.Figure(go.Bar(
@@ -97,8 +108,8 @@ def render_vas_map(mo, vas_entries, regions=None) -> Any:
         marker_color=colors, hovertext=hovers, hoverinfo="text",
     ))
     fig.update_layout(
-        title="Virtual Address Space Layout",
-        xaxis_title="Region Size (bytes)",
+        title=_("Virtual Address Space Layout"),
+        xaxis_title=_("Region Size (bytes)"),
         yaxis_title="",
         template="plotly_dark",
         paper_bgcolor="#1e1e1e",
@@ -125,7 +136,7 @@ def render_vas_table(mo, vas_entries, regions=None) -> Any:
     from ui.components import color_scheme as cs
 
     if not vas_entries:
-        return mo.md("*No VAS map data available.*")
+        return mo.md(_("*No VAS map data available.*"))
 
     if regions is None:
         regions = []
@@ -134,13 +145,13 @@ def render_vas_table(mo, vas_entries, regions=None) -> Any:
     th = f'padding:4px 8px;color:{cs.TEXT_SECONDARY};'
     header = (
         f'<tr>'
-        f'<th style="{th}text-align:left;">Base Address</th>'
-        f'<th style="{th}text-align:left;">End Address</th>'
-        f'<th style="{th}text-align:right;">Size</th>'
-        f'<th style="{th}text-align:center;">Type</th>'
-        f'<th style="{th}text-align:center;">Prot</th>'
-        f'<th style="{th}text-align:left;">Mapped Path</th>'
-        f'<th style="{th}text-align:center;">Captured</th>'
+        f'<th style="{th}text-align:left;">{_("Base Address")}</th>'
+        f'<th style="{th}text-align:left;">{_("End Address")}</th>'
+        f'<th style="{th}text-align:right;">{_("Size")}</th>'
+        f'<th style="{th}text-align:center;">{_("Type")}</th>'
+        f'<th style="{th}text-align:center;">{_("Prot")}</th>'
+        f'<th style="{th}text-align:left;">{_("Mapped Path")}</th>'
+        f'<th style="{th}text-align:center;">{_("Captured")}</th>'
         f'</tr>'
     )
 
@@ -176,7 +187,7 @@ def render_vas_table(mo, vas_entries, regions=None) -> Any:
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">VAS Map Details</div>'
+        f'<div class="memdiver-header">{_("VAS Map Details")}</div>'
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead>{header}</thead>'
         f'<tbody>{"".join(rows)}</tbody>'

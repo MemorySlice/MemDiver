@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.heatmap")
 
 
@@ -29,7 +31,7 @@ def render_heatmap(
     from core.display_labels import get_short_label
 
     if not libraries or not secret_types:
-        return mo.md("*No data for heatmap.*")
+        return mo.md(_("*No data for heatmap.*"))
 
     rows_html = []
     for lib in libraries:
@@ -57,14 +59,14 @@ def render_heatmap(
         for st in secret_types
     ]
     header = (
-        f'<tr><th style="padding:6px 10px;color:{cs.TEXT_SECONDARY};">Library</th>'
+        f'<tr><th style="padding:6px 10px;color:{cs.TEXT_SECONDARY};">{_("Library")}</th>'
         + "".join(header_cells) + "</tr>"
     )
 
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">Key Presence Heatmap</div>'
+        f'<div class="memdiver-header">{_("Key Presence Heatmap")}</div>'
         f'<table style="border-collapse:collapse;width:100%;">'
         f'<thead>{header}</thead>'
         f'<tbody>{"".join(rows_html)}</tbody>'

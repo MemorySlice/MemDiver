@@ -3,6 +3,8 @@
 import logging
 from typing import Any, List, Tuple
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.controls.selector")
 
 
@@ -15,7 +17,7 @@ def create_protocol_dropdown(mo, dataset_info) -> Any:
     return mo.ui.dropdown(
         options=protocols,
         value=protocols[0] if protocols else "TLS",
-        label="Protocol",
+        label=_("Protocol"),
     )
 
 
@@ -49,7 +51,7 @@ def create_selector_controls(
     version_dropdown = mo.ui.dropdown(
         options=versions or ["13"],
         value=versions[0] if versions else "13",
-        label="Protocol Version",
+        label=_("Protocol Version"),
     )
     return (version_dropdown,)
 
@@ -73,7 +75,7 @@ def create_scenario_dropdown(mo, dataset_info, protocol_version: str):
     return mo.ui.dropdown(
         options=scenarios or ["default"],
         value=scenarios[0] if scenarios else "default",
-        label="Scenario",
+        label=_("Scenario"),
     )
 
 
@@ -103,7 +105,7 @@ def create_library_controls(
 
     library_select = mo.ui.multiselect(
         options=libs,
-        label="Libraries",
+        label=_("Libraries"),
         value=libs[:1] if libs else [],
     )
 
@@ -113,15 +115,15 @@ def create_library_controls(
     phase_dropdown = mo.ui.dropdown(
         options=phases or ["pre_abort"],
         value=phases[0] if phases else "pre_abort",
-        label="Phase",
+        label=_("Phase"),
     )
-    normalize_cb = mo.ui.checkbox(value=False, label="Normalize phases")
+    normalize_cb = mo.ui.checkbox(value=False, label=_("Normalize phases"))
     max_runs = mo.ui.slider(
         start=1,
         stop=20,
         value=10,
         step=1,
-        label="Max runs",
+        label=_("Max runs"),
     )
     return library_select, phase_dropdown, normalize_cb, max_runs
 
@@ -164,6 +166,6 @@ def render_selector_panel(mo, *controls) -> Any:
         A marimo vstack layout element.
     """
     return mo.vstack([
-        mo.md("### Selection"),
+        mo.md(_("### Selection")),
         mo.hstack(list(controls), justify="start", gap=1, wrap=True),
     ])

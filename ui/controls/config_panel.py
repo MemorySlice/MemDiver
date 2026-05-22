@@ -84,18 +84,28 @@ def render_scan_results(mo, dataset_info) -> Any:
     """
     if dataset_info is None:
         return mo.md(
-            "*No dataset scanned yet. Click 'Scan Dataset' to begin.*"
+            _("*No dataset scanned yet. Click 'Scan Dataset' to begin.*")
         )
 
     lines = [
-        f"**Protocol Versions**: {', '.join(sorted(dataset_info.protocol_versions))}",
-        f"**Total Runs**: {dataset_info.total_runs}",
+        _("**Protocol Versions**: {versions}").format(
+            versions=', '.join(sorted(dataset_info.protocol_versions))
+        ),
+        _("**Total Runs**: {count}").format(count=dataset_info.total_runs),
     ]
     for ver in sorted(dataset_info.protocol_versions):
         scenarios = dataset_info.scenarios.get(ver, [])
-        lines.append(f"- TLS {ver}: {len(scenarios)} scenario(s)")
+        lines.append(
+            _("- TLS {ver}: {n} scenario(s)").format(
+                ver=ver, n=len(scenarios)
+            )
+        )
         for sc in scenarios:
             libs = dataset_info.libraries.get(sc, set())
-            lines.append(f"  - {sc}: {len(libs)} libraries")
+            lines.append(
+                _("  - {scenario}: {n} libraries").format(
+                    scenario=sc, n=len(libs)
+                )
+            )
 
     return mo.md("\n".join(lines))

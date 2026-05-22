@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List
 
 from core.constants import TESTING as _TESTING, RESEARCH as _RESEARCH
+from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.mode")
 
@@ -96,12 +97,12 @@ class ModeManager:
         """Return mode summary for display."""
         if self.is_testing:
             return {
-                "mode": "Testing",
+                "mode": _("Testing"),
                 "icon": "🔍",
-                "description": "Validate patterns against dumps",
+                "description": _("Validate patterns against dumps"),
             }
         return {
-            "mode": "Research",
+            "mode": _("Research"),
             "icon": "🔬",
-            "description": "Discover unknown key patterns",
+            "description": _("Discover unknown key patterns"),
         }

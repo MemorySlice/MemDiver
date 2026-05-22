@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.investigation_panel")
 
 _ENT_COLORS: dict = {}
@@ -27,7 +29,7 @@ def _badge(label: str, color: str, bg: str) -> str:
 
 def render_investigation(
     mo, dump_data: bytes, offset: int,
-    variance: list = None, hits: list = None, title: str = "Investigation",
+    variance: list = None, hits: list = None, title: str = _("Investigation"),
 ) -> Any:
     """Render an investigation panel for a specific byte offset.
 
@@ -47,7 +49,7 @@ def render_investigation(
     from ui.components.hex_renderer import render_hex_line
 
     if offset < 0 or offset >= len(dump_data):
-        return mo.md("*Offset out of range*")
+        return mo.md(_("*Offset out of range*"))
 
     _init_colors(cs)
     rpt: RegionReport = analyze_region(dump_data, offset, variance=variance, hits=hits)
@@ -59,9 +61,9 @@ def render_investigation(
 
     # Byte value
     bv = rpt.byte_value
-    asc = f'<code>{chr(bv)}</code>' if 32 <= bv < 127 else "non-printable"
+    asc = f'<code>{chr(bv)}</code>' if 32 <= bv < 127 else _("non-printable")
     s.append(f'<div style="margin-bottom:8px;font-size:12px;">'
-             f'<span style="color:{cs.TEXT_SECONDARY};">Byte:</span> '
+             f'<span style="color:{cs.TEXT_SECONDARY};">{_("Byte:")}</span> '
              f'<code style="color:{cs.ACCENT_CYAN};">0x{bv:02x}</code> '
              f'({bv}) &mdash; {asc}</div>')
 
@@ -70,7 +72,7 @@ def render_investigation(
     pct = min(rpt.entropy / 8.0 * 100, 100)
     s.append(
         f'<div style="margin-bottom:8px;">'
-        f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">Entropy:</span> '
+        f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">{_("Entropy:")}</span> '
         f'<span style="display:inline-block;width:120px;height:10px;'
         f'background:{cs.BG_TERTIARY};border-radius:3px;vertical-align:middle;'
         f'margin:0 6px;overflow:hidden;">'
@@ -85,7 +87,7 @@ def render_investigation(
         vcol = _VAR_COLORS.get(vc, cs.TEXT_SECONDARY)
         s.append(f'<div style="margin-bottom:8px;">'
                  f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">'
-                 f'Variance:</span> {rpt.variance_at_offset:.1f} '
+                 f'{_("Variance:")}</span> {rpt.variance_at_offset:.1f} '
                  f'{_badge(vc, vcol, cs.BG_TERTIARY)}</div>')
 
     # Matching secrets table
@@ -97,7 +99,7 @@ def render_investigation(
             for h in rpt.matching_secrets)
         s.append(f'<div style="margin-bottom:8px;">'
                  f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">'
-                 f'Matching Secrets:</span>'
+                 f'{_("Matching Secrets:")}</span>'
                  f'<table style="border-collapse:collapse;margin-top:4px;">'
                  f'{rows}</table></div>')
 
@@ -107,7 +109,7 @@ def render_investigation(
                           f'{st.value[:40]}</code>' for st in rpt.strings[:8])
         s.append(f'<div style="margin-bottom:8px;">'
                  f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">'
-                 f'Strings nearby:</span> {items}</div>')
+                 f'{_("Strings nearby:")}</span> {items}</div>')
 
     # 16-byte context: line before + line containing offset
     row_start = (offset // 16) * 16

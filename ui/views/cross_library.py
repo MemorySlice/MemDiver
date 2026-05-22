@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.cross_library")
 
 
@@ -31,7 +33,7 @@ def render_cross_library(
     from ui.components import color_scheme as cs
 
     if not library_data:
-        return mo.md("*No library data for comparison.*")
+        return mo.md(_("*No library data for comparison.*"))
 
     panels = []
     for lib_name, data in sorted(library_data.items()):
@@ -61,7 +63,7 @@ def render_cross_library(
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">Cross-Library Comparison: {secret_type}</div>'
+        f'<div class="memdiver-header">{_("Cross-Library Comparison: {secret_type}").format(secret_type=secret_type)}</div>'
         f'<div style="display:flex;gap:12px;overflow-x:auto;">'
         + "".join(panels)
         + '</div></div>'

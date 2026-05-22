@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.hex_comparison")
 
 
@@ -23,10 +25,10 @@ def create_comparison_controls(
     max_page = max(0, total_pages(max_size, rows_per_page, bytes_per_row) - 1)
 
     return {
-        "page": mo.ui.slider(start=0, stop=max_page, value=0, label="Page"),
-        "offset_input": mo.ui.text(value="0", label="Jump to offset (hex)"),
-        "jump_btn": mo.ui.button(label="Jump", value=0),
-        "highlight_diffs": mo.ui.switch(value=True, label="Highlight differences"),
+        "page": mo.ui.slider(start=0, stop=max_page, value=0, label=_("Page")),
+        "offset_input": mo.ui.text(value="0", label=_("Jump to offset (hex)")),
+        "jump_btn": mo.ui.button(label=_("Jump"), value=0),
+        "highlight_diffs": mo.ui.switch(value=True, label=_("Highlight differences")),
     }
 
 
@@ -34,8 +36,8 @@ def render_hex_comparison(
     mo,
     dump_a: bytes,
     dump_b: bytes,
-    label_a: str = "Dump A",
-    label_b: str = "Dump B",
+    label_a: str = _("Dump A"),
+    label_b: str = _("Dump B"),
     controls: Optional[dict] = None,
     bytes_per_row: int = 16,
     rows_per_page: int = 32,
@@ -97,12 +99,14 @@ def render_hex_comparison(
     )
 
     diff_count = len(diff_offsets)
-    info = f"Page {page} | Offset 0x{start_a:x} | {diff_count} differing bytes"
+    info = _("Page {page} | Offset 0x{offset:x} | {count} differing bytes").format(
+        page=page, offset=start_a, count=diff_count,
+    )
 
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">Side-by-Side Comparison</div>'
+        f'<div class="memdiver-header">{_("Side-by-Side Comparison")}</div>'
         f'<div style="font-size:11px;color:{cs.TEXT_SECONDARY};margin-bottom:8px;">{info}</div>'
         f'<div style="display:flex;gap:12px;">'
         f'<div style="flex:1;min-width:0;">'

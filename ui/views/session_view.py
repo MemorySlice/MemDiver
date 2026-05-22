@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from ui.components.html_builder import format_size as _format_size
+from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.session_view")
 
@@ -30,42 +31,42 @@ def render_session_view(mo, report) -> Any:
     from ui.components import color_scheme as cs
 
     if report is None:
-        return mo.md("*No session data available.*")
+        return mo.md(_("*No session data available.*"))
 
     sections = []
 
     # -- Process Info --
     info_rows = [
-        _info_row("Dump UUID", str(report.dump_uuid), cs),
-        _info_row("PID", str(report.pid), cs),
-        _info_row("OS", report.os_type, cs),
-        _info_row("Architecture", report.arch_type, cs),
-        _info_row("Timestamp", report.timestamp_iso, cs),
+        _info_row(_("Dump UUID"), str(report.dump_uuid), cs),
+        _info_row(_("PID"), str(report.pid), cs),
+        _info_row(_("OS"), report.os_type, cs),
+        _info_row(_("Architecture"), report.arch_type, cs),
+        _info_row(_("Timestamp"), report.timestamp_iso, cs),
     ]
     if report.process_identity:
         pi = report.process_identity
         info_rows.extend([
-            _info_row("Parent PID", str(pi.ppid), cs),
-            _info_row("Session ID", str(pi.session_id), cs),
-            _info_row("Executable", f"<code>{pi.exe_path}</code>", cs),
-            _info_row("Command Line", f"<code>{pi.cmd_line}</code>", cs),
+            _info_row(_("Parent PID"), str(pi.ppid), cs),
+            _info_row(_("Session ID"), str(pi.session_id), cs),
+            _info_row(_("Executable"), f"<code>{pi.exe_path}</code>", cs),
+            _info_row(_("Command Line"), f"<code>{pi.cmd_line}</code>", cs),
         ])
     sections.append(
-        f'<div class="memdiver-header">Process Info</div>'
+        f'<div class="memdiver-header">{_("Process Info")}</div>'
         f'<table style="border-collapse:collapse;">{"".join(info_rows)}</table>'
     )
 
     # -- Summary Stats --
     stats_rows = [
-        _info_row("Memory Regions", str(report.region_count), cs),
-        _info_row("Total Region Size", _format_size(report.total_region_size), cs),
-        _info_row("Captured Pages", str(report.captured_page_count), cs),
-        _info_row("Captured Size", _format_size(report.total_captured_bytes), cs),
-        _info_row("Key Hints", str(report.key_hint_count), cs),
-        _info_row("VAS Entries", str(len(report.vas_entries)), cs),
+        _info_row(_("Memory Regions"), str(report.region_count), cs),
+        _info_row(_("Total Region Size"), _format_size(report.total_region_size), cs),
+        _info_row(_("Captured Pages"), str(report.captured_page_count), cs),
+        _info_row(_("Captured Size"), _format_size(report.total_captured_bytes), cs),
+        _info_row(_("Key Hints"), str(report.key_hint_count), cs),
+        _info_row(_("VAS Entries"), str(len(report.vas_entries)), cs),
     ]
     sections.append(
-        f'<div class="memdiver-header" style="margin-top:12px;">Summary</div>'
+        f'<div class="memdiver-header" style="margin-top:12px;">{_("Summary")}</div>'
         f'<table style="border-collapse:collapse;">{"".join(stats_rows)}</table>'
     )
 
@@ -73,10 +74,10 @@ def render_session_view(mo, report) -> Any:
     if report.modules:
         th = f'padding:4px 10px;color:{cs.TEXT_SECONDARY};text-align:left;'
         mod_hdr = (
-            f'<tr><th style="{th}">Base Address</th>'
-            f'<th style="{th}text-align:right;">Size</th>'
-            f'<th style="{th}">Path</th>'
-            f'<th style="{th}">Version</th></tr>'
+            f'<tr><th style="{th}">{_("Base Address")}</th>'
+            f'<th style="{th}text-align:right;">{_("Size")}</th>'
+            f'<th style="{th}">{_("Path")}</th>'
+            f'<th style="{th}">{_("Version")}</th></tr>'
         )
         mod_rows = []
         for m in report.modules:
@@ -93,7 +94,7 @@ def render_session_view(mo, report) -> Any:
             )
         sections.append(
             f'<div class="memdiver-header" style="margin-top:12px;">'
-            f'Modules ({len(report.modules)})</div>'
+            + _("Modules ({count})").format(count=len(report.modules)) + '</div>'
             f'<table style="border-collapse:collapse;width:100%;">'
             f'<thead>{mod_hdr}</thead>'
             f'<tbody>{"".join(mod_rows)}</tbody></table>'
@@ -103,9 +104,9 @@ def render_session_view(mo, report) -> Any:
     if report.related_dumps:
         th = f'padding:4px 10px;color:{cs.TEXT_SECONDARY};text-align:left;'
         rel_hdr = (
-            f'<tr><th style="{th}">Dump UUID</th>'
-            f'<th style="{th}text-align:right;">PID</th>'
-            f'<th style="{th}text-align:right;">Relationship</th></tr>'
+            f'<tr><th style="{th}">{_("Dump UUID")}</th>'
+            f'<th style="{th}text-align:right;">{_("PID")}</th>'
+            f'<th style="{th}text-align:right;">{_("Relationship")}</th></tr>'
         )
         rel_rows = []
         for rd in report.related_dumps:
@@ -120,7 +121,7 @@ def render_session_view(mo, report) -> Any:
             )
         sections.append(
             f'<div class="memdiver-header" style="margin-top:12px;">'
-            f'Related Dumps ({len(report.related_dumps)})</div>'
+            + _("Related Dumps ({count})").format(count=len(report.related_dumps)) + '</div>'
             f'<table style="border-collapse:collapse;width:100%;">'
             f'<thead>{rel_hdr}</thead>'
             f'<tbody>{"".join(rel_rows)}</tbody></table>'

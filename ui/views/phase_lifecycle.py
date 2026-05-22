@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.phase_lifecycle")
 
 
@@ -33,7 +35,7 @@ def render_phase_lifecycle(
     from core.display_labels import get_short_label
 
     if not phases or not secret_types:
-        return mo.md("*No lifecycle data available.*")
+        return mo.md(_("*No lifecycle data available.*"))
 
     # Build header
     header_cells = "".join(
@@ -66,7 +68,7 @@ def render_phase_lifecycle(
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">Phase Lifecycle: {library}</div>'
+        f'<div class="memdiver-header">{_("Phase Lifecycle: {library}").format(library=library)}</div>'
         f'<div style="overflow-x:auto;">'
         f'<table style="border-collapse:collapse;">'
         f'<thead>{header}</thead>'

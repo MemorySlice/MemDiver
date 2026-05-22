@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.block_navigator")
 
 
@@ -21,7 +23,7 @@ def render_block_navigator(mo, reader, selected_type: str = "") -> Any:
 
     nodes = list_blocks(reader)
     if not nodes:
-        return mo.callout(mo.md("No blocks found in MSL file."), kind="warn")
+        return mo.callout(mo.md(_("No blocks found in MSL file.")), kind="warn")
 
     groups = group_blocks(nodes)
 
@@ -29,7 +31,7 @@ def render_block_navigator(mo, reader, selected_type: str = "") -> Any:
     summary_parts = []
     total = len(nodes)
     summary_parts.append(f"<div style='font-size:13px; color:#808080; margin-bottom:8px;'>"
-                         f"{total} blocks total</div>")
+                         + _("{total} blocks total").format(total=total) + "</div>")
 
     for cat, cat_nodes in groups.items():
         type_counts: Dict[str, int] = {}
@@ -75,8 +77,8 @@ def render_block_navigator(mo, reader, selected_type: str = "") -> Any:
             table = (
                 f"<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 f"<tr style='border-bottom:1px solid #ddd;'>"
-                f"<th align='left'>Offset</th><th align='left'>Size</th>"
-                f"<th align='left'>UUID</th></tr>"
+                f"<th align='left'>{_('Offset')}</th><th align='left'>{_('Size')}</th>"
+                f"<th align='left'>{_('UUID')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
             detail_sections[f"{tname} ({len(tnodes)})"] = mo.Html(table)
@@ -118,12 +120,12 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
             html = (
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>Offset</th><th align='left'>Length</th>"
-                "<th align='left'>Type</th><th align='left'>Protocol</th>"
-                "<th align='left'>Confidence</th></tr>"
+                f"<th align='left'>{_('Offset')}</th><th align='left'>{_('Length')}</th>"
+                f"<th align='left'>{_('Type')}</th><th align='left'>{_('Protocol')}</th>"
+                f"<th align='left'>{_('Confidence')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
-            sections["Key Hints (decoded)"] = mo.Html(html)
+            sections[_("Key Hints (decoded)")] = mo.Html(html)
     except Exception:
         pass
 
@@ -142,11 +144,11 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
             html = (
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>Base</th><th align='left'>Size</th>"
-                "<th align='left'>Path</th><th align='left'>Version</th></tr>"
+                f"<th align='left'>{_('Base')}</th><th align='left'>{_('Size')}</th>"
+                f"<th align='left'>{_('Path')}</th><th align='left'>{_('Version')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
-            sections["Modules (decoded)"] = mo.Html(html)
+            sections[_("Modules (decoded)")] = mo.Html(html)
     except Exception:
         pass
 
@@ -161,11 +163,11 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
                 f"<td>{e.module_size:,}</td><td>{e.path}</td></tr>"
                 for e in mli_entries
             ]
-            sections[f"Module Index ({len(mli_entries)})"] = mo.Html(
+            sections[_("Module Index ({count})").format(count=len(mli_entries))] = mo.Html(
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>UUID</th><th align='left'>Base</th>"
-                "<th align='left'>Size</th><th align='left'>Path</th></tr>"
+                f"<th align='left'>{_('UUID')}</th><th align='left'>{_('Base')}</th>"
+                f"<th align='left'>{_('Size')}</th><th align='left'>{_('Path')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
     except Exception:
@@ -182,13 +184,13 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
                 f"<td>{p.cmd_line}</td><td>{p.user}</td></tr>"
                 for p in procs
             ]
-            sections[f"Processes ({len(procs)})"] = mo.Html(
+            sections[_("Processes ({count})").format(count=len(procs))] = mo.Html(
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>PID</th><th align='left'>PPID</th>"
-                "<th align='left'>UID</th><th align='left'>Target</th>"
-                "<th align='left'>Exe</th><th align='left'>Cmd</th>"
-                "<th align='left'>User</th></tr>"
+                f"<th align='left'>{_('PID')}</th><th align='left'>{_('PPID')}</th>"
+                f"<th align='left'>{_('UID')}</th><th align='left'>{_('Target')}</th>"
+                f"<th align='left'>{_('Exe')}</th><th align='left'>{_('Cmd')}</th>"
+                f"<th align='left'>{_('User')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
     except Exception:
@@ -218,12 +220,12 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
                 f"<td style='font-family:monospace;'>{_fmt_addr(c.family, c.remote_addr)}:{c.remote_port}</td></tr>"
                 for c in conns
             ]
-            sections[f"Connections ({len(conns)})"] = mo.Html(
+            sections[_("Connections ({count})").format(count=len(conns))] = mo.Html(
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>PID</th><th align='left'>Family</th>"
-                "<th align='left'>Protocol</th>"
-                "<th align='left'>Local</th><th align='left'>Remote</th></tr>"
+                f"<th align='left'>{_('PID')}</th><th align='left'>{_('Family')}</th>"
+                f"<th align='left'>{_('Protocol')}</th>"
+                f"<th align='left'>{_('Local')}</th><th align='left'>{_('Remote')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
     except Exception:
@@ -233,20 +235,20 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
         htables = reader.collect_handles()
         handles = [e for t in htables for e in t.entries]
         if handles:
-            _HT = {0x00: "Unknown", 0x01: "File", 0x02: "Directory",
-                   0x03: "Socket", 0x04: "Pipe", 0x05: "Device",
-                   0x06: "Registry", 0xFF: "Other"}
+            _HT = {0x00: _("Unknown"), 0x01: _("File"), 0x02: _("Directory"),
+                   0x03: _("Socket"), 0x04: _("Pipe"), 0x05: _("Device"),
+                   0x06: _("Registry"), 0xFF: _("Other")}
             rows = [
                 f"<tr><td>{h.pid}</td><td>{h.fd}</td>"
-                f"<td>{_HT.get(h.handle_type, 'Unknown')}</td>"
+                f"<td>{_HT.get(h.handle_type, _('Unknown'))}</td>"
                 f"<td style='font-family:monospace;'>{h.path}</td></tr>"
                 for h in handles
             ]
-            sections[f"Handles ({len(handles)})"] = mo.Html(
+            sections[_("Handles ({count})").format(count=len(handles))] = mo.Html(
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
                 "<tr style='border-bottom:1px solid #ddd;'>"
-                "<th align='left'>PID</th><th align='left'>FD</th>"
-                "<th align='left'>Type</th><th align='left'>Path</th></tr>"
+                f"<th align='left'>{_('PID')}</th><th align='left'>{_('FD')}</th>"
+                f"<th align='left'>{_('Type')}</th><th align='left'>{_('Path')}</th></tr>"
                 f"{''.join(rows)}</table>"
             )
     except Exception:
@@ -255,34 +257,34 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
     # -- Speculative/incomplete decoders (spec §4.3 reserved / §6.2 incomplete) --
     _RESERVED_BADGE = (
         "<span style='font-size:10px; padding:2px 6px; background:#D97706; "
-        "color:white; border-radius:3px;'>SPEC RESERVED</span>"
+        f"color:white; border-radius:3px;'>{_('SPEC RESERVED')}</span>"
     )
     _INCOMPLETE_BADGE = (
         "<span style='font-size:10px; padding:2px 6px; background:#DC2626; "
-        "color:white; border-radius:3px;'>INCOMPLETE</span>"
+        f"color:white; border-radius:3px;'>{_('INCOMPLETE')}</span>"
     )
     _SPEC_BADGE = (
         "<span style='font-size:10px; padding:2px 6px; background:#16A34A; "
-        "color:white; border-radius:3px;'>SPEC §6.2</span>"
+        f"color:white; border-radius:3px;'>{_('SPEC §6.2')}</span>"
     )
 
     _ext_specs = [
-        ("collect_thread_contexts", "Thread Contexts", _RESERVED_BADGE),
-        ("collect_file_descriptors", "File Descriptors", _RESERVED_BADGE),
-        ("collect_network_connections", "Net Connections (0x0013)", _RESERVED_BADGE),
-        ("collect_environment_blocks", "Environment Blocks", _RESERVED_BADGE),
-        ("collect_security_tokens", "Security Tokens", _RESERVED_BADGE),
-        ("collect_system_context", "System Context", _SPEC_BADGE),
+        ("collect_thread_contexts", _("Thread Contexts"), _RESERVED_BADGE),
+        ("collect_file_descriptors", _("File Descriptors"), _RESERVED_BADGE),
+        ("collect_network_connections", _("Net Connections (0x0013)"), _RESERVED_BADGE),
+        ("collect_environment_blocks", _("Environment Blocks"), _RESERVED_BADGE),
+        ("collect_security_tokens", _("Security Tokens"), _RESERVED_BADGE),
+        ("collect_system_context", _("System Context"), _SPEC_BADGE),
     ]
     for method_name, title, badge in _ext_specs:
         try:
             blocks = getattr(reader, method_name)()
             if not blocks:
                 continue
-            sections[f"{title} [speculative]"] = mo.Html(
+            sections[_("{title} [speculative]").format(title=title)] = mo.Html(
                 f"<div>{badge}<p style='font-size:11px; color:#808080; margin:4px 0;'>"
-                f"{len(blocks)} block(s). Layout is speculative — see decoders_ext.py warning."
-                f"</p></div>"
+                + _("{count} block(s). Layout is speculative — see decoders_ext.py warning.").format(count=len(blocks))
+                + "</p></div>"
             )
         except Exception:
             pass

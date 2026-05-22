@@ -7,6 +7,7 @@ from ui.components.hex_pager import compute_page, total_pages, offset_to_page
 from ui.components.hex_renderer import render_hex_dump
 from ui.components.bookmark_store import BookmarkStore
 from ui.components import color_scheme as cs
+from ui.locales import _
 from core.region_analysis import find_pattern, parse_hex_pattern
 
 logger = logging.getLogger("memdiver.ui.views.hex_navigator")
@@ -17,26 +18,26 @@ def create_hex_controls(mo, dump_size: int, rows_per_page: int = 64) -> dict:
     max_page = max(0, total_pages(dump_size, rows_per_page) - 1)
     max_offset = max(0, dump_size - 1)
     return {
-        "page": mo.ui.slider(start=0, stop=max_page, value=0, label="Page"),
-        "offset_input": mo.ui.text(value="0", label="Jump to offset (hex)"),
-        "jump_btn": mo.ui.button(label="Jump", value=0),
-        "search_input": mo.ui.text(value="", label="Search (hex or ASCII)"),
-        "search_btn": mo.ui.button(label="Search", value=0),
+        "page": mo.ui.slider(start=0, stop=max_page, value=0, label=_("Page")),
+        "offset_input": mo.ui.text(value="0", label=_("Jump to offset (hex)")),
+        "jump_btn": mo.ui.button(label=_("Jump"), value=0),
+        "search_input": mo.ui.text(value="", label=_("Search (hex or ASCII)")),
+        "search_btn": mo.ui.button(label=_("Search"), value=0),
         "inspect_offset": mo.ui.number(
-            start=0, stop=max_offset, value=0, label="Inspect offset",
+            start=0, stop=max_offset, value=0, label=_("Inspect offset"),
         ),
-        "bookmark_label": mo.ui.text(value="", label="Bookmark label"),
-        "bookmark_btn": mo.ui.button(label="Bookmark", value=0),
+        "bookmark_label": mo.ui.text(value="", label=_("Bookmark label")),
+        "bookmark_btn": mo.ui.button(label=_("Bookmark"), value=0),
     }
 
 
 def _build_legend() -> str:
     """Build the color legend HTML."""
     items = [
-        (cs.COLOR_KEY, "Key"), (cs.COLOR_SAME, "Static"),
-        (cs.COLOR_DIFFERENT, "Dynamic"), (cs.COLOR_ZERO, "Zero"),
-        (cs.COLOR_ASCII, "ASCII"), (cs.COLOR_BOOKMARK, "Bookmark"),
-        (cs.COLOR_SEARCH_HIT, "Search"),
+        (cs.COLOR_KEY, _("Key")), (cs.COLOR_SAME, _("Static")),
+        (cs.COLOR_DIFFERENT, _("Dynamic")), (cs.COLOR_ZERO, _("Zero")),
+        (cs.COLOR_ASCII, _("ASCII")), (cs.COLOR_BOOKMARK, _("Bookmark")),
+        (cs.COLOR_SEARCH_HIT, _("Search")),
     ]
     return " ".join(
         f'<span style="color:{c};margin-right:12px;">&#9632; {l}</span>'
@@ -64,24 +65,28 @@ def _render_search_results(
     if not offsets:
         return (
             f'<div style="color:{cs.TEXT_SECONDARY};font-size:12px;">'
-            "No matches found.</div>"
+            f'{_("No matches found.")}</div>'
         )
     count = len(offsets)
     shown = min(count, 20)
     rows_html = []
     for off in offsets[:shown]:
         pg = offset_to_page(off, rows_per_page, bytes_per_row)
+        page_label = _("Page {page}").format(page=pg)
         rows_html.append(
             f"<tr>"
             f'<td style="padding:2px 8px;color:{cs.ACCENT_CYAN}">'
             f"0x{off:08x}</td>"
             f'<td style="padding:2px 8px;color:{cs.TEXT_SECONDARY}">'
-            f"Page {pg}</td></tr>"
+            f"{page_label}</td></tr>"
         )
     table = "".join(rows_html)
-    header = f"{count} match{'es' if count != 1 else ''}"
+    header = (
+        _("{count} match").format(count=count) if count == 1
+        else _("{count} matches").format(count=count)
+    )
     if count > shown:
-        header += f" (showing first {shown})"
+        header += _(" (showing first {shown})").format(shown=shown)
     return (
         f'<div style="margin-top:8px;">'
         f'<div style="color:{cs.ACCENT_BLUE};font-size:12px;'
@@ -96,12 +101,12 @@ def render_hex_navigator(
     byte_classes: Optional[List[str]] = None,
     highlight_offsets: Optional[set] = None,
     bookmarks: Optional[BookmarkStore] = None,
-    title: str = "Hex Navigator",
+    title: str = _("Hex Navigator"),
     bytes_per_row: int = 16, rows_per_page: int = 64,
 ) -> Any:
     """Render the enhanced hex viewer with pagination and controls."""
     if not dump_data:
-        return mo.md("*No dump data to display.*")
+        return mo.md(_("*No dump data to display.*"))
 
     page = controls["page"].value
     start, end = compute_page(
@@ -123,11 +128,12 @@ def render_hex_navigator(
 
     # Info bar
     n_pages = total_pages(len(dump_data), rows_per_page, bytes_per_row)
-    info = (
-        f"Page {page + 1}/{n_pages} | "
-        f"Offset 0x{start:04X}\u20130x{end:04X} | "
-        f"{len(dump_data)} bytes"
-    )
+    info = _(
+        "Page {page}/{n_pages} | "
+        "Offset 0x{start:04X}\u20130x{end:04X} | "
+        "{n_bytes} bytes"
+    ).format(page=page + 1, n_pages=n_pages, start=start, end=end,
+             n_bytes=len(dump_data))
     legend = _build_legend()
 
     # Jump hint
@@ -140,13 +146,16 @@ def render_hex_navigator(
             if target_page != page:
                 jump_hint = (
                     f'<div style="color:{cs.ACCENT_ORANGE};font-size:11px;'
-                    f'margin-top:4px;">Navigate to page {target_page + 1} '
-                    f"for offset 0x{target:X}</div>"
+                    f'margin-top:4px;">'
+                    + _("Navigate to page {page} for offset 0x{offset:X}").format(
+                        page=target_page + 1, offset=target,
+                    )
+                    + "</div>"
                 )
         except ValueError:
             jump_hint = (
                 f'<div style="color:{cs.ACCENT_RED};font-size:11px;'
-                f'margin-top:4px;">Invalid hex offset</div>'
+                f'margin-top:4px;">{_("Invalid hex offset")}</div>'
             )
 
     # Search results

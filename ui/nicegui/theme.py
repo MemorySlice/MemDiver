@@ -3,6 +3,7 @@
 from nicegui import ui
 
 from ui.components.color_scheme import BASE_CSS
+from ui.locales import _
 
 
 # Single-user desktop app: one dark_mode binding cached for the process.
@@ -37,7 +38,7 @@ def is_dark() -> bool:
 def create_theme_toggle():
     """Create a dark/light mode toggle button with reactive icon update."""
     icon = 'dark_mode' if is_dark() else 'light_mode'
-    btn = ui.button(icon=icon).props('flat dense').tooltip('Toggle light/dark mode')
+    btn = ui.button(icon=icon).props('flat dense').tooltip(_('Toggle light/dark mode'))
 
     def _on_click():
         new_dark = toggle_dark_mode()

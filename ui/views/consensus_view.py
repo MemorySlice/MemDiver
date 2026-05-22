@@ -3,13 +3,15 @@
 import logging
 from typing import Any, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.consensus_view")
 
 
 def render_consensus_view(
     mo,
     consensus,
-    title: str = "Consensus Matrix",
+    title: str = _("Consensus Matrix"),
 ) -> Any:
     """Render the consensus matrix classification overview.
 
@@ -25,7 +27,7 @@ def render_consensus_view(
     from ui.components.html_builder import stat_row
 
     if not consensus or consensus.size == 0:
-        return mo.md("*No consensus data. Need >= 2 dumps at the same phase.*")
+        return mo.md(_("*No consensus data. Need >= 2 dumps at the same phase.*"))
 
     counts = consensus.classification_counts()
     total = consensus.size
@@ -33,10 +35,10 @@ def render_consensus_view(
     # Classification bars
     bars = []
     class_info = [
-        ("invariant", cs.VARIANCE_INVARIANT, "Identical across all runs"),
-        ("structural", cs.VARIANCE_STRUCTURAL, "Low variance (< 100)"),
-        ("pointer", cs.VARIANCE_POINTER, "Medium variance (< 3000)"),
-        ("key_candidate", cs.VARIANCE_KEY_CANDIDATE, "High variance (key material)"),
+        ("invariant", cs.VARIANCE_INVARIANT, _("Identical across all runs")),
+        ("structural", cs.VARIANCE_STRUCTURAL, _("Low variance (< 100)")),
+        ("pointer", cs.VARIANCE_POINTER, _("Medium variance (< 3000)")),
+        ("key_candidate", cs.VARIANCE_KEY_CANDIDATE, _("High variance (key material)")),
     ]
     for cls_name, color, desc in class_info:
         count = counts.get(cls_name, 0)
@@ -56,8 +58,8 @@ def render_consensus_view(
         )
 
     stats = (
-        stat_row("Total bytes", f"{total:,}")
-        + stat_row("Dumps analyzed", str(consensus.num_dumps))
+        stat_row(_("Total bytes"), f"{total:,}")
+        + stat_row(_("Dumps analyzed"), str(consensus.num_dumps))
     )
 
     html = (

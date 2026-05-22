@@ -62,7 +62,7 @@ async def render_wizard(state, mode_mgr):
             keylog_input = ui.input(
                 _('Keylog filename'),
                 value='keylog.csv',
-                placeholder='keylog.csv',
+                placeholder=_('keylog.csv'),
             ).classes('w-full')
             keylog_input.bind_visibility_from(gt_mode, 'value', value='keylog')
             with ui.stepper_navigation():

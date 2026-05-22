@@ -61,14 +61,16 @@ def render_analysis_panel(
     """
     mode_info = mode_manager.summary()
     return mo.vstack([
-        mo.md("### Analysis"),
+        mo.md(_("### Analysis")),
         mo.hstack([
             algo_dropdown,
             run_button,
             mode_toggle,
         ], justify="start", gap=1),
         mo.md(
-            f"**Mode**: {mode_info['mode']} - {mode_info['description']}"
+            _("**Mode**: {mode} - {description}").format(
+                mode=mode_info['mode'], description=mode_info['description']
+            )
         ),
     ])
 
@@ -86,15 +88,15 @@ def render_mode_banner(mo, mode_manager: ModeManager) -> Any:
     if mode_manager.is_research:
         return mo.callout(
             mo.md(
-                "**Research Mode** -- Full analysis suite active: "
-                "entropy profiling, variance mapping, consensus matrix, "
-                "cross-library comparison, differential analysis, "
-                "pattern architect, derived key expansion"
+                _("**Research Mode** -- Full analysis suite active: "
+                  "entropy profiling, variance mapping, consensus matrix, "
+                  "cross-library comparison, differential analysis, "
+                  "pattern architect, derived key expansion")
             ),
             kind="info",
         )
     return mo.callout(
-        mo.md("**Testing Mode** -- Validate patterns against dumps"),
+        mo.md(_("**Testing Mode** -- Validate patterns against dumps")),
         kind="neutral",
     )
 
@@ -112,19 +114,19 @@ def render_results_summary(mo, analysis_result) -> Any:
         markdown element when no results are available.
     """
     if analysis_result is None:
-        return mo.md("*No analysis results yet.*")
+        return mo.md(_("*No analysis results yet.*"))
 
     from ui.components.html_builder import table, badge, color_cell
     from ui.components import color_scheme as cs
 
-    headers = ["Library", "Phase", "Runs", "Hits", "Status"]
+    headers = [_("Library"), _("Phase"), _("Runs"), _("Hits"), _("Status")]
     rows = []
     for report in analysis_result.libraries:
         hit_count = len(report.hits)
         if hit_count > 0:
-            status = badge("Found", cs.ACCENT_GREEN)
+            status = badge(_("Found"), cs.ACCENT_GREEN)
         else:
-            status = badge("None", cs.ACCENT_RED)
+            status = badge(_("None"), cs.ACCENT_RED)
 
         hit_color = cs.ACCENT_CYAN if hit_count else cs.TEXT_MUTED
         rows.append([
@@ -135,5 +137,5 @@ def render_results_summary(mo, analysis_result) -> Any:
             status,
         ])
 
-    html = table(headers, rows, title="Analysis Results")
+    html = table(headers, rows, title=_("Analysis Results"))
     return mo.Html(html)

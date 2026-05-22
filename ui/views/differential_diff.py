@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.differential_diff")
 
 
@@ -10,8 +12,8 @@ def render_differential_diff(
     mo,
     dump_a: bytes,
     dump_b: bytes,
-    label_a: str = "Run 1",
-    label_b: str = "Run 2",
+    label_a: str = _("Run 1"),
+    label_b: str = _("Run 2"),
     max_rows: int = 64,
     bytes_per_row: int = 16,
 ) -> Any:
@@ -32,7 +34,7 @@ def render_differential_diff(
     from ui.components import color_scheme as cs
 
     if not dump_a or not dump_b:
-        return mo.md("*Need two dumps for differential comparison.*")
+        return mo.md(_("*Need two dumps for differential comparison.*"))
 
     min_len = min(len(dump_a), len(dump_b))
     max_bytes = max_rows * bytes_per_row
@@ -79,10 +81,13 @@ def render_differential_diff(
     html = (
         f'{cs.BASE_CSS}'
         f'<div class="memdiver-panel">'
-        f'<div class="memdiver-header">Differential Diff</div>'
+        f'<div class="memdiver-header">{_("Differential Diff")}</div>'
         f'<div style="font-size:11px;color:{cs.TEXT_SECONDARY};margin-bottom:6px;">'
-        f'{label_a} vs {label_b} | {diff_count} bytes differ ({pct:.1f}%) | '
-        f'{min_len} bytes compared</div>'
+        + _("{label_a} vs {label_b} | {diff_count} bytes differ ({pct:.1f}%) | "
+            "{min_len} bytes compared").format(
+                label_a=label_a, label_b=label_b, diff_count=diff_count,
+                pct=pct, min_len=min_len)
+        + '</div>'
         f'<pre style="font-family:monospace;font-size:12px;line-height:1.4;'
         f'background:{cs.BG_PRIMARY};padding:12px;border-radius:4px;overflow-x:auto;">'
         f'{content}</pre></div>'

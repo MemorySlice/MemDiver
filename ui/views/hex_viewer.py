@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from ui.locales import _
+
 logger = logging.getLogger("memdiver.ui.views.hex_viewer")
 
 
@@ -12,7 +14,7 @@ def render_hex_viewer(
     start_offset: int = 0,
     byte_classes: Optional[List[str]] = None,
     highlight_offsets: Optional[set] = None,
-    title: str = "Hex Viewer",
+    title: str = _("Hex Viewer"),
     bytes_per_row: int = 16,
     max_rows: int = 64,
     interactive: bool = False,
@@ -51,7 +53,7 @@ def render_hex_viewer(
     from ui.components import color_scheme as cs
 
     if not dump_data:
-        return mo.md("*No dump data to display.*")
+        return mo.md(_("*No dump data to display.*"))
 
     hex_html = render_hex_dump(
         dump_data,
@@ -64,18 +66,20 @@ def render_hex_viewer(
 
     # Legend
     legend_items = [
-        (cs.COLOR_KEY, "Key"),
-        (cs.COLOR_SAME, "Static"),
-        (cs.COLOR_DIFFERENT, "Dynamic"),
-        (cs.COLOR_ZERO, "Zero"),
-        (cs.COLOR_ASCII, "ASCII"),
+        (cs.COLOR_KEY, _("Key")),
+        (cs.COLOR_SAME, _("Static")),
+        (cs.COLOR_DIFFERENT, _("Dynamic")),
+        (cs.COLOR_ZERO, _("Zero")),
+        (cs.COLOR_ASCII, _("ASCII")),
     ]
     legend = " ".join(
         f'<span style="color:{color};margin-right:12px;">&#9632; {label}</span>'
         for color, label in legend_items
     )
 
-    info = f"{len(dump_data)} bytes from offset 0x{start_offset:x}"
+    info = _("{n_bytes} bytes from offset 0x{offset:x}").format(
+        n_bytes=len(dump_data), offset=start_offset,
+    )
 
     html = (
         f'{cs.BASE_CSS}'
@@ -105,9 +109,9 @@ def render_hit_details(mo, hits: List[Any], dump_data: bytes) -> Any:
     from ui.components import color_scheme as cs
 
     if not hits:
-        return mo.md("*No hits to display.*")
+        return mo.md(_("*No hits to display.*"))
 
-    headers = ["Type", "Offset", "Length", "Hex Preview"]
+    headers = [_("Type"), _("Offset"), _("Length"), _("Hex Preview")]
     rows = []
     for hit in hits[:20]:  # Limit to 20
         preview = dump_data[hit.offset:hit.offset + min(hit.length, 16)]
@@ -121,5 +125,7 @@ def render_hit_details(mo, hits: List[Any], dump_data: bytes) -> Any:
             f'<code style="color:{cs.COLOR_KEY}">{hex_str}</code>',
         ])
 
-    html = table(headers, rows, title=f"Secret Hits ({len(hits)} total)")
+    html = table(headers, rows, title=_("Secret Hits ({count} total)").format(
+        count=len(hits),
+    ))
     return mo.Html(html)
