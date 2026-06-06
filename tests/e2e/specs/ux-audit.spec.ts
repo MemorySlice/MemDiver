@@ -39,7 +39,7 @@ type Findings = {
   focusRingOk: "yes" | "no" | "unknown";
 };
 
-test.describe("UX audit across all tabs", () => {
+test.describe("UX audit across all tabs", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present.");
   test("screenshot + observe each tab", async ({ page }) => {
     test.setTimeout(180_000);

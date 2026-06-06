@@ -3,7 +3,7 @@ import { tab, stringsRow } from "../fixtures/selectors";
 import { datasetAvailable } from "../fixtures/dataset";
 import { enterWorkspaceWithMsl } from "../fixtures/workspace";
 
-test.describe("Strings tab — fast first paint, virtualized", () => {
+test.describe("Strings tab — fast first paint, virtualized", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present on this machine.");
 
   test("first row appears within 3s, virtualizer keeps DOM small", async ({

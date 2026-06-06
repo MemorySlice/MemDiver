@@ -256,3 +256,47 @@ def test_volatility3_exporter_emits_plugin_python_source():
     assert "vol3_demo" in source
     # Must embed the YARA rule constant (cross-class integration point).
     assert "YARA_RULE" in source
+
+
+def test_pattern_generator_empty_input_returns_none():
+    """Empty reference bytes + empty mask short-circuit to None."""
+    assert PatternGenerator.generate(b"", []) is None
+
+
+def test_infer_fields_merges_contiguous_runs_and_labels_key():
+    """Contiguous same-type bytes merge into single fields; key window wins.
+
+    Region layout (24 bytes):
+      [0..7]   low variance  -> contiguous 'static' run (one field)
+      [8..15]  high variance -> contiguous 'dynamic' run (one field)
+      [16..23] would be 'static' by variance, but overlaps the key window
+    """
+    key_offset = 16
+    key_length = 8
+    variance = (
+        [10.0] * 8           # static run
+        + [50_000.0] * 8     # dynamic run
+        + [10.0] * 8         # static by variance, but inside key window
+    )
+    fields = PatternGenerator.infer_fields(
+        variance, key_offset=key_offset, key_length=key_length,
+        threshold=2000.0,
+    )
+
+    # (a) Contiguous same-type bytes collapse: far fewer fields than bytes.
+    assert len(fields) < len(variance)
+
+    # (c) Every field dict carries the documented keys.
+    for f in fields:
+        for key in ("offset", "length", "type", "mean_variance", "label"):
+            assert key in f, f"missing key: {key}"
+
+    # (b) The field covering the key window is 'key_material', overriding
+    #     what its (static) variance would otherwise classify it as.
+    key_fields = [
+        f for f in fields
+        if f["offset"] < key_offset + key_length
+        and f["offset"] + f["length"] > key_offset
+    ]
+    assert key_fields, "expected a field overlapping the key window"
+    assert all(f["type"] == "key_material" for f in key_fields)

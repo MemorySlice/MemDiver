@@ -10,7 +10,7 @@ const SCAN_ROOT = path.join(DATASET_ROOT, "gocryptfs/dataset_gocryptfs");
 const BACKEND_PORT = process.env.BACKEND_PORT ?? "8091";
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 
-test.describe("Dataset discovery — /api/dataset/runs", () => {
+test.describe("Dataset discovery — /api/dataset/runs", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present on this machine.");
   // /api/dataset/runs walks the full dataset tree; on this machine it
   // takes ~32s cold and can exceed the default 60s test budget when

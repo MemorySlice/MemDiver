@@ -143,3 +143,20 @@ def test_filter_by_multikey():
     # No matches case.
     none_match = store.filter_by(library="boringssl", tls_version="1.2")
     assert none_match == []
+
+
+def test_summary_libraries_distinct_across_runs():
+    """summary() reflects the number of distinct libraries across runs.
+
+    summary()["libraries"] is a list of names without polars and an int
+    n_unique with polars -- assert defensively against both shapes.
+    """
+    store = MetadataStore()
+    store.add_run(_make_run("openssl", "1.3", 0))
+    store.add_run(_make_run("boringssl", "1.3", 0))
+
+    summary = store.summary()
+    libs = summary["libraries"]
+    distinct = len(libs) if isinstance(libs, list) else libs
+    assert distinct == 2
+    assert summary["total_runs"] == 2

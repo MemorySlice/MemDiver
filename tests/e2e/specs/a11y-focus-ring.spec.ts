@@ -10,7 +10,7 @@ import {
 
 const MAX_TABS = 30;
 
-test.describe("a11y: visible focus ring on keyboard-focusable elements", () => {
+test.describe("a11y: visible focus ring on keyboard-focusable elements", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present; cannot mount workspace.");
 
   for (const t of TABS) {

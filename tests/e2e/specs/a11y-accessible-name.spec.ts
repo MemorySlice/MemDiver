@@ -8,7 +8,7 @@ import {
   navigateToTab,
 } from "../fixtures/a11y";
 
-test.describe("a11y: every icon-only button has an accessible name", () => {
+test.describe("a11y: every icon-only button has an accessible name", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present; cannot mount workspace.");
 
   for (const t of TABS) {

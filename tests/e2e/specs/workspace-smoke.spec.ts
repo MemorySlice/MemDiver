@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { tab } from "../fixtures/selectors";
-import { datasetAvailable } from "../fixtures/dataset";
+import { syntheticMslPath, syntheticMslAvailable } from "../fixtures/dataset";
 import {
   enterWorkspaceWithMsl,
   installErrorGuards,
@@ -48,18 +48,22 @@ const BOTTOM_TABS_VERIFICATION: readonly BottomTab[] = [
   "pipeline",
 ] as const;
 
-test.describe("workspace tab smoke", () => {
+test.describe("workspace tab smoke", { tag: "@smoke" }, () => {
   test.skip(
-    !datasetAvailable,
-    "Dataset not present on this machine; set MEMDIVER_DATASET or provide run_0001 MSL.",
+    !syntheticMslAvailable,
+    "Synthetic MSL fixture missing; run tests/e2e/fixtures/synthetic_msl/generate.py",
   );
 
   test("every visible tab renders without console errors or 5xx", async ({
     page,
   }) => {
     const guards = installErrorGuards(page);
-    await enterWorkspaceWithMsl(page);
+    await enterWorkspaceWithMsl(page, syntheticMslPath);
 
+    // If a tab returns a 5xx on the minimal synthetic MSL (e.g. it needs
+    // richer data than the fixture provides), narrow it out of the
+    // SIDE_TABS / BOTTOM_TABS_VERIFICATION lists below rather than
+    // re-adding a dataset gate — the smoke spec must stay dataset-free.
     for (const name of SIDE_TABS) {
       const selector = tab(name);
       await page.locator(selector).first().click();
@@ -77,7 +81,7 @@ test.describe("workspace tab smoke", () => {
 
   test("experiment panel renders form controls", async ({ page }) => {
     const guards = installErrorGuards(page);
-    await enterWorkspaceWithMsl(page);
+    await enterWorkspaceWithMsl(page, syntheticMslPath);
 
     // The experiment tab is gated to exploration mode in the verification
     // boot path; we directly assert the panel mounts when its testid is

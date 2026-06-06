@@ -3,7 +3,7 @@ import { tab } from "../fixtures/selectors";
 import { datasetAvailable } from "../fixtures/dataset";
 import { enterWorkspaceWithMsl } from "../fixtures/workspace";
 
-test.describe("Verify-key tab — basic render stub", () => {
+test.describe("Verify-key tab — basic render stub", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present on this machine.");
 
   test("verify-key tab mounts without crashing", async ({ page }) => {

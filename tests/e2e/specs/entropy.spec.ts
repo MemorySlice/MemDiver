@@ -6,7 +6,7 @@ import {
   switchToExplorationMode,
 } from "../fixtures/workspace";
 
-test.describe("Entropy bottom tab mounts", () => {
+test.describe("Entropy bottom tab mounts", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present.");
   test("mounts without errors", async ({ page }) => {
     const errors: string[] = [];

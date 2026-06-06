@@ -18,7 +18,7 @@ import { datasetAvailable } from "../fixtures/dataset";
 import { enterWorkspaceWithMsl } from "../fixtures/workspace";
 import { waitForHexBytes } from "./screenshots-helpers";
 
-test.describe("Consensus overlay wiring", () => {
+test.describe("Consensus overlay wiring", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset MSL fixture not present.");
   test.setTimeout(180_000);
 

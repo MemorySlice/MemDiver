@@ -67,9 +67,17 @@ async function dismissFtueIfPresent(page: Page): Promise<void> {
  * single-file MSL session. Tests then have the full workspace mounted
  * and can click the data-testid-marked tabs.
  *
+ * @param mslPath - Optional path to the MSL file to load. Defaults to
+ * the real dataset MSL (`MSL` from ./dataset) so existing callers keep
+ * their current behavior; pass a synthetic fixture path to run without
+ * the dataset.
+ *
  * Assumes the backend is up (playwright.config webServer handles that).
  */
-export async function enterWorkspaceWithMsl(page: Page): Promise<void> {
+export async function enterWorkspaceWithMsl(
+  page: Page,
+  mslPath: string = MSL,
+): Promise<void> {
   // Suppress the driver.js welcome tour before the app hydrates. The
   // init script fires on every nav; the post-mount sweep is a belt-and-
   // suspenders fallback for version drift.
@@ -83,7 +91,7 @@ export async function enterWorkspaceWithMsl(page: Page): Promise<void> {
   // Step 1: Select Data — fill the path input with the MSL file path.
   const pathInput = page.getByPlaceholder("Enter path to file or directory");
   await expect(pathInput).toBeVisible({ timeout: 15_000 });
-  await pathInput.fill(MSL);
+  await pathInput.fill(mslPath);
 
   // Click Next. The wizard validates via /api/path/info and advances
   // to the Analysis step (MSL is a single file so Directory Type is

@@ -33,7 +33,7 @@ import {
   injectPipelineEvents,
 } from "./screenshots-helpers";
 
-test.describe("Chart backend dispatch", () => {
+test.describe("Chart backend dispatch", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset MSL fixture not present.");
   // Entropy compute can be 60-120s cold; pipeline fixtures need the
   // backend's hex viewer + workspace mount flow. Budget generously.

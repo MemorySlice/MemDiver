@@ -3,7 +3,7 @@ import { tab } from "../fixtures/selectors";
 import { datasetAvailable } from "../fixtures/dataset";
 import { enterWorkspaceWithMsl } from "../fixtures/workspace";
 
-test.describe("Structures side tab mounts", () => {
+test.describe("Structures side tab mounts", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present.");
   test("mounts without errors", async ({ page }) => {
     const errors: string[] = [];

@@ -31,7 +31,7 @@ import {
   injectPipelineEvents,
 } from "./screenshots-helpers";
 
-test.describe("README screenshots", () => {
+test.describe("README screenshots", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset MSL fixture not present.");
   // The default per-test timeout in playwright.config.ts is 60 s. A cold
   // entropy compute on a 215 MB MSL can exceed that by itself, and the

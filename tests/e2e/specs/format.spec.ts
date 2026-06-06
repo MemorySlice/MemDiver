@@ -3,7 +3,7 @@ import { tab, formatPill } from "../fixtures/selectors";
 import { datasetAvailable } from "../fixtures/dataset";
 import { enterWorkspaceWithMsl } from "../fixtures/workspace";
 
-test.describe("Format tab — MSL is recognized, not mislabeled as ELF", () => {
+test.describe("Format tab — MSL is recognized, not mislabeled as ELF", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present on this machine.");
 
   test("MSL dump surfaces msl parser and MSL nav tree", async ({ page }) => {

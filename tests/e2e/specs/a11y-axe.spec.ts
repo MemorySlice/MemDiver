@@ -11,7 +11,7 @@ import {
 
 const PER_TAB_GUARD = 30;
 
-test.describe("a11y: axe-core (WCAG 2.0 A/AA, critical+serious only)", () => {
+test.describe("a11y: axe-core (WCAG 2.0 A/AA, critical+serious only)", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset not present; cannot mount workspace.");
 
   for (const t of TABS) {
