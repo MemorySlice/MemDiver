@@ -26,3 +26,9 @@ tests/artifacts/
 docs/_build/
 docs/api/_autosummary/
 docs/screenshots/_tempdata/
+
+# local/misc stuff
+docs/_static/screenshots/.backup_20260422T221132/
+docs/_static/screenshots/.triptych_parts/
+.claude/
+docs/issue-drafts/
