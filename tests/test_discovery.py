@@ -121,3 +121,26 @@ def test_secret_source_none(tmp_path):
     run = RunDiscovery.load_run_directory(run_dir)
     assert run is not None
     assert run.secret_source == "none"
+
+
+def test_dataset_scanner_missing_root_raises_clear_error(tmp_path):
+    """Regression: a deleted/replaced scan root must raise a clear
+    NotADirectoryError instead of an opaque FileNotFoundError from a deep
+    iterdir() call (TOCTOU race)."""
+    import pytest
+
+    missing = tmp_path / "gone"  # never created
+    scanner = DatasetScanner(missing)
+    with pytest.raises(NotADirectoryError, match="not a directory"):
+        scanner.fast_scan()
+
+
+def test_dataset_scanner_root_replaced_by_file_raises(tmp_path):
+    """Regression: root replaced by a regular file must also be guarded."""
+    import pytest
+
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("data")
+    scanner = DatasetScanner(not_a_dir)
+    with pytest.raises(NotADirectoryError, match="not a directory"):
+        scanner.fast_scan()

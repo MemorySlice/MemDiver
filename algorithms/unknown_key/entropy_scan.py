@@ -73,11 +73,22 @@ class EntropyScanAlgorithm(BaseAlgorithm):
             return []
         matches.sort(key=lambda m: (m.offset, -m.length))
         merged = [matches[0]]
+        # ``cluster_end`` tracks the furthest right edge of the current run of
+        # overlapping matches. Comparing against this (rather than only
+        # ``merged[-1]``) ensures a later match that overlaps an earlier kept
+        # interval is still merged even when it does not overlap the most
+        # recently kept one, which previously inflated the match count.
+        cluster_end = merged[0].offset + merged[0].length
         for m in matches[1:]:
-            prev = merged[-1]
-            if m.offset < prev.offset + prev.length:
-                if m.confidence > prev.confidence:
+            if m.offset < cluster_end:
+                kept = merged[-1]
+                # Per existing intent: keep the higher-confidence interval; on a
+                # confidence tie keep the wider one. The match's own
+                # offset/length/data are preserved unchanged (no synthesizing).
+                if (m.confidence, m.length) > (kept.confidence, kept.length):
                     merged[-1] = m
+                cluster_end = max(cluster_end, m.offset + m.length)
             else:
                 merged.append(m)
+                cluster_end = m.offset + m.length
         return merged

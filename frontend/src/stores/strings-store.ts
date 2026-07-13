@@ -96,8 +96,12 @@ export const useStringsStore = create<StringsState>((set, get) => {
       return;
     }
     const mode = state.highlightAllWarn ? "all" : "viewport";
+    // visibleFirst/visibleLast are indices into the FILTERED list that
+    // StringsPanel virtualizes over, so highlights must be built from the
+    // same filtered list — otherwise the slice indexes the wrong strings
+    // (and 'all' mode would highlight every unfiltered row).
     const payload = buildHighlightPayload(
-      state.rows,
+      get().getFilteredStrings(),
       state.visibleFirst,
       state.visibleLast,
       mode,

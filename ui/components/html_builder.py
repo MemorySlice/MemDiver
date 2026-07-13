@@ -11,7 +11,13 @@ def table(
     title: Optional[str] = None,
     col_styles: Optional[Dict[int, str]] = None,
 ) -> str:
-    """Build an HTML table with dark theme styling."""
+    """Build an HTML table with dark theme styling.
+
+    Note: cell values are interpolated as raw HTML so callers may pass
+    pre-built fragments (e.g. ``<code>...</code>``). Callers are therefore
+    responsible for escaping any untrusted/dump-derived text via
+    ``hex_renderer._html_escape`` before passing it in.
+    """
     parts = [cs.BASE_CSS]
     if title:
         parts.append(f'<div class="memdiver-header">{title}</div>')

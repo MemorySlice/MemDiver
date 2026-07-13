@@ -8,23 +8,24 @@
  */
 
 import type { JSX } from "react";
+import { useTranslation } from "react-i18next";
 
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { FunnelCounts } from "@/stores/pipeline-store";
 
 interface FunnelRow {
   key: keyof FunnelCounts;
-  label: string;
+  labelKey: string;
   color: string;
 }
 
 const ROWS: FunnelRow[] = [
-  { key: "raw", label: "Raw", color: "bg-indigo-600" },
-  { key: "variance", label: "Variance", color: "bg-blue-600" },
-  { key: "aligned", label: "Aligned", color: "bg-cyan-600" },
-  { key: "high_entropy", label: "Entropy", color: "bg-teal-600" },
-  { key: "candidates", label: "Candidates", color: "bg-green-600" },
-  { key: "verified", label: "Verified", color: "bg-emerald-500" },
+  { key: "raw", labelKey: "run.funnel.rows.raw", color: "bg-indigo-600" },
+  { key: "variance", labelKey: "run.funnel.rows.variance", color: "bg-blue-600" },
+  { key: "aligned", labelKey: "run.funnel.rows.aligned", color: "bg-cyan-600" },
+  { key: "high_entropy", labelKey: "run.funnel.rows.highEntropy", color: "bg-teal-600" },
+  { key: "candidates", labelKey: "run.funnel.rows.candidates", color: "bg-green-600" },
+  { key: "verified", labelKey: "run.funnel.rows.verified", color: "bg-emerald-500" },
 ];
 
 function logFraction(count: number, raw: number): number {
@@ -37,6 +38,7 @@ function logFraction(count: number, raw: number): number {
 }
 
 export function FunnelChart(): JSX.Element {
+  const { t } = useTranslation("pipeline");
   const funnel = usePipelineStore((s) => s.funnel);
   const raw = funnel.raw;
 
@@ -45,10 +47,10 @@ export function FunnelChart(): JSX.Element {
       className="md-panel p-3 space-y-2 text-xs md-text-secondary"
       data-tour-id="pipeline-funnel"
     >
-      <div className="md-text-accent font-semibold">Reduction funnel</div>
+      <div className="md-text-accent font-semibold">{t("run.funnel.title")}</div>
       {raw === 0 ? (
         <div className="md-text-muted italic py-2">
-          Awaiting consensus…
+          {t("run.funnel.awaiting")}
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -58,7 +60,7 @@ export function FunnelChart(): JSX.Element {
             return (
               <div key={row.key} className="flex items-center gap-2">
                 <div className="w-[100px] shrink-0 capitalize md-text-muted">
-                  {row.label}
+                  {t(row.labelKey)}
                 </div>
                 <div className="flex-1 h-3 rounded bg-[var(--md-bg-hover)] overflow-hidden">
                   <div

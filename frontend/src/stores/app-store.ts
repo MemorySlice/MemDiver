@@ -168,12 +168,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         const store = m.useDumpStore.getState();
         if (store.dumps.some((d) => d.path === inputPath)) return;
         const name = inputPath.split("/").pop() ?? inputPath;
-        const ext = inputPath.split(".").pop()?.toLowerCase();
+        // Extension-based detection, case-insensitive — kept consistent
+        // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
+        const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
         store.addDump({
           path: inputPath,
           name,
+          // pathInfo is populated earlier in the wizard; fall back to 0
+          // intentionally if it is missing rather than blocking the add.
           size: pathInfo?.file_size ?? 0,
-          format: ext === "msl" ? "msl" : "raw",
+          format,
         });
       });
     }
@@ -203,7 +207,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         const store = m.useDumpStore.getState();
         if (store.dumps.some((d) => d.path === filePath)) return;
         const name = filePath.split("/").pop() ?? filePath;
-        const ext = filePath.split(".").pop()?.toLowerCase();
+        // Extension-based detection, case-insensitive — kept consistent
+        // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
+        const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
         // Fetch file size from API
         let fileSize = 0;
         try {
@@ -211,13 +217,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           const info = await getPathInfo(filePath);
           fileSize = info.file_size ?? 0;
         } catch {
-          // silently use 0
+          // getPathInfo failed (e.g. file moved since the session was
+          // saved); intentionally fall back to size 0 so the dump still
+          // restores rather than aborting the whole session restore.
+          fileSize = 0;
         }
         store.addDump({
           path: filePath,
           name,
           size: fileSize,
-          format: ext === "msl" ? "msl" : "raw",
+          format,
         });
       });
     }

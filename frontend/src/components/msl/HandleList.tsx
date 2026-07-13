@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Handle {
   pid: number;
@@ -24,6 +25,7 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 export function HandleList({ mslPath }: Props) {
+  const { t } = useTranslation("msl");
   const [handles, setHandles] = useState<Handle[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,11 +52,11 @@ export function HandleList({ mslPath }: Props) {
   }, [handles]);
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
-  if (!handles.length) return <p className="p-3 text-xs md-text-muted">No handle table blocks</p>;
+  if (!handles.length) return <p className="p-3 text-xs md-text-muted">{t("handles.empty")}</p>;
 
   return (
     <div className="p-3 text-xs space-y-2">
-      <h3 className="text-sm font-semibold md-text-accent">Handles ({handles.length})</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("handles.title", { count: handles.length })}</h3>
       {Object.entries(grouped).map(([type, items]) => (
         <div key={type} className="md-panel p-2">
           <div className="flex items-center gap-2 mb-1">
@@ -67,10 +69,10 @@ export function HandleList({ mslPath }: Props) {
           </div>
           <div className="space-y-0.5 max-h-32 overflow-auto">
             {items.map((h, i) => (
-              <div key={i} className="font-mono md-text-secondary truncate" title={h.path || `<no path>`}>
+              <div key={i} className="font-mono md-text-secondary truncate" title={h.path || t("handles.noPathTooltip")}>
                 <span className="md-text-muted text-[10px] mr-1">pid={h.pid}</span>
                 <span className="md-text-muted text-[10px] mr-2">fd={h.fd}</span>
-                <span>{h.path || <em className="md-text-muted">(no path)</em>}</span>
+                <span>{h.path || <em className="md-text-muted">{t("handles.noPath")}</em>}</span>
               </div>
             ))}
           </div>

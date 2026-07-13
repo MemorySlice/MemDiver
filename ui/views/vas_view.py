@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from ui.components import color_scheme as _cs
 from ui.components.html_builder import format_size as _format_size
+from ui.components.hex_renderer import _html_escape
 from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.vas_view")
@@ -98,7 +99,7 @@ def render_vas_map(mo, vas_entries, regions=None) -> Any:
                 size=_format_size(entry.region_size),
                 rtype=rtype,
                 prot=prot,
-                path=entry.mapped_path or "—",
+                path=_html_escape(str(entry.mapped_path or "—")),
                 status=status,
             )
         )
@@ -178,7 +179,7 @@ def render_vas_table(mo, vas_entries, regions=None) -> Any:
             f'<td style="padding:3px 8px;color:{cs.TEXT_PRIMARY};'
             f'text-align:center;font-family:monospace;">{prot}</td>'
             f'<td style="padding:3px 8px;color:{cs.TEXT_MUTED};">'
-            f'{entry.mapped_path or "—"}</td>'
+            f'{_html_escape(str(entry.mapped_path or "—"))}</td>'
             f'<td style="padding:3px 8px;color:{cap_color};'
             f'text-align:center;">{cap_icon}</td>'
             f'</tr>'

@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { byteToHex, offsetToHex } from "@/utils/hex-codec";
 
 interface Props {
@@ -19,11 +20,14 @@ function byteColor(a: number, b: number, isDumpB: boolean): string {
 export const DifferentialDiff = memo(function DifferentialDiff({
   dumpA,
   dumpB,
-  labelA = "Dump A",
-  labelB = "Dump B",
+  labelA,
+  labelB,
   maxRows = 64,
   bytesPerRow = 16,
 }: Props) {
+  const { t } = useTranslation("charts");
+  const resolvedLabelA = labelA ?? t("differential.labelA");
+  const resolvedLabelB = labelB ?? t("differential.labelB");
   const { lines, diffCount, compareLen } = useMemo(() => {
     const len = Math.min(dumpA.length, dumpB.length);
     const maxBytes = maxRows * bytesPerRow;
@@ -63,16 +67,16 @@ export const DifferentialDiff = memo(function DifferentialDiff({
   }, [dumpA, dumpB, maxRows, bytesPerRow]);
 
   if (!dumpA.length || !dumpB.length) {
-    return <p className="p-4 text-sm md-text-muted">Need two dumps for differential comparison.</p>;
+    return <p className="p-4 text-sm md-text-muted">{t("differential.empty")}</p>;
   }
 
   const pct = compareLen > 0 ? ((diffCount / compareLen) * 100).toFixed(1) : "0";
 
   return (
     <div className="p-3 text-xs space-y-2">
-      <h3 className="text-sm font-semibold md-text-accent">Differential Diff</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("differential.title")}</h3>
       <p className="md-text-muted text-[10px]">
-        {labelA} vs {labelB} | {diffCount} bytes differ ({pct}%) | {compareLen} bytes compared
+        {t("differential.summary", { labelA: resolvedLabelA, labelB: resolvedLabelB, diffCount, pct, compareLen })}
       </p>
       <pre
         className="font-mono text-xs leading-relaxed rounded p-3 overflow-x-auto"

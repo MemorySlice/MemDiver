@@ -274,7 +274,7 @@ def wizard_layout(
         steps.append(mo.md("### Step 2: Select Data"))
         steps.append(data_picker)
     # Step 3 (conditional)
-    if data_picker.value if hasattr(data_picker, 'value') else False:
+    if data_picker.value:
         steps.append(mo.md("### Step 3: Ground Truth (optional)"))
         if gt_hints_md:
             steps.append(gt_hints_md)
@@ -282,7 +282,7 @@ def wizard_layout(
         if gt_radio.value == "keylog":
             steps.append(mo.hstack([gt_keylog_input, gt_template_dd], gap=1))
     # Step 4 + launch (conditional)
-    if data_picker.value if hasattr(data_picker, 'value') else False:
+    if data_picker.value:
         steps.append(mo.md("### Step 4: Analysis Mode"))
         steps.append(mode_radio)
         steps.append(mo.md("---"))
@@ -431,7 +431,7 @@ def dataset_selectors(dataset_info, get_wizard_done, mo, state):
         ds_lib_select, _pd, ds_normalize_cb, ds_max_runs = create_library_controls(
             mo, dataset_info, ds_tls_dd.value, ds_scenario_dd.value,
         )
-        libs = sorted(dataset_info.libraries.get(ds_scenario_dd.value, set()))
+        libs = sorted(dataset_info.libraries.get(f"{ds_tls_dd.value}/{ds_scenario_dd.value}", set()))
         _phases = resolve_phases(dataset_info, ds_tls_dd.value, ds_scenario_dd.value, libs,
                                  normalize=ds_normalize_cb.value)
         ds_phase_dd = mo.ui.dropdown(
@@ -754,7 +754,7 @@ def _():
 
 
 @app.cell
-def dir_views(Path, RunDiscovery, get_wizard_done, mo, runs, state):
+def dir_views(Path, RunDiscovery, get_wizard_done, mo, state):
     """Build directory mode view sections."""
     mo.stop(not get_wizard_done())
     dir_view_sections = {}
@@ -773,7 +773,7 @@ def dir_views(Path, RunDiscovery, get_wizard_done, mo, runs, state):
             )
             # Show hex of first dump
             if _runs[0].dumps:
-                _first_dump = runs[0].dumps[0]
+                _first_dump = _runs[0].dumps[0]
                 _data = _first_dump.path.read_bytes()
                 from ui.views.hex_viewer import render_hex_viewer as _render_hex
                 dir_view_sections["Hex Viewer"] = _render_hex(

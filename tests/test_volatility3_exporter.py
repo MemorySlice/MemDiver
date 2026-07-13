@@ -100,6 +100,28 @@ class TestVolatility3Exporter:
         )
         assert "Find AES-256 keys" in source
 
+    @pytest.mark.parametrize("bad_ratio", [None, "n/a", object()])
+    def test_export_compiles_with_non_numeric_static_ratio(
+        self, sample_pattern, bad_ratio
+    ):
+        """A None/non-numeric static_ratio must still emit a compilable plugin.
+
+        Regression: static_ratio was substituted as a bare token, so a
+        None/non-numeric value produced ``StaticRatio: None`` -> a plugin that
+        failed to import. It must be coerced to a numeric literal (0.0 here).
+        """
+        pattern = dict(sample_pattern)
+        pattern["static_ratio"] = bad_ratio
+        source = Volatility3Exporter.export(pattern)
+        compile(source, "<generated>", "exec")  # Must not raise SyntaxError
+        assert "0.0," in source
+
+    def test_export_static_ratio_is_numeric_literal(self, sample_pattern):
+        """A valid float static_ratio is emitted as a numeric literal."""
+        source = Volatility3Exporter.export(sample_pattern)
+        compile(source, "<generated>", "exec")
+        assert "0.9375," in source
+
     def test_save(self, sample_pattern, tmp_path):
         source = Volatility3Exporter.export(sample_pattern)
         out = tmp_path / "test_plugin.py"

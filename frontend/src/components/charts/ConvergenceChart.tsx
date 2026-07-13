@@ -1,6 +1,7 @@
 /**
  * Line chart showing detection quality vs number of dumps (N).
  */
+import { useTranslation } from "react-i18next";
 import type { ConvergenceSweepResult } from '../../api/types';
 import { EmptyState } from '@/components/common/EmptyState';
 import { ConvergenceIcon } from '@/components/common/Icons';
@@ -11,18 +12,19 @@ interface ConvergenceChartProps {
 }
 
 export function ConvergenceChart({ data }: ConvergenceChartProps) {
+  const { t: tr } = useTranslation("charts");
   if (!data || data.points.length === 0) {
     return (
       <EmptyState
         icon={<ConvergenceIcon />}
-        title="No convergence data"
+        title={tr("convergence.empty.title")}
         description={
           <>
-            Plots recall and false-positive rate as N sweeps from 1 to max. Produced by the experiment harness or by
-            {" "}<code>memdiver consensus --convergence</code>.
+            {tr("convergence.empty.descriptionPrefix")}
+            <code>memdiver consensus --convergence</code>.
           </>
         }
-        secondary={{ label: "CLI quickstart", href: "/docs/quickstart/experiment.md" }}
+        secondary={{ label: tr("convergence.empty.cliLink"), href: "/docs/quickstart/experiment.md" }}
         data-testid="convergence-empty"
       />
     );
@@ -38,6 +40,9 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
   const xScale = (n: number) => {
     const ns = data.points.map(p => p.n);
     const idx = ns.indexOf(n);
+    // A single-point sweep has no span to divide by (idx/(0) → NaN), so place
+    // the lone point at mid-axis instead of producing un-plottable NaN coords.
+    if (ns.length <= 1) return padding.left + plotW / 2;
     return padding.left + (idx / (ns.length - 1)) * plotW;
   };
 
@@ -58,17 +63,17 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
   return (
     <div className="p-4">
       <h3 className="text-sm font-semibold mb-2" style={{ color: t.textPrimary }}>
-        Convergence: Detection Quality vs Number of Dumps
+        {tr("convergence.title")}
       </h3>
       <div className="flex gap-4 text-xs mb-2" style={{ color: t.textSecondary }}>
         {data.first_detection_n && (
-          <span>First detection: N={data.first_detection_n}</span>
+          <span>{tr("convergence.firstDetection", { n: data.first_detection_n })}</span>
         )}
         {data.first_decryption_n && (
-          <span>First decryption: N={data.first_decryption_n}</span>
+          <span>{tr("convergence.firstDecryption", { n: data.first_decryption_n })}</span>
         )}
         {data.first_fp_target_n && (
-          <span>FP target met: N={data.first_fp_target_n}</span>
+          <span>{tr("convergence.fpTargetMet", { n: data.first_fp_target_n })}</span>
         )}
       </div>
       <svg
@@ -106,11 +111,11 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
         {/* Y-axis labels */}
         <text x={10} y={padding.top + plotH / 2} fill={t.accentGreen} fontSize={10}
               transform={`rotate(-90, 10, ${padding.top + plotH / 2})`} textAnchor="middle">
-          Recall %
+          {tr("convergence.axis.recall")}
         </text>
         <text x={chartWidth - 5} y={padding.top + plotH / 2} fill={t.accentRed} fontSize={10}
               transform={`rotate(90, ${chartWidth - 5}, ${padding.top + plotH / 2})`} textAnchor="middle">
-          False Positives
+          {tr("convergence.axis.falsePositives")}
         </text>
         {/* First detection marker */}
         {data.first_detection_n && (
@@ -121,14 +126,14 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
       </svg>
       <div className="flex gap-4 mt-2 text-xs">
         <span className="flex items-center gap-1">
-          <span className="w-3 h-0.5 inline-block" style={{ background: t.accentGreen }} /> Recall
+          <span className="w-3 h-0.5 inline-block" style={{ background: t.accentGreen }} /> {tr("convergence.legend.recall")}
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-3 h-0.5 inline-block" style={{ background: t.accentRed }} /> False Positives
+          <span className="w-3 h-0.5 inline-block" style={{ background: t.accentRed }} /> {tr("convergence.legend.falsePositives")}
         </span>
         {data.first_detection_n && (
           <span className="flex items-center gap-1">
-            <span className="w-3 h-0.5 inline-block border-dashed" style={{ background: t.accentYellow }} /> First Detection
+            <span className="w-3 h-0.5 inline-block border-dashed" style={{ background: t.accentYellow }} /> {tr("convergence.legend.firstDetection")}
           </span>
         )}
       </div>

@@ -101,7 +101,7 @@ def render_scan_results(mo, dataset_info) -> Any:
             )
         )
         for sc in scenarios:
-            libs = dataset_info.libraries.get(sc, set())
+            libs = dataset_info.libraries.get(f"{ver}/{sc}", set())
             lines.append(
                 _("  - {scenario}: {n} libraries").format(
                     scenario=sc, n=len(libs)

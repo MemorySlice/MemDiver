@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { cancelPipelineRun, getPipelineRun } from "@/api/pipeline";
 import { useFtueStore } from "@/ftue/store";
@@ -31,14 +32,15 @@ import type { TaskProgressEvent } from "@/api/websocket";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
 
-// Wizard-stage order used by the stepper.
-const WIZARD_STEPS: Array<{ id: WizardStage; label: string }> = [
-  { id: "recipe", label: "Recipe" },
-  { id: "dumps", label: "Dumps" },
-  { id: "oracle", label: "Oracle" },
-  { id: "thresholds", label: "Thresholds" },
-  { id: "running", label: "Run" },
-  { id: "results", label: "Results" },
+// Wizard-stage order used by the stepper. Labels are resolved at
+// render time via t("panel.steps.<id>").
+const WIZARD_STEPS: Array<{ id: WizardStage }> = [
+  { id: "recipe" },
+  { id: "dumps" },
+  { id: "oracle" },
+  { id: "thresholds" },
+  { id: "running" },
+  { id: "results" },
 ];
 
 const STATUS_BADGE_BG: Record<string, string> = {
@@ -57,6 +59,7 @@ function Stepper({
   stage: WizardStage;
   onJump: (next: WizardStage) => void;
 }) {
+  const { t } = useTranslation("pipeline");
   const activeIdx = WIZARD_STEPS.findIndex((s) => s.id === stage);
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-[var(--md-border)]">
@@ -92,7 +95,7 @@ function Stepper({
               >
                 {idx + 1}
               </span>
-              {step.label}
+              {t(`panel.steps.${step.id}`)}
             </button>
             {idx < WIZARD_STEPS.length - 1 && (
               <span className="md-text-muted text-xs">›</span>
@@ -105,6 +108,7 @@ function Stepper({
 }
 
 function HeaderBar() {
+  const { t } = useTranslation("pipeline");
   const status = usePipelineStore((s) => s.status);
   const taskId = usePipelineStore((s) => s.taskId);
   const stage = usePipelineStore((s) => s.stage);
@@ -118,17 +122,17 @@ function HeaderBar() {
 
   return (
     <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--md-border)] md-bg-secondary">
-      <h2 className="text-sm font-semibold md-text-accent">Pipeline</h2>
+      <h2 className="text-sm font-semibold md-text-accent">{t("panel.title")}</h2>
       <span
         className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-2 py-0.5"
         style={{ background: STATUS_BADGE_BG[status] ?? "var(--md-text-muted)" }}
       >
         {status}
       </span>
-      <span className="md-text-muted text-xs">stage: {stage}</span>
+      <span className="md-text-muted text-xs">{t("panel.stageLabel", { stage })}</span>
       {taskId && (
         <span className="md-text-muted text-[10px] font-mono truncate">
-          task {taskId.slice(0, 12)}…
+          {t("panel.taskLabel", { taskId: taskId.slice(0, 12) })}
         </span>
       )}
       <div className="flex-1" />
@@ -141,9 +145,9 @@ function HeaderBar() {
             void cancelPipelineRun(taskId).catch(() => undefined);
           }}
           className="text-xs px-2 py-1 rounded bg-amber-800 text-amber-100 hover:bg-amber-700 disabled:opacity-50"
-          title="Stop the running pipeline — best-effort, may take a few hundred ms"
+          title={t("panel.cancelTitle")}
         >
-          {cancelling ? "Cancelling…" : "Cancel run"}
+          {cancelling ? t("panel.cancelling") : t("panel.cancelRun")}
         </button>
       )}
       {(status === "succeeded" || status === "failed" || status === "cancelled") && (
@@ -151,9 +155,9 @@ function HeaderBar() {
           type="button"
           onClick={resetRun}
           className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
-          title="Clear the finished run and start a new pipeline"
+          title={t("panel.newRunTitle")}
         >
-          New run
+          {t("panel.newRun")}
         </button>
       )}
     </div>
@@ -161,6 +165,7 @@ function HeaderBar() {
 }
 
 function ResumingBanner() {
+  const { t } = useTranslation("pipeline");
   const taskId = usePipelineStore((s) => s.taskId);
   const status = usePipelineStore((s) => s.status);
   const stage = usePipelineStore((s) => s.stage);
@@ -168,9 +173,9 @@ function ResumingBanner() {
   if (status !== "pending" && status !== "running") return null;
   return (
     <div className="mx-3 mt-3 p-2 text-xs rounded border border-[var(--md-accent-blue)] bg-[var(--md-bg-hover)] md-text-accent">
-      Resuming pipeline run{" "}
-      <span className="font-mono">{taskId.slice(0, 12)}…</span> ({stage}).
-      Live progress will reattach via WebSocket.
+      {t("panel.resuming")}{" "}
+      <span className="font-mono">{taskId.slice(0, 12)}…</span>{" "}
+      {t("panel.resumingTail", { stage })}
     </div>
   );
 }
@@ -248,9 +253,11 @@ export default function PipelinePanel() {
         if (!isTerminal) return;
 
         // Replay stage history. Use a local seq cursor advanced past
-        // `lastSeq` so the reducer's "already seen" check never drops
-        // a synthetic event.
-        let seq = lastSeq;
+        // the *current* lastSeq (read at run time, not from the stale
+        // closure value) so the reducer's "already seen" check never
+        // drops a synthetic event and the base isn't numbered off a
+        // pre-rehydration snapshot.
+        let seq = usePipelineStore.getState().lastSeq;
         for (const stage of record.stages ?? []) {
           const startTs = stage.started_at ?? record.started_at ?? record.created_at;
           ingestEvent({

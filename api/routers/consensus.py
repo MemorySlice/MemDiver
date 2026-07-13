@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -119,8 +120,11 @@ async def add_upload(
             status_code=400,
             detail=f"dump shorter than consensus size ({len(data)} < {session.size})",
         )
-    num, _mean, _max = manager.add_dump(
-        session_id, bytes(data[: session.size]), label=label or file.filename,
+    num, _mean, _max = await asyncio.to_thread(
+        manager.add_dump,
+        session_id,
+        bytes(data[: session.size]),
+        label or file.filename,
     )
     return AddResponse(
         session_id=session_id,

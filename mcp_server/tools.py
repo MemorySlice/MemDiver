@@ -26,7 +26,9 @@ def scan_dataset(
     protocols: Optional[List[str]] = None,
 ) -> dict:
     """Scan a dataset directory for available protocols, libraries, and phases."""
-    session.set_dataset(root)
+    result = session.set_dataset(root)
+    if "error" in result:
+        return result
     return session.get_or_scan(keylog_filename, protocols)
 
 

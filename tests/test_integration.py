@@ -37,9 +37,10 @@ def test_fast_scan_discovers_fixture_dataset():
     assert "12/scenario_a/openssl" in info.phases
     assert "13/scenario_a/boringssl" in info.phases
     assert info.total_runs == 6  # 2 TLS12 + 2 TLS13 + 2 SSH2
-    # Both libraries should appear in scenario_a (H1 fix)
-    assert "openssl" in info.libraries["scenario_a"]
-    assert "boringssl" in info.libraries["scenario_a"]
+    # Libraries are keyed by composite "ver/scenario" so they stay separated
+    # per TLS version (no cross-version merge).
+    assert "openssl" in info.libraries["12/scenario_a"]
+    assert "boringssl" in info.libraries["13/scenario_a"]
 
 
 def test_fast_scan_phases_populated():
@@ -105,6 +106,19 @@ def test_pipeline_analyze_zeroed_phase():
     report = pipeline.analyze_library(
         openssl_dir, phase="post_abort", protocol_version="12", expand_keys=False,
     )
+    assert len(report.hits) == 0
+
+
+def test_pipeline_phase_not_found_reports_zero_runs_analyzed():
+    """Regression: a phase present in no run must report num_runs=0 (analyzed),
+    so a phase typo is not masked as a clean 'no secrets found' across N runs."""
+    pipeline = AnalysisPipeline()
+    openssl_dir = DATASET_ROOT / "TLS12" / "scenario_a" / "openssl"
+    report = pipeline.analyze_library(
+        openssl_dir, phase="nonexistent_phase", protocol_version="12",
+        expand_keys=False,
+    )
+    assert report.num_runs == 0
     assert len(report.hits) == 0
 
 

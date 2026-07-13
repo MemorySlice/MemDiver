@@ -9,6 +9,7 @@ import pytest
 from engine.brute_force import (
     EXIT_HIT,
     EXIT_NO_HIT,
+    _run_parallel,
     brute_force_with_oracle,
     iter_candidate_slices,
     run_brute_force,
@@ -115,6 +116,74 @@ def test_run_brute_force_parallel_path(tmp_path):
     )
     assert result.exit_code == EXIT_HIT
     assert result.hits[0].offset == 256
+
+
+def test_run_parallel_streams_with_bounded_window(tmp_path):
+    """_run_parallel must not eagerly drain the candidate iterator.
+
+    With the old eager ``[pool.submit(...) for job in jobs_iter]`` an
+    unbounded candidate iterator would loop forever (and balloon memory)
+    before any result was processed. A bounded in-flight window lets the
+    non-exhaustive early-cancel fire and the call terminate. We also
+    assert the generator was never fully drained — only a bounded prefix
+    is ever pulled.
+    """
+    oracle = _write_oracle(
+        tmp_path,
+        "TARGET = bytes([1]) * 32\n"
+        "def verify(c): return c == TARGET\n",
+    )
+    pulled = {"count": 0}
+    hit_payload = bytes([1]) * 32
+    miss_payload = bytes([0]) * 32
+
+    def unbounded_jobs():
+        # First candidate is the hit so exhaustive=False can short-circuit;
+        # the rest are an effectively infinite stream of misses. If the
+        # iterator were drained eagerly this generator would never return.
+        i = 0
+        while True:
+            payload = hit_payload if i == 0 else miss_payload
+            pulled["count"] += 1
+            yield (0, i, 32, payload)
+            i += 1
+            if i > 10_000_000:  # safety net so a regression fails fast
+                raise AssertionError("iterator drained without back-pressure")
+
+    raw_hits, total = _run_parallel(
+        unbounded_jobs(),
+        oracle,
+        {},
+        2,
+        exhaustive=False,
+    )
+    assert len(raw_hits) == 1
+    assert raw_hits[0] == (0, 0, 32)
+    # Window is jobs*4 == 8; we must never have pulled the whole stream.
+    assert pulled["count"] < 1000
+
+
+def test_run_parallel_exhaustive_finds_all_hits(tmp_path):
+    """Streaming must still cover every candidate in exhaustive mode."""
+    oracle = _write_oracle(
+        tmp_path,
+        "def verify(c): return c[:1] == b'\\xaa'\n",
+    )
+    jobs_list = [
+        (0, i, 1, (b"\xaa" if i % 2 == 0 else b"\xbb"))
+        for i in range(40)
+    ]
+    raw_hits, total = _run_parallel(
+        iter(jobs_list),
+        oracle,
+        {},
+        3,
+        exhaustive=True,
+        total_estimate=len(jobs_list),
+    )
+    assert total == 40
+    assert len(raw_hits) == 20
+    assert {h[1] for h in raw_hits} == {i for i in range(40) if i % 2 == 0}
 
 
 def test_neighborhood_variance_attached_from_state(tmp_path):

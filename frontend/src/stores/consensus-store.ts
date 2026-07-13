@@ -1,5 +1,10 @@
 import { create } from "zustand";
 
+// Cap on cached page-classification entries. Scrolling a large dump would
+// otherwise grow pageClassifications without bound; once the cap is hit we
+// drop the oldest entries (Map preserves insertion order).
+const MAX_CACHED_PAGES = 256;
+
 interface StaticRegion {
   start: number;
   end: number;
@@ -18,6 +23,9 @@ interface ConsensusState {
   volatileRegions: StaticRegion[];
   overlayEnabled: boolean;
 
+  // Server-assigned id of the most recent consensus build. Range queries are
+  // scoped to this id so concurrent clients can't read each other's results.
+  consensusId: string | null;
   pageClassifications: Map<number, number[]>;
 
   runConsensus: (dumpPaths: string[], normalize: boolean) => Promise<void>;
@@ -36,6 +44,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
   staticRegions: [],
   volatileRegions: [],
   overlayEnabled: false,
+  consensusId: null,
   pageClassifications: new Map(),
 
   runConsensus: async (dumpPaths, normalize) => {
@@ -59,6 +68,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
         counts: json.counts ?? null,
         staticRegions: json.static_regions ?? [],
         volatileRegions: json.volatile_regions ?? [],
+        consensusId: json.consensus_id ?? null,
         pageClassifications: new Map(),
       });
     } catch (err) {
@@ -76,8 +86,13 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
     if (cached && cached.length >= length) {
       return cached.slice(0, length);
     }
+    if (!state.consensusId) {
+      // No consensus built yet — nothing to range over.
+      return [];
+    }
     const url =
-      `/api/analysis/consensus/range?offset=${offset}&length=${length}`;
+      `/api/analysis/consensus/range?consensus_id=${encodeURIComponent(state.consensusId)}` +
+      `&offset=${offset}&length=${length}`;
     const res = await fetch(url);
     if (!res.ok) {
       throw new Error(`Consensus range fetch failed: ${res.status}`);
@@ -87,6 +102,13 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
     set((prev) => {
       const next = new Map(prev.pageClassifications);
       next.set(offset, classifications);
+      // Evict oldest entries once the cache exceeds its bound so scrolling a
+      // large dump cannot grow the map unbounded.
+      while (next.size > MAX_CACHED_PAGES) {
+        const oldest = next.keys().next().value;
+        if (oldest === undefined) break;
+        next.delete(oldest);
+      }
       return { pageClassifications: next };
     });
     return classifications;
@@ -106,6 +128,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       staticRegions: [],
       volatileRegions: [],
       overlayEnabled: false,
+      consensusId: null,
       pageClassifications: new Map(),
     }),
 }));

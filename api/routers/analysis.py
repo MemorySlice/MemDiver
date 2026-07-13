@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
+from contextlib import ExitStack
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +25,10 @@ from api.models import (
     ConsensusRequest,
     ConvergenceRequest,
     VerifyKeyRequest,
+)
+from api.services.consensus_session import (
+    ConsensusSessionManager,
+    get_consensus_manager,
 )
 from core.dump_source import open_dump
 from engine.consensus import ConsensusVector
@@ -61,25 +66,23 @@ def run_analysis(
 @router.post("/consensus")
 def run_consensus(
     req: ConsensusRequest,
-    session: ToolSession = Depends(get_tool_session),
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
 ):
     """Build consensus vector from multiple dumps."""
     if len(req.dump_paths) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 dumps")
 
-    sources = [open_dump(Path(p)) for p in req.dump_paths]
-    try:
+    with ExitStack() as stack:
+        # open_dump() only constructs the source; entering it opens the source
+        # so build_from_sources can read it (an unopened MslDumpSource raises),
+        # and ExitStack guarantees every source is closed on exit.
+        sources = [stack.enter_context(open_dump(Path(p))) for p in req.dump_paths]
         cm = ConsensusVector()
         cm.build_from_sources(sources, normalize=req.normalize)
-    finally:
-        for src in sources:
-            try:
-                src.close()
-            except Exception as exc:
-                logger.warning("Failed to close dump source: %s", exc)
 
-    # Cache in session for range queries
-    session._consensus_cache = cm
+    # Register the build under its own id so range queries are isolated per
+    # client — no shared mutable state on a process-wide singleton.
+    built = manager.register(cm)
 
     static_regions = []
     for r in cm.get_static_regions():
@@ -100,6 +103,7 @@ def run_consensus(
         })
 
     return {
+        "consensus_id": built.session_id,
         "size": cm.size,
         "num_dumps": cm.num_dumps,
         "counts": cm.classification_counts(),
@@ -110,14 +114,21 @@ def run_consensus(
 
 @router.get("/consensus/range")
 def consensus_range(
+    consensus_id: str,
     offset: int = 0,
     length: int = 1024,
-    session: ToolSession = Depends(get_tool_session),
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
 ):
-    """Get variance classifications for a byte range."""
-    cm = getattr(session, "_consensus_cache", None)
-    if cm is None:
+    """Get variance classifications for a byte range of a specific build.
+
+    ``consensus_id`` is the id returned by ``POST /consensus``; range queries
+    are scoped to that build so concurrent clients never read each other's
+    results.
+    """
+    built = manager.get(consensus_id)
+    if built is None:
         raise HTTPException(status_code=404, detail="No consensus computed yet")
+    cm = built.matrix
 
     length = min(length, 16384)
     end = min(offset + length, cm.size)
@@ -331,8 +342,13 @@ def verify_key(req: VerifyKeyRequest):
             detail=f"Offset+length exceeds dump size",
         )
 
-    ciphertext = bytes.fromhex(req.ciphertext_hex)
-    iv = bytes.fromhex(req.iv_hex) if req.iv_hex else VERIFICATION_IV
+    try:
+        ciphertext = bytes.fromhex(req.ciphertext_hex)
+        iv = bytes.fromhex(req.iv_hex) if req.iv_hex else VERIFICATION_IV
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid hex input: {exc}"
+        ) from exc
 
     verified = verifier.verify(candidate, ciphertext, iv, VERIFICATION_PLAINTEXT)
 

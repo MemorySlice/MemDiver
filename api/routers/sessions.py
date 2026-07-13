@@ -72,6 +72,8 @@ def load_session(
         snapshot = session_service.load_session(name, settings.session_dir)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return asdict(snapshot)
 
 
@@ -81,10 +83,13 @@ def save_session(
     settings: Settings = Depends(get_api_settings),
 ):
     """Save full session state from the frontend."""
-    saved = session_service.save_session(
-        payload.model_dump(),
-        settings.session_dir,
-    )
+    try:
+        saved = session_service.save_session(
+            payload.model_dump(),
+            settings.session_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     logger.info("Session saved: %s", saved)
     return {
         "path": str(saved),
@@ -103,5 +108,7 @@ def delete_session(
         session_service.delete_session(name, settings.session_dir)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     logger.info("Deleted session: %s", name)
     return {"deleted": name, "status": "ok"}

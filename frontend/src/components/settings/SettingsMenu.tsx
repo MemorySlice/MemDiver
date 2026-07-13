@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useTheme } from "@/providers/ThemeProvider";
 import { downloadJsonFile } from "@/utils/download";
@@ -79,6 +80,7 @@ function SelectRow<T extends string | number>({
 }
 
 export function SettingsMenu() {
+  const { t } = useTranslation("misc");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const settings = useSettingsStore();
@@ -106,7 +108,7 @@ export function SettingsMenu() {
 
   const handleReset = () => {
     if (settings.general.confirmBeforeReset) {
-      if (!window.confirm("Reset all settings to defaults?")) return;
+      if (!window.confirm(t("settings.resetConfirm"))) return;
     }
     settings.resetToDefaults();
   };
@@ -116,8 +118,8 @@ export function SettingsMenu() {
       <button
         onClick={() => setOpen((prev) => !prev)}
         className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
-        title="Settings"
-        aria-label="Settings"
+        title={t("common:settings")}
+        aria-label={t("common:settings")}
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -137,16 +139,16 @@ export function SettingsMenu() {
       {open && (
         <div className="absolute right-0 top-full mt-1 w-72 max-h-[70vh] overflow-auto rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] shadow-lg z-50 text-xs">
           <div className="px-3 py-2 border-b border-[var(--md-border)]">
-            <span className="text-xs font-semibold md-text-secondary">Settings</span>
+            <span className="text-xs font-semibold md-text-secondary">{t("settings.title")}</span>
           </div>
 
-          <Section title="Display">
+          <Section title={t("settings.sectionDisplay")}>
             <SelectRow
-              label="Theme"
+              label={t("settings.theme")}
               value={settings.display.theme}
               options={[
-                { value: "dark", label: "Dark" },
-                { value: "light", label: "Light" },
+                { value: "dark", label: t("settings.themeDark") },
+                { value: "light", label: t("settings.themeLight") },
               ]}
               onChange={(v) => {
                 const t = v as "light" | "dark";
@@ -155,7 +157,7 @@ export function SettingsMenu() {
               }}
             />
             <CheckboxRow
-              label="High Contrast"
+              label={t("settings.highContrast")}
               checked={settings.display.highContrast}
               onChange={(v) => {
                 settings.updateDisplay({ highContrast: v });
@@ -163,7 +165,7 @@ export function SettingsMenu() {
               }}
             />
             <SelectRow
-              label="Hex Bytes/Row"
+              label={t("settings.hexBytesPerRow")}
               value={settings.display.hexBytesPerRow}
               options={[
                 { value: 16, label: "16" },
@@ -172,31 +174,31 @@ export function SettingsMenu() {
               onChange={(v) => settings.updateDisplay({ hexBytesPerRow: v as 16 | 32 })}
             />
             <CheckboxRow
-              label="Uppercase Hex"
+              label={t("settings.uppercaseHex")}
               checked={settings.display.hexUpperCase}
               onChange={(v) => settings.updateDisplay({ hexUpperCase: v })}
             />
             <CheckboxRow
-              label="Show ASCII Column"
+              label={t("settings.showAsciiColumn")}
               checked={settings.display.showAsciiColumn}
               onChange={(v) => settings.updateDisplay({ showAsciiColumn: v })}
             />
             <SelectRow
-              label="Font Size"
+              label={t("settings.fontSize")}
               value={settings.display.fontSize}
               options={[
-                { value: "xs", label: "Extra Small" },
-                { value: "sm", label: "Small" },
-                { value: "base", label: "Normal" },
+                { value: "xs", label: t("settings.fontSizeExtraSmall") },
+                { value: "sm", label: t("settings.fontSizeSmall") },
+                { value: "base", label: t("settings.fontSizeNormal") },
               ]}
               onChange={(v) => settings.updateDisplay({ fontSize: v as "xs" | "sm" | "base" })}
             />
             <SelectRow
-              label="Chart Backend"
+              label={t("settings.chartBackend")}
               value={settings.display.chartBackend}
               options={[
-                { value: "plotly", label: "Plotly (interactive)" },
-                { value: "svg", label: "SVG (lightweight)" },
+                { value: "plotly", label: t("settings.chartBackendPlotly") },
+                { value: "svg", label: t("settings.chartBackendSvg") },
               ]}
               onChange={(v) =>
                 settings.updateDisplay({ chartBackend: v as ChartBackend })
@@ -204,53 +206,54 @@ export function SettingsMenu() {
             />
           </Section>
 
-          <Section title="Analysis">
-            <Row label="Entropy Threshold">
+          <Section title={t("settings.sectionAnalysis")}>
+            <Row label={t("settings.entropyThreshold")}>
               <input
                 type="number"
                 step="0.1"
                 min="0"
                 max="8"
                 value={settings.analysis.entropyThreshold}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
                   settings.updateAnalysis({
-                    entropyThreshold: parseFloat(e.target.value) || 4.5,
-                  })
-                }
+                    entropyThreshold: Number.isNaN(v) ? 4.5 : v,
+                  });
+                }}
                 className="w-16 bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded px-1.5 py-0.5 text-xs md-text-secondary text-right"
               />
             </Row>
             <CheckboxRow
-              label="Auto-run on Load"
+              label={t("settings.autoRunOnLoad")}
               checked={settings.analysis.autoRunOnLoad}
               onChange={(v) => settings.updateAnalysis({ autoRunOnLoad: v })}
             />
           </Section>
 
-          <Section title="General">
+          <Section title={t("settings.sectionGeneral")}>
             <CheckboxRow
-              label="Auto-save Session"
+              label={t("settings.autoSaveSession")}
               checked={settings.general.autoSaveSession}
               onChange={(v) => settings.updateGeneral({ autoSaveSession: v })}
             />
             <CheckboxRow
-              label="Keyboard Shortcuts"
+              label={t("settings.keyboardShortcuts")}
               checked={settings.general.keyboardShortcutsEnabled}
               onChange={(v) => settings.updateGeneral({ keyboardShortcutsEnabled: v })}
             />
             <CheckboxRow
-              label="Confirm Before Reset"
+              label={t("settings.confirmBeforeReset")}
               checked={settings.general.confirmBeforeReset}
               onChange={(v) => settings.updateGeneral({ confirmBeforeReset: v })}
             />
           </Section>
 
-          <Section title="Help">
+          <Section title={t("settings.sectionHelp")}>
             <button
               onClick={handleStartOnboardingTour}
               className="w-full text-left px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
             >
-              Run onboarding tour
+              {t("settings.runOnboardingTour")}
             </button>
           </Section>
 
@@ -259,13 +262,13 @@ export function SettingsMenu() {
               onClick={handleExport}
               className="flex-1 px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
             >
-              Export
+              {t("settings.export")}
             </button>
             <button
               onClick={handleReset}
               className="flex-1 px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors md-text-error"
             >
-              Reset
+              {t("settings.reset")}
             </button>
           </div>
         </div>

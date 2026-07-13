@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 
 const TYPE_BADGE: Record<string, string> = {
@@ -7,6 +8,7 @@ const TYPE_BADGE: Record<string, string> = {
 };
 
 export function NeighborhoodOverlayPanel() {
+  const { t } = useTranslation("hex");
   const overlay = useHexStore((s) => s.activeNeighborhoodOverlay);
   const clearOverlay = useHexStore((s) => s.setActiveNeighborhoodOverlay);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
@@ -14,11 +16,14 @@ export function NeighborhoodOverlayPanel() {
   if (!overlay) return null;
 
   const { hitOffset, hitSize, neighborhoodStart, variance, fields } = overlay;
+  const hasVariance = variance.length > 0;
   const windowEnd = neighborhoodStart + variance.length;
 
-  const minVar = Math.min(...variance);
-  const maxVar = Math.max(...variance);
-  const meanVar = variance.reduce((a, b) => a + b, 0) / variance.length;
+  const minVar = hasVariance ? Math.min(...variance) : null;
+  const maxVar = hasVariance ? Math.max(...variance) : null;
+  const meanVar = hasVariance
+    ? variance.reduce((a, b) => a + b, 0) / variance.length
+    : null;
 
   const handleRowClick = (fieldOffset: number) => {
     scrollToOffset(neighborhoodStart + fieldOffset);
@@ -30,23 +35,26 @@ export function NeighborhoodOverlayPanel() {
         {/* Header */}
         <div className="flex items-center justify-between gap-2">
           <h4 className="font-semibold md-text-accent truncate font-mono">
-            Neighborhood: 0x{hitOffset.toString(16)}
+            {t("neighborhood.title", { offset: hitOffset.toString(16) })}
           </h4>
           <button
             onClick={() => clearOverlay(null)}
             className="px-1.5 py-0.5 text-[10px] rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] shrink-0"
           >
-            Clear
+            {t("neighborhood.clear")}
           </button>
         </div>
 
         {/* Metadata */}
         <div className="flex gap-3 text-[10px] md-text-muted flex-wrap">
           <span>
-            Window: 0x{neighborhoodStart.toString(16)}&ndash;0x
-            {windowEnd.toString(16)} ({variance.length}B)
+            {t("neighborhood.window", {
+              start: neighborhoodStart.toString(16),
+              end: windowEnd.toString(16),
+              length: variance.length,
+            })}
           </span>
-          <span>Key: {hitSize}B</span>
+          <span>{t("neighborhood.key", { size: hitSize })}</span>
         </div>
       </div>
 
@@ -55,11 +63,11 @@ export function NeighborhoodOverlayPanel() {
         <table className="w-full text-[10px]">
           <thead>
             <tr className="md-text-muted sticky top-0 md-bg-secondary">
-              <th className="text-left p-0.5">Label</th>
-              <th className="text-left p-0.5">Offset</th>
-              <th className="text-left p-0.5">Len</th>
-              <th className="text-left p-0.5">Type</th>
-              <th className="text-right p-0.5">Var</th>
+              <th className="text-left p-0.5">{t("neighborhood.colLabel")}</th>
+              <th className="text-left p-0.5">{t("neighborhood.colOffset")}</th>
+              <th className="text-left p-0.5">{t("neighborhood.colLen")}</th>
+              <th className="text-left p-0.5">{t("neighborhood.colType")}</th>
+              <th className="text-right p-0.5">{t("neighborhood.colVar")}</th>
             </tr>
           </thead>
           <tbody>
@@ -91,9 +99,9 @@ export function NeighborhoodOverlayPanel() {
 
         {/* Variance summary */}
         <div className="mt-2 pt-1 border-t border-[var(--md-border)] text-[10px] md-text-muted flex gap-3">
-          <span>min {minVar.toFixed(1)}</span>
-          <span>max {maxVar.toFixed(1)}</span>
-          <span>mean {meanVar.toFixed(1)}</span>
+          <span>{t("neighborhood.summaryMin", { value: hasVariance ? minVar!.toFixed(1) : "--" })}</span>
+          <span>{t("neighborhood.summaryMax", { value: hasVariance ? maxVar!.toFixed(1) : "--" })}</span>
+          <span>{t("neighborhood.summaryMean", { value: hasVariance ? meanVar!.toFixed(1) : "--" })}</span>
         </div>
       </div>
     </div>

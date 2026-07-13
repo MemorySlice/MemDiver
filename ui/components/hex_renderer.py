@@ -5,6 +5,15 @@ from typing import Dict, List, Optional, Tuple
 from . import color_scheme as cs
 
 
+def render_offset_column(offset: int) -> str:
+    """Render the leading offset column (8 hex digits + two spaces) as HTML.
+
+    Shared so two-panel / XOR views format offsets identically to the
+    standard single-panel hex dump.
+    """
+    return f'<span style="color:{cs.TEXT_SECONDARY}">{offset:08x}</span>  '
+
+
 def render_hex_line(
     data: bytes,
     offset: int,
@@ -26,7 +35,7 @@ def render_hex_line(
     """
     parts = []
     # Offset column
-    parts.append(f'<span style="color:{cs.TEXT_SECONDARY}">{offset:08x}</span>  ')
+    parts.append(render_offset_column(offset))
 
     # Hex bytes
     for i, byte in enumerate(data):
@@ -59,6 +68,8 @@ def render_hex_line(
         )
         char = chr(byte) if 32 <= byte < 127 else "."
         parts.append(f'<span style="color:{color}">{_html_escape(char)}</span>')
+    # Pad the ASCII block on short final lines so the closing pipe aligns.
+    parts.append(" " * (bytes_per_row - len(data)))
     parts.append("|")
 
     return "".join(parts)

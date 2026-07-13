@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { byteToHex, offsetToHex } from "@/utils/hex-codec";
 
 interface LibraryPanel {
@@ -55,6 +56,7 @@ export const CrossLibraryHex = memo(function CrossLibraryHex({
   context = 64,
   bytesPerRow = 16,
 }: Props) {
+  const { t } = useTranslation("charts");
   const panels = useMemo(() => {
     return libraries.map((lib) => {
       const start = Math.max(0, keyOffset - context);
@@ -73,17 +75,17 @@ export const CrossLibraryHex = memo(function CrossLibraryHex({
   }, [libraries, keyOffset, keyLength, context, bytesPerRow]);
 
   if (!libraries.length) {
-    return <p className="p-4 text-sm md-text-muted">No library data for comparison.</p>;
+    return <p className="p-4 text-sm md-text-muted">{t("crossLibrary.empty")}</p>;
   }
 
   return (
     <div className="p-3 text-xs space-y-2">
       <h3 className="text-sm font-semibold md-text-accent">
-        Cross-Library Comparison: {secretType}
+        {t("crossLibrary.title", { secretType })}
       </h3>
       <div className="flex gap-3 overflow-x-auto">
-        {panels.map((panel) => (
-          <div key={panel.name} className="flex-1 min-w-[320px]">
+        {panels.map((panel, i) => (
+          <div key={`${panel.name}-${i}`} className="flex-1 min-w-[320px]">
             <div className="font-semibold mb-1" style={{ color: "var(--md-accent-blue)" }}>
               {panel.name}
             </div>

@@ -228,3 +228,27 @@ def test_variant_label_sha_sizes():
     assert variant_label(sd, {"secret": 48}) == "SHA-384"
     assert variant_label(sd, {"secret": 64}) == "SHA-512"
     assert variant_label(sd, {"secret": 20}) == "SHA-1"
+
+
+def test_serialize_overlay_result_unknown_field_no_crash():
+    """serialize_overlay_result skips overlays whose field is not in the struct.
+
+    field_by_name is Optional; externally-fed overlays may reference a field
+    name absent from struct_def. Such overlays must be skipped for the
+    resolved_sizes lookup rather than raising AttributeError on None.
+    """
+    from core.structure_overlay import serialize_overlay_result
+
+    sd = _simple_struct()  # fields: magic, payload (no size_choices)
+    overlays = [
+        FieldOverlay(offset=0, length=4, field_name="magic", parsed_value=1,
+                     display="1", valid=True),
+        # Overlay referencing a field that does not exist on sd.
+        FieldOverlay(offset=4, length=4, field_name="ghost_field",
+                     parsed_value=2, display="2", valid=True),
+    ]
+    result = serialize_overlay_result(sd, overlays, total_size=8)
+    assert result["name"] == "test_simple"
+    assert {f["name"] for f in result["fields"]} == {"magic", "ghost_field"}
+    # No size_choices fields -> no variant, and no crash on the unknown field.
+    assert result["variant"] is None

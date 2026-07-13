@@ -1,0 +1,22 @@
+{
+  "bookmarks": {
+    "title": "Bookmarks",
+    "offsetPlaceholder": "0x offset",
+    "labelPlaceholder": "Label",
+    "addBookmark": "Add bookmark",
+    "empty": "No bookmarks yet."
+  },
+  "panel": {
+    "offsetTitle": "Offset 0x{{offset}}",
+    "readByteError": "Failed to read byte",
+    "getEntropyError": "Failed to get entropy",
+    "bytePrefix": "Byte: {{message}}",
+    "entropyPrefix": "Entropy: {{message}}",
+    "byteValue": "Byte Value",
+    "hex": "Hex:",
+    "dec": "Dec:",
+    "ascii": "ASCII:",
+    "localEntropy": "Local Entropy",
+    "bits": "{{value}} bits"
+  }
+}

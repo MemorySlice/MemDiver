@@ -7,8 +7,7 @@ from typing import List, Tuple
 
 from core.strings import StringMatch, extract_strings
 
-from .enums import PageState
-from .page_map import count_captured_pages
+from .page_map import get_region_page_data
 from .types import MslMemoryRegion
 
 logger = logging.getLogger("memdiver.msl.string_extract")
@@ -32,13 +31,12 @@ class MslStringReport:
 
 
 def _get_region_page_data(reader, region: MslMemoryRegion) -> bytes:
-    """Read page data for a region, handling compressed blocks."""
-    payload = reader.read_block_payload(region.block_header)
-    map_bytes = ((region.num_pages + 3) // 4 + 7) & ~7
-    data_start = 0x20 + map_bytes
-    num_captured = count_captured_pages(region.page_states)
-    end = data_start + num_captured * region.page_size
-    return payload[data_start:end]
+    """Read page data for a region, handling compressed blocks.
+
+    Thin wrapper over the shared ``get_region_page_data`` helper, kept so
+    existing call sites and any importers remain stable.
+    """
+    return get_region_page_data(reader, region)
 
 
 def extract_region_strings(

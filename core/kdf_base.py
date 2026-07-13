@@ -55,8 +55,14 @@ class BaseKDF(ABC):
         candidate_b: bytes,
         dump_data: bytes,
         hash_algo: str = "sha256",
+        hash_candidates: Optional[List[bytes]] = None,
     ) -> float:
         """Test whether *candidate_a* and *candidate_b* are KDF-related.
+
+        *hash_candidates* is an optional list of byte-strings discovered in the
+        dump that may serve as protocol-specific KDF inputs (e.g. the SSH-2
+        exchange hash H and session_id). Plugins that do not need such inputs
+        (TLS 1.2 / 1.3) ignore it; SSH-2 requires it to validate honestly.
 
         Returns a confidence score between 0.0 (unrelated) and 1.0
         (confirmed relationship).

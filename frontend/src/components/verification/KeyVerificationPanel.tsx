@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation, Trans } from "react-i18next";
 import { verifyKey } from "@/api/client";
 import { useHexStore } from "@/stores/hex-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
@@ -15,7 +16,23 @@ function isHex(value: string): boolean {
   return /^[0-9a-fA-F]*$/.test(value);
 }
 
+/**
+ * Parse an offset string without silent truncation. A '0x'/'0X' prefix means
+ * hex; a bare numeric string means decimal. A bare string containing hex
+ * letters (e.g. '1f') is ambiguous and rejected (returns NaN) rather than being
+ * misread as decimal, which would verify the wrong offset.
+ */
+function parseOffset(raw: string): number {
+  const value = raw.trim();
+  if (/^0x/i.test(value)) {
+    const body = value.slice(2);
+    return /^[0-9a-fA-F]+$/.test(body) ? parseInt(body, 16) : NaN;
+  }
+  return /^[0-9]+$/.test(value) ? parseInt(value, 10) : NaN;
+}
+
 export function KeyVerificationPanel() {
+  const { t } = useTranslation("misc");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const selection = useHexStore((s) => s.selection);
@@ -54,7 +71,7 @@ export function KeyVerificationPanel() {
   const [lengthInput, setLengthInput] = useState<string>("");
 
   const effectiveOffset = offsetInput.trim()
-    ? parseInt(offsetInput.replace(/^0x/i, ""), offsetInput.toLowerCase().startsWith("0x") ? 16 : 10)
+    ? parseOffset(offsetInput)
     : prefillOffset;
   const effectiveLength = lengthInput.trim() ? parseInt(lengthInput, 10) : prefillLength;
 
@@ -83,7 +100,7 @@ export function KeyVerificationPanel() {
       });
       setResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Verification request failed");
+      setError(e instanceof Error ? e.message : t("verification.requestFailed"));
     }
   }
 
@@ -98,14 +115,14 @@ export function KeyVerificationPanel() {
     addBookmark({
       offset: result.offset,
       length: effectiveLength,
-      label: `verified ${result.cipher} key`,
+      label: t("verification.bookmarkLabel", { cipher: result.cipher }),
     });
   };
 
   if (!dumpPath) {
     return (
       <p className="p-3 text-xs md-text-muted">
-        Load a dump file to verify candidate key bytes against a known ciphertext.
+        {t("verification.loadDumpHint")}
       </p>
     );
   }
@@ -113,16 +130,19 @@ export function KeyVerificationPanel() {
   return (
     <div className="p-3 space-y-3 text-xs">
       <div className="space-y-1">
-        <p className="font-medium md-text-secondary">Key Verification</p>
+        <p className="font-medium md-text-secondary">{t("verification.heading")}</p>
         <p className="text-[10px] md-text-muted">
-          Decrypts a known ciphertext with the selected byte range as the candidate key. Verifies
-          the result matches MemDiver&apos;s plaintext probe. Only <span className="font-mono">AES-256-CBC</span> is supported today.
+          <Trans
+            t={t}
+            i18nKey="verification.description"
+            components={[<span className="font-mono" />]}
+          />
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
-          <span className="text-[10px] md-text-muted">Offset</span>
+          <span className="text-[10px] md-text-muted">{t("verification.offset")}</span>
           <input
             className={INPUT}
             value={offsetInput}
@@ -131,7 +151,7 @@ export function KeyVerificationPanel() {
           />
         </label>
         <label className="block">
-          <span className="text-[10px] md-text-muted">Length</span>
+          <span className="text-[10px] md-text-muted">{t("verification.length")}</span>
           <input
             className={INPUT}
             value={lengthInput}
@@ -142,34 +162,34 @@ export function KeyVerificationPanel() {
       </div>
 
       <label className="block">
-        <span className="text-[10px] md-text-muted">Ciphertext (hex)</span>
+        <span className="text-[10px] md-text-muted">{t("verification.ciphertextLabel")}</span>
         <textarea
           className={`${INPUT} resize-y`}
           rows={3}
           value={ciphertextHex}
           onChange={(e) => setCiphertextHex(e.target.value)}
-          placeholder="Paste hex-encoded ciphertext..."
+          placeholder={t("verification.ciphertextPlaceholder")}
         />
         {!ciphertextValid && ciphertextHex.length > 0 && (
-          <p className="text-[10px] md-text-error mt-0.5">Ciphertext must be an even-length hex string.</p>
+          <p className="text-[10px] md-text-error mt-0.5">{t("verification.ciphertextInvalid")}</p>
         )}
       </label>
 
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
-          <span className="text-[10px] md-text-muted">IV (hex, optional)</span>
+          <span className="text-[10px] md-text-muted">{t("verification.ivLabel")}</span>
           <input
             className={INPUT}
             value={ivHex}
             onChange={(e) => setIvHex(e.target.value)}
-            placeholder="default 000102...0f"
+            placeholder={t("verification.ivPlaceholder")}
           />
           {!ivValid && (
-            <p className="text-[10px] md-text-error mt-0.5">Invalid hex.</p>
+            <p className="text-[10px] md-text-error mt-0.5">{t("verification.ivInvalid")}</p>
           )}
         </label>
         <label className="block">
-          <span className="text-[10px] md-text-muted">Cipher</span>
+          <span className="text-[10px] md-text-muted">{t("verification.cipherLabel")}</span>
           <select
             className={INPUT}
             value={cipher}
@@ -188,10 +208,10 @@ export function KeyVerificationPanel() {
           style={{ background: "var(--md-accent-blue)" }}
         >
           {isVerifying && <span className="md-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}
-          {isVerifying ? "Verifying..." : "Verify Key"}
+          {isVerifying ? t("verification.verifying") : t("verification.verifyKey")}
         </button>
         {(result || error) && (
-          <button onClick={reset} className={BTN}>Clear</button>
+          <button onClick={reset} className={BTN}>{t("common:clear")}</button>
         )}
       </div>
 
@@ -201,16 +221,22 @@ export function KeyVerificationPanel() {
         <div className="md-panel p-2 space-y-1">
           {result.verified === true ? (
             <p className="text-[11px]">
-              <span className="md-text-accent font-semibold">Key verified</span> at offset
-              {" "}0x{result.offset.toString(16).toUpperCase()} ({result.cipher})
+              <span className="md-text-accent font-semibold">{t("verification.keyVerified")}</span>{" "}
+              {t("verification.verifiedAtOffset", {
+                offset: result.offset.toString(16).toUpperCase(),
+                cipher: result.cipher,
+              })}
             </p>
           ) : result.verified === false ? (
             <p className="text-[11px] md-text-error">
-              No match at offset 0x{result.offset.toString(16).toUpperCase()} ({result.cipher})
+              {t("verification.noMatch", {
+                offset: result.offset.toString(16).toUpperCase(),
+                cipher: result.cipher,
+              })}
             </p>
           ) : (
             <p className="text-[11px] md-text-muted">
-              Verification returned null. Check dump path, cipher, or length.
+              {t("verification.returnedNull")}
             </p>
           )}
           {result.key_hex && (
@@ -220,8 +246,8 @@ export function KeyVerificationPanel() {
           )}
           {result.verified === true && (
             <div className="flex gap-1 pt-1">
-              <button onClick={handleCopyKey} className={BTN}>Copy key hex</button>
-              <button onClick={handleBookmark} className={BTN}>Bookmark offset</button>
+              <button onClick={handleCopyKey} className={BTN}>{t("verification.copyKeyHex")}</button>
+              <button onClick={handleBookmark} className={BTN}>{t("verification.bookmarkOffset")}</button>
             </div>
           )}
         </div>

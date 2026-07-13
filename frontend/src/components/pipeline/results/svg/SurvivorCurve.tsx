@@ -13,6 +13,7 @@
  * `settings.display.chartBackend === "svg"`.
  */
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
@@ -33,6 +34,7 @@ const MARGIN = { top: 30, right: 20, bottom: 80, left: 60 };
 const SVG_DASH: Record<string, string | undefined> = { dot: "3 3" };
 
 export function SurvivorCurve() {
+  const { t } = useTranslation("pipeline");
   const points = usePipelineStore((s) => s.nsweepPoints);
   const { svg: tokens } = useChartTheme();
   const [containerRef, containerWidth] = useContainerWidth({
@@ -80,7 +82,7 @@ export function SurvivorCurve() {
         data-chart-backend="svg"
         className="md-panel p-4 text-xs md-text-muted"
       >
-        No n-sweep data (pipeline ran without --nsweep).
+        {t("results.survivor.noData")}
       </div>
     );
   }
@@ -110,7 +112,7 @@ export function SurvivorCurve() {
         width={containerWidth}
         height={CHART_HEIGHT}
         role="img"
-        aria-label="Survivor curve"
+        aria-label={t("results.survivor.ariaLabel")}
         style={{ display: "block" }}
         onMouseMove={(e) => {
           const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
@@ -125,7 +127,7 @@ export function SurvivorCurve() {
         }}
         onMouseLeave={() => setHoverN(null)}
       >
-        <title>Survivor curve</title>
+        <title>{t("results.survivor.ariaLabel")}</title>
 
         {/* Grid */}
         {yTicks.map((t) => (
@@ -187,7 +189,7 @@ export function SurvivorCurve() {
               fill="#a855f7"
               fontWeight={600}
             >
-              hit
+              {t("results.survivor.hit")}
             </text>
           </g>
         )}
@@ -242,7 +244,7 @@ export function SurvivorCurve() {
           fontSize={11}
           fill={tokens.textSecondary}
         >
-          N dumps folded
+          {t("results.survivor.xAxis")}
         </text>
 
         {/* Y axis (log) */}
@@ -274,7 +276,7 @@ export function SurvivorCurve() {
           fill={tokens.textSecondary}
           transform={`rotate(-90, 14, ${MARGIN.top + plotH / 2})`}
         >
-          Survivors (log)
+          {t("results.survivor.yAxis")}
         </text>
 
         {/* Legend (bottom, horizontal) */}
@@ -323,7 +325,7 @@ export function SurvivorCurve() {
             fontFamily: "inherit",
           }}
         >
-          <div style={{ fontWeight: 600, marginBottom: 3 }}>N = {hoverPoint.n}</div>
+          <div style={{ fontWeight: 600, marginBottom: 3 }}>{t("results.survivor.tooltipN", { n: hoverPoint.n })}</div>
           {SURVIVOR_TRACES.map((t) => (
             <div key={t.key} style={{ color: t.color }}>
               {t.label}: {formatNumber(traceValues(t.key, hoverPoint))}
@@ -331,7 +333,7 @@ export function SurvivorCurve() {
           ))}
           {hoverPoint.hit_offset !== null && (
             <div style={{ color: "#a855f7", marginTop: 2 }}>
-              oracle hit @ 0x{hoverPoint.hit_offset.toString(16)}
+              {t("results.survivor.oracleHit", { offset: hoverPoint.hit_offset.toString(16) })}
             </div>
           )}
         </div>

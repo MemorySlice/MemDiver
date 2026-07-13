@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStringsStore } from "@/stores/strings-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function StringsPanel({ dumpPath }: Props) {
+  const { t } = useTranslation("misc");
   const rows = useStringsStore((s) => s.rows);
   const fetching = useStringsStore((s) => s.fetching);
   const done = useStringsStore((s) => s.done);
@@ -137,12 +139,12 @@ export function StringsPanel({ dumpPath }: Props) {
           }}
           className="px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[var(--md-text-primary)] text-xs"
         >
-          <option value="ascii">ASCII</option>
-          <option value="utf-8">UTF-8</option>
+          <option value="ascii">{t("strings.encodingAscii")}</option>
+          <option value="utf-8">{t("strings.encodingUtf8")}</option>
         </select>
 
         <label className="flex items-center gap-1 md-text-secondary">
-          Min:
+          {t("strings.minLabel")}
           <input
             type="number"
             value={minLength}
@@ -158,14 +160,14 @@ export function StringsPanel({ dumpPath }: Props) {
           onClick={handleRefetch}
           className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors"
         >
-          Extract
+          {t("strings.extract")}
         </button>
 
         <input
           type="text"
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
-          placeholder="Filter strings..."
+          placeholder={t("strings.filterPlaceholder")}
           className="flex-1 min-w-[100px] px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] text-xs"
         />
 
@@ -176,7 +178,7 @@ export function StringsPanel({ dumpPath }: Props) {
             onChange={(e) => setHighlightActive(e.target.checked)}
             className="accent-[var(--md-accent-blue)]"
           />
-          Highlight
+          {t("strings.highlight")}
         </label>
 
         <button
@@ -185,24 +187,28 @@ export function StringsPanel({ dumpPath }: Props) {
           className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
           title={
             highlightAllWarn
-              ? "Restrict highlights to viewport"
-              : `Highlight all ${filteredRows.length} matches`
+              ? t("strings.viewportOnlyTitle")
+              : t("strings.highlightAllTitle", { total: filteredRows.length })
           }
         >
-          {highlightAllWarn ? "Viewport only" : `Highlight all ${filteredRows.length}`}
+          {highlightAllWarn
+            ? t("strings.viewportOnly")
+            : t("strings.highlightAll", { total: filteredRows.length })}
         </button>
 
         <span className="md-text-muted whitespace-nowrap">
-          {typeof totalCount === "string" ? totalCount : filteredRows.length} strings
-          {truncated && " (truncated)"}
+          {t("strings.stringsCount", {
+            total: typeof totalCount === "string" ? totalCount : filteredRows.length,
+          })}
+          {truncated && t("strings.truncatedSuffix")}
           {fetching && (
-            <span className="ml-2 animate-pulse" aria-label="loading">
-              loading...
+            <span className="ml-2 animate-pulse" aria-label={t("strings.loadingAria")}>
+              {t("strings.loading")}
             </span>
           )}
           {done && rows.length > 0 && (
-            <span className="ml-2 md-text-muted" aria-label="done">
-              (done)
+            <span className="ml-2 md-text-muted" aria-label={t("strings.doneAria")}>
+              {t("strings.done")}
             </span>
           )}
         </span>
@@ -213,21 +219,20 @@ export function StringsPanel({ dumpPath }: Props) {
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40">
           <div className="max-w-md p-4 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[var(--md-text-primary)] text-xs space-y-3">
             <p>
-              Highlighting all {filteredRows.length} matches may slow the hex viewer.
-              Continue?
+              {t("strings.confirmHighlightAll", { total: filteredRows.length })}
             </p>
             <div className="flex justify-end gap-2">
               <button
                 onClick={cancelHighlightAll}
                 className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors"
               >
-                Cancel
+                {t("common:cancel")}
               </button>
               <button
                 onClick={confirmHighlightAll}
                 className="px-2 py-1 rounded border border-[var(--md-accent-blue)] bg-[var(--md-accent-blue)] text-white hover:opacity-90 transition-opacity"
               >
-                Highlight all
+                {t("strings.highlightAllConfirm")}
               </button>
             </div>
           </div>
@@ -239,16 +244,16 @@ export function StringsPanel({ dumpPath }: Props) {
         className="grid px-2 py-1 md-text-muted border-b border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[11px]"
         style={{ gridTemplateColumns: "10ch 1fr 6ch 4ch" }}
       >
-        <span>Offset</span>
-        <span>Value</span>
-        <span>Len</span>
-        <span>Enc</span>
+        <span>{t("strings.colOffset")}</span>
+        <span>{t("strings.colValue")}</span>
+        <span>{t("strings.colLen")}</span>
+        <span>{t("strings.colEnc")}</span>
       </div>
 
       {/* Virtualized body */}
       {showEmptyState ? (
         <p className="p-3 text-center md-text-muted">
-          {rows.length === 0 ? "No strings found." : "No strings match filter."}
+          {rows.length === 0 ? t("strings.noStringsFound") : t("strings.noStringsMatch")}
         </p>
       ) : (
         <div ref={parentRef} className="flex-1 overflow-auto">

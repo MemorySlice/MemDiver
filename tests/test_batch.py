@@ -284,6 +284,36 @@ def test_auto_persist_true_when_no_project_db(tmp_path):
     assert calls[0].get("auto_persist") is True
 
 
+class _UnavailableDB:
+    """Stand-in ProjectDB whose backend never came up."""
+
+    _available = False
+
+    def persist_report(self, report):  # pragma: no cover - must not be called
+        raise AssertionError("persist_report must not run on an unavailable db")
+
+
+def test_unavailable_project_db_warns_on_silent_skip(tmp_path, caplog):
+    """Regression: when project_db is supplied but unavailable, per-job
+    auto_persist is disabled AND main-process persist is skipped — this must
+    emit a clear warning instead of silently dropping results."""
+    import logging
+
+    req = _make_request(tmp_path)
+    batch = BatchRequest(jobs=[req])
+
+    runner = BatchRunner(project_db=_UnavailableDB())
+    with patch("engine.batch.run_analysis_request", _mock_run_analysis):
+        with caplog.at_level(logging.WARNING, logger="memdiver.engine.batch"):
+            result = runner.run(batch)
+
+    assert len(result.succeeded) == 1
+    assert any(
+        "will NOT be persisted" in rec.getMessage()
+        for rec in caplog.records
+    ), "expected a warning when persistence is silently skipped"
+
+
 # --- ProcessPool pickling regression ---
 
 

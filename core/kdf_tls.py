@@ -1,5 +1,6 @@
 """TLS KDF plugins wrapping TLS12PRF and TLS13HKDF as BaseKDF subclasses."""
 
+import hashlib
 import logging
 from typing import List, Optional, Set
 
@@ -44,8 +45,13 @@ class TLS12KDF(BaseKDF):
         candidate_b: bytes,
         dump_data: bytes,
         hash_algo: str = "sha256",
+        hash_candidates: Optional[List[bytes]] = None,
     ) -> float:
-        """Test TLS 1.2 PRF relationship between two 48-byte candidates."""
+        """Test TLS 1.2 PRF relationship between two 48-byte candidates.
+
+        *hash_candidates* is accepted for interface compatibility (SSH-2 needs
+        it) and ignored here: TLS 1.2 PRF needs no dump-discovered hash inputs.
+        """
         probe_random = b"\x00" * 32
 
         # Try a as PMS -> does PRF yield b?
@@ -145,8 +151,13 @@ class TLS13KDF(BaseKDF):
         candidate_b: bytes,
         dump_data: bytes,
         hash_algo: str = "sha256",
+        hash_candidates: Optional[List[bytes]] = None,
     ) -> float:
-        """Test TLS 1.3 HKDF relationship between two 32-byte candidates."""
+        """Test TLS 1.3 HKDF relationship between two 32-byte candidates.
+
+        *hash_candidates* is accepted for interface compatibility (SSH-2 needs
+        it) and ignored here: TLS 1.3 HKDF needs no dump-discovered hash inputs.
+        """
         # Try HKDF-Extract both ways.
         prk = TLS13HKDF.hkdf_extract(salt=candidate_a, ikm=candidate_b, hash_algo=hash_algo)
         if prk == candidate_a or prk == candidate_b:
@@ -157,7 +168,9 @@ class TLS13KDF(BaseKDF):
             return _KDF_MATCH_CONFIDENCE
 
         # Try HKDF-Expand-Label with standard TLS 1.3 labels.
-        empty_hash = bytes(_TLS13_KEY_SIZE)
+        # TLS 1.3 Derive-Secret over the empty transcript uses the hash of the
+        # empty string as context (RFC 8446 Section 7.1), not zero bytes.
+        empty_hash = hashlib.new(hash_algo, b"").digest()
         tls13_labels = [
             "derived", "c hs traffic", "s hs traffic",
             "c ap traffic", "s ap traffic", "exp master", "res master",

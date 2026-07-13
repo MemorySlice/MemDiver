@@ -172,9 +172,16 @@ def serialize_overlay_result(
     total_size: int,
 ) -> Dict[str, Any]:
     """Build the common response payload shared by apply_structure and identify_structure."""
+    def _has_size_choices(field_name: str) -> bool:
+        # field_by_name is Optional: externally-fed overlays may reference a
+        # field that is not part of struct_def. Skip those rather than
+        # raising AttributeError on a None lookup.
+        field = struct_def.field_by_name(field_name)
+        return field is not None and bool(field.size_choices)
+
     resolved_sizes = {
         o.field_name: o.length for o in overlays
-        if struct_def.field_by_name(o.field_name).size_choices
+        if _has_size_choices(o.field_name)
     }
     variant = variant_label(struct_def, resolved_sizes) if resolved_sizes else None
     return {

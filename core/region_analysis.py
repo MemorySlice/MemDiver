@@ -68,7 +68,11 @@ def analyze_region(
     neighborhood = data[start:end]
 
     entropy = shannon_entropy(neighborhood)
-    byte_value = data[offset] if offset < len(data) else 0
+    if not 0 <= offset < len(data):
+        raise IndexError(
+            f"offset {offset} out of range for data of length {len(data)}"
+        )
+    byte_value = data[offset]
 
     var_at = None
     var_class = None

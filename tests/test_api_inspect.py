@@ -160,3 +160,26 @@ def test_blocks_missing_file_404(client, tmp_path):
     missing = tmp_path / "does_not_exist.msl"
     resp = client.get("/api/inspect/blocks", params={"msl_path": str(missing)})
     assert resp.status_code == 404
+
+
+# -- offset bounds guards ------------------------------------------------
+
+def test_hex_rejects_negative_offset_422(client, raw_dump):
+    """The /hex offset query param has ge=0, so a negative offset is a 422."""
+    path, _ = raw_dump
+    resp = client.get(
+        "/api/inspect/hex", params={"dump_path": path, "offset": -1}
+    )
+    assert resp.status_code == 422
+
+
+def test_read_hex_negative_offset_errors(raw_dump):
+    """read_hex itself returns a clean 'out of range' error for a negative
+    offset, even when called below the API validation layer."""
+    from mcp_server import tools_inspect
+    from mcp_server.session import ToolSession
+
+    path, _ = raw_dump
+    result = tools_inspect.read_hex(ToolSession(), path, offset=-1, length=16)
+    assert "error" in result
+    assert "out of range" in result["error"]

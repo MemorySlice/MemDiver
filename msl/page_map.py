@@ -133,3 +133,18 @@ def count_captured_pages(page_states_or_intervals) -> int:
             if iv.state == PageState.CAPTURED
         )
     return sum(1 for s in page_states_or_intervals if s == PageState.CAPTURED)
+
+
+def get_region_page_data(reader, region) -> bytes:
+    """Read the captured page data for a region, handling compressed blocks.
+
+    Skips the region block's fixed header (0x20) and its 8-byte-padded
+    PageStateMap, then returns exactly the captured-page bytes. Shared by
+    string and key extraction so the offset math stays in one place.
+    """
+    payload = reader.read_block_payload(region.block_header)
+    map_bytes = ((region.num_pages + 3) // 4 + 7) & ~7
+    data_start = 0x20 + map_bytes
+    num_captured = count_captured_pages(region.page_states)
+    end = data_start + num_captured * region.page_size
+    return payload[data_start:end]

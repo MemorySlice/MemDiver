@@ -1,0 +1,40 @@
+{
+  "comparison": {
+    "empty": "No experiment results available.",
+    "title": "Tool Comparison",
+    "metric": "Metric",
+    "format": "Format",
+    "precision": "Precision",
+    "falsePositives": "False positives",
+    "recall": "Recall",
+    "decryption": "Decryption",
+    "plugin": "Plugin",
+    "saved": "Saved",
+    "yes": "YES",
+    "no": "NO",
+    "na": "N/A"
+  },
+  "scan": {
+    "empty": "Run analysis to see results here.",
+    "allAlgorithms": "All Algorithms",
+    "rerunAll": "Re-run All",
+    "exportJson": "Export JSON",
+    "hits": "{{count}} hits",
+    "running": "Running...",
+    "rerunFailed": "Re-run failed",
+    "rerun": "Re-run",
+    "colOffset": "Offset",
+    "colLen": "Len",
+    "colConf": "Conf",
+    "colType": "Type",
+    "more": "...and {{count}} more",
+    "noHits": "No hits"
+  },
+  "verification": {
+    "verifiedTitle": "Decryption verified",
+    "verified": "Verified",
+    "failedTitle": "Decryption failed",
+    "failed": "Failed",
+    "notVerifiedTitle": "Not verified"
+  }
+}

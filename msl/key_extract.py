@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from core.models import CryptoSecret
 
 from .enums import MslKeyType, MslProtocol, PageState
-from .page_map import count_captured_pages
+from .page_map import get_region_page_data
 from .types import MslKeyHint, MslMemoryRegion
 
 logger = logging.getLogger("memdiver.msl.key_extract")
@@ -77,6 +77,16 @@ def extract_key_bytes(reader, hint: MslKeyHint) -> Optional[bytes]:
         logger.warning("Key hint references unknown region %s", hint.region_uuid)
         return None
 
+    # A zero-length key carries no secret bytes; emitting it produces a
+    # spurious empty CryptoSecret. It also slips past the bounds check below
+    # when region_offset == region_size (0 + region_size is not > region_size).
+    if hint.key_length <= 0:
+        logger.warning(
+            "Key hint has non-positive key_length %d; skipping",
+            hint.key_length,
+        )
+        return None
+
     if hint.region_offset + hint.key_length > region.region_size:
         logger.warning(
             "Key hint offset %d + length %d exceeds region size %d",
@@ -111,21 +121,11 @@ def _read_region_bytes(
     )
     data_offset = captured_before * page_size + (offset % page_size)
 
-    page_data = _get_region_page_data(reader, region)
+    page_data = get_region_page_data(reader, region)
     if data_offset + length > len(page_data):
         logger.warning("Computed data offset exceeds available page data")
         return None
     return page_data[data_offset:data_offset + length]
-
-
-def _get_region_page_data(reader, region: MslMemoryRegion) -> bytes:
-    """Read page data for a region, handling compressed blocks."""
-    payload = reader.read_block_payload(region.block_header)
-    map_bytes = ((region.num_pages + 3) // 4 + 7) & ~7
-    data_start = 0x20 + map_bytes
-    num_captured = count_captured_pages(region.page_states)
-    end = data_start + num_captured * region.page_size
-    return payload[data_start:end]
 
 
 def extract_secrets_from_msl(reader) -> List[CryptoSecret]:

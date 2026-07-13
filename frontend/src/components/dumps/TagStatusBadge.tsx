@@ -1,34 +1,36 @@
+import { useTranslation } from "react-i18next";
 import type { TagStatus } from "@/api/types";
 
-const STYLES: Record<TagStatus, { bg: string; label: string; title: string } | null> = {
+const STYLES: Record<TagStatus, { bg: string; labelKey: string; titleKey: string } | null> = {
   not_encrypted: null,
   valid: {
     bg: "var(--md-accent-green)",
-    label: "VALID",
-    title: "AEAD tag verified — encrypted dump decrypted successfully",
+    labelKey: "tagStatus.valid.label",
+    titleKey: "tagStatus.valid.title",
   },
   corrupted: {
     bg: "var(--md-accent-red)",
-    label: "CORRUPT",
-    title: "AEAD verification failed — wrong key or tampered file",
+    labelKey: "tagStatus.corrupt.label",
+    titleKey: "tagStatus.corrupt.title",
   },
   missing_key: {
     bg: "var(--md-accent-orange)",
-    label: "NO KEY",
-    title: "Encrypted dump opened without a key",
+    labelKey: "tagStatus.noKey.label",
+    titleKey: "tagStatus.noKey.title",
   },
 };
 
 export function TagStatusBadge({ status }: { status?: TagStatus }) {
+  const { t } = useTranslation("dumps");
   const style = status ? STYLES[status] : null;
   if (!style) return null;
   return (
     <span
       className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase"
       style={{ background: style.bg, color: "var(--md-bg-primary)" }}
-      title={style.title}
+      title={t(style.titleKey)}
     >
-      {style.label}
+      {t(style.labelKey)}
     </span>
   );
 }

@@ -45,8 +45,19 @@ def read_hex(
     try:
         with cached_dump_source(Path(dump_path)) as source:
             file_size = source.size_for(view)
-            data = source.read_range(offset, length, view=view)
             format_name = source.format_name
+            # Reject out-of-range offsets with a clean error message, matching
+            # the sibling _read_hex_raw guard. read_range backstops this, but a
+            # negative offset here should not silently return tail bytes.
+            if offset < 0 or offset > file_size:
+                return {
+                    "error": "offset out of range",
+                    "offset": offset,
+                    "file_size": file_size,
+                    "view": view,
+                    "format": format_name,
+                }
+            data = source.read_range(offset, length, view=view)
     except FileNotFoundError:
         return {"error": f"File not found: {dump_path}"}
 
@@ -162,11 +173,16 @@ def get_entropy(
     profile = compute_entropy_profile(data, window=window, step=step)
     regions = find_high_entropy_regions(profile, threshold=threshold)
 
-    # Sample profile to keep response size reasonable
+    # Sample profile to keep response size reasonable. Use index-based even
+    # sampling that spans the whole profile (always including the last entry)
+    # so the plotted sample matches the full-profile stats/high_entropy_regions.
     sample = profile
     if len(profile) > MAX_ENTROPY_SAMPLES:
-        step_size = len(profile) // MAX_ENTROPY_SAMPLES
-        sample = profile[::step_size][:MAX_ENTROPY_SAMPLES]
+        n = len(profile)
+        sample = [
+            profile[(i * (n - 1)) // (MAX_ENTROPY_SAMPLES - 1)]
+            for i in range(MAX_ENTROPY_SAMPLES)
+        ]
 
     entropies = [e for _, e in profile] if profile else [0.0]
     return {
@@ -295,6 +311,64 @@ def _collect_chunk_matches(
         if len(results) >= max_results:
             return True, absolute_offset + m.length
     return False, None
+
+
+def search_bytes(
+    session: ToolSession,
+    dump_path: str,
+    pattern_hex: str,
+    view: ViewMode = "raw",
+    max_results: int = 500,
+    cursor: int = 0,
+) -> dict:
+    """Search a dump for every occurrence of a hex byte pattern.
+
+    ``pattern_hex`` accepts an optional leading ``0x`` and surrounding
+    whitespace (e.g. ``"0x deadbeef"``). It must decode to at least one
+    byte; empty, odd-length, or non-hex input returns a clear error.
+
+    For ``.msl`` files, ``view="raw"`` searches the .msl container bytes
+    while ``view="vas"`` searches the flattened captured memory projection;
+    for ``.dump`` files the ``view`` parameter is accepted but ignored.
+
+    Results are paginated by offset index: ``cursor`` is the index into the
+    full match list to resume from, and ``next_cursor`` (0 when exhausted)
+    feeds straight back into the next call.
+    """
+    normalized = pattern_hex.strip()
+    if normalized[:2].lower() == "0x":
+        normalized = normalized[2:]
+    normalized = "".join(normalized.split())
+    if not normalized:
+        return {"error": "Empty byte pattern"}
+    try:
+        needle = bytes.fromhex(normalized)
+    except ValueError:
+        return {"error": f"Invalid hex byte pattern: {pattern_hex!r}"}
+    if not needle:
+        return {"error": "Empty byte pattern"}
+
+    try:
+        with cached_dump_source(Path(dump_path)) as source:
+            file_size = source.size_for(view)
+            offsets = source.find_all(needle, view=view)
+    except FileNotFoundError:
+        return {"error": f"File not found: {dump_path}"}
+
+    page = offsets[cursor:cursor + max_results]
+    truncated = len(offsets) > cursor + max_results
+    next_cursor = cursor + max_results if truncated else 0
+
+    return {
+        "pattern_hex": needle.hex(),
+        "pattern_len": len(needle),
+        "offsets": page,
+        "count": len(offsets),
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+        "view": view,
+        "file_size": file_size,
+    }
 
 
 def get_session_info(session: ToolSession, msl_path: str) -> dict:

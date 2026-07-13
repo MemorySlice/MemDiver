@@ -3,8 +3,10 @@
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 # Ensure package root is on sys.path for bare imports (matches legacy_app.py/run.py pattern)
@@ -111,7 +113,12 @@ def _write_output(
     else:
         text = json.dumps(data, indent=2)
     if output_path:
-        Path(output_path).write_text(text)
+        try:
+            Path(output_path).write_text(text)
+        except OSError as exc:
+            print(f"memdiver: cannot write output to {output_path}: {exc}",
+                  file=sys.stderr)
+            raise SystemExit(1)
         logger.info("Output written to %s", output_path)
     else:
         print(text)
@@ -342,8 +349,15 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
 
     logger.info("Building consensus from %d dumps", len(dump_paths))
     key_material = _key_material_from_args(args)
-    sources = [open_dump(p, **key_material) for p in dump_paths]
-    try:
+    with ExitStack() as stack:
+        # open_dump() only constructs the source; entering it opens the source
+        # (mmap + header parse) so build_from_sources can read it — an unopened
+        # MslDumpSource raises RuntimeError on get_reader(). ExitStack also
+        # guarantees every source is closed on exit.
+        sources = [stack.enter_context(open_dump(p, **key_material))
+                   for p in dump_paths]
+        for source in sources:
+            _warn_tag_status(source)
         cm = ConsensusVector()
         cm.build_from_sources(sources, normalize=args.normalize)
 
@@ -391,13 +405,6 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
             result["convergence"] = serialize_convergence_result(sweep)
 
         _write_output(result, args.output)
-    finally:
-        for s in sources:
-            if hasattr(s, "__exit__"):
-                try:
-                    s.__exit__(None, None, None)
-                except Exception:
-                    pass
     return 0
 
 
@@ -460,6 +467,11 @@ def _cmd_consensus_add(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if not data.strip(b"\x00"):
+        logger.warning(
+            "Folded dump %s is entirely zero bytes — consensus may be meaningless",
+            args.dump,
+        )
     welford.add_dump(data)
 
     new_mean, new_m2, new_n = welford.state_arrays()
@@ -767,8 +779,30 @@ def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
     except MslCryptoError as exc:
         print(f"memdiver: {exc}", file=sys.stderr)
         return 1
-    Path(args.public_out).write_bytes(public_key)
-    Path(args.private_out).write_bytes(private_key)
+    public_path = Path(args.public_out)
+    private_path = Path(args.private_out)
+    try:
+        # Write the private key first, with owner-only (0o600) permissions so
+        # it never inherits a world/group-readable umask. Use os.open with the
+        # mode up-front to avoid a brief window where the secret is readable.
+        fd = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(private_key)
+        finally:
+            # chmod again in case the file pre-existed (O_CREAT mode is ignored
+            # for an existing file).
+            os.chmod(private_path, 0o600)
+        public_path.write_bytes(public_key)
+    except OSError as exc:
+        # Avoid leaving a half-written keypair behind on failure.
+        for partial in (private_path, public_path):
+            try:
+                partial.unlink()
+            except OSError:
+                pass
+        print(f"memdiver: cannot write KEM keypair: {exc}", file=sys.stderr)
+        return 1
     print(f"memdiver: wrote {args.public_out} ({len(public_key)}B public) and "
           f"{args.private_out} ({len(private_key)}B private) for {args.mechanism}",
           file=sys.stderr)
@@ -1193,23 +1227,23 @@ def _build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--output-dir", required=True, help="Directory for report.{json,md,html}")
     ns.add_argument("-v", "--verbose", action="store_true")
     # emit-plugin
-    ep = sub.add_parser(
+    ep_emit = sub.add_parser(
         "emit-plugin",
         help="Emit a Volatility3 plugin from a brute-force hit neighborhood",
         parents=[_decrypt_parent_parser()],
     )
-    ep.add_argument("--hit", required=True, help="hits.json from brute-force")
-    ep.add_argument("--reference", required=True, help="Reference dump file")
-    ep.add_argument("--name", required=True, help="Plugin class / rule name")
-    ep.add_argument("--hit-index", type=int, default=0)
-    ep.add_argument("--description")
-    ep.add_argument(
+    ep_emit.add_argument("--hit", required=True, help="hits.json from brute-force")
+    ep_emit.add_argument("--reference", required=True, help="Reference dump file")
+    ep_emit.add_argument("--name", required=True, help="Plugin class / rule name")
+    ep_emit.add_argument("--hit-index", type=int, default=0)
+    ep_emit.add_argument("--description")
+    ep_emit.add_argument(
         "--variance-threshold", type=float, default=None,
         help="Max variance for static bytes (default: 3000). Lower values "
         "produce more wildcards → more cross-session robust patterns.",
     )
-    ep.add_argument("-o", "--output", required=True, help="Output .py file path")
-    ep.add_argument("-v", "--verbose", action="store_true")
+    ep_emit.add_argument("-o", "--output", required=True, help="Output .py file path")
+    ep_emit.add_argument("-v", "--verbose", action="store_true")
     # export
     ex = sub.add_parser("export", help="Export pattern as YARA/JSON/Volatility3",
                         parents=[_decrypt_parent_parser()])
@@ -1270,24 +1304,24 @@ def _build_parser() -> argparse.ArgumentParser:
     vr.add_argument("-o", "--output", help="Output JSON file")
     vr.add_argument("-v", "--verbose", action="store_true")
     # experiment
-    ep = sub.add_parser("experiment",
-                        help="Run full dump-and-analyze experiment")
-    ep.add_argument("--target", required=True,
-                    help="Target script path (e.g., aes_sample_process.py)")
-    ep.add_argument("--num-runs", type=int, default=30,
-                    help="Number of dump iterations per tool (default: 30)")
-    ep.add_argument("--tools", help="Comma-separated dump tools (default: auto-detect)")
-    ep.add_argument("--output-dir", type=Path, default=Path("./experiment_output"),
-                    help="Output directory (default: ./experiment_output)")
-    ep.add_argument("--convergence", action="store_true",
-                    help="Run convergence sweep after dumping")
-    ep.add_argument("--max-fp", type=int, default=0,
-                    help="FP target for convergence (default: 0)")
-    ep.add_argument("--export-format", default="volatility3",
-                    choices=["yara", "json", "volatility3"],
-                    help="Auto-export format (default: volatility3)")
-    ep.add_argument("-o", "--output", help="Output JSON results file")
-    ep.add_argument("-v", "--verbose", action="store_true")
+    ep_exp = sub.add_parser("experiment",
+                            help="Run full dump-and-analyze experiment")
+    ep_exp.add_argument("--target", required=True,
+                        help="Target script path (e.g., aes_sample_process.py)")
+    ep_exp.add_argument("--num-runs", type=int, default=30,
+                        help="Number of dump iterations per tool (default: 30)")
+    ep_exp.add_argument("--tools", help="Comma-separated dump tools (default: auto-detect)")
+    ep_exp.add_argument("--output-dir", type=Path, default=Path("./experiment_output"),
+                        help="Output directory (default: ./experiment_output)")
+    ep_exp.add_argument("--convergence", action="store_true",
+                        help="Run convergence sweep after dumping")
+    ep_exp.add_argument("--max-fp", type=int, default=0,
+                        help="FP target for convergence (default: 0)")
+    ep_exp.add_argument("--export-format", default="volatility3",
+                        choices=["yara", "json", "volatility3"],
+                        help="Auto-export format (default: volatility3)")
+    ep_exp.add_argument("-o", "--output", help="Output JSON results file")
+    ep_exp.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 

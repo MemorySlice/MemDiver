@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from core.dataset_metadata import DatasetMeta, DumpRef, load_run_meta
+from core.dataset_metadata import DatasetMeta, DumpRef, _decode_hex, load_run_meta
 from tests._paths import SKIP_REASON, dataset_root
 
 
@@ -80,6 +80,23 @@ def test_load_run_meta_aslr_accepts_int_and_hex(tmp_path: Path) -> None:
     """``aslr_base`` can be a hex string or a raw integer."""
     _write_meta(tmp_path, {"aslr_base": 4194304})
     assert load_run_meta(tmp_path).aslr_base == 4194304  # type: ignore[union-attr]
+
+
+def test_decode_hex_even_length_and_prefix() -> None:
+    """Even-length hex decodes, with optional ``0x`` prefix."""
+    assert _decode_hex("deadbeef") == b"\xde\xad\xbe\xef"
+    assert _decode_hex("0xDEADBEEF") == b"\xde\xad\xbe\xef"
+    assert _decode_hex("") == b""
+
+
+def test_decode_hex_rejects_odd_length() -> None:
+    """Odd-length hex is rejected rather than nibble-misaligned by padding.
+
+    ``"abc"`` must NOT decode to ``b"\\x0a\\xbc"`` (front-pad) — that would
+    silently shift every nibble. It returns empty bytes instead.
+    """
+    assert _decode_hex("abc") == b""
+    assert _decode_hex("0xabc") == b""
 
 
 def test_load_run_meta_real_dataset() -> None:

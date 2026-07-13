@@ -116,3 +116,47 @@ def test_render_session_view_none():
     mo = _make_mo()
     render_session_view(mo, None)
     mo.md.assert_called_once()
+
+
+def test_render_vas_table_escapes_malicious_path():
+    """Untrusted mapped_path with HTML markup is escaped, not injected."""
+    from ui.views.vas_view import render_vas_table
+    mo = _make_mo()
+    payload = '<script>alert(1)</script>'
+    entries = [MslVasEntry(0x00400000, 0x10000, 0x05, 0x03, payload)]
+    render_vas_table(mo, entries)
+    html = mo.Html.call_args[0][0]
+    assert payload not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_render_session_view_escapes_malicious_exe_path():
+    """Untrusted process exe_path with HTML markup is escaped."""
+    from ui.views.session_view import render_session_view
+    from msl.session_extract import SessionReport
+    from msl.types import MslProcessIdentity, MslBlockHeader
+
+    mo = _make_mo()
+    hdr = MslBlockHeader(
+        block_type=0x0040, flags=0, block_length=80,
+        payload_version=1, block_uuid=UUID(int=1),
+        parent_uuid=UUID(int=0), prev_hash=b"\x00" * 32,
+        file_offset=0, payload_offset=80,
+    )
+    payload = '<img src=x onerror=alert(1)>'
+    pi = MslProcessIdentity(
+        block_header=hdr, ppid=1000, session_id=1,
+        start_time_ns=0, exe_path=payload, cmd_line="ok",
+    )
+    report = SessionReport(
+        dump_uuid=UUID(int=42), pid=1234,
+        os_type="LINUX", arch_type="X86_64",
+        timestamp_ns=1_700_000_000_000_000_000,
+        process_identity=pi,
+        region_count=1, total_region_size=4096,
+        captured_page_count=1,
+    )
+    render_session_view(mo, report)
+    html = mo.Html.call_args[0][0]
+    assert payload not in html
+    assert "&lt;img" in html

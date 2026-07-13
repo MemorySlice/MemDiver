@@ -11,6 +11,7 @@
  * when `settings.display.chartBackend === "svg"`.
  */
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 import type { EntropyChartProps } from "../types";
@@ -27,8 +28,10 @@ const MARGIN = { top: 40, right: 20, bottom: 40, left: 55 };
 export const EntropyChart = memo(function EntropyChart({
   data,
   threshold = 7.5,
-  title = "Entropy Profile",
+  title,
 }: EntropyChartProps) {
+  const { t } = useTranslation("charts");
+  const resolvedTitle = title ?? t("entropy.defaultTitle");
   const { svg: tokens } = useChartTheme();
   const [containerRef, containerWidth] = useContainerWidth();
 
@@ -59,7 +62,7 @@ export const EntropyChart = memo(function EntropyChart({
     }, [points, containerWidth]);
 
   if (points.length === 0) {
-    return <p className="p-3 text-sm md-text-muted" data-chart-backend="svg">No entropy profile available.</p>;
+    return <p className="p-3 text-sm md-text-muted" data-chart-backend="svg">{t("entropy.empty")}</p>;
   }
 
   const xTicks = niceLinearTicks(offsetMin, offsetMax, 6);
@@ -73,10 +76,10 @@ export const EntropyChart = memo(function EntropyChart({
         width={chartWidth}
         height={CHART_HEIGHT}
         role="img"
-        aria-label={title}
+        aria-label={resolvedTitle}
         style={{ display: "block", background: tokens.chartPaper }}
       >
-        <title>{title}</title>
+        <title>{resolvedTitle}</title>
 
         {/* Plot area background */}
         <rect
@@ -96,7 +99,7 @@ export const EntropyChart = memo(function EntropyChart({
           fontWeight={600}
           fill={tokens.chartText}
         >
-          {title}
+          {resolvedTitle}
         </text>
 
         {/* Horizontal grid (at each Y tick) */}
@@ -196,7 +199,7 @@ export const EntropyChart = memo(function EntropyChart({
           fontSize={11}
           fill={tokens.textSecondary}
         >
-          Offset (bytes)
+          {t("entropy.axis.offset")}
         </text>
 
         {/* Y axis ticks + labels */}
@@ -230,7 +233,7 @@ export const EntropyChart = memo(function EntropyChart({
           fill={tokens.textSecondary}
           transform={`rotate(-90, 14, ${MARGIN.top + plotH / 2})`}
         >
-          Entropy (bits/byte)
+          {t("entropy.axis.entropy")}
         </text>
       </svg>
     </div>

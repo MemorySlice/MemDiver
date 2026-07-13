@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Tuple
 
-from .dump_io import DumpReader
+from .dump_io import DumpReader, find_all_offsets
 
 logger = logging.getLogger("memdiver.core.dump_source")
 
@@ -12,14 +12,9 @@ ViewMode = Literal["raw", "vas"]
 
 
 def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
-    offsets, start = [], 0
-    while True:
-        idx = data.find(needle, start)
-        if idx == -1:
-            break
-        offsets.append(idx)
-        start = idx + 1
-    return offsets
+    """Overlapping-aware byte search over *data* (delegates to the shared
+    :func:`core.dump_io.find_all_offsets` helper used by ``DumpReader``)."""
+    return find_all_offsets(data, needle)
 
 
 class RawDumpSource:
@@ -372,8 +367,13 @@ def open_dump(path: Path, *,
                              kem_private_key=kem_private_key)
 
     # ELF core dump: \x7fELF magic + e_type == ET_CORE (4) at offset 16.
+    # e_type's byte order follows EI_DATA (magic[5]): 1=ELFDATA2LSB
+    # (little-endian), 2=ELFDATA2MSB (big-endian). Reading it unconditionally
+    # little-endian misdetects big-endian cores, which then fall through to
+    # RawDumpSource.
     if magic[:4] == b"\x7fELF" and len(magic) >= 18:
-        e_type = int.from_bytes(magic[16:18], "little")
+        byteorder = "big" if magic[5] == 2 else "little"
+        e_type = int.from_bytes(magic[16:18], byteorder)
         if e_type == 4:  # ET_CORE
             from core.dump_sources.gcore import GCoreDumpSource
             return GCoreDumpSource(path)

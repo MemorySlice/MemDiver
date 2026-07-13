@@ -1,4 +1,5 @@
 import { forwardRef, type MouseEvent } from "react";
+import { useTranslation } from "react-i18next";
 import type { BrowseEntry } from "@/api/types";
 
 interface FileBrowserEntryListProps {
@@ -30,9 +31,10 @@ export const FileBrowserEntryList = forwardRef<HTMLDivElement, FileBrowserEntryL
     { loading, error, parentPath, displayEntries, filter, onNavigateParent, onEntryClick },
     ref,
   ) {
+    const { t } = useTranslation("wizard");
     return (
       <div className="overflow-y-auto" style={{ maxHeight: "calc(70vh - 140px)" }}>
-        {loading && <div className="p-4 text-sm md-text-muted text-center">Loading...</div>}
+        {loading && <div className="p-4 text-sm md-text-muted text-center">{t("browser.loading")}</div>}
 
         {error && (
           <div className="p-4 text-sm text-center" style={{ color: "var(--md-accent-red)" }}>
@@ -50,13 +52,13 @@ export const FileBrowserEntryList = forwardRef<HTMLDivElement, FileBrowserEntryL
                 className={ENTRY_CLASS}
               >
                 <span className="text-[var(--md-accent-blue)]">..</span>
-                <span className="md-text-muted text-xs">Parent directory</span>
+                <span className="md-text-muted text-xs">{t("browser.entries.parentDirectory")}</span>
               </button>
             )}
 
             {displayEntries.length === 0 && (
               <div className="p-4 text-sm md-text-muted text-center">
-                {filter ? `No matches for "${filter}"` : "Empty directory"}
+                {filter ? t("browser.entries.noMatches", { filter }) : t("browser.entries.emptyDirectory")}
               </div>
             )}
 

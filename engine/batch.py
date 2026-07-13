@@ -175,6 +175,12 @@ class BatchRunner:
         batch_result.total_duration_seconds = time.monotonic() - batch_start
 
         # Persist results from main process when project_db provided
+        if self._project_db and not getattr(self._project_db, '_available', False):
+            logger.warning(
+                "project_db supplied but unavailable (_available=False); "
+                "batch results will NOT be persisted (%d succeeded jobs skipped)",
+                len(batch_result.succeeded),
+            )
         if self._project_db and getattr(self._project_db, '_available', False):
             for jr in batch_result.succeeded:
                 try:

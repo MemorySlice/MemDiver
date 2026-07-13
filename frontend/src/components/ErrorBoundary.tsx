@@ -1,8 +1,19 @@
 import { Component, type ReactNode, type ErrorInfo } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+}
+
+function DefaultErrorFallback({ message }: { message?: string }) {
+  const { t } = useTranslation("misc");
+  return (
+    <div className="p-4 text-sm md-text-muted">
+      <p className="font-semibold">{t("app.errorBoundaryTitle")}</p>
+      <p className="mt-1 opacity-70">{message}</p>
+    </div>
+  );
 }
 
 interface State {
@@ -24,10 +35,7 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return this.props.fallback ?? (
-        <div className="p-4 text-sm md-text-muted">
-          <p className="font-semibold">Something went wrong.</p>
-          <p className="mt-1 opacity-70">{this.state.error?.message}</p>
-        </div>
+        <DefaultErrorFallback message={this.state.error?.message} />
       );
     }
     return this.props.children;

@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useDumpStore } from "../../stores/dump-store";
 
 export function TagStatusUnlock({ dumpId }: { dumpId: string }) {
+  const { t } = useTranslation("dumps");
   const unlockTagStatus = useDumpStore((s) => s.unlockTagStatus);
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
@@ -13,10 +15,10 @@ export function TagStatusUnlock({ dumpId }: { dumpId: string }) {
     setError(null);
     try {
       const status = await unlockTagStatus(dumpId, { passphrase });
-      if (status === "corrupted") setError("Wrong key or tampered file");
+      if (status === "corrupted") setError(t("unlock.wrongKey"));
       else setPassphrase("");
     } catch {
-      setError("Unlock failed");
+      setError(t("unlock.failed"));
     } finally {
       setBusy(false);
     }
@@ -33,7 +35,7 @@ export function TagStatusUnlock({ dumpId }: { dumpId: string }) {
           value={passphrase}
           onChange={(e) => setPassphrase(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleUnlock()}
-          placeholder="Passphrase"
+          placeholder={t("unlock.placeholder")}
           className="flex-1 px-2 py-0.5 text-[10px] rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)]"
         />
         <button
@@ -41,7 +43,7 @@ export function TagStatusUnlock({ dumpId }: { dumpId: string }) {
           disabled={!passphrase || busy}
           className="px-2 py-0.5 text-[10px] rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] disabled:opacity-40"
         >
-          {busy ? "..." : "Unlock"}
+          {busy ? t("unlock.busy") : t("unlock.button")}
         </button>
       </div>
       {error && (

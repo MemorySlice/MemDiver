@@ -66,6 +66,35 @@ def test_iter_blocks(msl_path):
         assert BlockType.SYSTEM_CONTEXT in types
 
 
+def test_header_only_iter_matches_raw_blocks(msl_path):
+    """_iter_raw_block_headers yields the same framing as _iter_raw_blocks
+    without decompressing payloads (used by _appendix_offset)."""
+    with MslReader(msl_path) as reader:
+        full = [
+            (h.file_offset, h.block_length, h.block_type)
+            for h, _ in reader._iter_raw_blocks()
+        ]
+        headers = [
+            (h.file_offset, h.block_length, h.block_type)
+            for h in reader._iter_raw_block_headers()
+        ]
+        assert headers == full
+
+
+def test_header_only_iter_does_not_decompress(monkeypatch, msl_path):
+    """The header-only walk must never call decompress()."""
+    import msl.reader as reader_mod
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("decompress() called during header-only walk")
+
+    with MslReader(msl_path) as reader:
+        monkeypatch.setattr(reader_mod, "decompress", _boom)
+        # Exhaust the header iterator and exercise _appendix_offset.
+        list(reader._iter_raw_block_headers())
+        reader._appendix_offset()
+
+
 def test_collect_regions(msl_path):
     with MslReader(msl_path) as reader:
         regions = reader.collect_regions()
@@ -134,6 +163,17 @@ def test_too_small_raises(tmp_path):
     p.write_bytes(b"\x00" * 10)
     with pytest.raises(MslParseError, match="too small"):
         MslReader(p).open()
+
+
+def test_parse_block_header_short_buffer_raises(msl_path):
+    """Defensive guard: parsing a header at an offset without a full
+    BLOCK_HEADER_SIZE-byte slice available raises MslParseError instead of
+    silently reading a truncated header."""
+    from msl.enums import BLOCK_HEADER_SIZE
+    with MslReader(msl_path) as reader:
+        short_offset = len(reader._buf) - (BLOCK_HEADER_SIZE - 1)
+        with pytest.raises(MslParseError, match="Truncated block header"):
+            reader._parse_block_header(short_offset)
 
 
 def test_key_hint_references_region(msl_path):

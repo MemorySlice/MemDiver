@@ -168,6 +168,39 @@ def test_batch_validation_bad_workers(client, fixture_library_dir):
     assert r.status_code == 422
 
 
+# ------------------------------------------------------------------
+# verify-key: malformed hex must be a clean 400, not an unhandled 500
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "ciphertext_hex, iv_hex",
+    [
+        ("zz", None),          # non-hex chars
+        ("abc", None),         # odd length
+        ("00", "zz"),          # malformed iv
+        ("00", "abc"),         # odd-length iv
+    ],
+)
+def test_verify_key_malformed_hex_returns_400(client, tmp_path, ciphertext_hex, iv_hex):
+    """``bytes.fromhex`` on attacker-controlled ciphertext_hex/iv_hex must
+    surface as a 400, never as an unhandled 500 leaking internals."""
+    dump = tmp_path / "tiny.bin"
+    dump.write_bytes(b"\x00" * 64)
+    payload = {
+        "dump_path": str(dump),
+        "offset": 0,
+        "length": 32,
+        "ciphertext_hex": ciphertext_hex,
+        "cipher": "AES-256-CBC",
+    }
+    if iv_hex is not None:
+        payload["iv_hex"] = iv_hex
+    r = client.post("/api/analysis/verify-key", json=payload)
+    assert r.status_code == 400, r.text
+    assert "hex" in r.json()["detail"].lower()
+
+
 def test_batch_validation_empty_library_dirs(client):
     """A job with an empty ``library_dirs`` list must be rejected at the
     Pydantic layer (DTO declares ``min_length=1``)."""

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "../../stores/hex-store";
 
 interface Module {
@@ -31,6 +32,7 @@ async function resolveVa(
 }
 
 export function ModuleList({ mslPath }: Props) {
+  const { t } = useTranslation("msl");
   const [modules, setModules] = useState<Module[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -52,7 +54,7 @@ export function ModuleList({ mslPath }: Props) {
     setNotice(null);
     const result = await resolveVa(mslPath, m.base_addr);
     if (!result) {
-      setNotice(`Could not resolve ${m.path.split("/").pop()}`);
+      setNotice(t("modules.resolveFailed", { name: m.path.split("/").pop() }));
       return;
     }
     const viewMode = useHexStore.getState().viewMode;
@@ -61,8 +63,8 @@ export function ModuleList({ mslPath }: Props) {
     if (target === null || target === undefined) {
       setNotice(
         viewMode === "raw"
-          ? `No block header for this module in raw view`
-          : `Module not captured in VAS view`,
+          ? t("modules.noBlockHeaderRaw")
+          : t("modules.notCapturedVas"),
       );
       return;
     }
@@ -70,14 +72,14 @@ export function ModuleList({ mslPath }: Props) {
   };
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
-  if (!modules.length) return <p className="p-3 text-xs md-text-muted">No modules</p>;
+  if (!modules.length) return <p className="p-3 text-xs md-text-muted">{t("modules.empty")}</p>;
 
   const truncate = (p: string) => (p.length > 40 ? "..." + p.slice(-37) : p);
   const toKB = (n: number) => (n / 1024).toFixed(1);
 
   return (
     <div className="p-3 text-xs space-y-1">
-      <h3 className="text-sm font-semibold md-text-accent">Modules</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("modules.title")}</h3>
       {notice && (
         <p className="text-[11px] md-text-warning">{notice}</p>
       )}

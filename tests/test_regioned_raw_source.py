@@ -100,3 +100,43 @@ def test_missing_maps_raises(tmp_path: Path) -> None:
     src = GdbRawDumpSource(bogus)
     with pytest.raises(FileNotFoundError):
         src.open()
+
+
+def _make_synthetic_gdb_raw(tmp_path: Path) -> Path:
+    """Build a tiny .bin + .maps pair describing one 256-byte region."""
+    bin_path = tmp_path / "tiny.gdb_raw.bin"
+    payload = b"\x00" * 100 + b"\xAA" * 32 + b"\x00" * 124  # 256 bytes
+    bin_path.write_bytes(payload)
+    maps_path = tmp_path / "tiny.gdb_raw.maps"
+    maps_path.write_text(
+        "00400000-00400100 rw-p 00000000 00:00 0 [heap]\n"
+    )
+    return bin_path
+
+
+def test_find_all_empty_needle_returns_empty(tmp_path: Path) -> None:
+    """An empty needle must short-circuit, not yield one hit per byte (hang).
+
+    Regression: ``_RegionedRawSource.find_all`` previously forwarded an empty
+    needle to the byte-search loop, which advances one byte at a time and
+    effectively never terminates on a real dump.
+    """
+    bin_path = _make_synthetic_gdb_raw(tmp_path)
+    with GdbRawDumpSource(bin_path) as source:
+        assert source.find_all(b"", view="raw") == []
+        assert source.find_all(b"", view="vas") == []
+        # Sanity: a real needle still works on both views.
+        assert source.find_all(b"\xAA" * 32, view="raw") == [100]
+        assert source.find_all(b"\xAA" * 32, view="vas") == [100]
+
+
+def test_read_range_negative_offset_safe(tmp_path: Path) -> None:
+    """A negative offset must not return wrong-region tail bytes.
+
+    Regression for DumpReader.read_range negative-slice bug, exercised through
+    the regioned raw source's raw + vas paths.
+    """
+    bin_path = _make_synthetic_gdb_raw(tmp_path)
+    with GdbRawDumpSource(bin_path) as source:
+        assert source.read_range(-1, 16, view="raw") == b""
+        assert source.read_range(-100, 16, view="vas") == b""

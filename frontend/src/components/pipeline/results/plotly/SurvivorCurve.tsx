@@ -6,35 +6,12 @@
  * The SVG alternative lives at `../svg/SurvivorCurve.tsx`.
  */
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { Data, Layout } from "plotly.js";
 
 import { Plot } from "@/components/charts/plotly/normalize-plot";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { SURVIVOR_TRACES } from "../survivor-traces";
-
-const LAYOUT: Partial<Layout> = {
-  height: 360,
-  margin: { l: 60, r: 20, t: 30, b: 50 },
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(0,0,0,0)",
-  font: { color: "#cbd5e1", size: 11 },
-  xaxis: {
-    title: { text: "N dumps folded" },
-    gridcolor: "rgba(148,163,184,0.15)",
-    zerolinecolor: "rgba(148,163,184,0.3)",
-  },
-  yaxis: {
-    type: "log",
-    title: { text: "Survivors (log)" },
-    gridcolor: "rgba(148,163,184,0.15)",
-    zerolinecolor: "rgba(148,163,184,0.3)",
-  },
-  legend: {
-    orientation: "h",
-    y: -0.2,
-    font: { color: "#cbd5e1" },
-  },
-};
 
 const PLOT_CONFIG = { displayModeBar: false, responsive: true } as const;
 
@@ -46,7 +23,35 @@ const PLOT_CONFIG = { displayModeBar: false, responsive: true } as const;
  * value at which the oracle produced a verified hit.
  */
 export function SurvivorCurve() {
+  const { t } = useTranslation("pipeline");
   const points = usePipelineStore((s) => s.nsweepPoints);
+
+  const layout = useMemo<Partial<Layout>>(
+    () => ({
+      height: 360,
+      margin: { l: 60, r: 20, t: 30, b: 50 },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#cbd5e1", size: 11 },
+      xaxis: {
+        title: { text: t("results.survivor.xAxis") },
+        gridcolor: "rgba(148,163,184,0.15)",
+        zerolinecolor: "rgba(148,163,184,0.3)",
+      },
+      yaxis: {
+        type: "log",
+        title: { text: t("results.survivor.yAxis") },
+        gridcolor: "rgba(148,163,184,0.15)",
+        zerolinecolor: "rgba(148,163,184,0.3)",
+      },
+      legend: {
+        orientation: "h",
+        y: -0.2,
+        font: { color: "#cbd5e1" },
+      },
+    }),
+    [t],
+  );
 
   const traces = useMemo<Data[]>(() => {
     if (points.length === 0) return [];
@@ -77,18 +82,18 @@ export function SurvivorCurve() {
         mode: "markers+text" as unknown as "markers",
         name: "oracle_hit",
         marker: { color: "#a855f7", size: 14, symbol: "star" },
-        text: ["hit"],
+        text: [t("results.survivor.hit")],
         textposition: "top center",
         textfont: { color: "#a855f7", size: 11 },
       });
     }
     return out;
-  }, [points]);
+  }, [points, t]);
 
   if (points.length === 0) {
     return (
       <div className="md-panel p-4 text-xs md-text-muted">
-        No n-sweep data (pipeline ran without --nsweep).
+        {t("results.survivor.noData")}
       </div>
     );
   }
@@ -97,7 +102,7 @@ export function SurvivorCurve() {
     <div className="md-panel p-2" data-tour-id="pipeline-survivor-curve">
       <Plot
         data={traces}
-        layout={LAYOUT}
+        layout={layout}
         config={PLOT_CONFIG}
         style={{ width: "100%", height: "360px" }}
         useResizeHandler

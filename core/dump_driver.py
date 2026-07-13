@@ -2,6 +2,7 @@
 import datetime
 import logging
 import os
+import select
 import shlex
 import shutil
 import signal
@@ -81,19 +82,47 @@ class DumpOrchestrator:
         )
         pid, key_hex, iv_hex = None, None, None
         deadline = time.monotonic() + timeout
-        for line in proc.stdout:
-            line = line.strip()
-            if line.startswith("MEMDIVER_PID="):
-                pid = int(line.split("=", 1)[1])
-            elif line.startswith("MEMDIVER_KEY="):
-                key_hex = line.split("=", 1)[1]
-            elif line.startswith("MEMDIVER_IV="):
-                iv_hex = line.split("=", 1)[1]
-            elif line.startswith("MEMDIVER_READY="):
-                break
-            if time.monotonic() > deadline:
+        stdout_fd = proc.stdout.fileno()
+        # Read the raw fd via select() so the deadline still fires when the
+        # target opens but never emits a newline. Iterating ``for line in
+        # proc.stdout`` (or readline) blocks indefinitely on such a target.
+        # We read bytes directly from the fd and split lines ourselves to
+        # avoid the TextIOWrapper buffering data that select() can't see.
+        buf = ""
+        ready = False
+
+        def _consume(text_line: str) -> bool:
+            nonlocal pid, key_hex, iv_hex
+            text_line = text_line.strip()
+            if text_line.startswith("MEMDIVER_PID="):
+                pid = int(text_line.split("=", 1)[1])
+            elif text_line.startswith("MEMDIVER_KEY="):
+                key_hex = text_line.split("=", 1)[1]
+            elif text_line.startswith("MEMDIVER_IV="):
+                iv_hex = text_line.split("=", 1)[1]
+            elif text_line.startswith("MEMDIVER_READY="):
+                return True
+            return False
+
+        while not ready:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 proc.kill()
                 raise TimeoutError("Target process did not become ready")
+            readable, _, _ = select.select([stdout_fd], [], [], remaining)
+            if not readable:
+                # Timed out waiting for output; loop re-checks the deadline.
+                continue
+            chunk = os.read(stdout_fd, 65536)
+            if not chunk:
+                # EOF: target exited/closed stdout without becoming ready.
+                break
+            buf += chunk.decode("utf-8", "replace")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                if _consume(line):
+                    ready = True
+                    break
         if pid is None or key_hex is None:
             proc.kill()
             raise RuntimeError("Target process did not provide PID/KEY")
@@ -147,7 +176,13 @@ class DumpOrchestrator:
                 ok = self.dump(target.pid, dump_path, info.name)
                 run_meta["tool_results"][info.name] = ok
                 if ok:
-                    keylog = f"line\nAES256_KEY {'00' * 32} {target.key_hex}\n"
+                    # Derive the keylog label from the experiment protocol and
+                    # use the target's IV as the identifier when one is known
+                    # (falls back to all-zero IV for IV-less protocols), rather
+                    # than hardcoding AES256 / a zero identifier.
+                    label = f"{protocol}_KEY"
+                    identifier = target.iv_hex or ("00" * 16)
+                    keylog = f"line\n{label} {identifier} {target.key_hex}\n"
                     (run_dir / "keylog.csv").write_text(keylog)
                     logger.info("Run %d/%d [%s]: OK", run_idx, num_runs, info.name)
                 else:

@@ -1,0 +1,36 @@
+{
+  "connections": {
+    "title": "Connections ({{count}})",
+    "empty": "No connection table blocks"
+  },
+  "handles": {
+    "title": "Handles ({{count}})",
+    "empty": "No handle table blocks",
+    "noPathTooltip": "<no path>",
+    "noPath": "(no path)"
+  },
+  "moduleIndex": {
+    "title": "Module Index ({{count}})",
+    "description": "Pre-assigned UUIDs for modules — navigation aid (spec §5.3)",
+    "empty": "No module index blocks"
+  },
+  "modules": {
+    "title": "Modules",
+    "empty": "No modules",
+    "resolveFailed": "Could not resolve {{name}}",
+    "noBlockHeaderRaw": "No block header for this module in raw view",
+    "notCapturedVas": "Module not captured in VAS view"
+  },
+  "processes": {
+    "title": "Processes ({{count}})",
+    "empty": "No process table blocks",
+    "targetBadge": "TARGET",
+    "rss": "RSS {{size}}"
+  },
+  "reserved": {
+    "badge": {
+      "specReserved": "SPEC RESERVED",
+      "incomplete": "INCOMPLETE"
+    }
+  }
+}

@@ -11,6 +11,7 @@
  * `settings.display.chartBackend === "svg"`.
  */
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 import type { VarianceMapProps } from "../types";
@@ -33,8 +34,10 @@ export const VarianceMap = memo(function VarianceMap({
   variance,
   classifications,
   step = 1,
-  title = "Variance Map",
+  title,
 }: VarianceMapProps) {
+  const { t } = useTranslation("charts");
+  const resolvedTitle = title ?? t("variance.defaultTitle");
   const { svg: tokens } = useChartTheme();
   const [containerRef, containerWidth] = useContainerWidth();
 
@@ -66,7 +69,7 @@ export const VarianceMap = memo(function VarianceMap({
   if (sampled.length === 0) {
     return (
       <p className="p-3 text-sm md-text-muted" data-chart-backend="svg">
-        No variance data.
+        {t("variance.empty")}
       </p>
     );
   }
@@ -93,10 +96,10 @@ export const VarianceMap = memo(function VarianceMap({
         width={containerWidth}
         height={CHART_HEIGHT}
         role="img"
-        aria-label={title}
+        aria-label={resolvedTitle}
         style={{ display: "block", background: tokens.chartPaper }}
       >
-        <title>{title}</title>
+        <title>{resolvedTitle}</title>
 
         <rect x={MARGIN.left} y={MARGIN.top} width={plotW} height={plotH} fill={tokens.chartPlot} />
 
@@ -108,7 +111,7 @@ export const VarianceMap = memo(function VarianceMap({
           fontWeight={600}
           fill={tokens.chartText}
         >
-          {title}
+          {resolvedTitle}
         </text>
 
         {/* Log-scale horizontal grid */}
@@ -190,7 +193,7 @@ export const VarianceMap = memo(function VarianceMap({
           fontSize={11}
           fill={tokens.textSecondary}
         >
-          Offset (bytes)
+          {t("variance.axis.offset")}
         </text>
 
         {/* Y axis (log) */}
@@ -222,7 +225,7 @@ export const VarianceMap = memo(function VarianceMap({
           fill={tokens.textSecondary}
           transform={`rotate(-90, 14, ${MARGIN.top + plotH / 2})`}
         >
-          Variance (log)
+          {t("variance.axis.varianceLog")}
         </text>
       </svg>
     </div>

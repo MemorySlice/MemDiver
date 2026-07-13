@@ -19,17 +19,9 @@ logger = logging.getLogger("memdiver.kdf")
 
 # -- Hash length lookup --------------------------------------------------- #
 
-_HASH_LENGTHS = {
-    "sha256": 32,
-    "sha384": 48,
-    "sha512": 64,
-}
-
 
 def _hash_length(hash_algo: str) -> int:
     """Return the output length in bytes for *hash_algo*."""
-    if hash_algo in _HASH_LENGTHS:
-        return _HASH_LENGTHS[hash_algo]
     return hashlib.new(hash_algo).digest_size
 
 

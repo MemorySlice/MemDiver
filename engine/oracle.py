@@ -60,19 +60,19 @@ def load_oracle_config(path: Path | None) -> dict[str, Any]:
 
 
 def _assert_safe_path(path: Path) -> None:
-    """Refuse to load oracles from world-writable files or directories."""
+    """Refuse to load oracles from group/world-writable files or directories."""
     if not path.is_file():
         raise OracleLoadError(f"oracle file not found: {path}")
     file_mode = path.stat().st_mode
-    if file_mode & stat.S_IWOTH:
+    if file_mode & (stat.S_IWOTH | stat.S_IWGRP):
         raise OracleLoadError(
-            f"refusing to load world-writable oracle: {path} "
+            f"refusing to load group/world-writable oracle: {path} "
             f"(mode={stat.filemode(file_mode)}); tighten permissions first"
         )
     parent_mode = path.parent.stat().st_mode
-    if parent_mode & stat.S_IWOTH:
+    if parent_mode & (stat.S_IWOTH | stat.S_IWGRP):
         raise OracleLoadError(
-            f"refusing to load oracle from world-writable directory: "
+            f"refusing to load oracle from group/world-writable directory: "
             f"{path.parent} (mode={stat.filemode(parent_mode)})"
         )
 

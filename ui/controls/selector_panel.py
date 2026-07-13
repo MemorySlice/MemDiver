@@ -98,7 +98,7 @@ def create_library_controls(
         max_runs_slider).
     """
     libs = (
-        sorted(dataset_info.libraries.get(scenario, set()))
+        sorted(dataset_info.libraries.get(f"{protocol_version}/{scenario}", set()))
         if dataset_info
         else []
     )

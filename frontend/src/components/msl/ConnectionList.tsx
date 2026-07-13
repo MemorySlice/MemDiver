@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Connection {
   pid: number;
@@ -33,6 +34,7 @@ function formatEndpoint(addr: string, port: number, family: number): string {
 }
 
 export function ConnectionList({ mslPath }: Props) {
+  const { t } = useTranslation("msl");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,11 +51,11 @@ export function ConnectionList({ mslPath }: Props) {
   }, [mslPath]);
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
-  if (!connections.length) return <p className="p-3 text-xs md-text-muted">No connection table blocks</p>;
+  if (!connections.length) return <p className="p-3 text-xs md-text-muted">{t("connections.empty")}</p>;
 
   return (
     <div className="p-3 text-xs space-y-1">
-      <h3 className="text-sm font-semibold md-text-accent">Connections ({connections.length})</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("connections.title", { count: connections.length })}</h3>
       <div className="md-panel p-2 space-y-1 max-h-64 overflow-auto">
         {connections.map((c, i) => (
           <div key={i} className="font-mono md-text-secondary">

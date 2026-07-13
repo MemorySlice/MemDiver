@@ -76,7 +76,12 @@ def render_hex_comparison(
     # Build diff classes
     diff_classes_a = None
     diff_classes_b = None
-    diff_offsets = set()
+    # Comparison is positional within the page; for unequal-length dumps on a
+    # high page start_a may differ from start_b, so record both panel offsets
+    # rather than a single (potentially misleading) offset.
+    diff_offsets_a = set()
+    diff_offsets_b = set()
+    diff_count = 0
 
     if highlight_diffs:
         min_len = min(len(page_data_a), len(page_data_b))
@@ -89,7 +94,11 @@ def render_hex_comparison(
             else:
                 diff_classes_a.append("different")
                 diff_classes_b.append("different")
-                diff_offsets.add(start_a + i)
+                diff_count += 1
+                if i < len(page_data_a):
+                    diff_offsets_a.add(start_a + i)
+                if i < len(page_data_b):
+                    diff_offsets_b.add(start_b + i)
 
     hex_a = render_hex_dump(
         page_data_a, start_a, diff_classes_a, None, bytes_per_row, rows_per_page,
@@ -98,9 +107,11 @@ def render_hex_comparison(
         page_data_b, start_b, diff_classes_b, None, bytes_per_row, rows_per_page,
     )
 
-    diff_count = len(diff_offsets)
-    info = _("Page {page} | Offset 0x{offset:x} | {count} differing bytes").format(
-        page=page, offset=start_a, count=diff_count,
+    info = _(
+        "Page {page} | A 0x{offset_a:x} / B 0x{offset_b:x} | "
+        "{count} differing bytes (positional)"
+    ).format(
+        page=page, offset_a=start_a, offset_b=start_b, count=diff_count,
     )
 
     html = (

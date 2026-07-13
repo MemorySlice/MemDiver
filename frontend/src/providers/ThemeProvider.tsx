@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { useSettingsStore } from "@/stores/settings-store";
 
 type Theme = "light" | "dark";
 
@@ -34,8 +35,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("memdiver-high-contrast", String(highContrast));
   }, [highContrast]);
 
-  const setTheme = (t: Theme) => setThemeState(t);
-  const toggleHighContrast = () => setHighContrast((prev) => !prev);
+  // Theme/high-contrast historically lived in two unsynchronized places:
+  // ThemeProvider's own localStorage keys and settings-store's
+  // display.theme/display.highContrast. Writing through to the settings
+  // store here keeps the two copies in sync regardless of whether the user
+  // toggled via ThemeToggle or the settings menu, avoiding drift.
+  const setTheme = (t: Theme) => {
+    setThemeState(t);
+    useSettingsStore.getState().updateDisplay({ theme: t });
+  };
+  const toggleHighContrast = () =>
+    setHighContrast((prev) => {
+      const next = !prev;
+      useSettingsStore.getState().updateDisplay({ highContrast: next });
+      return next;
+    });
 
   return (
     <ThemeContext value={{ theme, resolvedTheme: theme, setTheme, highContrast, toggleHighContrast }}>

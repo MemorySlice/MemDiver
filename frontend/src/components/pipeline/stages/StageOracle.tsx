@@ -15,6 +15,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { OracleExample } from "@/api/oracles";
 import { OracleDryRunBar } from "@/components/pipeline/oracle/OracleDryRunBar";
@@ -42,6 +43,7 @@ interface Props {
 }
 
 export function StageOracle({ onAdvance }: Props) {
+  const { t } = useTranslation("pipeline");
   const oracleId = usePipelineStore((s) => s.form.oracleId);
   const oracleSha256 = usePipelineStore((s) => s.form.oracleSha256);
   const uploaded = useOracleStore((s) => s.uploaded);
@@ -60,13 +62,14 @@ export function StageOracle({ onAdvance }: Props) {
     <div className="p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold md-text-accent">
-          Pick or upload your oracle
+          {t("stages.oracle.title")}
         </h3>
         <p className="text-xs md-text-muted">
-          The oracle is your decryption check. Upload a <code>.py</code>{" "}
-          file that exports <code>verify(candidate)</code> or{" "}
-          <code>build_oracle(cfg)</code>, then arm it. The armed file's
-          sha256 is what the worker runs.
+          {t("stages.oracle.subtitlePrefix")} <code>.py</code>{" "}
+          {t("stages.oracle.subtitleMid")} <code>verify(candidate)</code>{" "}
+          {t("stages.oracle.subtitleOr")}{" "}
+          <code>build_oracle(cfg)</code>
+          {t("stages.oracle.subtitleTail")}
         </p>
       </div>
 
@@ -75,27 +78,29 @@ export function StageOracle({ onAdvance }: Props) {
       </div>
 
       <div className="flex gap-2 border-b border-[var(--md-border)]">
-        {(["upload", "examples"] as const).map((t) => (
+        {(["upload", "examples"] as const).map((tabKey) => (
           <button
-            key={t}
+            key={tabKey}
             type="button"
-            onClick={() => setTab(t)}
-            className={`text-xs px-3 py-1.5 capitalize transition-colors ${
-              tab === t
+            onClick={() => setTab(tabKey)}
+            className={`text-xs px-3 py-1.5 transition-colors ${
+              tab === tabKey
                 ? "font-semibold border-b-2 border-[var(--md-accent-blue)] md-text-accent"
                 : "md-text-muted hover:md-text-secondary"
             }`}
           >
-            {t}
+            {t(`stages.oracle.tab.${tabKey}`)}
           </button>
         ))}
       </div>
 
       {exampleHint && tab === "upload" && (
         <div className="md-panel p-2 text-xs md-text-muted">
-          Copy <code className="md-text-accent">{exampleHint}</code> from{" "}
-          <code>docs/oracle_examples/</code>, tweak it for your dataset,
-          then drop the edited file below to upload + arm it.
+          {t("stages.oracle.exampleHintPrefix")}{" "}
+          <code className="md-text-accent">{exampleHint}</code>{" "}
+          {t("stages.oracle.exampleHintMid")}{" "}
+          <code>docs/oracle_examples/</code>
+          {t("stages.oracle.exampleHintTail")}
         </div>
       )}
 
@@ -117,7 +122,7 @@ export function StageOracle({ onAdvance }: Props) {
           onClick={() => onAdvance("dumps")}
           className="text-xs px-3 py-1.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
         >
-          ← Back
+          {t("stages.oracle.back")}
         </button>
         <button
           type="button"
@@ -126,11 +131,11 @@ export function StageOracle({ onAdvance }: Props) {
           className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
           title={
             canAdvance
-              ? "Continue to threshold configuration"
-              : "Upload and arm an oracle to continue"
+              ? t("stages.oracle.nextTitleEnabled")
+              : t("stages.oracle.nextTitleDisabled")
           }
         >
-          Next: Thresholds →
+          {t("stages.oracle.next")}
         </button>
       </div>
     </div>

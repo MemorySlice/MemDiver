@@ -17,13 +17,20 @@ from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Mat
 from core.constants import UNKNOWN_KEY
 from core.kdf import TLS12PRF, TLS13HKDF
 from core.kdf_registry import get_kdf_registry
-from core.kdf_ssh import SSH2KDF
+from core.kdf_ssh import SSH2KDF, SSH2KDFPlugin, KEY_TYPE_CHARS
 
 
 # Expected key sizes per protocol version.
 _TLS12_KEY_SIZE = 48  # pre-master / master secret
 _TLS13_KEY_SIZE = 32  # HKDF-based secrets (SHA-256)
 _SSH2_KEY_SIZE = 32
+
+# SSH-2 derived outputs are not uniformly 32 bytes (RFC 4253 Section 7.2):
+# IVs (types A/B) are the cipher block size (8/12/16), encryption keys
+# (types C/D) are 16/24/32, and integrity/HMAC keys (types E/F) are commonly
+# 20 (HMAC-SHA1) or 32/64. Restricting candidates to exactly 32 bytes drops
+# real related outputs, so SSH-2 accepts this wider set of plausible lengths.
+_SSH2_ACCEPTED_KEY_SIZES = frozenset({8, 12, 16, 20, 24, 32, 48, 64})
 
 # Confidence thresholds.
 _KDF_MATCH_CONFIDENCE = 0.95
@@ -110,11 +117,28 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
         # Dispatch to chain validation with protocol-specific probe function.
         chain_params = _CHAIN_PARAMS.get(tls_version)
         probe_fn = self._PROBE_FUNCTIONS.get(tls_version)
+        # SSH-2 derived outputs vary in length, so accept a wider candidate set
+        # than the single expected key size used by TLS.
+        accepted_lengths = (
+            _SSH2_ACCEPTED_KEY_SIZES if tls_version == "SSH2" else None
+        )
+        # SSH-2 pairs cannot be validated without the real exchange hash H and
+        # session_id. Discover those from the candidate pool (high-entropy
+        # 20/32/64-byte blobs already surfaced upstream) and thread them
+        # through. Empty for other protocols (and when nothing is discovered),
+        # in which case validation falls back to the existing behavior.
+        hash_candidates: Optional[List[bytes]] = None
+        if tls_version == "SSH2":
+            hash_candidates = SSH2KDFPlugin.discover_hash_candidates(
+                [c.data for c in candidates]
+            )
         pairwise_matches, kdf_links_found = self._validate_chain(
             candidates, dump_data, kdf_plugin,
             key_size=chain_params[0],
             validation_label=chain_params[1],
             probe_fn=probe_fn,
+            accepted_lengths=accepted_lengths,
+            hash_candidates=hash_candidates,
         )
         validated.extend(pairwise_matches)
 
@@ -160,16 +184,32 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
         key_size: int,
         validation_label: str,
         probe_fn: Optional[Callable[[bytes, int], bytes]] = None,
+        accepted_lengths: Optional[frozenset] = None,
+        hash_candidates: Optional[List[bytes]] = None,
     ) -> Tuple[List[Match], int]:
         """Validate KDF chains among candidates of a given key size.
 
         1. Pairwise validation via ``kdf_plugin.validate_pair()``.
         2. Probe-in-dump fallback using ``probe_fn(candidate_data, key_size)``.
 
+        Candidates are filtered by length: exactly ``key_size`` by default, or
+        any length in ``accepted_lengths`` when provided (used by SSH-2, whose
+        derived outputs are not uniformly ``key_size`` bytes).
+
+        *hash_candidates* (SSH-2 only) are the real exchange hash H / session_id
+        blobs discovered in the dump. When present they are passed to
+        ``validate_pair`` and used to build a genuine SSH probe (deriving keys
+        A-F from each candidate with the real (H, session_id) pairs and checking
+        dump presence). When absent, SSH falls back to the existing zero-filled
+        ``_probe_ssh2`` probe, and TLS probe behavior is unchanged.
+
         Returns:
             Tuple of (validated matches, number of KDF links found).
         """
-        sized = [c for c in candidates if len(c.data) == key_size]
+        if accepted_lengths is not None:
+            sized = [c for c in candidates if len(c.data) in accepted_lengths]
+        else:
+            sized = [c for c in candidates if len(c.data) == key_size]
         validated: List[Match] = []
         seen_offsets: set = set()
         links = 0
@@ -179,6 +219,7 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
                 cand_b = sized[j]
                 confidence = kdf_plugin.validate_pair(
                     cand_a.data, cand_b.data, dump_data,
+                    hash_candidates=hash_candidates,
                 )
                 if confidence > 0.0:
                     links += 1
@@ -199,12 +240,23 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
                             ))
 
         # Probe-in-dump fallback for unvalidated candidates.
-        if probe_fn is not None:
+        # For SSH-2 with discovered (H, session_id) pairs, build a genuine probe
+        # that derives keys A-F from a candidate using the REAL hashes and
+        # checks dump presence. Otherwise use the supplied single-output
+        # probe_fn (zero-filled for SSH, unchanged for TLS).
+        if hash_candidates:
+            probe_derive = self._make_ssh2_probe(hash_candidates)
+        elif probe_fn is not None:
+            probe_derive = lambda data: [probe_fn(data, key_size)]
+        else:
+            probe_derive = None
+
+        if probe_derive is not None:
             for cand in sized:
                 if cand.offset in seen_offsets:
                     continue
-                derived = probe_fn(cand.data, key_size)
-                if derived in dump_data:
+                derived_values = probe_derive(cand.data)
+                if any(d in dump_data for d in derived_values):
                     seen_offsets.add(cand.offset)
                     links += 1
                     validated.append(Match(
@@ -220,6 +272,35 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
                     ))
 
         return validated, links
+
+    @staticmethod
+    def _make_ssh2_probe(
+        hash_candidates: List[bytes],
+    ) -> Callable[[bytes], List[bytes]]:
+        """Build an SSH-2 probe closure bound to discovered (H, session_id).
+
+        The returned closure treats its argument as the shared secret K and
+        derives all six SSH-2 key types for every (H, session_id) pair drawn
+        from *hash_candidates*, at each of the SSH hash sizes. The caller checks
+        whether any derived value is present in the dump -- a genuine link via
+        the real discovered hashes. Loops are bounded by the already-capped
+        *hash_candidates* list.
+        """
+        derive_lengths = sorted(SSH2KDFPlugin._ssh_hash_sizes())
+
+        def probe(data: bytes) -> List[bytes]:
+            derived: List[bytes] = []
+            for exchange_hash in hash_candidates:
+                for session_id in hash_candidates:
+                    for key_char in KEY_TYPE_CHARS:
+                        for length in derive_lengths:
+                            derived.append(SSH2KDF.derive_key(
+                                data, exchange_hash, key_char,
+                                session_id, length,
+                            ))
+            return derived
+
+        return probe
 
     # ------------------------------------------------------------------ #
     #  Protocol-specific probe functions

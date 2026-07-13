@@ -158,33 +158,57 @@ class GCoreDumpSource:
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
         return self._find_all_vas(needle)
 
-    def _reader_raw_bytes(self) -> bytes:
-        """mmap-backed ``bytes`` view of the whole file.
+    def _reader_raw_bytes(self):
+        """Return the live ``mmap`` object for the whole core file.
 
-        Python's ``mmap`` supports ``.find`` without materialising a copy,
-        but we also need an overlap-tolerant scan and the standard
-        idiom is to let bytes slicing view the mmap lazily.
+        The ``mmap`` object is returned directly (not sliced/copied): it
+        supports ``len()`` and ``.find()`` exactly like ``bytes``, which is
+        all :func:`_find_all_in_bytes` needs. Copying the entire core into a
+        ``bytes`` object would defeat the mmap-only design and risk OOM on
+        multi-GB cores. The caller treats the result as read-only bytes.
         """
         mm = self._reader._mmap  # noqa: SLF001
         if mm is None:
             return b""
-        return mm[0:len(mm)]
+        return mm
 
     def _find_all_vas(self, needle: bytes) -> List[int]:
-        """Scan each PT_LOAD segment individually, translating hits to VAS."""
+        """Locate ``needle`` in the flattened VAS stream (overlap-tolerant).
+
+        PT_LOAD segments are concatenated contiguously in the ``view="vas"``
+        stream (see :meth:`_read_vas_range`), so a needle may straddle the
+        boundary between two adjacent segments. To catch such hits without
+        materialising the whole VAS stream, each segment is scanned together
+        with a short overlap window stitched from the bytes that follow it in
+        the VAS stream (``len(needle) - 1`` bytes is the maximum a straddling
+        match can reach into the next segment). Only matches that *begin*
+        inside the current segment are recorded, which keeps results unique
+        and ordered.
+        """
         hits: List[int] = []
         if not needle or not self._vas_segments:
             return hits
         mm = self._reader._mmap  # noqa: SLF001
         if mm is None:
             return hits
+        overlap = len(needle) - 1
         for idx, seg in enumerate(self._vas_segments):
             seg_bytes = mm[seg.file_offset:seg.file_offset + seg.filesz]
             vas_base = self._vas_cum[idx]
+            window = seg_bytes
+            if overlap > 0:
+                # Stitch up to ``overlap`` bytes from the following segment(s)
+                # so a needle crossing the boundary is detected here.
+                tail = self._read_vas_range(vas_base + seg.filesz, overlap)
+                if tail:
+                    window = bytes(seg_bytes) + tail
+            seg_len = seg.filesz
             start = 0
             while True:
-                at = seg_bytes.find(needle, start)
-                if at == -1:
+                at = window.find(needle, start)
+                if at == -1 or at >= seg_len:
+                    # ``at >= seg_len`` means the match starts in the overlap
+                    # tail; it will be recorded by the segment that owns it.
                     break
                 hits.append(vas_base + at)
                 start = at + 1

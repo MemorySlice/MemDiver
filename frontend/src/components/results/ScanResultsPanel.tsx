@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { runAnalysis } from "@/api/client";
 import { useResultsStore, type SortField } from "@/stores/results-store";
 import { useAppStore } from "@/stores/app-store";
@@ -14,6 +15,7 @@ function hexOffset(offset: number): string {
 }
 
 export function ScanResultsPanel() {
+  const { t } = useTranslation("results");
   const { algorithmResults, filterAlgorithm, sortField, sortDirection, setFilter, setSort, getFilteredHits, getTotalHitCount } = useResultsStore();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -41,7 +43,10 @@ export function ScanResultsPanel() {
     const { selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename } = useAppStore.getState();
     if (!selectedLibraries.length || !selectedPhase || !protocolVersion) return null;
     return {
-      library_dirs: selectedLibraries.map((lib) => `${datasetRoot}/${lib}`),
+      // In directory-input mode datasetRoot is '', so the selected library is
+      // already an absolute/relative path; only prefix when a root is set
+      // (mirrors AnalysisPanel) to avoid sending a leading-slash path.
+      library_dirs: selectedLibraries.map((lib) => (datasetRoot ? `${datasetRoot}/${lib}` : lib)),
       phase: selectedPhase,
       protocol_version: protocolVersion,
       keylog_filename: keylogFilename,
@@ -61,11 +66,11 @@ export function ScanResultsPanel() {
       const res = await runAnalysis(req);
       bridgeResults(res);
     } catch (e) {
-      resultsState.setAlgorithmError?.(algo, e instanceof Error ? e.message : "Re-run failed");
+      resultsState.setAlgorithmError?.(algo, e instanceof Error ? e.message : t("scan.rerunFailed"));
     } finally {
       useResultsStore.getState().setAlgorithmRunning(algo, false);
     }
-  }, [buildRequest, bridgeResults]);
+  }, [buildRequest, bridgeResults, t]);
 
   const handleRerunAll = useCallback(async () => {
     const req = buildRequest();
@@ -90,7 +95,7 @@ export function ScanResultsPanel() {
   if (algos.length === 0) {
     return (
       <div className="p-4 text-center md-text-muted text-xs">
-        Run analysis to see results here.
+        {t("scan.empty")}
       </div>
     );
   }
@@ -107,7 +112,7 @@ export function ScanResultsPanel() {
       <div className="flex items-center gap-2 flex-wrap">
         <select value={filterAlgorithm ?? ""} onChange={(e) => setFilter(e.target.value || null)}
           className="px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[var(--md-text-primary)] text-xs">
-          <option value="">All Algorithms</option>
+          <option value="">{t("scan.allAlgorithms")}</option>
           {algos.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
 
@@ -122,15 +127,15 @@ export function ScanResultsPanel() {
         <button onClick={handleRerunAll}
           className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] ml-auto transition-colors"
           style={{ borderColor: "var(--md-accent-blue)", color: "var(--md-accent-blue)" }}>
-          Re-run All
+          {t("scan.rerunAll")}
         </button>
 
         <button onClick={() => downloadJsonFile(filtered, "memdiver-results.json")}
           className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors">
-          Export JSON
+          {t("scan.exportJson")}
         </button>
 
-        <span className="md-text-muted whitespace-nowrap">{totalCount} hits</span>
+        <span className="md-text-muted whitespace-nowrap">{t("scan.hits", { count: totalCount })}</span>
       </div>
 
       {/* Algorithm sections */}
@@ -164,7 +169,7 @@ export function ScanResultsPanel() {
                 className="ml-auto px-1.5 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-[10px] transition-colors"
                 disabled={entry.running}
                 onClick={(e) => { e.stopPropagation(); handleRerun(algo); }}>
-                {entry.running ? "Running..." : "Re-run"}
+                {entry.running ? t("scan.running") : t("scan.rerun")}
               </button>
             </button>
 
@@ -173,7 +178,7 @@ export function ScanResultsPanel() {
               <table className="w-full text-[10px]">
                 <thead>
                   <tr className="md-text-muted border-t border-[var(--md-border)]">
-                    {([["Offset", "offset"], ["Len", "length"], ["Conf", "confidence"], ["Type", "algorithm"]] as const).map(([label, field]) => (
+                    {([[t("scan.colOffset"), "offset"], [t("scan.colLen"), "length"], [t("scan.colConf"), "confidence"], [t("scan.colType"), "algorithm"]] as const).map(([label, field]) => (
                       <th
                         key={field}
                         className="text-left px-2 py-0.5 cursor-pointer select-none hover:text-[var(--md-accent-blue)] transition-colors"
@@ -196,14 +201,14 @@ export function ScanResultsPanel() {
                     </tr>
                   ))}
                   {overflow && (
-                    <tr><td colSpan={4} className="px-2 py-1 md-text-muted">...and {hits.length - MAX_VISIBLE} more</td></tr>
+                    <tr><td colSpan={4} className="px-2 py-1 md-text-muted">{t("scan.more", { count: hits.length - MAX_VISIBLE })}</td></tr>
                   )}
                 </tbody>
               </table>
             )}
 
             {!isCollapsed && hits.length === 0 && !entry.running && (
-              <div className="px-2 py-1 md-text-muted border-t border-[var(--md-border)]">No hits</div>
+              <div className="px-2 py-1 md-text-muted border-t border-[var(--md-border)]">{t("scan.noHits")}</div>
             )}
           </div>
         );

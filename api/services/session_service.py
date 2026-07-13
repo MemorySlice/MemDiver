@@ -17,6 +17,8 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from api.path_safety import safe_filename
+from engine.session_store import _EXT as _SESSION_EXT
 from engine.session_store import SessionSnapshot, SessionStore
 
 logger = logging.getLogger("memdiver.api.services.session_service")
@@ -56,7 +58,9 @@ def save_session(
     """Persist a session payload. Returns the file path written."""
     snapshot = payload_to_snapshot(payload, memdiver_version=memdiver_version)
     stem = snapshot.session_name or "session"
-    path = Path(directory) / f"{stem}.memdiver"
+    # Contain the client-supplied session name to a bare filename inside the
+    # session directory — reject path separators / traversal (ValueError).
+    path = safe_filename(directory, stem, _SESSION_EXT)
     return SessionStore.save(snapshot, path)
 
 
@@ -66,7 +70,7 @@ def load_session(name: str, directory: Path) -> SessionSnapshot:
     Raises:
         FileNotFoundError: if no matching session file exists.
     """
-    path = Path(directory) / f"{name}.memdiver"
+    path = safe_filename(directory, name, _SESSION_EXT)
     if not path.is_file():
         raise FileNotFoundError(f"Session not found: {name}")
     return SessionStore.load(path)
@@ -77,7 +81,10 @@ def delete_session(name: str, directory: Path) -> None:
 
     Raises:
         FileNotFoundError: if no matching session file exists.
+        ValueError: if *name* is not a bare filename (path traversal attempt).
     """
+    # Validate containment before SessionStore.delete builds the path itself.
+    safe_filename(directory, name, _SESSION_EXT)
     SessionStore.delete(name, directory)
 
 

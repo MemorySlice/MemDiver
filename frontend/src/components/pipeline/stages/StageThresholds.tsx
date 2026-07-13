@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { PipelineRunRequest } from "@/api/pipeline";
 import { runPipeline } from "@/api/pipeline";
@@ -54,6 +55,7 @@ function NumericField({
         step={step}
         min={min}
         onChange={(e) => {
+          if (e.target.value === "") return;
           const v = Number(e.target.value);
           if (!Number.isNaN(v)) onChange(v);
         }}
@@ -68,6 +70,7 @@ interface Props {
 }
 
 export function StageThresholds({ onAdvance }: Props) {
+  const { t } = useTranslation("pipeline");
   const form = usePipelineStore((s) => s.form);
   const updateForm = usePipelineStore((s) => s.updateForm);
   const setTaskId = usePipelineStore((s) => s.setTaskId);
@@ -84,11 +87,11 @@ export function StageThresholds({ onAdvance }: Props) {
 
   async function submit(): Promise<void> {
     if (!form.oracleId) {
-      setSubmitError("No oracle selected. Go back to the Oracle step.");
+      setSubmitError(t("stages.thresholds.noOracleError"));
       return;
     }
     if (form.sourcePaths.length === 0) {
-      setSubmitError("No dump paths provided. Go back to the Dumps step.");
+      setSubmitError(t("stages.thresholds.noDumpsError"));
       return;
     }
     setSubmitError(null);
@@ -114,71 +117,70 @@ export function StageThresholds({ onAdvance }: Props) {
     <div className="p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold md-text-accent">
-          Configure thresholds
+          {t("stages.thresholds.title")}
         </h3>
         <p className="text-xs md-text-muted">
-          Tune the variance / alignment / entropy filter chain. Defaults
-          come from the gocryptfs DFRWS case study; hover the{" "}
-          <span className="md-text-accent">?</span> icons for per-field
-          rationale.
+          {t("stages.thresholds.subtitlePrefix")}{" "}
+          <span className="md-text-accent">?</span>{" "}
+          {t("stages.thresholds.subtitleTail")}
         </p>
       </div>
 
       <div className="md-panel p-3 space-y-3">
         <div className="md-text-accent font-semibold text-xs uppercase tracking-wide">
-          Search-reduce
+          {t("stages.thresholds.searchReduce")}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <NumericField
-            label="min variance"
-            help="Per-byte variance threshold. Higher values keep only very volatile bytes; in the DFRWS paper 1500 separated real crypto material from noise at N≥20."
+            label={t("stages.thresholds.fields.minVariance")}
+            help={t("stages.thresholds.fields.minVarianceHelp")}
             value={form.reduce.min_variance ?? 3000}
             step={100}
             onChange={(v) => patchReduce({ min_variance: v })}
           />
           <NumericField
-            label="alignment"
-            help="Byte alignment the key must land on. Go's allocator places keys on 8-byte boundaries; most allocators use 8 or 16."
+            label={t("stages.thresholds.fields.alignment")}
+            help={t("stages.thresholds.fields.alignmentHelp")}
             value={form.reduce.alignment ?? 8}
             step={1}
             min={1}
             onChange={(v) => patchReduce({ alignment: v })}
           />
           <NumericField
-            label="block size"
-            help="Window the aligned density filter scores. 32 bytes fits a single AES-256 key; wider windows score pairs of adjacent keys."
+            label={t("stages.thresholds.fields.blockSize")}
+            help={t("stages.thresholds.fields.blockSizeHelp")}
             value={form.reduce.block_size ?? 32}
             step={8}
             min={8}
             onChange={(v) => patchReduce({ block_size: v })}
           />
           <NumericField
-            label="density"
-            help="Minimum survivor fraction inside an aligned block before it's kept. 0.5 means half the bytes in the window must already be candidates."
+            label={t("stages.thresholds.fields.density")}
+            help={t("stages.thresholds.fields.densityHelp")}
             value={form.reduce.density_threshold ?? 0.5}
             step={0.05}
             min={0}
             onChange={(v) => patchReduce({ density_threshold: v })}
           />
           <NumericField
-            label="entropy win"
-            help="Sliding-window size for Shannon entropy in bytes. Must be larger than the entropy threshold in bits, raised to 2."
+            label={t("stages.thresholds.fields.entropyWin")}
+            help={t("stages.thresholds.fields.entropyWinHelp")}
             value={form.reduce.entropy_window ?? 32}
             step={8}
             min={8}
             onChange={(v) => patchReduce({ entropy_window: v })}
           />
           <NumericField
-            label="entropy min"
-            help="Minimum Shannon entropy (bits) a window must hit. Cryptographic keys saturate near log2(window); keep this ≤ log2(window)."
+            label={t("stages.thresholds.fields.entropyMin")}
+            help={t("stages.thresholds.fields.entropyMinHelp")}
             value={form.reduce.entropy_threshold ?? 4.5}
             step={0.1}
             min={0}
             onChange={(v) => patchReduce({ entropy_threshold: v })}
           />
           <NumericField
-            label="min region"
-            help="Smallest contiguous region the reducer will emit. Regions shorter than this are dropped before brute-force."
+            label={t("stages.thresholds.fields.minRegion")}
+            help={t("stages.thresholds.fields.minRegionHelp")}
             value={form.reduce.min_region ?? 16}
             step={1}
             min={1}
@@ -189,28 +191,28 @@ export function StageThresholds({ onAdvance }: Props) {
 
       <div className="md-panel p-3 space-y-3">
         <div className="md-text-accent font-semibold text-xs uppercase tracking-wide">
-          Brute-force
+          {t("stages.thresholds.bruteForce")}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <NumericField
-            label="stride"
-            help="Candidate iteration step. Default = alignment. At stride=1 the hot loop wastes most oracle calls on misaligned offsets."
+            label={t("stages.thresholds.fields.stride")}
+            help={t("stages.thresholds.fields.strideHelp")}
             value={form.bruteForce.stride ?? 8}
             step={1}
             min={1}
             onChange={(v) => patchBrute({ stride: v })}
           />
           <NumericField
-            label="jobs"
-            help="Inner worker count for the brute-force ProcessPool. 1 = serial (easiest debugging); >1 = parallel. Memdiver v1 caps concurrent pipelines at 1, so jobs × 1 is the CPU footprint."
+            label={t("stages.thresholds.fields.jobs")}
+            help={t("stages.thresholds.fields.jobsHelp")}
             value={form.bruteForce.jobs ?? 1}
             step={1}
             min={1}
             onChange={(v) => patchBrute({ jobs: v })}
           />
           <NumericField
-            label="top K"
-            help="When no hit is found, how many highest-variance regions to report. Zero to disable the fallback."
+            label={t("stages.thresholds.fields.topK")}
+            help={t("stages.thresholds.fields.topKHelp")}
             value={form.bruteForce.top_k ?? 10}
             step={1}
             min={0}
@@ -224,7 +226,7 @@ export function StageThresholds({ onAdvance }: Props) {
             onChange={(e) => patchBrute({ exhaustive: e.target.checked })}
           />
           <span className="md-text-secondary">
-            Exhaustive (try every candidate even after the first hit)
+            {t("stages.thresholds.exhaustiveLabel")}
           </span>
         </label>
       </div>
@@ -241,16 +243,16 @@ export function StageThresholds({ onAdvance }: Props) {
           onClick={() => onAdvance("oracle")}
           className="text-xs px-3 py-1.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
         >
-          ← Back
+          {t("stages.thresholds.back")}
         </button>
         <button
           type="button"
           disabled={submitting}
           onClick={() => void submit()}
           className="text-xs px-4 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
-          title="Start consensus → reduce → verify → sweep → emit"
+          title={t("stages.thresholds.runTitle")}
         >
-          {submitting ? "Submitting…" : "Run pipeline"}
+          {submitting ? t("stages.thresholds.submitting") : t("stages.thresholds.run")}
         </button>
       </div>
     </div>

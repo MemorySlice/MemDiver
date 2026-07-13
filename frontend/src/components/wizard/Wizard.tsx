@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { FileBrowser } from "@/components/wizard/FileBrowser";
 import { getPathInfo } from "@/api/client";
@@ -6,17 +7,6 @@ import { useAppStore, SINGLE_FILE_ALGORITHMS, REFERENCE_ALGORITHMS, MULTI_DUMP_A
 import type { AlgorithmName } from "@/stores/app-store";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { getAlgorithmAvailability } from "@/utils/algorithm-availability";
-
-const ALGO_LABELS: Record<AlgorithmName, { label: string; desc: string }> = {
-  entropy_scan:          { label: "Entropy Scan",          desc: "Shannon entropy sliding window for high-entropy regions" },
-  pattern_match:         { label: "Pattern Match",         desc: "Structural patterns from JSON definitions" },
-  change_point:          { label: "Change Point",          desc: "CUSUM entropy change-point detection" },
-  structure_scan:        { label: "Structure Scan",        desc: "Identify known data structures via overlay matching" },
-  user_regex:            { label: "User Regex",            desc: "Custom regex pattern matching" },
-  exact_match:           { label: "Exact Match",           desc: "Search for known key byte sequences" },
-  differential:          { label: "Differential",          desc: "Cross-run byte variance analysis (needs 2+ dumps)" },
-  constraint_validator:  { label: "Constraint Validator",  desc: "KDF relationship verification for candidates" },
-};
 
 function WizardHeader() {
   return (
@@ -32,18 +22,25 @@ function WizardHeader() {
   );
 }
 
+const STEP_INDICATOR_KEYS: Record<string, string> = {
+  "Select Data": "step.indicator.selectData",
+  "Directory Type": "step.indicator.directoryType",
+  "Analysis": "step.indicator.analysis",
+};
+
 function StepIndicator({ steps, current }: { steps: string[]; current: number }) {
+  const { t } = useTranslation("wizard");
   return (
     <div className="flex mb-8 gap-1">
-      {steps.map((label, i) => (
-        <div key={label} className="flex-1 text-center">
+      {steps.map((step, i) => (
+        <div key={step} className="flex-1 text-center">
           <div
             className={`h-1 rounded-full mb-1 ${
               i <= current ? "bg-[var(--md-accent-blue)]" : "bg-[var(--md-border)]"
             }`}
           />
           <span className={`text-xs ${i <= current ? "md-text-accent" : "md-text-muted"}`}>
-            {label}
+            {t(STEP_INDICATOR_KEYS[step] ?? step)}
           </span>
         </div>
       ))}
@@ -52,6 +49,7 @@ function StepIndicator({ steps, current }: { steps: string[]; current: number })
 }
 
 function StepSelectData({ error }: { error: string | null }) {
+  const { t } = useTranslation("wizard");
   const { inputPath, setInputPath, keylogFilename } = useAppStore();
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
@@ -63,9 +61,9 @@ function StepSelectData({ error }: { error: string | null }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold md-text-accent">Select Data</h2>
+      <h2 className="text-lg font-semibold md-text-accent">{t("step.selectData.title")}</h2>
       <p className="text-sm md-text-secondary">
-        Enter a path or browse to a dump file or directory.
+        {t("step.selectData.description")}
       </p>
 
       <div className="flex gap-2">
@@ -73,7 +71,7 @@ function StepSelectData({ error }: { error: string | null }) {
           type="text"
           value={inputPath}
           onChange={(e) => setInputPath(e.target.value)}
-          placeholder="Enter path to file or directory"
+          placeholder={t("step.selectData.pathPlaceholder")}
           className="flex-1 px-3 py-2 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[var(--md-text-primary)] focus:border-[var(--md-accent-blue)]"
         />
         <button
@@ -81,7 +79,7 @@ function StepSelectData({ error }: { error: string | null }) {
           className="px-4 py-2 rounded font-medium text-white transition-all"
           style={{ background: "var(--md-accent-blue)" }}
         >
-          Open
+          {t("step.selectData.open")}
         </button>
       </div>
 
@@ -92,23 +90,23 @@ function StepSelectData({ error }: { error: string | null }) {
         onClick={() => setShowAdvanced(!showAdvanced)}
         className="text-sm md-text-secondary hover:md-text-primary transition-colors"
       >
-        {showAdvanced ? "\u25BE" : "\u25B8"} Reference Data (optional)
+        {showAdvanced ? "\u25BE" : "\u25B8"} {t("step.selectData.referenceData")}
       </button>
 
       {showAdvanced && (
         <div className="ml-4 space-y-2 text-sm">
           <div>
-            <label className="md-text-secondary">Keylog file:</label>
+            <label className="md-text-secondary">{t("step.selectData.keylogLabel")}</label>
             <input
               type="text"
               value={keylogFilename}
               onChange={(e) => useAppStore.setState({ keylogFilename: e.target.value })}
-              placeholder="keylog.csv"
+              placeholder={t("step.selectData.keylogPlaceholder")}
               className="ml-2 px-2 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)] text-[var(--md-text-primary)]"
             />
           </div>
           <p className="text-xs md-text-muted">
-            Provide known keys, struct definitions, or other reference data for verification algorithms.
+            {t("step.selectData.referenceNote")}
           </p>
         </div>
       )}
@@ -125,6 +123,7 @@ function StepSelectData({ error }: { error: string | null }) {
 }
 
 function StepDirectoryType() {
+  const { t } = useTranslation("wizard");
   const { inputMode, setInputMode, pathInfo } = useAppStore();
   const detectedMode = pathInfo?.detected_mode;
 
@@ -140,25 +139,25 @@ function StepDirectoryType() {
   const options = [
     {
       value: "directory" as const,
-      label: "Library Directory",
-      desc: "Contains runs of one library (e.g. openssl/)",
+      label: t("step.directoryType.library.label"),
+      desc: t("step.directoryType.library.desc"),
       detected: detectedMode === "run_directory",
     },
     {
       value: "dataset" as const,
-      label: "Dataset Directory",
-      desc: "Contains multiple library directories to compare",
+      label: t("step.directoryType.dataset.label"),
+      desc: t("step.directoryType.dataset.desc"),
       detected: detectedMode === "dataset",
     },
   ];
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold md-text-accent">What is this directory?</h2>
+      <h2 className="text-lg font-semibold md-text-accent">{t("step.directoryType.title")}</h2>
       {pathInfo && (
         <p className="text-sm md-text-muted">
-          Found {pathInfo.dump_count} dump file{pathInfo.dump_count !== 1 ? "s" : ""}
-          {pathInfo.has_keylog && " with keylog"}
+          {t("step.directoryType.foundDumps", { count: pathInfo.dump_count })}
+          {pathInfo.has_keylog && t("step.directoryType.withKeylog")}
         </p>
       )}
       <div className="flex gap-3">
@@ -174,7 +173,7 @@ function StepDirectoryType() {
           >
             <div className="font-medium">
               {o.label}
-              {o.detected && <span className="ml-2 text-xs md-text-muted">(detected)</span>}
+              {o.detected && <span className="ml-2 text-xs md-text-muted">{t("step.directoryType.detected")}</span>}
             </div>
             <div className="text-sm md-text-secondary mt-1">{o.desc}</div>
           </button>
@@ -185,6 +184,7 @@ function StepDirectoryType() {
 }
 
 function StepAnalysis() {
+  const { t } = useTranslation("wizard");
   const {
     analysisApproach, setAnalysisApproach,
     selectedAlgorithms, toggleAlgorithm,
@@ -217,7 +217,7 @@ function StepAnalysis() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold md-text-accent">Analysis</h2>
+      <h2 className="text-lg font-semibold md-text-accent">{t("step.analysis.title")}</h2>
 
       <div className="space-y-3">
         {/* Auto-Analyze option */}
@@ -229,9 +229,9 @@ function StepAnalysis() {
               : "border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
           }`}
         >
-          <div className="font-medium">Auto-Analyze</div>
+          <div className="font-medium">{t("step.analysis.auto.label")}</div>
           <div className="text-sm md-text-secondary mt-1">
-            Run selected algorithms to find key material and structures.
+            {t("step.analysis.auto.desc")}
           </div>
         </button>
 
@@ -239,7 +239,6 @@ function StepAnalysis() {
         {analysisApproach === "auto" && (
           <div className="ml-4 space-y-1.5">
             {allAlgos.map((algo) => {
-              const meta = ALGO_LABELS[algo];
               const availability = getAlgorithmAvailability(algo, availabilityContext);
               const checked = selectedAlgorithms.includes(algo);
               return (
@@ -260,8 +259,8 @@ function StepAnalysis() {
                     className="mt-0.5 accent-[var(--md-accent-blue)]"
                   />
                   <div>
-                    <span className="font-medium">{meta.label}</span>
-                    <span className="ml-2 md-text-muted text-xs">{meta.desc}</span>
+                    <span className="font-medium">{t(`algorithms.${algo}.label`)}</span>
+                    <span className="ml-2 md-text-muted text-xs">{t(`algorithms.${algo}.desc`)}</span>
                     {!availability.available && availability.reason && (
                       <span className="block text-xs mt-0.5" style={{ color: "var(--md-text-muted)" }}>
                         {availability.reason}
@@ -283,9 +282,9 @@ function StepAnalysis() {
               : "border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
           }`}
         >
-          <div className="font-medium">Inspect Only</div>
+          <div className="font-medium">{t("step.analysis.inspect.label")}</div>
           <div className="text-sm md-text-secondary mt-1">
-            View the dump without running analysis algorithms.
+            {t("step.analysis.inspect.desc")}
           </div>
         </button>
       </div>
@@ -293,13 +292,14 @@ function StepAnalysis() {
       {/* Info note */}
       <p className="text-xs md-text-muted flex items-center gap-1.5">
         <span style={{ color: "var(--md-accent-blue)" }}>i</span>
-        You can always run or toggle algorithms later from the workspace.
+        {t("step.analysis.note")}
       </p>
     </div>
   );
 }
 
 export function Wizard() {
+  const { t } = useTranslation("wizard");
   const { wizardStep, setWizardStep, completeWizard, pathInfo, inputPath } = useAppStore();
   const [pathError, setPathError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
@@ -335,23 +335,23 @@ export function Wizard() {
       const store = useAppStore.getState();
       store.setPathInfo(info);
       if (!info.exists) {
-        setPathError(`Path does not exist: "${path}"`);
+        setPathError(t("validation.pathNotExist", { path }));
         return;
       }
       if (info.is_file) {
         store.setInputMode("file");
       }
       if (info.is_directory && info.dump_count === 0 && info.detected_mode === "unknown") {
-        setPathError("No dump files (.dump, .msl) found in this directory. Please select a directory containing memory dumps.");
+        setPathError(t("validation.noDumps"));
         return;
       }
       setWizardStep(1);
     } catch {
-      setPathError("Could not validate path. Is the backend running?");
+      setPathError(t("validation.validateFailed"));
     } finally {
       setValidating(false);
     }
-  }, [setWizardStep]);
+  }, [setWizardStep, t]);
 
   const goForward = useCallback(async () => {
     if (currentStepName === "Select Data") {
@@ -392,7 +392,7 @@ export function Wizard() {
             disabled={wizardStep === 0}
             className="px-4 py-2 rounded border border-[var(--md-border)] disabled:opacity-30 hover:bg-[var(--md-bg-hover)] transition-colors"
           >
-            Back
+            {t("common:back")}
           </button>
           <button
             onClick={goForward}
@@ -402,7 +402,7 @@ export function Wizard() {
               background: nextDisabled ? "var(--md-text-muted)" : "var(--md-accent-blue)",
             }}
           >
-            {validating ? "\u23F3" : isLast ? "Start Analysis" : "Next"}
+            {validating ? "\u23F3" : isLast ? t("nav.startAnalysis") : t("common:next")}
           </button>
         </div>
       </div>

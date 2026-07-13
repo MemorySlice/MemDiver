@@ -1,0 +1,53 @@
+{
+  "editor": {
+    "title": "New Structure",
+    "name": "Name",
+    "namePlaceholder": "my_struct",
+    "totalSize": "Total Size (bytes)",
+    "protocol": "Protocol",
+    "protocolPlaceholder": "TLS, SSH, ...",
+    "tags": "Tags (comma-separated)",
+    "tagsPlaceholder": "crypto, header",
+    "description": "Description",
+    "fields": "Fields",
+    "addField": "+ Add Field",
+    "colName": "Name",
+    "colType": "Type",
+    "colOffset": "Offset",
+    "colSize": "Size",
+    "colDesc": "Desc",
+    "removeTitle": "Remove",
+    "saving": "Saving..."
+  },
+  "list": {
+    "loading": "Loading structures...",
+    "title": "Structure Definitions",
+    "createNew": "+ Create New",
+    "autoDetectIdle": "Auto-detect at cursor",
+    "autoDetectBusy": "Detecting...",
+    "autoDetectNoCursor": "Position cursor on hex view first",
+    "autoDetectTitle": "Auto-detect structure at cursor offset",
+    "matched": "Matched: {{name}} ({{confidence}}%)",
+    "noMatch": "No matching structure found",
+    "detectionFailed": "Detection failed",
+    "empty": "No structures defined.",
+    "generalGroup": "general",
+    "fieldSummary": "{{size}}B / {{count}} fields",
+    "applyAtOffset": "Apply at offset 0x{{offset}}",
+    "applyNoCursor": "Position cursor on hex view first",
+    "exportTitle": "Export JSON",
+    "deleteTitle": "Delete"
+  },
+  "overlay": {
+    "fields": "{{count}} fields",
+    "clear": "Clear",
+    "offset": "Offset: 0x{{offset}}",
+    "size": "Size: {{size}}B",
+    "colField": "Field",
+    "colOffset": "Offset",
+    "colLen": "Len",
+    "colValue": "Value",
+    "constraintPassed": "Constraint passed",
+    "ok": "ok"
+  }
+}

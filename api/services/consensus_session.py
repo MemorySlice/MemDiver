@@ -80,6 +80,32 @@ class ConsensusSessionManager:
         logger.info("Consensus session started: %s size=%d", session.session_id, size)
         return session
 
+    def register(self, matrix: ConsensusVector) -> ConsensusSession:
+        """Store an already-built (one-shot) ``ConsensusVector`` and return its session.
+
+        Unlike :meth:`begin` + :meth:`add_dump` (incremental Welford), this keeps
+        the result of a one-shot ``build_from_sources`` so the
+        ``/analysis/consensus`` endpoint's range queries no longer have to stash
+        state on a process-wide singleton. Each build gets its own id, so
+        concurrent clients can never read each other's results. The session is
+        marked finalized; the idle TTL sweep reclaims it.
+        """
+        self._sweep()
+        now = time.time()
+        session = ConsensusSession(
+            session_id=str(uuid.uuid4()),
+            size=matrix.size,
+            created_at=now,
+            last_used_at=now,
+            matrix=matrix,
+            finalized=True,
+        )
+        with self._lock:
+            self._sessions[session.session_id] = session
+        logger.info("Consensus build registered: %s size=%d",
+                    session.session_id, matrix.size)
+        return session
+
     def get(self, session_id: str) -> Optional[ConsensusSession]:
         self._sweep()
         with self._lock:

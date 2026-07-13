@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { browsePath } from "@/api/client";
 import type { BrowseEntry } from "@/api/types";
 import { useBrowserStore, normalizePath } from "@/stores/browser-store";
@@ -23,6 +24,7 @@ function deriveFilter(editPath: string | null, currentPath: string): string {
 }
 
 export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
+  const { t } = useTranslation("wizard");
   const [currentPath, setCurrentPath] = useState<string>("");
   const [editPath, setEditPath] = useState<string | null>(null);
   const [parentPath, setParentPath] = useState<string | null>(null);
@@ -51,11 +53,11 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
         setEntries(result.entries);
       }
     } catch {
-      setError("Could not browse path. Is the backend running?");
+      setError(t("browser.browseError"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadDirectory();
@@ -100,18 +102,18 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
       >
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-[var(--md-border)]">
-          <h3 className="text-sm font-semibold md-text-accent">Browse</h3>
+          <h3 className="text-sm font-semibold md-text-accent">{t("browser.title")}</h3>
           <button
             onClick={onClose}
             className="px-2 py-0.5 text-sm rounded hover:bg-[var(--md-bg-hover)] transition-colors"
-            title="Close"
+            title={t("common:close")}
           >
             x
           </button>
         </div>
 
         <FileBrowserPathBar
-          value={editPath ?? (currentPath || "Loading...")}
+          value={editPath ?? (currentPath || t("browser.loading"))}
           onChange={setEditPath}
           onFocus={() => { if (editPath === null) setEditPath(currentPath); }}
           onBlur={() => { if (editPath === currentPath) setEditPath(null); }}
@@ -160,14 +162,14 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
             onClick={onClose}
             className="px-3 py-1.5 text-sm rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors"
           >
-            Cancel
+            {t("common:cancel")}
           </button>
           <button
             onClick={handleSelectCurrentDir}
             disabled={!currentPath}
             className="px-3 py-1.5 text-sm rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90 transition-opacity disabled:opacity-40"
           >
-            Select This Directory
+            {t("browser.selectDirectory")}
           </button>
         </div>
       </div>

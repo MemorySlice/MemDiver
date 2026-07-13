@@ -85,6 +85,43 @@ def test_upload_dump_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/dumps/upload — the blocking importer must be offloaded
+# ---------------------------------------------------------------------------
+
+
+def test_upload_dump_offloads_import_to_thread(client, monkeypatch):
+    """Regression: ``tools.import_raw_dump`` (up to 4 GiB parse/convert) is
+    CPU/IO-heavy and synchronous, so the async handler must run it via
+    ``asyncio.to_thread`` instead of blocking the event loop. We assert the
+    router dispatches the importer through ``asyncio.to_thread`` while
+    preserving the temp-file + result contract."""
+    sentinel = {"source": "x", "output": "y", "regions_written": 1}
+
+    def _fake_import(session, raw_path, output_path, pid=0):
+        assert Path(raw_path).is_file()
+        return sentinel
+
+    monkeypatch.setattr(tools, "import_raw_dump", _fake_import)
+
+    calls: list[str] = []
+    real_to_thread = dumps_router.asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(dumps_router.asyncio, "to_thread", spy_to_thread)
+
+    r = client.post(
+        "/api/dumps/upload",
+        files={"file": ("t.dump", b"\x00\x01\x02\x03small", "application/octet-stream")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == sentinel
+    assert "_fake_import" in calls, "import_raw_dump must be offloaded via asyncio.to_thread"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/dumps/upload — missing file → 422
 # ---------------------------------------------------------------------------
 
@@ -115,3 +152,29 @@ def test_upload_dump_over_cap_is_413(client, monkeypatch):
     )
     assert r.status_code == 413
     assert "cap" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/dumps/upload — output_dir escaping settings.upload_dir → 400
+# ---------------------------------------------------------------------------
+
+
+def test_upload_dump_output_dir_outside_upload_dir_is_400(client):
+    """An ``output_dir`` resolving outside ``settings.upload_dir`` is rejected
+    with 400 (path containment), before any conversion runs."""
+    r = client.post(
+        "/api/dumps/upload",
+        params={"output_dir": "/etc"},
+        files={"file": ("t.dump", b"\x00\x01\x02\x03", "application/octet-stream")},
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_upload_dump_output_dir_traversal_is_400(client):
+    """A traversal ``output_dir`` (``../`` escape) is rejected with 400."""
+    r = client.post(
+        "/api/dumps/upload",
+        params={"output_dir": "../../../../tmp/evil_out"},
+        files={"file": ("t.dump", b"\x00\x01\x02\x03", "application/octet-stream")},
+    )
+    assert r.status_code == 400, r.text

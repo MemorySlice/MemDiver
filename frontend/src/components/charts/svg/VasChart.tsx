@@ -14,6 +14,7 @@
  * `settings.display.chartBackend === "svg"`.
  */
 import { memo, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 import type { VasChartProps, VasEntry } from "../types";
@@ -22,14 +23,14 @@ import { scaleLinear, niceLinearTicks, formatNumber } from "./primitives";
 const MARGIN = { top: 40, right: 20, bottom: 36, left: 150 };
 const ROW_HEIGHT = 22;
 
-const TYPE_NAMES: Record<number, string> = {
-  0x00: "Unknown",
-  0x01: "Heap",
-  0x02: "Stack",
-  0x03: "Image",
-  0x04: "Mapped",
-  0x05: "Anonymous",
-  0x06: "Shared",
+const TYPE_NAME_KEYS: Record<number, string> = {
+  0x00: "vas.type.unknown",
+  0x01: "vas.type.heap",
+  0x02: "vas.type.stack",
+  0x03: "vas.type.image",
+  0x04: "vas.type.mapped",
+  0x05: "vas.type.anonymous",
+  0x06: "vas.type.shared",
 };
 
 function protStr(prot: number): string {
@@ -38,7 +39,10 @@ function protStr(prot: number): string {
   );
 }
 
-export const VasChart = memo(function VasChart({ entries, title = "Virtual Address Space" }: VasChartProps) {
+export const VasChart = memo(function VasChart({ entries, title }: VasChartProps) {
+  const { t } = useTranslation("charts");
+  const resolvedTitle = title ?? t("vas.defaultTitle");
+  const typeName = (type: number) => t(TYPE_NAME_KEYS[type] ?? "vas.type.unknown");
   const { svg: tokens } = useChartTheme();
   const [containerRef, containerWidth] = useContainerWidth({
     initialWidth: 720,
@@ -76,7 +80,7 @@ export const VasChart = memo(function VasChart({ entries, title = "Virtual Addre
   if (!entries.length) {
     return (
       <p className="md-text-muted text-sm p-4" data-chart-backend="svg">
-        No VAS data.
+        {t("vas.empty")}
       </p>
     );
   }
@@ -99,14 +103,14 @@ export const VasChart = memo(function VasChart({ entries, title = "Virtual Addre
         width={containerWidth}
         height={chartHeight}
         role="img"
-        aria-label={title}
+        aria-label={resolvedTitle}
         style={{ display: "block", background: tokens.chartPaper }}
         onMouseMove={(e) => {
           const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
           setMouse({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         }}
       >
-        <title>{title}</title>
+        <title>{resolvedTitle}</title>
 
         <rect x={MARGIN.left} y={MARGIN.top} width={plotW} height={plotH} fill={tokens.chartPlot} />
 
@@ -118,7 +122,7 @@ export const VasChart = memo(function VasChart({ entries, title = "Virtual Addre
           fontWeight={600}
           fill={tokens.chartText}
         >
-          {title}
+          {resolvedTitle}
         </text>
 
         {/* Vertical grid for X ticks */}
@@ -222,7 +226,7 @@ export const VasChart = memo(function VasChart({ entries, title = "Virtual Addre
           fontSize={11}
           fill={tokens.textSecondary}
         >
-          Size (bytes)
+          {t("vas.axis.size")}
         </text>
       </svg>
 
@@ -243,10 +247,10 @@ export const VasChart = memo(function VasChart({ entries, title = "Virtual Addre
           }}
         >
           <div style={{ fontWeight: 600 }}>
-            {TYPE_NAMES[hovered.region_type] ?? "Unknown"}
+            {typeName(hovered.region_type)}
           </div>
           <div style={{ color: tokens.textSecondary, marginTop: 2 }}>
-            {`addr 0x${hovered.base_addr.toString(16)}`}
+            {t("vas.tooltip.addr", { addr: `0x${hovered.base_addr.toString(16)}` })}
           </div>
           <div style={{ color: tokens.textSecondary }}>
             {`${protStr(hovered.protection)} | ${(hovered.region_size / 1024).toFixed(0)} KB`}

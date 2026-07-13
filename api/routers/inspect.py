@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.dependencies import get_tool_session
@@ -20,7 +20,7 @@ router = APIRouter()
 @router.get("/hex")
 def read_hex(
     dump_path: str,
-    offset: int = 0,
+    offset: int = Query(0, ge=0),
     length: int = 256,
     view: ViewMode = "raw",
     session: ToolSession = Depends(get_tool_session),
@@ -93,6 +93,29 @@ def extract_strings(
     return tools_inspect._extract_strings(
         session, dump_path, offset, length, min_length, encoding, max_results,
         cursor=cursor, chunk_size=chunk_size,
+    )
+
+
+@router.get("/byte-search")
+def search_bytes(
+    dump_path: str,
+    pattern_hex: str,
+    view: ViewMode = "raw",
+    max_results: int = 500,
+    cursor: int = 0,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Search a dump for every occurrence of a hex byte pattern.
+
+    ``pattern_hex`` accepts an optional leading ``0x`` and surrounding
+    whitespace. ``cursor`` resumes a previous paged scan (pass the
+    ``next_cursor`` from the last response). For MSL files, ``view`` selects
+    the byte source: ``raw`` (default) → .msl container bytes; ``vas`` →
+    flattened captured memory projection.
+    """
+    return tools_inspect.search_bytes(
+        session, dump_path, pattern_hex, view=view,
+        max_results=max_results, cursor=cursor,
     )
 
 

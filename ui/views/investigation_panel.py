@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from ui.components.hex_renderer import _html_escape
 from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.investigation_panel")
@@ -106,7 +107,7 @@ def render_investigation(
     # Strings found nearby
     if rpt.strings:
         items = ", ".join(f'<code style="color:{cs.ACCENT_GREEN};">'
-                          f'{st.value[:40]}</code>' for st in rpt.strings[:8])
+                          f'{_html_escape(str(st.value[:40]))}</code>' for st in rpt.strings[:8])
         s.append(f'<div style="margin-bottom:8px;">'
                  f'<span style="color:{cs.TEXT_SECONDARY};font-size:12px;">'
                  f'{_("Strings nearby:")}</span> {items}</div>')

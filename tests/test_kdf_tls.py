@@ -1,11 +1,13 @@
 """Tests for TLS KDF plugins (TLS12KDF, TLS13KDF)."""
 
+import hashlib
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from core.kdf import TLS13HKDF
 from core.kdf_base import KDFParams
 from core.kdf_tls import TLS12KDF, TLS13KDF
 from core.models import CryptoSecret
@@ -73,6 +75,25 @@ def test_tls13_validate_pair_no_match():
     b = os.urandom(32)
     score = kdf.validate_pair(a, b, b"")
     assert score == 0.0
+
+
+def test_tls13_validate_pair_matches_real_empty_transcript_secret():
+    """validate_pair links secrets derived with the real empty-transcript hash.
+
+    Regression: the labeled-expand branch must use SHA256("") as the
+    Derive-Secret context (RFC 8446 7.1), not 32 zero bytes, or real secrets
+    never match.
+    """
+    kdf = TLS13KDF()
+    secret_a = b"\x42" * 32
+    empty_hash = hashlib.sha256(b"").digest()
+    derived = TLS13HKDF.hkdf_expand_label(secret_a, "derived", empty_hash, 32)
+
+    assert kdf.validate_pair(secret_a, derived, b"") == 0.95
+
+    # The old buggy zero-byte context must NOT spuriously match.
+    zero_ctx_derived = TLS13HKDF.hkdf_expand_label(secret_a, "derived", bytes(32), 32)
+    assert kdf.validate_pair(secret_a, zero_ctx_derived, b"") == 0.0
 
 
 def test_tls13_expand_traffic_secret():

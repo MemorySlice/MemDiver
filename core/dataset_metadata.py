@@ -119,14 +119,20 @@ def _build_meta(
 
 
 def _decode_hex(value: str) -> bytes:
-    """Decode a hex string tolerating ``0x`` prefixes and odd lengths."""
+    """Decode a hex string tolerating a ``0x`` prefix.
+
+    Odd-length hex is rejected (returns ``b""``): front-padding with a
+    leading zero would nibble-misalign every byte and silently corrupt the
+    decoded key material, so it is safer to skip the malformed value.
+    """
     if not value:
         return b""
     clean = value.lower()
     if clean.startswith("0x"):
         clean = clean[2:]
     if len(clean) % 2:
-        clean = "0" + clean
+        logger.warning("Ignoring odd-length hex string (%d chars)", len(clean))
+        return b""
     try:
         return bytes.fromhex(clean)
     except ValueError:

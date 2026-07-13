@@ -235,16 +235,20 @@ def download_artifact(task_id: str, name: str):
     try:
         full_path = store.open(task_id, name)
     except ArtifactNotFound:
-        task_dir = store.task_dir(task_id)
-        candidate = (task_dir / spec.relpath).resolve()
+        # Route the fallback through the store's validated resolver so it
+        # enforces the same traversal *and* symlink guards as store.open()
+        # — a plain resolve()+relative_to would happily serve an in-tree
+        # symlink that points outside the task dir.
         try:
-            candidate.relative_to(task_dir.resolve())
-        except ValueError as exc:
-            raise HTTPException(status_code=400,
-                                detail="artifact escapes task dir") from exc
-        if not candidate.is_file():
-            raise HTTPException(status_code=404, detail="artifact file missing")
-        full_path = candidate
+            full_path = store._resolve(
+                task_id, spec.relpath, require_file=True
+            )
+        except ArtifactNotFound as exc:
+            raise HTTPException(
+                status_code=404, detail="artifact file missing"
+            ) from exc
+        except (InvalidArtifactName, ArtifactStoreError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ArtifactStoreError, InvalidArtifactName) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FileResponse(
@@ -346,9 +350,10 @@ async def refine_consensus(task_id: str, body: RefineRequest):
             nb_pad = 64
             start = max(0, offset - nb_pad)
             end = min(len(variance), offset + length + nb_pad)
-            nb_var = (
-                m2[start:end].astype(np.float32) / float(new_n)
-            ).tolist()
+            # Use the post-fold variance (welford.variance()), NOT the
+            # stale pre-fold local m2 array — the new dumps were folded
+            # into welford._m2, so m2[start:end]/new_n would be wrong.
+            nb_var = variance[start:end].astype(np.float32).tolist()
             nb_static = sum(
                 1 for v in nb_var if v <= PLUGIN_STATIC_THRESHOLD
             )

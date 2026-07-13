@@ -6,6 +6,7 @@
  * The SVG alternative lives at `../svg/VarianceMap.tsx`.
  */
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import { Plot } from "./normalize-plot";
 import { usePlotlyTheme, usePlotlyColors } from "@/hooks/usePlotlyTheme";
 import { PLOTLY_CONFIG, PLOTLY_STYLE } from "../chart-config";
@@ -15,8 +16,10 @@ export const VarianceMap = memo(function VarianceMap({
   variance,
   classifications,
   step = 1,
-  title = "Variance Map",
+  title,
 }: VarianceMapProps) {
+  const { t } = useTranslation("charts");
+  const resolvedTitle = title ?? t("variance.defaultTitle");
   const theme = usePlotlyTheme();
   const colors = usePlotlyColors();
 
@@ -37,12 +40,12 @@ export const VarianceMap = memo(function VarianceMap({
       data={[{
         x: offsets, y: sampled, type: "bar",
         marker: { color: barColors || colors.accentBlue },
-        name: "Variance",
+        name: t("variance.seriesName"),
       }]}
       layout={{
-        ...theme, title: { text: title }, height: 350, bargap: 0,
-        xaxis: { ...theme.xaxis, title: { text: "Offset (bytes)" } },
-        yaxis: { ...theme.yaxis, title: { text: "Variance" }, type: "log" },
+        ...theme, title: { text: resolvedTitle }, height: 350, bargap: 0,
+        xaxis: { ...theme.xaxis, title: { text: t("variance.axis.offset") } },
+        yaxis: { ...theme.yaxis, title: { text: t("variance.axis.variance") }, type: "log" },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         shapes: [
           { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 200, y1: 200, line: { color: colors.structural, width: 1, dash: "dot" } },

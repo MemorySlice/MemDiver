@@ -1,6 +1,7 @@
 /**
  * Side-by-side method comparison table matching the CLI output format.
  */
+import { useTranslation } from "react-i18next";
 
 interface ToolResult {
   tool: string;
@@ -17,32 +18,33 @@ interface MethodComparisonTableProps {
 }
 
 export function MethodComparisonTable({ results }: MethodComparisonTableProps) {
+  const { t } = useTranslation("results");
   if (results.length === 0) {
     return (
       <div className="flex items-center justify-center h-24 text-zinc-500 text-sm">
-        No experiment results available.
+        {t("comparison.empty")}
       </div>
     );
   }
 
   const metrics = [
-    { key: 'format', label: 'Format', fmt: (v: unknown) => String(v) },
-    { key: 'precision', label: 'Precision', fmt: (v: unknown) => typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : 'N/A' },
-    { key: 'false_positives', label: 'False positives', fmt: (v: unknown) => typeof v === 'number' ? v.toLocaleString() : 'N/A' },
-    { key: 'recall', label: 'Recall', fmt: (v: unknown) => typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : 'N/A' },
-    { key: 'decryption_verified', label: 'Decryption', fmt: (v: unknown) => v === true ? 'YES' : v === false ? 'NO' : 'N/A' },
-    { key: 'plugin_saved', label: 'Plugin', fmt: (v: unknown) => v ? 'Saved' : '-' },
+    { key: 'format', label: t("comparison.format"), fmt: (v: unknown) => String(v) },
+    { key: 'precision', label: t("comparison.precision"), fmt: (v: unknown) => typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : t("comparison.na") },
+    { key: 'false_positives', label: t("comparison.falsePositives"), fmt: (v: unknown) => typeof v === 'number' ? v.toLocaleString() : t("comparison.na") },
+    { key: 'recall', label: t("comparison.recall"), fmt: (v: unknown) => typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : t("comparison.na") },
+    { key: 'decryption_verified', label: t("comparison.decryption"), fmt: (v: unknown) => v === true ? t("comparison.yes") : v === false ? t("comparison.no") : t("comparison.na") },
+    { key: 'plugin_saved', label: t("comparison.plugin"), fmt: (v: unknown) => v ? t("comparison.saved") : '-' },
   ];
 
   return (
     <div className="p-4">
       <h3 className="text-sm font-semibold text-zinc-300 mb-3">
-        Tool Comparison
+        {t("comparison.title")}
       </h3>
       <table className="w-full text-xs font-mono">
         <thead>
           <tr className="border-b border-zinc-700">
-            <th className="text-left py-1.5 px-2 text-zinc-400 font-medium">Metric</th>
+            <th className="text-left py-1.5 px-2 text-zinc-400 font-medium">{t("comparison.metric")}</th>
             {results.map(r => (
               <th key={r.tool} className="text-center py-1.5 px-2 text-zinc-300 font-semibold">
                 {r.tool}

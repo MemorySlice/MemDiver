@@ -131,7 +131,7 @@ class DifferentialAlgorithm(BaseAlgorithm):
             if not self._width_matches_target(width):
                 continue
 
-            mean_var = sum(variance[start:end]) / width
+            mean_var = float(variance[start:end].mean())
             region_data = primary_dump[start:end] if start + width <= len(primary_dump) else b""
             region_counts = count_classifications(classifications[start:end])
 

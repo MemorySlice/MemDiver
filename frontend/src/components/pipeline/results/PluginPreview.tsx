@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import { ARTIFACT_NAMES } from "@/components/pipeline/constants";
@@ -17,6 +18,7 @@ export function PluginPreview({
   taskId,
   artifactName = ARTIFACT_NAMES.VOL3_PLUGIN,
 }: Props) {
+  const { t } = useTranslation("pipeline");
   const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -74,12 +76,12 @@ export function PluginPreview({
   };
 
   if (loading) {
-    return <div className="md-panel p-3 text-xs md-text-muted">Loading plugin&hellip;</div>;
+    return <div className="md-panel p-3 text-xs md-text-muted">{t("results.plugin.loading")}</div>;
   }
   if (error) {
     return (
       <div className="md-panel p-3 text-xs" style={{ color: "var(--md-accent-red)" }}>
-        Failed to load plugin: {error}
+        {t("results.plugin.loadError", { error })}
       </div>
     );
   }
@@ -87,19 +89,19 @@ export function PluginPreview({
   return (
     <div className="md-panel flex flex-col">
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--md-border)]">
-        <span className="text-xs md-text-accent font-semibold">{artifactName}.py</span>
+        <span className="text-xs md-text-accent font-semibold">{t("results.plugin.fileName", { name: artifactName })}</span>
         <div className="flex gap-2">
           <button
             onClick={handleCopy}
             className="text-[11px] px-2 py-0.5 rounded hover:bg-[var(--md-bg-hover)] md-text-secondary"
           >
-            {copied ? "Copied!" : "Copy"}
+            {copied ? t("results.plugin.copied") : t("common:copy")}
           </button>
           <button
             onClick={handleDownload}
             className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white"
           >
-            Download
+            {t("common:download")}
           </button>
         </div>
       </div>

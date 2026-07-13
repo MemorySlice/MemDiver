@@ -210,3 +210,165 @@ def test_download_unknown_artifact_is_404(client, synthetic_dumps):
     _wait_terminal(client, task_id)
     r = client.get(f"/api/pipeline/runs/{task_id}/artifacts/does-not-exist")
     assert r.status_code == 404
+
+
+# ------------------------------------------------------------------
+# download_artifact fallback security (regression for symlink bypass)
+# ------------------------------------------------------------------
+
+
+class _FakeRecord:
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+
+
+class _FakeManager:
+    """Minimal stand-in exposing only what download_artifact touches."""
+
+    def __init__(self, record, store):
+        self._record = record
+        self.artifact_store = store
+
+    def get(self, task_id):
+        return self._record
+
+
+def test_download_fallback_rejects_in_tree_symlink(tmp_path, monkeypatch):
+    """The fallback resolve path (store has no registered spec) must still
+    refuse an in-tree symlink that escapes the task dir — previously it
+    used a bare resolve()+relative_to and would happily serve it."""
+    import os
+
+    from fastapi import HTTPException
+
+    from api.routers import pipeline as pipeline_mod
+    from api.services.artifact_store import ArtifactSpec, ArtifactStore
+
+    # Secret file living OUTSIDE the store root.
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"top-secret")
+
+    store_root = tmp_path / "tasks"
+    store = ArtifactStore(store_root, max_total_bytes=0)
+    task_dir = store.task_dir("task-symlink")
+
+    # An in-tree symlink whose target escapes the task dir.
+    link = task_dir / "leak.bin"
+    os.symlink(secret, link)
+
+    # Spec is on the TaskRecord but NOT registered in the store, so
+    # store.open() raises ArtifactNotFound and we hit the fallback.
+    spec = ArtifactSpec(name="leak", relpath="leak.bin",
+                        media_type="application/octet-stream")
+    record = _FakeRecord([spec])
+    manager = _FakeManager(record, store)
+    monkeypatch.setattr(pipeline_mod, "_task_manager_or_503", lambda: manager)
+
+    with pytest.raises(HTTPException) as exc_info:
+        pipeline_mod.download_artifact("task-symlink", "leak")
+    assert exc_info.value.status_code == 400
+
+
+def test_download_fallback_serves_regular_in_tree_file(tmp_path, monkeypatch):
+    """Sanity: the hardened fallback still serves a genuine regular file."""
+    from api.routers import pipeline as pipeline_mod
+    from api.services.artifact_store import ArtifactSpec, ArtifactStore
+
+    store_root = tmp_path / "tasks"
+    store = ArtifactStore(store_root, max_total_bytes=0)
+    task_dir = store.task_dir("task-ok")
+    (task_dir / "report.bin").write_bytes(b"hello")
+
+    spec = ArtifactSpec(name="report", relpath="report.bin")
+    record = _FakeRecord([spec])
+    manager = _FakeManager(record, store)
+    monkeypatch.setattr(pipeline_mod, "_task_manager_or_503", lambda: manager)
+
+    resp = pipeline_mod.download_artifact("task-ok", "report")
+    assert Path(resp.path).read_bytes() == b"hello"
+
+
+# ------------------------------------------------------------------
+# refine_consensus neighborhood variance (regression for stale m2)
+# ------------------------------------------------------------------
+
+
+def test_refine_neighborhood_variance_uses_post_fold_state(tmp_path, monkeypatch):
+    """After folding new dumps, hit_neighborhood variance must reflect the
+    POST-fold Welford state, not the stale pre-fold local m2 array divided
+    by the new (larger) dump count."""
+    import asyncio
+
+    import numpy as np
+
+    from core.variance import WelfordVariance
+    from api.routers import pipeline as pipeline_mod
+
+    size = 256
+
+    def _make_dump(seed):
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 256, size, dtype=np.uint8).tobytes()
+
+    base_dumps = [_make_dump(s) for s in (1, 2)]
+    extra_dumps = [_make_dump(s) for s in (3, 4)]
+
+    # Build + persist the pre-fold Welford state (2 base dumps).
+    base = WelfordVariance(size)
+    for d in base_dumps:
+        base.add_dump(d)
+    mean, m2, n = base.state_arrays()
+
+    consensus_dir = tmp_path / "art" / "consensus"
+    consensus_dir.mkdir(parents=True)
+    mean_path = consensus_dir / "mean.npy"
+    m2_path = consensus_dir / "m2.npy"
+    np.save(mean_path, mean)
+    np.save(m2_path, m2)
+    state = {
+        "mean_path": str(mean_path),
+        "m2_path": str(m2_path),
+        "num_dumps": int(n),
+    }
+    (consensus_dir / "state.json").write_text(json.dumps(state))
+
+    # A hit at offset 96, length 16 so its neighborhood is non-trivial.
+    hit_offset, hit_len = 96, 16
+    bf_dir = tmp_path / "art" / "brute_force"
+    bf_dir.mkdir(parents=True)
+    (bf_dir / "hits.json").write_text(
+        json.dumps({"hits": [{"offset": hit_offset, "length": hit_len}]})
+    )
+
+    # Write the extra dumps to disk so open_dump can read them.
+    extra_paths = []
+    for i, d in enumerate(extra_dumps):
+        p = tmp_path / f"extra_{i}.bin"
+        p.write_bytes(d)
+        extra_paths.append(str(p))
+
+    # Compute the expected POST-fold variance independently.
+    expected = WelfordVariance(size)
+    for d in base_dumps + extra_dumps:
+        expected.add_dump(d)
+    expected_var = expected.variance()
+
+    record = {"artifact_dir": str(tmp_path / "art")}
+    manager = _FakeManager(record, store=None)
+    monkeypatch.setattr(pipeline_mod, "_task_manager_or_503", lambda: manager)
+
+    body = pipeline_mod.RefineRequest(additional_paths=extra_paths)
+    resp = asyncio.run(pipeline_mod.refine_consensus("t", body))
+
+    assert resp.num_dumps == 4
+    assert len(resp.hit_neighborhoods) == 1
+    nb = resp.hit_neighborhoods[0]
+    nb_pad = 64
+    start = max(0, hit_offset - nb_pad)
+    end = min(size, hit_offset + hit_len + nb_pad)
+    got = np.array(nb["neighborhood_variance"], dtype=np.float32)
+    np.testing.assert_allclose(got, expected_var[start:end], rtol=1e-5, atol=1e-3)
+
+    # And confirm it is NOT the buggy stale-m2 / new_n value.
+    stale = (m2[start:end].astype(np.float32) / 4.0)
+    assert not np.allclose(got, stale, rtol=1e-5, atol=1e-3)

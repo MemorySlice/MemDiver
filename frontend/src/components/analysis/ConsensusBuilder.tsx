@@ -1,13 +1,15 @@
 import { useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useConsensusIncrementalStore } from "@/stores/consensus-incremental-store";
 import { EmptyState } from "@/components/common/EmptyState";
 import { LiveConsensusIcon } from "@/components/common/Icons";
 
 function Sparkline({ values }: { values: number[] }) {
+  const { t } = useTranslation("analysis");
   if (values.length < 2) {
     return (
       <div className="h-10 flex items-center text-[10px] md-text-muted">
-        sparkline appears after 2+ dumps
+        {t("consensus.sparklineHint")}
       </div>
     );
   }
@@ -24,7 +26,7 @@ function Sparkline({ values }: { values: number[] }) {
       height={height}
       className="block"
       role="img"
-      aria-label="max variance over time"
+      aria-label={t("consensus.sparklineAria")}
     >
       <polyline
         fill="none"
@@ -37,6 +39,7 @@ function Sparkline({ values }: { values: number[] }) {
 }
 
 export function ConsensusBuilder() {
+  const { t } = useTranslation("analysis");
   const {
     sessionId,
     size,
@@ -89,14 +92,14 @@ export function ConsensusBuilder() {
     return (
       <EmptyState
         icon={<LiveConsensusIcon />}
-        title="Fold dumps one at a time"
-        description="Start a session, then drop dumps in as they arrive. Variance, classification, and top offsets recompute after each add. Finalize at N ≥ 2."
-        primaryCta={{ label: "Start session", onClick: handleBegin }}
-        secondary={{ label: "About consensus", href: "/docs/visualizations/consensus.md" }}
+        title={t("consensus.emptyTitle")}
+        description={t("consensus.emptyDescription")}
+        primaryCta={{ label: t("consensus.startSession"), onClick: handleBegin }}
+        secondary={{ label: t("consensus.aboutConsensus"), href: "/docs/visualizations/consensus.md" }}
         data-testid="live-consensus-empty"
       >
         <label className="flex flex-col items-start gap-1 mt-[var(--space-3)] text-[var(--text-xs)]" style={{ color: "var(--md-text-secondary)" }}>
-          <span>Consensus size (bytes)</span>
+          <span>{t("consensus.sizeLabel")}</span>
           <input
             type="number"
             value={sizeInput}
@@ -113,9 +116,9 @@ export function ConsensusBuilder() {
   if (status === "finalized" && finalResult) {
     return (
       <div className="p-3 text-xs">
-        <h3 className="font-semibold mb-2">Incremental Consensus — Finalized</h3>
+        <h3 className="font-semibold mb-2">{t("consensus.finalizedTitle")}</h3>
         <p className="md-text-muted mb-2">
-          {finalResult.num_dumps} dumps / {finalResult.size.toLocaleString()} bytes
+          {t("consensus.finalizedSummary", { dumps: finalResult.num_dumps, bytes: finalResult.size.toLocaleString() })}
         </p>
         <table className="w-full max-w-sm mb-3">
           <tbody>
@@ -132,11 +135,10 @@ export function ConsensusBuilder() {
           </tbody>
         </table>
         <p className="md-text-muted mb-2">
-          mean var {finalResult.variance_summary.mean.toFixed(2)}, max{" "}
-          {finalResult.variance_summary.max.toFixed(2)}
+          {t("consensus.varianceSummary", { mean: finalResult.variance_summary.mean.toFixed(2), max: finalResult.variance_summary.max.toFixed(2) })}
         </p>
         <button onClick={reset} className="md-button">
-          New session
+          {t("consensus.newSession")}
         </button>
       </div>
     );
@@ -145,9 +147,9 @@ export function ConsensusBuilder() {
   return (
     <div className="p-3 text-xs">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="font-semibold">Incremental Consensus</h3>
+        <h3 className="font-semibold">{t("consensus.title")}</h3>
         <span className="md-text-muted">
-          {numDumps} dump{numDumps === 1 ? "" : "s"} · {size.toLocaleString()} bytes
+          {t("consensus.dumpSummary", { count: numDumps, bytes: size.toLocaleString() })}
         </span>
       </div>
 
@@ -157,7 +159,7 @@ export function ConsensusBuilder() {
         className="border border-dashed border-[var(--md-border)] rounded p-3 mb-2 text-center cursor-pointer md-bg-tertiary"
         onClick={() => fileInputRef.current?.click()}
       >
-        Drop a .dump or .msl here, or click to pick.
+        {t("consensus.dropHint")}
         <input
           ref={fileInputRef}
           type="file"
@@ -172,11 +174,11 @@ export function ConsensusBuilder() {
         <div className="text-[11px] md-text-muted">
           {liveStats ? (
             <>
-              <div>mean {liveStats.mean_variance.toFixed(2)}</div>
-              <div>max {liveStats.max_variance.toFixed(2)}</div>
+              <div>{t("consensus.statMean", { value: liveStats.mean_variance.toFixed(2) })}</div>
+              <div>{t("consensus.statMax", { value: liveStats.max_variance.toFixed(2) })}</div>
             </>
           ) : (
-            <div>no stats yet</div>
+            <div>{t("consensus.noStats")}</div>
           )}
         </div>
       </div>
@@ -184,7 +186,7 @@ export function ConsensusBuilder() {
       {liveStats && liveStats.top_offsets.length > 0 && (
         <details className="mb-2">
           <summary className="cursor-pointer md-text-muted">
-            top variance offsets
+            {t("consensus.topOffsets")}
           </summary>
           <ul className="mt-1">
             {liveStats.top_offsets.map((t) => (
@@ -202,10 +204,10 @@ export function ConsensusBuilder() {
           disabled={numDumps < 2}
           className="md-button-primary disabled:opacity-50"
         >
-          Finalize
+          {t("consensus.finalize")}
         </button>
         <button onClick={reset} className="md-button">
-          Cancel
+          {t("common:cancel")}
         </button>
       </div>
 

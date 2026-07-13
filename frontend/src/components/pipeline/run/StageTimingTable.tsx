@@ -7,19 +7,20 @@
  */
 
 import type { JSX } from "react";
+import { useTranslation } from "react-i18next";
 
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { StageTimings } from "@/stores/pipeline-store";
 
 interface TimingRow {
   key: keyof StageTimings;
-  label: string;
+  labelKey: string;
 }
 
 const ROWS: TimingRow[] = [
-  { key: "consensus_ms", label: "Consensus" },
-  { key: "reduce_ms", label: "Search-reduce" },
-  { key: "brute_force_ms", label: "Brute-force" },
+  { key: "consensus_ms", labelKey: "run.timings.consensus" },
+  { key: "reduce_ms", labelKey: "run.timings.searchReduce" },
+  { key: "brute_force_ms", labelKey: "run.timings.bruteForce" },
 ];
 
 function formatMs(ms: number): string {
@@ -30,25 +31,26 @@ function formatMs(ms: number): string {
 }
 
 export function StageTimingTable(): JSX.Element {
+  const { t } = useTranslation("pipeline");
   const timings = usePipelineStore((s) => s.timings);
   const total =
     timings.consensus_ms + timings.reduce_ms + timings.brute_force_ms;
 
   return (
     <div className="md-panel p-3 space-y-2 text-xs md-text-secondary">
-      <div className="md-text-accent font-semibold">Stage timings</div>
+      <div className="md-text-accent font-semibold">{t("run.timings.title")}</div>
       <table className="w-full border-collapse">
         <tbody>
           {ROWS.map((row) => (
             <tr key={row.key} className="border-b border-[var(--md-border)]">
-              <td className="py-1 md-text-muted">{row.label}</td>
+              <td className="py-1 md-text-muted">{t(row.labelKey)}</td>
               <td className="py-1 text-right font-mono">
                 {formatMs(timings[row.key])}
               </td>
             </tr>
           ))}
           <tr>
-            <td className="pt-1.5 md-text-accent font-semibold">Total</td>
+            <td className="pt-1.5 md-text-accent font-semibold">{t("run.timings.total")}</td>
             <td className="pt-1.5 text-right font-mono md-text-accent font-semibold">
               {formatMs(total)}
             </td>

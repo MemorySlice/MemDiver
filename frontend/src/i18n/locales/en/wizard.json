@@ -1,0 +1,107 @@
+{
+  "browser": {
+    "title": "Browse",
+    "browseError": "Could not browse path. Is the backend running?",
+    "pathPlaceholder": "Type a path and press Enter",
+    "loading": "Loading...",
+    "selectDirectory": "Select This Directory",
+    "bookmark": {
+      "add": "Bookmark this folder",
+      "remove": "Remove bookmark",
+      "expand": "Expand bookmarks",
+      "collapse": "Collapse bookmarks",
+      "title": "Bookmarks ({{count}})"
+    },
+    "entries": {
+      "parentDirectory": "Parent directory",
+      "noMatches": "No matches for \"{{filter}}\"",
+      "emptyDirectory": "Empty directory"
+    }
+  },
+  "step": {
+    "indicator": {
+      "selectData": "Select Data",
+      "directoryType": "Directory Type",
+      "analysis": "Analysis"
+    },
+    "selectData": {
+      "title": "Select Data",
+      "description": "Enter a path or browse to a dump file or directory.",
+      "pathPlaceholder": "Enter path to file or directory",
+      "open": "Open",
+      "referenceData": "Reference Data (optional)",
+      "keylogLabel": "Keylog file:",
+      "keylogPlaceholder": "keylog.csv",
+      "referenceNote": "Provide known keys, struct definitions, or other reference data for verification algorithms."
+    },
+    "directoryType": {
+      "title": "What is this directory?",
+      "foundDumps": "Found {{count}} dump file",
+      "foundDumps_other": "Found {{count}} dump files",
+      "withKeylog": " with keylog",
+      "detected": "(detected)",
+      "library": {
+        "label": "Library Directory",
+        "desc": "Contains runs of one library (e.g. openssl/)"
+      },
+      "dataset": {
+        "label": "Dataset Directory",
+        "desc": "Contains multiple library directories to compare"
+      }
+    },
+    "analysis": {
+      "title": "Analysis",
+      "auto": {
+        "label": "Auto-Analyze",
+        "desc": "Run selected algorithms to find key material and structures."
+      },
+      "inspect": {
+        "label": "Inspect Only",
+        "desc": "View the dump without running analysis algorithms."
+      },
+      "note": "You can always run or toggle algorithms later from the workspace."
+    }
+  },
+  "validation": {
+    "pathNotExist": "Path does not exist: \"{{path}}\"",
+    "noDumps": "No dump files (.dump, .msl) found in this directory. Please select a directory containing memory dumps.",
+    "validateFailed": "Could not validate path. Is the backend running?"
+  },
+  "nav": {
+    "startAnalysis": "Start Analysis"
+  },
+  "algorithms": {
+    "entropy_scan": {
+      "label": "Entropy Scan",
+      "desc": "Shannon entropy sliding window for high-entropy regions"
+    },
+    "pattern_match": {
+      "label": "Pattern Match",
+      "desc": "Structural patterns from JSON definitions"
+    },
+    "change_point": {
+      "label": "Change Point",
+      "desc": "CUSUM entropy change-point detection"
+    },
+    "structure_scan": {
+      "label": "Structure Scan",
+      "desc": "Identify known data structures via overlay matching"
+    },
+    "user_regex": {
+      "label": "User Regex",
+      "desc": "Custom regex pattern matching"
+    },
+    "exact_match": {
+      "label": "Exact Match",
+      "desc": "Search for known key byte sequences"
+    },
+    "differential": {
+      "label": "Differential",
+      "desc": "Cross-run byte variance analysis (needs 2+ dumps)"
+    },
+    "constraint_validator": {
+      "label": "Constraint Validator",
+      "desc": "KDF relationship verification for candidates"
+    }
+  }
+}

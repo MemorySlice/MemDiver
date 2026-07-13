@@ -1,0 +1,25 @@
+{
+  "manager": {
+    "title": "Sessions",
+    "namePlaceholder": "Session name",
+    "saved": "Session saved",
+    "saveFailed": "Save failed",
+    "loadedName": "Loaded: {{name}}",
+    "loadFailed": "Load failed",
+    "loadingSessions": "Loading sessions...",
+    "noSessions": "No saved sessions."
+  },
+  "info": {
+    "title": "Session Info",
+    "uuid": "UUID",
+    "pid": "PID",
+    "osArch": "OS / Arch",
+    "timestamp": "Timestamp",
+    "executable": "Executable",
+    "regions": "Regions",
+    "totalSize": "Total Size",
+    "capturedPages": "Captured Pages",
+    "keyHints": "Key Hints",
+    "modules": "Modules ({{n}})"
+  }
+}

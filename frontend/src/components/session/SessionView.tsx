@@ -13,6 +13,7 @@ interface SessionData {
 }
 
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   data: SessionData;
@@ -25,28 +26,29 @@ function formatSize(bytes: number): string {
 }
 
 export const SessionView = memo(function SessionView({ data }: Props) {
+  const { t } = useTranslation("session");
   return (
     <div className="p-3 space-y-3 text-xs">
-      <h3 className="text-sm font-semibold md-text-accent">Session Info</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("info.title")}</h3>
 
       <div className="md-panel p-2 space-y-1">
-        <Row label="UUID" value={data.dump_uuid} />
-        <Row label="PID" value={String(data.pid)} />
-        <Row label="OS / Arch" value={`${data.os_type} / ${data.arch_type}`} />
-        <Row label="Timestamp" value={data.timestamp_iso} />
-        {data.exe_path && <Row label="Executable" value={data.exe_path} />}
+        <Row label={t("info.uuid")} value={data.dump_uuid} />
+        <Row label={t("info.pid")} value={String(data.pid)} />
+        <Row label={t("info.osArch")} value={`${data.os_type} / ${data.arch_type}`} />
+        <Row label={t("info.timestamp")} value={data.timestamp_iso} />
+        {data.exe_path && <Row label={t("info.executable")} value={data.exe_path} />}
       </div>
 
       <div className="md-panel p-2 space-y-1">
-        <Row label="Regions" value={String(data.region_count)} />
-        <Row label="Total Size" value={formatSize(data.total_region_size)} />
-        <Row label="Captured Pages" value={String(data.captured_page_count)} />
-        <Row label="Key Hints" value={String(data.key_hint_count)} />
+        <Row label={t("info.regions")} value={String(data.region_count)} />
+        <Row label={t("info.totalSize")} value={formatSize(data.total_region_size)} />
+        <Row label={t("info.capturedPages")} value={String(data.captured_page_count)} />
+        <Row label={t("info.keyHints")} value={String(data.key_hint_count)} />
       </div>
 
       {data.modules.length > 0 && (
         <div className="md-panel p-2">
-          <div className="font-medium mb-1 md-text-secondary">Modules ({data.modules.length})</div>
+          <div className="font-medium mb-1 md-text-secondary">{t("info.modules", { n: data.modules.length })}</div>
           <div className="max-h-32 overflow-auto space-y-0.5">
             {data.modules.map((m, i) => (
               <div key={i} className="font-mono md-text-muted truncate" title={m.path}>

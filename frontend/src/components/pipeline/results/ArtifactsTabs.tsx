@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import type { ArtifactSpec } from "@/api/pipeline";
@@ -27,26 +28,27 @@ interface RawListProps {
 }
 
 function RawArtifactList({ taskId, artifacts }: RawListProps) {
+  const { t } = useTranslation("pipeline");
   const secondary = artifacts.filter((a) => !PRIMARY_ARTIFACT_NAMES.has(a.name));
   if (secondary.length === 0) {
     return (
       <div className="md-panel p-3 text-xs md-text-muted">
-        No secondary artifacts registered yet.
+        {t("results.artifacts.noSecondary")}
       </div>
     );
   }
   return (
     <details open className="md-panel">
       <summary className="px-3 py-1.5 text-xs md-text-accent font-semibold cursor-pointer border-b border-[var(--md-border)]">
-        Raw outputs ({secondary.length})
+        {t("results.artifacts.rawOutputs", { count: secondary.length })}
       </summary>
       <table className="w-full text-[11px]">
         <thead>
           <tr className="md-text-muted border-b border-[var(--md-border)]">
-            <th className="text-left px-3 py-1 font-normal">name</th>
-            <th className="text-left px-3 py-1 font-normal">size</th>
-            <th className="text-left px-3 py-1 font-normal">sha256</th>
-            <th className="text-right px-3 py-1 font-normal">action</th>
+            <th className="text-left px-3 py-1 font-normal">{t("results.artifacts.colName")}</th>
+            <th className="text-left px-3 py-1 font-normal">{t("results.artifacts.colSize")}</th>
+            <th className="text-left px-3 py-1 font-normal">{t("results.artifacts.colSha")}</th>
+            <th className="text-right px-3 py-1 font-normal">{t("results.artifacts.colAction")}</th>
           </tr>
         </thead>
         <tbody>
@@ -64,7 +66,7 @@ function RawArtifactList({ taskId, artifacts }: RawListProps) {
                   download
                   className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white"
                 >
-                  Download
+                  {t("common:download")}
                 </a>
               </td>
             </tr>
@@ -81,6 +83,7 @@ function RawArtifactList({ taskId, artifacts }: RawListProps) {
  * list for everything else the ArtifactStore registered.
  */
 export function ArtifactsTabs() {
+  const { t } = useTranslation("pipeline");
   const taskId = usePipelineStore((s) => s.taskId);
   const artifacts = usePipelineStore((s) => s.artifacts);
   const [tab, setTab] = useState<TabKey>("plugin");
@@ -97,15 +100,15 @@ export function ArtifactsTabs() {
   if (!taskId) {
     return (
       <div className="md-panel p-4 text-xs md-text-muted">
-        No pipeline run loaded.
+        {t("results.artifacts.noRunLoaded")}
       </div>
     );
   }
 
   const tabs: { key: TabKey; label: string }[] = [
-    { key: "plugin", label: "Plugin" },
-    { key: "report", label: "Report" },
-    { key: "raw", label: "Raw" },
+    { key: "plugin", label: t("results.artifacts.tabPlugin") },
+    { key: "report", label: t("results.artifacts.tabReport") },
+    { key: "raw", label: t("results.artifacts.tabRaw") },
   ];
 
   return (
@@ -131,7 +134,7 @@ export function ArtifactsTabs() {
             <PluginPreview taskId={taskId} />
           ) : (
             <div className="md-panel p-4 text-xs md-text-muted">
-              No vol3_plugin artifact in this run.
+              {t("results.artifacts.noPlugin")}
             </div>
           ))}
         {tab === "report" &&
@@ -139,7 +142,7 @@ export function ArtifactsTabs() {
             <ReportHtmlFrame taskId={taskId} />
           ) : (
             <div className="md-panel p-4 text-xs md-text-muted">
-              No nsweep_html artifact in this run.
+              {t("results.artifacts.noReport")}
             </div>
           ))}
         {tab === "raw" && <RawArtifactList taskId={taskId} artifacts={artifacts} />}

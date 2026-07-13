@@ -64,17 +64,24 @@ def _digest(path: Path) -> str:
 
 def check() -> int:
     tmp_png = STATIC / ".check_logo_readme.png"
+    tmp_fav_png = STATIC / ".check_favicon.png"
     tmp_fav = STATIC / ".check_favicon.ico"
     try:
+        # Render everything into temp files; never touch the committed assets
+        # (a read-only verify must not mutate tracked files).
         _svg_to_png(SOURCE_SIMPLE, tmp_png, width=README_WIDTH)
-        _svg_to_png(SOURCE_SIMPLE, FAVICON_PNG, width=max(FAVICON_SIZES))
-        img = Image.open(FAVICON_PNG).convert("RGBA")
+        _svg_to_png(SOURCE_SIMPLE, tmp_fav_png, width=max(FAVICON_SIZES))
+        img = Image.open(tmp_fav_png).convert("RGBA")
         img.save(tmp_fav, format="ICO", sizes=[(s, s) for s in FAVICON_SIZES])
 
-        ok = _digest(tmp_png) == _digest(README_PNG) and _digest(tmp_fav) == _digest(FAVICON_ICO)
+        ok = (
+            _digest(tmp_png) == _digest(README_PNG)
+            and _digest(tmp_fav_png) == _digest(FAVICON_PNG)
+            and _digest(tmp_fav) == _digest(FAVICON_ICO)
+        )
         return 0 if ok else 1
     finally:
-        for p in (tmp_png, tmp_fav):
+        for p in (tmp_png, tmp_fav_png, tmp_fav):
             if p.exists():
                 p.unlink()
 

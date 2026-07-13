@@ -8,7 +8,11 @@ from core.structure_defs import StructureDef, FieldDef, FieldType
 
 MAX_TOTAL_SIZE = 65536  # 64KB max structure size
 VALID_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
-VALID_CONSTRAINTS = {"min", "max", "equals", "not_zero"}
+VALID_CONSTRAINTS = {"min", "max", "equals", "not_zero", "byte_equals", "byte_in"}
+# Constraints that compare a parsed value with `<` / `>` (numeric only).
+# Applying these to a 'bytes' field would raise TypeError in _check_constraints,
+# so they are rejected at validation time for byte-typed fields.
+_NUMERIC_ONLY_CONSTRAINTS = {"min", "max"}
 
 
 def validate_structure_json(data: dict) -> Tuple[bool, List[str]]:
@@ -70,6 +74,12 @@ def validate_structure_json(data: dict) -> Tuple[bool, List[str]]:
                 for k in field["constraints"]:
                     if k not in VALID_CONSTRAINTS:
                         errors.append(f"{prefix}: unknown constraint '{k}'")
+                    elif (k in _NUMERIC_ONLY_CONSTRAINTS
+                          and field.get("field_type") == FieldType.BYTES.value):
+                        errors.append(
+                            f"{prefix}: constraint '{k}' is not valid for "
+                            f"field_type 'bytes' (numeric only)"
+                        )
 
     return len(errors) == 0, errors
 
@@ -85,6 +95,7 @@ def json_to_structure_def(data: dict) -> StructureDef:
             size=f["size"],
             description=f.get("description", ""),
             constraints=f.get("constraints", {}),
+            size_choices=tuple(f.get("size_choices", ())),
         ))
 
     return StructureDef(
@@ -113,6 +124,7 @@ def structure_def_to_json(sd: StructureDef) -> dict:
                 "size": f.size,
                 "description": f.description,
                 "constraints": dict(f.constraints) if f.constraints else {},
+                "size_choices": list(f.size_choices),
             }
             for f in sd.fields
         ],

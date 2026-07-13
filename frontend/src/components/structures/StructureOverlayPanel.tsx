@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 
 type Variant = "sidebar" | "detail";
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function StructureOverlayPanel({ variant = "detail" }: Props) {
+  const { t } = useTranslation("structures");
   const overlay = useHexStore((s) => s.activeStructureOverlay);
   const clearOverlay = useHexStore((s) => s.setActiveStructureOverlay);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
@@ -37,7 +39,7 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
           {overlay.structureName}
         </h4>
         <span className="px-1.5 py-0.5 rounded bg-[var(--md-bg-hover)] font-mono text-[10px] md-text-secondary shrink-0">
-          {overlay.fields.length} fields
+          {t("overlay.fields", { count: overlay.fields.length })}
         </span>
       </div>
       <button
@@ -47,15 +49,15 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
         }}
         className="px-1.5 py-0.5 text-[10px] rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] shrink-0"
       >
-        Clear
+        {t("overlay.clear")}
       </button>
     </div>
   );
 
   const meta = (
     <div className="flex gap-3 text-[10px] md-text-muted">
-      <span>Offset: 0x{overlay.baseOffset.toString(16)}</span>
-      <span>Size: {overlay.totalSize}B</span>
+      <span>{t("overlay.offset", { offset: overlay.baseOffset.toString(16) })}</span>
+      <span>{t("overlay.size", { size: overlay.totalSize })}</span>
     </div>
   );
 
@@ -63,10 +65,10 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
     <table className="w-full text-[10px]">
       <thead>
         <tr className="md-text-muted sticky top-0 md-bg-secondary">
-          <th className="text-left p-0.5">Field</th>
-          <th className="text-left p-0.5">Offset</th>
-          <th className="text-left p-0.5">Len</th>
-          <th className="text-left p-0.5">Value</th>
+          <th className="text-left p-0.5">{t("overlay.colField")}</th>
+          <th className="text-left p-0.5">{t("overlay.colOffset")}</th>
+          <th className="text-left p-0.5">{t("overlay.colLen")}</th>
+          <th className="text-left p-0.5">{t("overlay.colValue")}</th>
           <th className="text-left p-0.5"></th>
         </tr>
       </thead>
@@ -102,9 +104,9 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
                     className={
                       isActive ? "text-white" : "text-[var(--md-accent-green)]"
                     }
-                    title="Constraint passed"
+                    title={t("overlay.constraintPassed")}
                   >
-                    ok
+                    {t("overlay.ok")}
                   </span>
                 ) : (
                   <span className="md-text-muted">--</span>

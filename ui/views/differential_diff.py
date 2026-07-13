@@ -32,6 +32,7 @@ def render_differential_diff(
         mo.Html with the diff view.
     """
     from ui.components import color_scheme as cs
+    from ui.components.hex_renderer import render_offset_column
 
     if not dump_a or not dump_b:
         return mo.md(_("*Need two dumps for differential comparison.*"))
@@ -44,7 +45,7 @@ def render_differential_diff(
     lines = []
     for row_start in range(0, min(min_len, max_bytes), bytes_per_row):
         row_end = min(row_start + bytes_per_row, min_len)
-        parts = [f'<span style="color:{cs.TEXT_SECONDARY}">{row_start:08x}</span>  ']
+        parts = [render_offset_column(row_start)]
 
         for i in range(row_start, row_end):
             a, b = dump_a[i], dump_b[i]

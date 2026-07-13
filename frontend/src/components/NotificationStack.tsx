@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   dismiss,
   subscribe,
@@ -26,6 +27,7 @@ const SEVERITY_STYLES: Record<
 };
 
 function Toast({ notif }: { notif: ErrorNotification }) {
+  const { t } = useTranslation("misc");
   const styles = SEVERITY_STYLES[notif.severity] ?? SEVERITY_STYLES.error;
   return (
     <div
@@ -46,7 +48,7 @@ function Toast({ notif }: { notif: ErrorNotification }) {
       <button
         type="button"
         onClick={() => dismiss(notif.id)}
-        aria-label="Dismiss notification"
+        aria-label={t("app.notificationDismiss")}
         className="md-text-muted hover:md-text-primary text-sm leading-none px-1"
       >
         &times;

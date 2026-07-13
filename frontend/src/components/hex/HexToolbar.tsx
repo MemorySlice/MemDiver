@@ -1,7 +1,10 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
+import { useHexSearch } from "@/hooks/useHexSearch";
 
 export function HexToolbar() {
+  const { t } = useTranslation("hex");
   // Per-field selectors — this component only reads metadata that changes
   // rarely, so keep it out of the chunk-load re-render path.
   const fileSize = useHexStore((s) => s.fileSize);
@@ -10,7 +13,13 @@ export function HexToolbar() {
   const viewMode = useHexStore((s) => s.viewMode);
   const setViewMode = useHexStore((s) => s.setViewMode);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
+  const setSearchOffsets = useHexStore((s) => s.setSearchOffsets);
+  const setHighlightedRegions = useHexStore((s) => s.setHighlightedRegions);
   const [offsetInput, setOffsetInput] = useState("");
+  const [patternInput, setPatternInput] = useState("");
+
+  const { offsets, patternLen, truncated, isSearching, error, search, clear } =
+    useHexSearch(dumpPath ?? "");
 
   const handleGoTo = useCallback(() => {
     const val = offsetInput.trim();
@@ -24,6 +33,39 @@ export function HexToolbar() {
     }
   }, [offsetInput, fileSize, scrollToOffset]);
 
+  const handleFind = useCallback(() => {
+    const pattern = patternInput.trim().replace(/\s+/g, "");
+    if (!pattern || !dumpPath) return;
+    search(pattern, viewMode);
+  }, [patternInput, dumpPath, viewMode, search]);
+
+  // Push search hits into shared store state (minimap) and the hex highlight
+  // overlay whenever a search resolves with results. `offsets`/`patternLen`
+  // update atomically from the hook, so this never depends on the live input
+  // — clearing the input below can't accidentally re-fire it.
+  useEffect(() => {
+    if (isSearching) return;
+    if (offsets.length === 0) return;
+    setSearchOffsets(offsets);
+    const existing = useHexStore.getState().highlightedRegions;
+    const nonSearch = existing.filter((r) => r.type !== "search");
+    const searchRegions = offsets.map((offset) => ({
+      offset,
+      length: Math.max(1, patternLen),
+      type: "search" as const,
+      label: t("toolbar.searchHitLabel"),
+    }));
+    setHighlightedRegions([...nonSearch, ...searchRegions]);
+  }, [offsets, patternLen, isSearching, setSearchOffsets, setHighlightedRegions, t]);
+
+  const handleClearSearch = useCallback(() => {
+    setPatternInput("");
+    clear();
+    setSearchOffsets([]);
+    const existing = useHexStore.getState().highlightedRegions;
+    setHighlightedRegions(existing.filter((r) => r.type !== "search"));
+  }, [clear, setSearchOffsets, setHighlightedRegions]);
+
   const fileName = dumpPath?.split(/[\\/]/).pop() ?? "";
   const sizeKB = (fileSize / 1024).toFixed(1);
   const isMsl = format === "msl";
@@ -31,14 +73,14 @@ export function HexToolbar() {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--md-border)] md-bg-secondary text-xs">
       <span className="md-text-secondary truncate flex-1" title={dumpPath ?? ""}>
-        {fileName} — {sizeKB} KB
+        {t("toolbar.fileLabel", { name: fileName, size: sizeKB })}
       </span>
       {isMsl && (
         <div
           className="flex items-center shrink-0 rounded border border-[var(--md-border)] overflow-hidden"
           role="tablist"
-          aria-label="MSL view mode"
-          title="Raw: .msl container bytes. Memory: flattened captured VAS."
+          aria-label={t("toolbar.mslViewModeLabel")}
+          title={t("toolbar.mslViewModeTitle")}
         >
           <button
             role="tab"
@@ -51,7 +93,7 @@ export function HexToolbar() {
                 : "hover:bg-[var(--md-bg-hover)]")
             }
           >
-            Raw file
+            {t("toolbar.rawFile")}
           </button>
           <button
             role="tab"
@@ -64,7 +106,7 @@ export function HexToolbar() {
                 : "hover:bg-[var(--md-bg-hover)]")
             }
           >
-            Memory (VAS)
+            {t("toolbar.memoryVas")}
           </button>
         </div>
       )}
@@ -74,15 +116,53 @@ export function HexToolbar() {
           value={offsetInput}
           onChange={(e) => setOffsetInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleGoTo()}
-          placeholder="0x offset"
+          placeholder={t("toolbar.offsetPlaceholder")}
           className="w-24 px-2 py-0.5 rounded border border-[var(--md-border)] bg-transparent text-xs"
         />
         <button
           onClick={handleGoTo}
           className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
         >
-          Go
+          {t("toolbar.go")}
         </button>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <input
+          type="text"
+          value={patternInput}
+          onChange={(e) => setPatternInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleFind()}
+          placeholder={t("toolbar.patternPlaceholder")}
+          className="w-40 px-2 py-0.5 rounded border border-[var(--md-border)] bg-transparent text-xs"
+        />
+        <button
+          onClick={handleFind}
+          disabled={isSearching}
+          className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] disabled:opacity-50"
+        >
+          {isSearching ? t("toolbar.finding") : t("toolbar.find")}
+        </button>
+        {error && (
+          <span className="md-text-error truncate max-w-[12rem]" title={error}>
+            {error}
+          </span>
+        )}
+        {!error && !isSearching && offsets.length > 0 && (
+          <span className="md-text-secondary whitespace-nowrap">
+            {truncated
+              ? t("toolbar.hitsTruncated", { count: offsets.length })
+              : t("toolbar.hits", { count: offsets.length })}
+          </span>
+        )}
+        {(offsets.length > 0 || patternInput) && (
+          <button
+            onClick={handleClearSearch}
+            title={t("toolbar.clearSearch")}
+            className="px-1.5 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
+          >
+            ✕
+          </button>
+        )}
       </div>
     </div>
   );

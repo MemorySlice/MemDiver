@@ -15,6 +15,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export function StageDumps({ onAdvance }: Props) {
+  const { t } = useTranslation("pipeline");
   const sourcePaths = usePipelineStore((s) => s.form.sourcePaths);
   const updateForm = usePipelineStore((s) => s.updateForm);
 
@@ -57,14 +59,12 @@ export function StageDumps({ onAdvance }: Props) {
     <div className="p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold md-text-accent">
-          Select memory dumps
+          {t("stages.dumps.title")}
         </h3>
         <p className="text-xs md-text-muted">
-          Paste one absolute path per line. <code>.dump</code> and{" "}
-          <code>.msl</code> both work — MSL sources take the
-          ASLR-aware incremental path; raw dumps take the flat path.
-          Minimum 1 dump; 3+ before variance filtering becomes
-          meaningful.
+          {t("stages.dumps.subtitlePrefix")} <code>.dump</code>{" "}
+          {t("stages.dumps.subtitleAnd")} <code>.msl</code>{" "}
+          {t("stages.dumps.subtitleBody")}
         </p>
       </div>
 
@@ -83,7 +83,7 @@ export function StageDumps({ onAdvance }: Props) {
             disabled={draft.trim().length === 0}
             className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
           >
-            Add paths
+            {t("stages.dumps.addPaths")}
           </button>
           {sourcePaths.length > 0 && (
             <button
@@ -91,7 +91,7 @@ export function StageDumps({ onAdvance }: Props) {
               onClick={clearAll}
               className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-red-700 hover:text-white"
             >
-              Clear all
+              {t("stages.dumps.clearAll")}
             </button>
           )}
         </div>
@@ -100,8 +100,7 @@ export function StageDumps({ onAdvance }: Props) {
       {sourcePaths.length > 0 ? (
         <div className="md-panel">
           <div className="px-3 py-2 border-b border-[var(--md-border)] text-xs md-text-muted">
-            {sourcePaths.length} dump
-            {sourcePaths.length === 1 ? "" : "s"} selected
+            {t("stages.dumps.selectedCount", { count: sourcePaths.length })}
           </div>
           <ul className="max-h-48 overflow-y-auto divide-y divide-[var(--md-border)]">
             {sourcePaths.map((path, idx) => (
@@ -117,7 +116,7 @@ export function StageDumps({ onAdvance }: Props) {
                   type="button"
                   onClick={() => removeAt(idx)}
                   className="md-text-muted hover:text-red-400"
-                  aria-label={`remove ${path}`}
+                  aria-label={t("stages.dumps.removePath", { path })}
                 >
                   ×
                 </button>
@@ -127,7 +126,7 @@ export function StageDumps({ onAdvance }: Props) {
         </div>
       ) : (
         <div className="md-panel p-3 text-xs md-text-muted text-center">
-          No dumps yet. Paste at least one path above to continue.
+          {t("stages.dumps.empty")}
         </div>
       )}
 
@@ -137,7 +136,7 @@ export function StageDumps({ onAdvance }: Props) {
           onClick={() => onAdvance("recipe")}
           className="text-xs px-3 py-1.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
         >
-          ← Back
+          {t("stages.dumps.back")}
         </button>
         <button
           type="button"
@@ -145,7 +144,7 @@ export function StageDumps({ onAdvance }: Props) {
           onClick={() => onAdvance("oracle")}
           className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
         >
-          Next: Oracle →
+          {t("stages.dumps.next")}
         </button>
       </div>
     </div>

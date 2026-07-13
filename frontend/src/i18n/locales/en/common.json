@@ -1,0 +1,22 @@
+{
+  "save": "Save",
+  "cancel": "Cancel",
+  "close": "Close",
+  "delete": "Delete",
+  "load": "Load",
+  "loading": "Loading…",
+  "retry": "Retry",
+  "confirm": "Confirm",
+  "dismiss": "Dismiss",
+  "error": "Error",
+  "search": "Search",
+  "clear": "Clear",
+  "add": "Add",
+  "remove": "Remove",
+  "copy": "Copy",
+  "download": "Download",
+  "settings": "Settings",
+  "back": "Back",
+  "next": "Next",
+  "none": "None"
+}

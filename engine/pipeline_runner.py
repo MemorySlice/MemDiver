@@ -172,14 +172,18 @@ def _build_consensus(
         mean_arr, m2_arr, n_welford = builder.welford_state()
     else:
         # Raw .dump path: use the flat ConsensusVector incremental API.
-        # We probe the minimum size so later dumps don't overflow.
-        min_size = min(len(s.read_all()) for s in sources)
+        # Read each source exactly once (read_all() re-reads the whole dump
+        # for non-mmap sources), then derive every downstream value from the
+        # cached buffers. We probe the minimum size so later dumps don't
+        # overflow.
+        cached_data = [s.read_all() for s in sources]
+        min_size = min(len(buf) for buf in cached_data)
         matrix = ConsensusVector()
         matrix.build_incremental(min_size)
-        for i, src in enumerate(sources):
+        for i, buf in enumerate(cached_data):
             if ctx.is_cancelled():
                 raise _CancelledByContext()
-            matrix.add_source(src.read_all()[:min_size])
+            matrix.add_source(buf[:min_size])
             ctx.emit(
                 "progress",
                 stage="consensus",
@@ -191,7 +195,7 @@ def _build_consensus(
         mean_arr, m2_arr, n_welford = matrix.welford_state()
         matrix.finalize()
         variance = matrix.variance
-        reference = sources[0].read_all()[:min_size]
+        reference = cached_data[0][:min_size]
         total = min_size
 
     # Persist consensus artifacts.

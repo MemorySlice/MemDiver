@@ -1,4 +1,5 @@
 import { memo, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import type { RegionIndex } from "./highlight-utils";
 import { getRegionForOffset, highlightClass } from "./highlight-utils";
 import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
@@ -46,6 +47,7 @@ export const HexRow = memo(function HexRow({
   overlayEnabled = false,
   getClassificationAt,
 }: HexRowProps) {
+  const { t } = useTranslation("hex");
   const hexCells: ReactElement[] = [];
   const asciiCells: ReactElement[] = [];
 
@@ -111,7 +113,8 @@ export const HexRow = memo(function HexRow({
     const classStr = classes.join(" ");
     let tooltip = region?.label ?? "";
     if (varianceVal !== undefined) {
-      tooltip = tooltip ? `${tooltip} | var: ${varianceVal.toFixed(1)}` : `var: ${varianceVal.toFixed(1)}`;
+      const varText = t("row.variance", { value: varianceVal.toFixed(1) });
+      tooltip = tooltip ? `${tooltip} | ${varText}` : varText;
     }
 
     // Add gap after 8th byte for visual grouping

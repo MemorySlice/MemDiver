@@ -58,10 +58,12 @@ export function useTaskProgress(
   callbacksRef.current = callbacks;
 
   // Legacy analysis-store wiring; only used when no callbacks bag is
-  // provided. Extracted once here so changes don't rebuild the effect.
-  const legacyStore = useAnalysisStore();
-  const legacySetters = useRef(legacyStore);
-  legacySetters.current = legacyStore;
+  // provided, and only ever read inside the WebSocket closure below.
+  // Read non-reactively via getState() rather than subscribing the host
+  // component to the whole analysis-store, which would cause avoidable
+  // re-renders on the pipeline/callbacks path where it is never read.
+  const legacySetters = useRef(useAnalysisStore.getState());
+  legacySetters.current = useAnalysisStore.getState();
 
   useEffect(() => {
     if (!taskId) return;

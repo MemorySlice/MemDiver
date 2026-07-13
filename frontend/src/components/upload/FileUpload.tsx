@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface UploadResult {
   source: string;
@@ -8,6 +9,7 @@ interface UploadResult {
 }
 
 export function FileUpload() {
+  const { t } = useTranslation("misc");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -23,11 +25,11 @@ export function FileUpload() {
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       setResult(await res.json());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed");
+      setError(e instanceof Error ? e.message : t("upload.failed"));
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [t]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -37,7 +39,7 @@ export function FileUpload() {
 
   return (
     <div className="p-3 space-y-3 text-xs">
-      <h3 className="text-sm font-semibold md-text-accent">Import Dump</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("upload.heading")}</h3>
       <div
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
@@ -51,11 +53,11 @@ export function FileUpload() {
         }}
       >
         {uploading ? (
-          <p className="md-text-accent">Uploading...</p>
+          <p className="md-text-accent">{t("upload.uploading")}</p>
         ) : (
           <>
-            <p>Drop a dump file here or click to browse</p>
-            <p className="md-text-muted mt-1">.dump, .bin, .raw, .msl</p>
+            <p>{t("upload.dropHint")}</p>
+            <p className="md-text-muted mt-1">{t("upload.acceptedTypes")}</p>
           </>
         )}
       </div>
@@ -64,9 +66,9 @@ export function FileUpload() {
 
       {result && (
         <div className="md-panel p-2 space-y-1">
-          <p style={{ color: "var(--md-accent-green)" }}>Import successful</p>
-          <p>Output: <span className="font-mono">{result.output}</span></p>
-          <p>Regions: {result.regions_written} | Size: {(result.total_bytes / 1024).toFixed(1)} KB</p>
+          <p style={{ color: "var(--md-accent-green)" }}>{t("upload.importSuccessful")}</p>
+          <p>{t("upload.output")} <span className="font-mono">{result.output}</span></p>
+          <p>{t("upload.regionsSize", { regions: result.regions_written, size: (result.total_bytes / 1024).toFixed(1) })}</p>
         </div>
       )}
     </div>

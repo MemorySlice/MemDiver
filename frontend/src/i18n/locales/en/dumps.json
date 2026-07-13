@@ -1,0 +1,43 @@
+{
+  "add": {
+    "placeholder": "Server path to dump file",
+    "adding": "..."
+  },
+  "list": {
+    "title": "Loaded Dumps",
+    "empty": "No dumps loaded.",
+    "sameLabel": "Same",
+    "sameTitle": "Mark as same process for consensus",
+    "removeTitle": "Remove dump"
+  },
+  "consensus": {
+    "aslrLabel": "ASLR Normalization",
+    "aslrDisabledTitle": "ASLR normalization requires MSL files with region metadata",
+    "aslrHint": "Convert to MSL via Import tab for ASLR support",
+    "run": "Run Consensus",
+    "running": "Running...",
+    "computing": "Computing consensus...",
+    "overlayLabel": "Show overlay in hex view"
+  },
+  "tagStatus": {
+    "valid": {
+      "label": "VALID",
+      "title": "AEAD tag verified — encrypted dump decrypted successfully"
+    },
+    "corrupt": {
+      "label": "CORRUPT",
+      "title": "AEAD verification failed — wrong key or tampered file"
+    },
+    "noKey": {
+      "label": "NO KEY",
+      "title": "Encrypted dump opened without a key"
+    }
+  },
+  "unlock": {
+    "placeholder": "Passphrase",
+    "button": "Unlock",
+    "busy": "...",
+    "wrongKey": "Wrong key or tampered file",
+    "failed": "Unlock failed"
+  }
+}

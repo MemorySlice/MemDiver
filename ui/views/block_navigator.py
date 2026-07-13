@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Dict, List
 
+from ui.components.hex_renderer import _html_escape
 from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.block_navigator")
@@ -138,8 +139,8 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
                 rows.append(
                     f"<tr><td style='font-family:monospace;'>0x{m.base_addr:X}</td>"
                     f"<td>{m.module_size:,}</td>"
-                    f"<td>{m.path}</td>"
-                    f"<td>{m.version}</td></tr>"
+                    f"<td>{_html_escape(str(m.path))}</td>"
+                    f"<td>{_html_escape(str(m.version))}</td></tr>"
                 )
             html = (
                 "<table style='width:100%; border-collapse:collapse; font-size:13px;'>"
@@ -160,7 +161,7 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
             rows = [
                 f"<tr><td style='font-family:monospace;'>{str(e.module_uuid)[:8]}</td>"
                 f"<td style='font-family:monospace;'>0x{e.base_addr:X}</td>"
-                f"<td>{e.module_size:,}</td><td>{e.path}</td></tr>"
+                f"<td>{e.module_size:,}</td><td>{_html_escape(str(e.path))}</td></tr>"
                 for e in mli_entries
             ]
             sections[_("Module Index ({count})").format(count=len(mli_entries))] = mo.Html(
@@ -180,8 +181,8 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
             rows = [
                 f"<tr><td>{p.pid}</td><td>{p.ppid}</td><td>{p.uid}</td>"
                 f"<td>{'✓' if p.is_target else ''}</td>"
-                f"<td style='font-family:monospace;'>{p.exe_name}</td>"
-                f"<td>{p.cmd_line}</td><td>{p.user}</td></tr>"
+                f"<td style='font-family:monospace;'>{_html_escape(str(p.exe_name))}</td>"
+                f"<td>{_html_escape(str(p.cmd_line))}</td><td>{_html_escape(str(p.user))}</td></tr>"
                 for p in procs
             ]
             sections[_("Processes ({count})").format(count=len(procs))] = mo.Html(
@@ -241,7 +242,7 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
             rows = [
                 f"<tr><td>{h.pid}</td><td>{h.fd}</td>"
                 f"<td>{_HT.get(h.handle_type, _('Unknown'))}</td>"
-                f"<td style='font-family:monospace;'>{h.path}</td></tr>"
+                f"<td style='font-family:monospace;'>{_html_escape(str(h.path))}</td></tr>"
                 for h in handles
             ]
             sections[_("Handles ({count})").format(count=len(handles))] = mo.Html(

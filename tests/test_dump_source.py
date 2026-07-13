@@ -6,8 +6,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from core.dump_source import MslDumpSource, RawDumpSource, open_dump
+from core.dump_io import find_all_offsets
+from core.dump_source import MslDumpSource, RawDumpSource, _find_all_in_bytes, open_dump
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
+
+
+class TestFindAllOffsets:
+    """The shared overlapping-aware byte search used by DumpReader and
+    _find_all_in_bytes (see core/dump_io.find_all_offsets)."""
+
+    def test_non_overlapping(self):
+        assert find_all_offsets(b"abXXcdXXef", b"XX") == [2, 6]
+
+    def test_overlapping_matches(self):
+        # 'aaa' contains 'aa' at offsets 0 and 1 (start advances by 1 byte).
+        assert find_all_offsets(b"aaaa", b"aa") == [0, 1, 2]
+
+    def test_no_match(self):
+        assert find_all_offsets(b"abc", b"z") == []
+
+    def test_dump_source_helper_delegates(self):
+        # _find_all_in_bytes must keep identical (overlapping) semantics.
+        assert _find_all_in_bytes(b"aaaa", b"aa") == find_all_offsets(b"aaaa", b"aa")
 
 
 @pytest.fixture
@@ -40,6 +60,20 @@ class TestRawDumpSource:
         with RawDumpSource(raw_path) as src:
             chunk = src.read_range(500, 24)
             assert len(chunk) == 24
+
+    def test_read_range_negative_offset_safe(self, raw_path):
+        """A negative offset must not return tail bytes via Python slicing.
+
+        Regression: ``DumpReader.read_range`` indexed ``self._mmap[offset:end]``
+        with no negative-offset guard, so a negative offset returned the wrong
+        region's bytes for adversarial dumps. It must now return b"".
+        """
+        with RawDumpSource(raw_path) as src:
+            assert src.read_range(-1, 16) == b""
+            assert src.read_range(-1000, 16) == b""
+            # Negative/zero length is also rejected.
+            assert src.read_range(0, -5) == b""
+            assert src.read_range(0, 0) == b""
 
     def test_find_all(self, raw_path):
         with RawDumpSource(raw_path) as src:
@@ -104,6 +138,33 @@ class TestOpenDump:
     def test_auto_detect_msl(self, msl_path):
         src = open_dump(msl_path)
         assert isinstance(src, MslDumpSource)
+
+    def test_auto_detect_big_endian_elf_core(self, tmp_path):
+        """A big-endian ELF core (EI_DATA=2) with e_type==ET_CORE must be
+        dispatched to GCoreDumpSource. Regression: e_type was read
+        little-endian unconditionally, so a big-endian core's e_type
+        (0x0004 stored big-endian) was misread as 0x0400 != ET_CORE and the
+        file fell through to RawDumpSource."""
+        from core.dump_sources.gcore import GCoreDumpSource
+        # EI_DATA = 2 (ELFDATA2MSB) at magic[5]; e_type stored big-endian.
+        e_ident = b"\x7fELF" + bytes([2, 2, 1]) + b"\x00" * 9  # class=2,data=2
+        # e_type at offset 16, big-endian ET_CORE (4) -> b"\x00\x04".
+        header = e_ident + b"\x00\x04" + b"\x00" * 32
+        p = tmp_path / "be_core.elf"
+        p.write_bytes(header)
+        src = open_dump(p)
+        assert isinstance(src, GCoreDumpSource)
+
+    def test_auto_detect_little_endian_elf_core_still_works(self, tmp_path):
+        """The little-endian path (EI_DATA=1) must keep dispatching to
+        GCoreDumpSource — guards against the byteorder fix regressing LE."""
+        from core.dump_sources.gcore import GCoreDumpSource
+        e_ident = b"\x7fELF" + bytes([2, 1, 1]) + b"\x00" * 9  # data=1 (LSB)
+        header = e_ident + b"\x04\x00" + b"\x00" * 32  # e_type LE = 4
+        p = tmp_path / "le_core.elf"
+        p.write_bytes(header)
+        src = open_dump(p)
+        assert isinstance(src, GCoreDumpSource)
 
 
 class TestMslViewModes:

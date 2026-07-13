@@ -167,7 +167,7 @@ class KaitaiOverlayAdapter:
 
         # Array of structs -- iterate with indexed paths
         if isinstance(value, list):
-            return self._process_array(field_name, value, offset, path)
+            return self._process_array(field_name, value, offset, length, path)
 
         # Primitive / enum / bytes -- leaf overlay
         return [
@@ -185,10 +185,24 @@ class KaitaiOverlayAdapter:
         field_name: str,
         items: list[Any],
         parent_offset: int,
+        parent_length: int,
         path: str,
     ) -> list[KaitaiFieldOverlay]:
-        """Handle array fields, recursing into struct elements."""
+        """Handle array fields, recursing into struct elements.
+
+        Struct elements expose their own per-element debug spans, so they are
+        recursed into and produce correctly-positioned overlays.
+
+        Primitive elements (ints, enums, bytes) are NOT given per-element
+        offsets by the Kaitai runtime at this call site -- the only span
+        available is the whole-array span (parent_offset, parent_length).
+        Emitting one zero-width overlay per element collapses every element
+        onto a single hex highlight, which is misleading. Instead emit a
+        single array-level overlay covering the real array span so the hex
+        view highlights the actual bytes the array occupies.
+        """
         overlays: list[KaitaiFieldOverlay] = []
+        primitive_count = 0
         for idx, item in enumerate(items):
             indexed_path = f"{path}[{idx}]"
             if _is_kaitai_struct(item):
@@ -196,13 +210,16 @@ class KaitaiOverlayAdapter:
                     self._collect_fields(item, base_offset=0, path_prefix=indexed_path),
                 )
             else:
-                overlays.append(
-                    KaitaiFieldOverlay(
-                        field_name=f"{field_name}[{idx}]",
-                        offset=parent_offset,
-                        length=0,
-                        display=_format_value(item),
-                        path=indexed_path,
-                    ),
-                )
+                primitive_count += 1
+
+        if primitive_count:
+            overlays.append(
+                KaitaiFieldOverlay(
+                    field_name=f"{field_name}[{primitive_count}]",
+                    offset=parent_offset,
+                    length=parent_length,
+                    display=f"[{primitive_count} items]",
+                    path=path,
+                ),
+            )
         return overlays

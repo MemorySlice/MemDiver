@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useBrowserStore } from "@/stores/browser-store";
 import { preventMouseDownFocus } from "./FileBrowserEntryList";
 
@@ -7,6 +8,7 @@ interface FileBrowserBookmarksProps {
 }
 
 export function FileBrowserBookmarks({ onNavigate }: FileBrowserBookmarksProps) {
+  const { t } = useTranslation("wizard");
   const bookmarks = useBrowserStore((s) => s.bookmarks);
   const removeBookmark = useBrowserStore((s) => s.removeBookmark);
   const [collapsed, setCollapsed] = useState(false);
@@ -19,11 +21,11 @@ export function FileBrowserBookmarks({ onNavigate }: FileBrowserBookmarksProps) 
         type="button"
         onClick={() => setCollapsed((c) => !c)}
         className="w-full flex items-center justify-between px-3 py-1.5 text-xs md-text-muted hover:bg-[var(--md-bg-hover)] transition-colors"
-        title={collapsed ? "Expand bookmarks" : "Collapse bookmarks"}
+        title={collapsed ? t("browser.bookmark.expand") : t("browser.bookmark.collapse")}
       >
         <span className="flex items-center gap-1.5">
           <span className="text-[var(--md-accent-blue)]">{"\u2605"}</span>
-          <span>Bookmarks ({bookmarks.length})</span>
+          <span>{t("browser.bookmark.title", { count: bookmarks.length })}</span>
         </span>
         <span>{collapsed ? "\u25B8" : "\u25BE"}</span>
       </button>
@@ -50,7 +52,7 @@ export function FileBrowserBookmarks({ onNavigate }: FileBrowserBookmarksProps) 
                 type="button"
                 onClick={() => removeBookmark(bm.id)}
                 className="shrink-0 px-2 py-1.5 text-xs md-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[var(--md-accent-red)] transition-opacity"
-                title="Remove bookmark"
+                title={t("browser.bookmark.remove")}
               >
                 {"\u2715"}
               </button>

@@ -242,7 +242,7 @@ class DatasetInfo:
     """Summary of a scanned dataset."""
     protocol_versions: Set[str] = field(default_factory=set)
     scenarios: Dict[str, List[str]] = field(default_factory=dict)  # ver -> scenario names
-    libraries: Dict[str, Set[str]] = field(default_factory=dict)   # scenario -> library names
+    libraries: Dict[str, Set[str]] = field(default_factory=dict)   # "ver/scenario" -> library names
     phases: Dict[str, List[str]] = field(default_factory=dict)     # library_key -> phase names
     normalized_phases: Dict[str, List[str]] = field(default_factory=dict)  # lib_key -> canonical phase names
     total_runs: int = 0
@@ -275,6 +275,16 @@ class DatasetScanner:
         - scenario: root is a scenario dir (children are library dirs with run subdirs)
         - library:  root is a library dir (children are run dirs)
         """
+        # Guard against a TOCTOU race: the root may have been deleted or
+        # replaced (e.g. by a non-directory) between construction and scan.
+        # Fail with a clear message instead of an opaque FileNotFoundError /
+        # NotADirectoryError surfacing from a later iterdir() call.
+        if not self.root.is_dir():
+            raise NotADirectoryError(
+                f"dataset scan root is not a directory (deleted or replaced?): "
+                f"{self.root}"
+            )
+
         # Check if root itself starts with a protocol prefix
         for prefix in prefixes:
             if self.root.name.startswith(prefix):
@@ -373,7 +383,7 @@ class DatasetScanner:
             ver, scenario_name = self._infer_context_from_library(prefixes)
             info.protocol_versions.add(ver)
             info.scenarios[ver] = [scenario_name]
-            info.libraries[scenario_name] = {self.root.name}
+            info.libraries[f"{ver}/{scenario_name}"] = {self.root.name}
             self._scan_library_dir(self.root, ver, scenario_name, info, _normalizer)
             return info
 
@@ -382,11 +392,11 @@ class DatasetScanner:
             ver, scenario_name = self._infer_context_from_scenario(prefixes)
             info.protocol_versions.add(ver)
             info.scenarios[ver] = [scenario_name]
-            info.libraries[scenario_name] = set()
+            info.libraries[f"{ver}/{scenario_name}"] = set()
             for lib_dir in sorted(self.root.iterdir()):
                 if not lib_dir.is_dir() or lib_dir.name.startswith('.'):
                     continue
-                info.libraries[scenario_name].add(lib_dir.name)
+                info.libraries[f"{ver}/{scenario_name}"].add(lib_dir.name)
                 self._scan_library_dir(lib_dir, ver, scenario_name, info, _normalizer)
             return info
 
@@ -424,13 +434,13 @@ class DatasetScanner:
                     continue
                 scenario_name = scenario_dir.name
                 info.scenarios[ver].append(scenario_name)
-                if scenario_name not in info.libraries:
-                    info.libraries[scenario_name] = set()
+                if f"{ver}/{scenario_name}" not in info.libraries:
+                    info.libraries[f"{ver}/{scenario_name}"] = set()
 
                 for lib_dir in sorted(scenario_dir.iterdir()):
                     if not lib_dir.is_dir() or lib_dir.name.startswith('.'):
                         continue
-                    info.libraries[scenario_name].add(lib_dir.name)
+                    info.libraries[f"{ver}/{scenario_name}"].add(lib_dir.name)
                     self._scan_library_dir(lib_dir, ver, scenario_name, info, _normalizer)
 
         return info

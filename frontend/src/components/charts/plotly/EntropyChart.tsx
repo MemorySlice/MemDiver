@@ -6,6 +6,7 @@
  * The SVG alternative lives at `../svg/EntropyChart.tsx`.
  */
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import { Plot } from "./normalize-plot";
 import { usePlotlyTheme, usePlotlyColors } from "@/hooks/usePlotlyTheme";
 import { PLOTLY_CONFIG, PLOTLY_STYLE } from "../chart-config";
@@ -14,13 +15,15 @@ import type { EntropyChartProps } from "../types";
 export const EntropyChart = memo(function EntropyChart({
   data,
   threshold = 7.5,
-  title = "Entropy Profile",
+  title,
 }: EntropyChartProps) {
+  const { t } = useTranslation("charts");
+  const resolvedTitle = title ?? t("entropy.defaultTitle");
   const theme = usePlotlyTheme();
   const colors = usePlotlyColors();
 
   if (!data.profile_sample || data.profile_sample.length === 0) {
-    return <p className="p-3 text-sm md-text-muted">No entropy profile available.</p>;
+    return <p className="p-3 text-sm md-text-muted">{t("entropy.empty")}</p>;
   }
 
   const offsets = data.profile_sample.map((p) => p.offset);
@@ -45,12 +48,12 @@ export const EntropyChart = memo(function EntropyChart({
         x: offsets, y: values, type: "scatter", mode: "lines",
         line: { color: colors.accentBlue, width: 1 },
         fill: "tozeroy", fillcolor: colors.accentBlue + "20",
-        name: "Entropy",
+        name: t("entropy.seriesName"),
       }]}
       layout={{
-        ...theme, title: { text: title }, height: 350,
-        xaxis: { ...theme.xaxis, title: { text: "Offset (bytes)" } },
-        yaxis: { ...theme.yaxis, title: { text: "Entropy (bits/byte)" }, range: [0, 8.5] },
+        ...theme, title: { text: resolvedTitle }, height: 350,
+        xaxis: { ...theme.xaxis, title: { text: t("entropy.axis.offset") } },
+        yaxis: { ...theme.yaxis, title: { text: t("entropy.axis.entropy") }, range: [0, 8.5] },
         shapes,
         showlegend: false,
       }}

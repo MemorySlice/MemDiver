@@ -28,9 +28,13 @@ export function getRegionForOffset(
       hi = mid - 1;
     }
   }
-  // hi is now the index of the last region with offset <= target
-  if (hi >= 0) {
-    const region = regions[hi];
+  // hi is now the index of the last region with offset <= target. Regions are
+  // sorted by start offset only and may overlap, so the rightmost candidate is
+  // not necessarily the one containing target — an earlier region with a
+  // larger length can still span it. Walk left over candidates (offset <=
+  // target) and return the first whose [offset, offset+length) contains target.
+  for (let i = hi; i >= 0; i--) {
+    const region = regions[i];
     if (offset < region.offset + region.length) {
       return region;
     }

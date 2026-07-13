@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Panel, Group, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SettingsMenu } from "@/components/settings/SettingsMenu";
@@ -62,6 +63,7 @@ function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal"
 }
 
 function Toolbar() {
+  const { t } = useTranslation("layout");
   const { mode, resetWizard } = useAppStore();
   const [notebookAvailable, setNotebookAvailable] = useState(false);
   useEffect(() => {
@@ -89,16 +91,16 @@ function Toolbar() {
             target="_blank"
             rel="noopener"
             className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
-            title="Open Marimo research notebook in new tab"
+            title={t("openNotebookTitle")}
           >
-            Open Notebook
+            {t("openNotebook")}
           </a>
         )}
         <button
           onClick={resetWizard}
           className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
         >
-          New Session
+          {t("newSession")}
         </button>
         <SettingsMenu />
         <ThemeToggle />
@@ -111,6 +113,7 @@ type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "i
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "verify-key" | "pipeline";
 
 function Sidebar() {
+  const { t } = useTranslation("layout");
   const [sideTab, setSideTab] = useState<SideTab>("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
@@ -120,17 +123,17 @@ function Sidebar() {
   return (
     <div data-tour-id="workspace-sidebar" className="h-full flex flex-col overflow-hidden md-bg-secondary">
       <div className="flex border-b border-[var(--md-border)]">
-        {(["bookmarks", "dumps", "format", "structures", "sessions", "import"] as const).map((t) => (
+        {(["bookmarks", "dumps", "format", "structures", "sessions", "import"] as const).map((tab) => (
           <button
-            key={t}
-            onClick={() => setSideTab(t)}
-            title={t}
-            data-testid={`tab-${t}`}
+            key={tab}
+            onClick={() => setSideTab(tab)}
+            title={t(`tabs.${tab}`)}
+            data-testid={`tab-${tab}`}
             className={`flex-1 text-xs py-1.5 capitalize transition-colors truncate px-1 ${
-              sideTab === t ? "bg-[var(--md-bg-hover)]" : "md-text-secondary hover:bg-[var(--md-bg-hover)]"
+              sideTab === tab ? "bg-[var(--md-bg-hover)]" : "md-text-secondary hover:bg-[var(--md-bg-hover)]"
             }`}
           >
-            {t}
+            {t(`tabs.${tab}`)}
           </button>
         ))}
       </div>
@@ -155,11 +158,11 @@ function Sidebar() {
             {dumpPath.endsWith(".msl") && (
               <>
                 <div className="border-t border-[var(--md-border)] mt-2 pt-2 px-3">
-                  <h4 className="text-xs font-semibold mb-1 md-text-muted">MSL Blocks</h4>
+                  <h4 className="text-xs font-semibold mb-1 md-text-muted">{t("mslBlocks")}</h4>
                 </div>
                 <BlockNavigator mslPath={dumpPath} onBlockClick={(off) => useHexStore.getState().scrollToOffset(off)} />
                 <div className="border-t border-[var(--md-border)] mt-2 pt-2 px-3">
-                  <h4 className="text-xs font-semibold mb-1 md-text-muted">Modules</h4>
+                  <h4 className="text-xs font-semibold mb-1 md-text-muted">{t("modules")}</h4>
                 </div>
                 <ModuleList mslPath={dumpPath} />
                 <ModuleIndex mslPath={dumpPath} />
@@ -171,39 +174,39 @@ function Sidebar() {
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="thread-contexts"
-                  title="Thread Contexts"
+                  title={t("threadContexts")}
                 />
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="file-descriptors"
-                  title="File Descriptors"
+                  title={t("fileDescriptors")}
                 />
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="network-connections"
-                  title="Network Connections"
+                  title={t("networkConnections")}
                 />
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="env-blocks"
-                  title="Environment Blocks"
+                  title={t("environmentBlocks")}
                 />
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="security-tokens"
-                  title="Security Tokens"
+                  title={t("securityTokens")}
                 />
                 <ReservedBlocksList
                   mslPath={dumpPath}
                   endpoint="system-context"
-                  title="System Context"
+                  title={t("systemContext")}
                 />
               </>
             )}
           </>
         )}
         {sideTab === "format" && !dumpPath && (
-          <p className="p-3 text-xs md-text-muted">Load a file to detect format.</p>
+          <p className="p-3 text-xs md-text-muted">{t("loadFileToDetectFormat")}</p>
         )}
         {sideTab === "structures" && <StructureList />}
         {sideTab === "sessions" && <SessionManager />}
@@ -229,22 +232,23 @@ function HexFocusBridge() {
 }
 
 function DatasetOverview({ path }: { path: string }) {
+  const { t } = useTranslation("layout");
   const { inputMode, pathInfo } = useAppStore();
   return (
     <div className="h-full p-4 overflow-auto flex items-center justify-center">
       <div className="text-center max-w-md">
         <p className="text-lg mb-2 md-text-accent">
-          {inputMode === "dataset" ? "Dataset" : "Library Directory"} Loaded
+          {t("loaded", { label: inputMode === "dataset" ? t("dataset") : t("libraryDirectory") })}
         </p>
         <p className="text-sm md-text-secondary mb-4 break-all">{path}</p>
         {pathInfo && (
           <div className="text-xs md-text-muted space-y-1">
-            <p>{pathInfo.dump_count} dump files found</p>
-            {pathInfo.has_keylog && <p>Keylog detected</p>}
+            <p>{t("dumpFilesFound", { n: pathInfo.dump_count })}</p>
+            {pathInfo.has_keylog && <p>{t("keylogDetected")}</p>}
           </div>
         )}
         <p className="text-sm md-text-secondary mt-4">
-          Use the Analysis panel below to configure and run analysis on this dataset.
+          {t("datasetAnalysisHint")}
         </p>
       </div>
     </div>
@@ -252,6 +256,7 @@ function DatasetOverview({ path }: { path: string }) {
 }
 
 function MainContent() {
+  const { t } = useTranslation("layout");
   const { inputMode, inputPath } = useAppStore();
   const { viewMode, comparisonDumpIds, dumps } = useDumpStore();
   const activeDump = useActiveDump();
@@ -261,10 +266,10 @@ function MainContent() {
     return (
       <div className="h-full p-4 overflow-auto flex items-center justify-center md-text-muted">
         <div className="text-center">
-          <p className="text-lg mb-2">Workspace Ready</p>
-          <p className="text-sm">No path selected.</p>
+          <p className="text-lg mb-2">{t("workspaceReady")}</p>
+          <p className="text-sm">{t("noPathSelected")}</p>
           <p className="text-xs mt-4 md-text-muted">
-            Ctrl+G: Go to offset | Ctrl+S: Save session | Ctrl+N: New session | Ctrl+B: Toggle sidebar
+            {t("shortcutsHint")}
           </p>
         </div>
       </div>
@@ -272,20 +277,25 @@ function MainContent() {
   }
 
   if (inputMode === "file") {
-    if (viewMode === "overlay" && comparisonDumpIds) {
+    if ((viewMode === "overlay" || viewMode === "comparison") && comparisonDumpIds) {
       const pathA = dumps.find((d) => d.id === comparisonDumpIds[0])?.path;
       const pathB = dumps.find((d) => d.id === comparisonDumpIds[1])?.path;
       if (pathA && pathB) {
-        return <HexOverlay pathA={pathA} pathB={pathB} />;
+        return viewMode === "overlay"
+          ? <HexOverlay pathA={pathA} pathB={pathB} />
+          : <HexComparison pathA={pathA} pathB={pathB} />;
       }
-    }
-
-    if (viewMode === "comparison" && comparisonDumpIds) {
-      const pathA = dumps.find((d) => d.id === comparisonDumpIds[0])?.path;
-      const pathB = dumps.find((d) => d.id === comparisonDumpIds[1])?.path;
-      if (pathA && pathB) {
-        return <HexComparison pathA={pathA} pathB={pathB} />;
-      }
+      // A comparison target no longer resolves (e.g. a dump was removed).
+      // Show an explicit message instead of silently falling through to
+      // the single-dump hex view, which would be misleading.
+      return (
+        <div className="h-full p-4 overflow-auto flex items-center justify-center md-text-muted">
+          <div className="text-center">
+            <p className="text-lg mb-2">{t("comparisonUnavailable")}</p>
+            <p className="text-sm">{t("comparisonUnavailableDetail", { viewMode })}</p>
+          </div>
+        </div>
+      );
     }
 
     const dumpPath = activeDump?.path ?? path;
@@ -298,6 +308,7 @@ function MainContent() {
 }
 
 function DetailPanel() {
+  const { t } = useTranslation("layout");
   const neighborhoodOverlay = useHexStore((s) => s.activeNeighborhoodOverlay);
   const overlay = useHexStore((s) => s.activeStructureOverlay);
   const result = useAnalysisStore((s) => s.result);
@@ -313,9 +324,9 @@ function DetailPanel() {
   if (!result) {
     return (
       <div className="h-full p-3 overflow-auto md-bg-secondary">
-        <h3 className="text-xs font-semibold uppercase tracking-wider mb-2 md-text-muted">Details</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wider mb-2 md-text-muted">{t("details")}</h3>
         <p className="text-sm md-text-secondary">
-          Click a structure in the Format or Structures tab to inspect parsed fields, or run analysis to see results.
+          {t("detailsHint")}
         </p>
       </div>
     );
@@ -323,12 +334,12 @@ function DetailPanel() {
   const totalHits = result.libraries.reduce((s, l) => s + l.hits.length, 0);
   return (
     <div className="h-full p-3 overflow-auto md-bg-secondary text-xs space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wider md-text-muted">Results Summary</h3>
-      <p>{totalHits} hits across {result.libraries.length} libraries</p>
+      <h3 className="text-xs font-semibold uppercase tracking-wider md-text-muted">{t("resultsSummary")}</h3>
+      <p>{t("hitsAcrossLibraries", { hits: totalHits, libraries: result.libraries.length })}</p>
       {result.libraries.map((lib) => (
         <div key={lib.library} className="md-panel p-2">
           <span className="font-medium">{lib.library}</span>
-          <span className="ml-2 md-text-muted">{lib.hits.length} hits</span>
+          <span className="ml-2 md-text-muted">{t("libraryHits", { n: lib.hits.length })}</span>
         </div>
       ))}
     </div>
@@ -336,6 +347,7 @@ function DetailPanel() {
 }
 
 function BottomTabs() {
+  const { t } = useTranslation("layout");
   const [tab, setTab] = useState<BottomTab>("analysis");
   const totalHits = useResultsStore((s) => s.getTotalHitCount());
   const isRunning = useAnalysisStore((s) => s.isRunning);
@@ -431,20 +443,20 @@ function BottomTabs() {
         {tab === "results" && <ScanResultsPanel />}
         {tab === "entropy" && (
           !dumpPath ? (
-            <p className="p-3 text-sm md-text-muted">Load a dump file to view entropy profile.</p>
+            <p className="p-3 text-sm md-text-muted">{t("loadDumpForEntropy")}</p>
           ) : entropyLoading ? (
-            <p className="p-3 text-sm md-text-muted">Loading entropy data...</p>
+            <p className="p-3 text-sm md-text-muted">{t("loadingEntropy")}</p>
           ) : entropyData ? (
-            <ErrorBoundary fallback={<p className="p-3 text-sm md-text-muted">Entropy chart failed to render.</p>}>
+            <ErrorBoundary fallback={<p className="p-3 text-sm md-text-muted">{t("entropyChartFailed")}</p>}>
               <EntropyChart data={entropyData} />
             </ErrorBoundary>
           ) : (
-            <p className="p-3 text-sm md-text-muted">Failed to load entropy data.</p>
+            <p className="p-3 text-sm md-text-muted">{t("entropyLoadFailed")}</p>
           )
         )}
         {tab === "strings" && (
           !dumpPath ? (
-            <p className="p-3 text-sm md-text-muted">Load a dump file to extract strings.</p>
+            <p className="p-3 text-sm md-text-muted">{t("loadDumpForStrings")}</p>
           ) : (
             <StringsPanel dumpPath={dumpPath} />
           )

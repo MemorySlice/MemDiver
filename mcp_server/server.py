@@ -76,10 +76,12 @@ def create_server():
     def extract_strings(
         dump_path: str, offset: int = 0, length: int = 0,
         min_length: int = 4, encoding: str = "ascii", max_results: int = 500,
+        cursor: int = 0, chunk_size: int = 8 * 1024 * 1024,
     ) -> str:
         """Extract printable strings from a dump file."""
         return json.dumps(tools_inspect._extract_strings(
             _session, dump_path, offset, length, min_length, encoding, max_results,
+            cursor, chunk_size,
         ))
 
     @mcp.tool()

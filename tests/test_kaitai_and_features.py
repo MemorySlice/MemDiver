@@ -228,6 +228,48 @@ class TestKaitaiAdapter:
         assert "EM_X86_64" in machine_overlays[0].display
 
 
+class TestKaitaiPrimitiveArrayOverlay:
+    """Primitive-element arrays collapse to one array-level overlay.
+
+    Kaitai's runtime does not expose per-element offsets at this call site,
+    so emitting one zero-width overlay per element put every element on the
+    same offset=parent, length=0 hex highlight. The adapter now emits a single
+    overlay covering the real array span instead.
+    """
+
+    def test_primitive_array_emits_single_span_overlay(self):
+        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+
+        adapter = KaitaiOverlayAdapter()
+        # parent_offset=10, parent_length=4 (a u1 array of 4 elements).
+        overlays = adapter._process_array(
+            field_name="bytes_field",
+            items=[1, 2, 3, 4],
+            parent_offset=10,
+            parent_length=4,
+            path="bytes_field",
+        )
+        assert len(overlays) == 1
+        ov = overlays[0]
+        assert ov.offset == 10
+        assert ov.length == 4  # covers the real array span, not zero-width
+        assert ov.path == "bytes_field"
+        assert "4 items" in ov.display
+
+    def test_empty_primitive_array_emits_nothing(self):
+        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+
+        adapter = KaitaiOverlayAdapter()
+        overlays = adapter._process_array(
+            field_name="empty",
+            items=[],
+            parent_offset=0,
+            parent_length=0,
+            path="empty",
+        )
+        assert overlays == []
+
+
 # ===================================================================
 # 5. Kaitai Registry
 # ===================================================================

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from pathlib import Path
@@ -246,11 +246,29 @@ def _run_parallel(
     jobs: int,
     exhaustive: bool,
     *,
+    total_estimate: int = 0,
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
 ) -> Tuple[List[Tuple[int, int, int]], int]:
+    """Stream candidates through a process pool with bounded back-pressure.
+
+    Rather than eagerly submitting one Future per candidate (which would
+    pickle the entire candidate space — each job carries its candidate
+    bytes — into the pool at once), this keeps at most ``max_in_flight``
+    Futures outstanding: it primes the window, then submits the next
+    candidate only as an earlier one completes. Memory therefore stays
+    bounded like the serial path. ``total_estimate`` is only used for the
+    progress percentage; completion order (and thus hit ordering) matches
+    the previous ``as_completed`` behavior, and the non-exhaustive
+    early-cancel still drops queued-but-unstarted work without running
+    the oracle on it.
+    """
     hits: List[Tuple[int, int, int]] = []
     completed = 0
+    total = total_estimate
+    # A small multiple of the worker count keeps every worker fed while
+    # capping how many candidate-byte payloads are resident at once.
+    max_in_flight = max(1, jobs * 4)
     ctx = get_context("spawn")
     with ProcessPoolExecutor(
         max_workers=jobs,
@@ -258,47 +276,64 @@ def _run_parallel(
         initializer=_worker_init,
         initargs=(str(oracle_path), oracle_config),
     ) as pool:
-        futures = [pool.submit(_worker_verify, job) for job in jobs_iter]
-        total = len(futures)
+        in_flight = set()
+        stop = False
         try:
-            for fut in as_completed(futures):
-                check_cancel(cancel_event)
-                completed += 1
-                ridx, offset, size, ok = fut.result()
-                if ok:
-                    hits.append((ridx, offset, size))
-                    safe_emit(
-                        progress_callback,
-                        ProgressEvent(
-                            stage="brute_force:hit",
-                            pct=-1.0,
-                            msg=f"hit @ 0x{offset:x} size={size}",
-                            extra={"offset": int(offset), "size": int(size),
-                                   "region_index": int(ridx)},
-                        ),
-                    )
-                    if not exhaustive:
-                        # best-effort cancel: already-running workers will finish,
-                        # but queued futures drop without invoking the oracle.
-                        for pending in futures:
-                            pending.cancel()
+            # Prime the in-flight window.
+            for job in jobs_iter:
+                in_flight.add(pool.submit(_worker_verify, job))
+                if len(in_flight) >= max_in_flight:
+                    break
+
+            while in_flight:
+                done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    check_cancel(cancel_event)
+                    completed += 1
+                    ridx, offset, size, ok = fut.result()
+                    if ok:
+                        hits.append((ridx, offset, size))
+                        safe_emit(
+                            progress_callback,
+                            ProgressEvent(
+                                stage="brute_force:hit",
+                                pct=-1.0,
+                                msg=f"hit @ 0x{offset:x} size={size}",
+                                extra={"offset": int(offset), "size": int(size),
+                                       "region_index": int(ridx)},
+                            ),
+                        )
+                        if not exhaustive:
+                            stop = True
+                            break
+                    if completed % _PROGRESS_EVERY == 0:
+                        pct = (completed / total) if total > 0 else -1.0
+                        safe_emit(
+                            progress_callback,
+                            ProgressEvent(
+                                stage="brute_force:progress",
+                                pct=pct,
+                                msg=f"tried={completed}/{total} hits={len(hits)}",
+                                extra={"tried": completed, "hits": len(hits),
+                                       "total": total},
+                            ),
+                        )
+                if stop:
+                    break
+                # Refill the window: submit one new candidate per slot freed
+                # by the just-completed Futures.
+                for job in jobs_iter:
+                    in_flight.add(pool.submit(_worker_verify, job))
+                    if len(in_flight) >= max_in_flight:
                         break
-                if completed % _PROGRESS_EVERY == 0:
-                    pct = (completed / total) if total > 0 else -1.0
-                    safe_emit(
-                        progress_callback,
-                        ProgressEvent(
-                            stage="brute_force:progress",
-                            pct=pct,
-                            msg=f"tried={completed}/{total} hits={len(hits)}",
-                            extra={"tried": completed, "hits": len(hits),
-                                   "total": total},
-                        ),
-                    )
         except Cancelled:
-            for pending in futures:
+            for pending in in_flight:
                 pending.cancel()
             raise
+        # best-effort cancel: already-running workers will finish, but
+        # queued-but-unstarted futures drop without invoking the oracle.
+        for pending in in_flight:
+            pending.cancel()
     return hits, completed
 
 
@@ -394,6 +429,7 @@ def run_brute_force(
     if jobs > 1 and len(slices) > 1:
         raw_hits, total = _run_parallel(
             iter(slices), oracle_path, oracle_config, jobs, exhaustive,
+            total_estimate=len(slices),
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )

@@ -169,8 +169,18 @@ def create_app() -> FastAPI:
     def notebook_status():
         return {"available": _notebook_available, "error": _notebook_error}
 
-    # Serve built React frontend if dist/ exists
-    frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+    # Serve built React frontend if dist/ exists. Allow an env override
+    # (MEMDIVER_FRONTEND_DIST, matching the Settings env_prefix) for
+    # packaged/relocated deployments where the source-tree-relative default
+    # does not apply. Degrades safely via the .is_dir() guard below.
+    import os
+
+    _frontend_override = os.environ.get("MEMDIVER_FRONTEND_DIST")
+    frontend_dist = (
+        Path(_frontend_override)
+        if _frontend_override
+        else Path(__file__).parent.parent / "frontend" / "dist"
+    )
     if frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 

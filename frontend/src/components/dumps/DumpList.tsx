@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useDumpStore } from "../../stores/dump-store";
 import { useConsensusStore } from "../../stores/consensus-store";
 import { useAppStore } from "@/stores/app-store";
@@ -6,11 +7,13 @@ import { TagStatusBadge } from "./TagStatusBadge";
 import { TagStatusUnlock } from "./TagStatusUnlock";
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return "--";
+  if (bytes < 0) return "--";
+  if (bytes === 0) return "0 B";
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 export function DumpList() {
+  const { t } = useTranslation("dumps");
   const dumps = useDumpStore((s) => s.dumps);
   const activeDumpId = useDumpStore((s) => s.activeDumpId);
   const setActiveDump = useDumpStore((s) => s.setActiveDump);
@@ -38,12 +41,12 @@ export function DumpList() {
 
   return (
     <div className="p-3 space-y-3 text-xs">
-      <h3 className="text-sm font-semibold md-text-accent">Loaded Dumps</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("list.title")}</h3>
 
       <AddDumpButton />
 
       {dumps.length === 0 ? (
-        <p className="md-text-muted">No dumps loaded.</p>
+        <p className="md-text-muted">{t("list.empty")}</p>
       ) : (
         <div className="space-y-1">
           {dumps.map((d) => (
@@ -84,20 +87,20 @@ export function DumpList() {
               <label
                 className="flex items-center gap-1 text-[10px] md-text-muted"
                 onClick={(e) => e.stopPropagation()}
-                title="Mark as same process for consensus"
+                title={t("list.sameTitle")}
               >
                 <input
                   type="checkbox"
                   checked={d.sameProcess}
                   onChange={() => toggleSameProcess(d.id)}
                 />
-                Same
+                {t("list.sameLabel")}
               </label>
 
               <button
                 onClick={(e) => { e.stopPropagation(); removeDump(d.id); }}
                 className="px-1 hover:text-[var(--md-accent-red)]"
-                title="Remove dump"
+                title={t("list.removeTitle")}
               >
                 x
               </button>
@@ -113,7 +116,7 @@ export function DumpList() {
           <div className="space-y-2">
             <label
               className={`flex items-center gap-2 ${allRaw ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-              title={allRaw ? "ASLR normalization requires MSL files with region metadata" : undefined}
+              title={allRaw ? t("consensus.aslrDisabledTitle") : undefined}
             >
               <input
                 type="checkbox"
@@ -121,11 +124,11 @@ export function DumpList() {
                 onChange={toggleAslrNormalize}
                 disabled={allRaw}
               />
-              <span>ASLR Normalization</span>
+              <span>{t("consensus.aslrLabel")}</span>
             </label>
             {allRaw && (
               <p className="text-[10px] md-text-muted ml-5">
-                Convert to MSL via Import tab for ASLR support
+                {t("consensus.aslrHint")}
               </p>
             )}
 
@@ -134,13 +137,13 @@ export function DumpList() {
               disabled={!canRunConsensus}
               className="w-full px-3 py-1.5 text-xs font-medium rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] disabled:opacity-40"
             >
-              {consensusLoading ? "Running..." : "Run Consensus"}
+              {consensusLoading ? t("consensus.running") : t("consensus.run")}
             </button>
 
             {consensusLoading && (
               <div className="flex items-center gap-2 md-text-muted">
                 <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                Computing consensus...
+                {t("consensus.computing")}
               </div>
             )}
 
@@ -167,7 +170,7 @@ export function DumpList() {
                 disabled={!consensusAvailable}
               />
               <span className={!consensusAvailable ? "opacity-40" : ""}>
-                Show overlay in hex view
+                {t("consensus.overlayLabel")}
               </span>
             </label>
           </div>

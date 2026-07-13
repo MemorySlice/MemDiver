@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { driver, type Driver, type DriveStep } from "driver.js";
 import "driver.js/dist/driver.css";
 import { useTourController } from "./useTourController";
@@ -89,7 +90,33 @@ function placementToSide(step: TourStep): Side {
   return p;
 }
 
+/** Maps a tour's registry id to its section name in the `app` namespace. */
+const TOUR_SECTION_BY_ID: Record<string, string> = {
+  "workspace-layout-101": "workspaceLayout",
+  "structure-overlay-101": "structureOverlay",
+  "pipeline-101": "pipeline",
+};
+
+/** Converts a kebab-case step id (e.g. "oracle-dryrun") to camelCase. */
+function toCamelCase(value: string): string {
+  return value.replace(/-([a-z])/g, (_, ch: string) => ch.toUpperCase());
+}
+
+/**
+ * Builds the `app` namespace key prefix for a tour step's strings, e.g.
+ * tour "pipeline-101" + step "oracle-dryrun" -> "tour.pipeline.oracleDryrun".
+ * Returns null when the tour id is not mapped, so callers can fall back to the
+ * literal strings carried on the step definition.
+ */
+function stepKeyPrefix(tourId: string, stepId: string): string | null {
+  const section = TOUR_SECTION_BY_ID[tourId];
+  if (!section) return null;
+  return `tour.${section}.${toCamelCase(stepId)}`;
+}
+
 export function TourRenderer() {
+  const { t } = useTranslation("app");
+  const { t: tCommon } = useTranslation("common");
   const {
     activeTour,
     currentStep,
@@ -161,19 +188,33 @@ export function TourRenderer() {
     const tId = activeTour.id;
     const tVersion = activeTour.version;
 
+    // Tour step copy is defined in the out-of-scope `src/ftue/tours/*.ts` data
+    // files. Resolve through the `app` namespace using a key derived from the
+    // tour + step ids, falling back to the literal text carried on the step so
+    // rendering stays correct until those data files are migrated to keys.
+    const keyPrefix = stepKeyPrefix(tId, currentStep.id);
+    const title = keyPrefix
+      ? t(`${keyPrefix}.title`, { defaultValue: currentStep.title })
+      : currentStep.title;
+    const body = keyPrefix
+      ? t(`${keyPrefix}.body`, { defaultValue: currentStep.body })
+      : currentStep.body;
+
     const showStep = (): void => {
       const element = resolveTarget(currentStep);
       const side = placementToSide(currentStep);
       const step: DriveStep = {
         element: element ?? undefined,
         popover: {
-          title: currentStep.title,
-          description: currentStep.body,
+          title,
+          description: body,
           side: element ? side : "over",
           align: "center",
           showButtons: ["next", "close"],
-          nextBtnText: isLast ? "Done" : "Next",
-          doneBtnText: "Done",
+          nextBtnText: isLast
+            ? t("tour.buttons.done")
+            : tCommon("next"),
+          doneBtnText: t("tour.buttons.done"),
           onNextClick: () => {
             if (isLast) {
               markSeen(tId, tVersion, true);
@@ -193,11 +234,16 @@ export function TourRenderer() {
 
     const requireAction = currentStep.requireAction;
     if (requireAction && !requireAction.predicate()) {
+      const hint = keyPrefix
+        ? t(`${keyPrefix}.requireAction`, {
+            defaultValue: requireAction.description,
+          })
+        : requireAction.description;
       const hintStep: DriveStep = {
         element: resolveTarget(currentStep) ?? undefined,
         popover: {
-          title: currentStep.title,
-          description: `${currentStep.body}\n\n${requireAction.description}`,
+          title,
+          description: `${body}\n\n${hint}`,
           side: "over",
           align: "center",
           showButtons: ["close"],

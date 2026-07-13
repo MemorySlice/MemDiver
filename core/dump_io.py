@@ -9,6 +9,24 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger("memdiver.dump_io")
 
 
+def find_all_offsets(buf, needle: bytes) -> List[int]:
+    """Return every offset of *needle* in *buf*, including overlapping matches.
+
+    Works over anything supporting ``.find(needle, start)`` (``bytes`` or an
+    ``mmap`` object). Overlapping matches are preserved by advancing the
+    search cursor by one byte past each hit (``start = idx + 1``).
+    """
+    offsets: List[int] = []
+    start = 0
+    while True:
+        idx = buf.find(needle, start)
+        if idx == -1:
+            break
+        offsets.append(idx)
+        start = idx + 1
+    return offsets
+
+
 class DumpReader:
     """Memory-mapped dump file reader for efficient scanning.
 
@@ -70,6 +88,12 @@ class DumpReader:
         """Read a specific byte range from the mapped file."""
         if self._mmap is None:
             return b""
+        # Reject negative offset/length: a negative offset would otherwise
+        # index from the file tail (Python negative slicing) and return
+        # wrong-region bytes for adversarial inputs. Mirrors the guard in
+        # ElfCoreReader.read_at / GCoreDumpSource.read_at.
+        if offset < 0 or length <= 0:
+            return b""
         end = min(offset + length, len(self._mmap))
         return self._mmap[offset:end]
 
@@ -77,15 +101,7 @@ class DumpReader:
         """Find all occurrences of needle in the mapped file."""
         if self._mmap is None:
             return []
-        offsets = []
-        start = 0
-        while True:
-            idx = self._mmap.find(needle, start)
-            if idx == -1:
-                break
-            offsets.append(idx)
-            start = idx + 1
-        return offsets
+        return find_all_offsets(self._mmap, needle)
 
     def regex_scan(self, pattern: bytes, max_matches: int = 0) -> List[Tuple[int, int, bytes]]:
         """Scan the mapped file with a regex pattern.

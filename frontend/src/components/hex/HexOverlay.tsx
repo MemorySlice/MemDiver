@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import { decodeBase64, byteToHex, byteToAscii } from "@/utils/hex-codec";
 import "../../styles/hex.css";
 
@@ -16,6 +17,7 @@ function nameFromPath(p: string): string {
 }
 
 export function HexOverlay({ pathA, pathB }: OverlayProps) {
+  const { t } = useTranslation("hex");
   const [offset, setOffset] = useState(0);
   const [bytesA, setBytesA] = useState<Uint8Array | null>(null);
   const [bytesB, setBytesB] = useState<Uint8Array | null>(null);
@@ -120,7 +122,7 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
           A: <strong>{nameFromPath(pathA)}</strong> | B: <strong>{nameFromPath(pathB)}</strong>
         </span>
         <span style={{ color: "var(--md-text-muted, #666)" }}>
-          Page {currentPage + 1} / {totalPages}
+          {t("overlay.page", { current: currentPage + 1, total: totalPages })}
         </span>
       </div>
       <div style={{ flex: 1, overflow: "auto", opacity: loading ? 0.5 : 1 }}>
@@ -128,10 +130,10 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
       </div>
       <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "4px 8px", borderTop: "1px solid var(--md-border, #333)" }}>
         <button disabled={currentPage === 0} onClick={() => loadPage(offset - PAGE_SIZE)}>
-          Prev
+          {t("overlay.prev")}
         </button>
         <button disabled={currentPage >= totalPages - 1} onClick={() => loadPage(offset + PAGE_SIZE)}>
-          Next
+          {t("overlay.next")}
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const FIELD_TYPES = [
   "uint8", "uint16_le", "uint16_be", "uint32_le", "uint32_be",
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export function StructureEditor({ onSave, onCancel }: Props) {
+  const { t } = useTranslation("structures");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [protocol, setProtocol] = useState("");
@@ -76,44 +78,44 @@ export function StructureEditor({ onSave, onCancel }: Props) {
 
   return (
     <div className="p-3 rounded border border-[var(--md-accent)] bg-[var(--md-bg-secondary)] space-y-3 text-xs">
-      <h4 className="text-sm font-semibold md-text-accent">New Structure</h4>
+      <h4 className="text-sm font-semibold md-text-accent">{t("editor.title")}</h4>
 
       <div className="grid grid-cols-2 gap-2">
         <label>
-          <span className="md-text-muted">Name</span>
-          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="my_struct" />
+          <span className="md-text-muted">{t("editor.name")}</span>
+          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder={t("editor.namePlaceholder")} />
         </label>
         <label>
-          <span className="md-text-muted">Total Size (bytes)</span>
+          <span className="md-text-muted">{t("editor.totalSize")}</span>
           <input className={inputCls} type="number" min={1} value={totalSize} onChange={(e) => setTotalSize(+e.target.value)} />
         </label>
         <label>
-          <span className="md-text-muted">Protocol</span>
-          <input className={inputCls} value={protocol} onChange={(e) => setProtocol(e.target.value)} placeholder="TLS, SSH, ..." />
+          <span className="md-text-muted">{t("editor.protocol")}</span>
+          <input className={inputCls} value={protocol} onChange={(e) => setProtocol(e.target.value)} placeholder={t("editor.protocolPlaceholder")} />
         </label>
         <label>
-          <span className="md-text-muted">Tags (comma-separated)</span>
-          <input className={inputCls} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="crypto, header" />
+          <span className="md-text-muted">{t("editor.tags")}</span>
+          <input className={inputCls} value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t("editor.tagsPlaceholder")} />
         </label>
       </div>
 
       <label>
-        <span className="md-text-muted">Description</span>
+        <span className="md-text-muted">{t("editor.description")}</span>
         <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} />
       </label>
 
       <div>
         <div className="flex items-center justify-between mb-1">
-          <span className="font-medium md-text-secondary">Fields</span>
+          <span className="font-medium md-text-secondary">{t("editor.fields")}</span>
           <button onClick={() => setFields((p) => [...p, emptyField()])} className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">
-            + Add Field
+            {t("editor.addField")}
           </button>
         </div>
         <table className="w-full text-xs">
           <thead>
             <tr className="md-text-muted text-left">
-              <th className="pr-1">Name</th><th className="pr-1">Type</th><th className="pr-1 w-16">Offset</th>
-              <th className="pr-1 w-16">Size</th><th className="pr-1">Desc</th><th className="w-8" />
+              <th className="pr-1">{t("editor.colName")}</th><th className="pr-1">{t("editor.colType")}</th><th className="pr-1 w-16">{t("editor.colOffset")}</th>
+              <th className="pr-1 w-16">{t("editor.colSize")}</th><th className="pr-1">{t("editor.colDesc")}</th><th className="w-8" />
             </tr>
           </thead>
           <tbody>
@@ -128,7 +130,7 @@ export function StructureEditor({ onSave, onCancel }: Props) {
                 <td className="pr-1 py-0.5"><input className={inputCls} type="number" min={0} value={f.offset} onChange={(e) => updateField(i, { offset: +e.target.value })} /></td>
                 <td className="pr-1 py-0.5"><input className={inputCls} type="number" min={1} value={f.size} onChange={(e) => updateField(i, { size: +e.target.value })} /></td>
                 <td className="pr-1 py-0.5"><input className={inputCls} value={f.description} onChange={(e) => updateField(i, { description: e.target.value })} /></td>
-                <td><button onClick={() => removeField(i)} className="px-1 hover:text-[var(--md-accent-red)]" title="Remove">x</button></td>
+                <td><button onClick={() => removeField(i)} className="px-1 hover:text-[var(--md-accent-red)]" title={t("editor.removeTitle")}>x</button></td>
               </tr>
             ))}
           </tbody>
@@ -143,10 +145,10 @@ export function StructureEditor({ onSave, onCancel }: Props) {
 
       <div className="flex gap-2 justify-end">
         <button onClick={onCancel} className="px-3 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">
-          Cancel
+          {t("common:cancel")}
         </button>
         <button onClick={handleSave} disabled={saving} className="px-3 py-1 rounded border border-[var(--md-accent)] bg-[var(--md-accent)] text-[var(--md-bg-primary)] font-medium disabled:opacity-40">
-          {saving ? "Saving..." : "Save"}
+          {saving ? t("editor.saving") : t("common:save")}
         </button>
       </div>
     </div>

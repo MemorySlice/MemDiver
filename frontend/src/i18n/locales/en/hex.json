@@ -1,0 +1,90 @@
+{
+  "legend": {
+    "show": "Show legend",
+    "hide": "Hide legend"
+  },
+  "comparison": {
+    "loadError": "Failed to load comparison data",
+    "loading": "Loading comparison...",
+    "prev": "Prev",
+    "next": "Next",
+    "offset": "Offset: 0x{{offset}}",
+    "defaultLabelA": "Dump A",
+    "defaultLabelB": "Dump B"
+  },
+  "controls": {
+    "prev": "Prev",
+    "next": "Next",
+    "page": "Page {{current}}/{{total}}",
+    "offsetPlaceholder": "0x offset",
+    "go": "Go"
+  },
+  "overlay": {
+    "page": "Page {{current}} / {{total}}",
+    "prev": "Prev",
+    "next": "Next"
+  },
+  "toolbar": {
+    "fileLabel": "{{name}} — {{size}} KB",
+    "mslViewModeLabel": "MSL view mode",
+    "mslViewModeTitle": "Raw: .msl container bytes. Memory: flattened captured VAS.",
+    "rawFile": "Raw file",
+    "memoryVas": "Memory (VAS)",
+    "offsetPlaceholder": "0x offset",
+    "go": "Go",
+    "patternPlaceholder": "hex pattern e.g. deadbeef",
+    "find": "Find",
+    "finding": "…",
+    "hits": "{{count}} hits",
+    "hitsTruncated": "{{count}}+ hits",
+    "clearSearch": "Clear search",
+    "searchHitLabel": "search hit"
+  },
+  "viewer": {
+    "emptyFile": "Empty file"
+  },
+  "row": {
+    "variance": "var: {{value}}"
+  },
+  "ndump": {
+    "dumpsLabel": "Dumps ({{active}}/{{total}}):",
+    "nLabel": "N:",
+    "legendInvariant": "Invariant",
+    "legendStructural": "Structural",
+    "legendPointer": "Pointer",
+    "legendKeyCandidate": "Key Candidate",
+    "legendDiffers": "Differs",
+    "byteTitle": "Offset 0x{{offset}} {{note}}",
+    "variesNote": "(varies across dumps)",
+    "prev": "Prev",
+    "next": "Next",
+    "page": "Page {{current}} / {{total}} (offset 0x{{offset}})"
+  },
+  "neighborhood": {
+    "title": "Neighborhood: 0x{{offset}}",
+    "clear": "Clear",
+    "window": "Window: 0x{{start}}–0x{{end}} ({{length}}B)",
+    "key": "Key: {{size}}B",
+    "colLabel": "Label",
+    "colOffset": "Offset",
+    "colLen": "Len",
+    "colType": "Type",
+    "colVar": "Var",
+    "summaryMin": "min {{value}}",
+    "summaryMax": "max {{value}}",
+    "summaryMean": "mean {{value}}"
+  },
+  "minimap": {
+    "results": "{{count}} results",
+    "resultsLimited": "{{count}} results (showing {{max}})"
+  },
+  "statusBar": {
+    "offsetLabelVas": "VAS",
+    "offsetLabelOffset": "Offset",
+    "cursor": "{{label}}: 0x{{offset}}",
+    "selection": "Sel: 0x{{start}}–0x{{end}} ({{length}} bytes)",
+    "byte": "Byte: {{value}}",
+    "byteEmpty": "Byte: —",
+    "fileInfo": "{{size}} KB | {{rows}} rows"
+  }
+}

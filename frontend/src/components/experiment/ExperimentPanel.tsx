@@ -15,6 +15,7 @@
  * :func:`notifyError` so the toast stack surfaces them.
  */
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ConvergenceChart } from '../charts/ConvergenceChart';
 import { MethodComparisonTable } from '../results/MethodComparisonTable';
 import type { ConvergenceSweepResult, ConvergencePoint } from '../../api/types';
@@ -44,6 +45,7 @@ interface ToolResult {
 const NOTIFY_CONTEXT = 'experiment-panel';
 
 export function ExperimentPanel() {
+  const { t } = useTranslation('misc');
   const [targetScript, setTargetScript] = useState('tests/fixtures/aes_sample_process.py');
   const [numRuns, setNumRuns] = useState(30);
   const [tools, setTools] = useState(['memslicer', 'lldb', 'fridump']);
@@ -106,9 +108,9 @@ export function ExperimentPanel() {
       case 'stage_start':
       case 'stage_end': {
         if (event.stage === 'capture') {
-          setStatus(event.msg ?? `capture: ${Math.round((event.pct ?? 0) * 100)}%`);
+          setStatus(event.msg ?? t('experiment.capturePct', { pct: Math.round((event.pct ?? 0) * 100) }));
         } else if (event.stage === 'consensus') {
-          setStatus(event.msg ?? 'building consensus...');
+          setStatus(event.msg ?? t('experiment.buildingConsensus'));
           if (event.type === 'progress') {
             const point = buildConvergencePoint(event);
             if (point) {
@@ -126,7 +128,7 @@ export function ExperimentPanel() {
             }
           }
         } else if (event.stage === 'verify') {
-          setStatus(event.msg ?? 'verifying...');
+          setStatus(event.msg ?? t('experiment.verifying'));
           if (event.type === 'progress' && event.extra) {
             const r = event.extra as unknown as ToolResult;
             if (r.tool) {
@@ -143,14 +145,14 @@ export function ExperimentPanel() {
         break;
       }
       case 'done': {
-        setStatus(event.msg ?? 'experiment complete');
+        setStatus(event.msg ?? t('experiment.complete'));
         setRunning(false);
         wsRef.current?.close();
         wsRef.current = null;
         break;
       }
       case 'error': {
-        const err = event.error ?? 'experiment failed';
+        const err = event.error ?? t('experiment.failed');
         setStatus(err);
         setRunning(false);
         notifyError(err, NOTIFY_CONTEXT);
@@ -165,7 +167,7 @@ export function ExperimentPanel() {
 
   const handleRun = async () => {
     setRunning(true);
-    setStatus('Starting experiment...');
+    setStatus(t('experiment.starting'));
     setConvergenceData(null);
     setToolResults([]);
 
@@ -188,16 +190,18 @@ export function ExperimentPanel() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setRunning(false);
-      setStatus(`Network error: ${msg}`);
-      notifyError(`Network error: ${msg}`, NOTIFY_CONTEXT);
+      const networkErr = t('experiment.networkError', { msg });
+      setStatus(networkErr);
+      notifyError(networkErr, NOTIFY_CONTEXT);
       return;
     }
 
     if (!resp.ok) {
       const detail = await resp.text();
       setRunning(false);
-      setStatus(`HTTP ${resp.status}: ${detail}`);
-      notifyError(`HTTP ${resp.status}: ${detail}`, NOTIFY_CONTEXT);
+      const httpErr = t('experiment.httpError', { status: resp.status, detail });
+      setStatus(httpErr);
+      notifyError(httpErr, NOTIFY_CONTEXT);
       return;
     }
 
@@ -215,24 +219,24 @@ export function ExperimentPanel() {
       className="flex flex-col gap-4 p-4 h-full overflow-auto"
       data-testid="experiment-panel"
     >
-      <h2 className="text-sm font-semibold text-zinc-200">Experiment Configuration</h2>
+      <h2 className="text-sm font-semibold text-zinc-200">{t('experiment.heading')}</h2>
 
       {/* Target script */}
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-400">Target Script</label>
+        <label className="text-xs text-zinc-400">{t('experiment.targetScript')}</label>
         <input
           type="text"
           value={targetScript}
           onChange={e => setTargetScript(e.target.value)}
           className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200"
-          placeholder="path/to/target_process.py"
+          placeholder={t('experiment.targetScriptPlaceholder')}
           data-testid="experiment-target"
         />
       </div>
 
       {/* Num runs */}
       <div className="flex items-center gap-3">
-        <label className="text-xs text-zinc-400 w-24">Runs per tool</label>
+        <label className="text-xs text-zinc-400 w-24">{t('experiment.runsPerTool')}</label>
         <input
           type="range"
           min={2}
@@ -247,7 +251,7 @@ export function ExperimentPanel() {
 
       {/* Tool selection */}
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-400">Dump Tools</label>
+        <label className="text-xs text-zinc-400">{t('experiment.dumpTools')}</label>
         <div className="flex gap-3">
           {['memslicer', 'lldb', 'fridump'].map(tool => (
             <label key={tool} className="flex items-center gap-1 text-xs cursor-pointer">
@@ -274,10 +278,10 @@ export function ExperimentPanel() {
             onChange={e => setConvergence(e.target.checked)}
             className="w-3 h-3"
           />
-          <span className="text-zinc-400">Convergence sweep</span>
+          <span className="text-zinc-400">{t('experiment.convergenceSweep')}</span>
         </label>
         <div className="flex items-center gap-1">
-          <span className="text-xs text-zinc-400">Max FP:</span>
+          <span className="text-xs text-zinc-400">{t('experiment.maxFp')}</span>
           <input
             type="number"
             value={maxFp}
@@ -291,9 +295,9 @@ export function ExperimentPanel() {
           onChange={e => setExportFormat(e.target.value)}
           className="bg-zinc-800 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-200"
         >
-          <option value="volatility3">Volatility3</option>
-          <option value="yara">YARA</option>
-          <option value="json">JSON</option>
+          <option value="volatility3">{t('experiment.formatVol3')}</option>
+          <option value="yara">{t('experiment.formatYara')}</option>
+          <option value="json">{t('experiment.formatJson')}</option>
         </select>
       </div>
 
@@ -305,12 +309,12 @@ export function ExperimentPanel() {
                    disabled:text-zinc-500 rounded text-xs font-medium text-white"
         data-testid="experiment-run"
       >
-        {running ? status || 'Running...' : 'Run Experiment'}
+        {running ? status || t('experiment.running') : t('experiment.runExperiment')}
       </button>
 
       {taskId && (
         <p className="text-xs text-zinc-500" data-testid="experiment-task-id">
-          task_id: {taskId}
+          {t('experiment.taskId', { taskId })}
         </p>
       )}
 

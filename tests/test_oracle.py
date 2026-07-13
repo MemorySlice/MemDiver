@@ -76,6 +76,23 @@ def test_refuses_world_writable_file(tmp_path):
         load_oracle(src)
 
 
+def test_refuses_group_writable_file(tmp_path):
+    """Regression: a group-writable oracle is hijackable on a shared host."""
+    src = _write(tmp_path / "o.py", "def verify(c): return True\n", mode=0o664)
+    with pytest.raises(OracleLoadError, match="writable oracle"):
+        load_oracle(src)
+
+
+def test_refuses_group_writable_parent_dir(tmp_path):
+    """Regression: a group-writable parent dir lets the file be replaced."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    src = _write(sub / "o.py", "def verify(c): return True\n", mode=0o644)
+    os.chmod(sub, 0o775)
+    with pytest.raises(OracleLoadError, match="writable directory"):
+        load_oracle(src)
+
+
 def test_missing_file_raises(tmp_path):
     with pytest.raises(OracleLoadError, match="not found"):
         load_oracle(tmp_path / "nonexistent.py")

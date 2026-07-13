@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useOracleStore } from "@/stores/oracle-store";
 
@@ -40,6 +41,7 @@ function dotStyle(state: DotState): { background: string } {
 }
 
 export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
+  const { t } = useTranslation("pipeline");
   const dryRun = useOracleStore((s) => s.dryRun);
   const runDry = useOracleStore((s) => s.runDry);
   const [submitting, setSubmitting] = useState(false);
@@ -64,23 +66,30 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
 
   const summary =
     dryRun && dryRun.oracle_id === oracleId
-      ? `${dryRun.passes} pass · ${dryRun.fails} fail · ${dryRun.errors} error · avg ${dryRun.per_call_us_avg.toFixed(1)}µs`
+      ? t("oracle.dryRun.summary", {
+          passes: dryRun.passes,
+          fails: dryRun.fails,
+          errors: dryRun.errors,
+          avg: dryRun.per_call_us_avg.toFixed(1),
+        })
       : null;
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs md-text-muted">
-          Smoke test the oracle on {samplesB64.length} sample{samplesB64.length === 1 ? "" : "s"} before committing to a full sweep.
+          {t("oracle.dryRun.smokeTest", { count: samplesB64.length })}
         </div>
         <button
           type="button"
           disabled={!oracleId || submitting || samplesB64.length === 0}
           onClick={() => void handleRun()}
           className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
-          title="Verify the oracle loads and runs before committing to a full sweep"
+          title={t("oracle.dryRun.testTitle")}
         >
-          {submitting ? "Testing…" : `Test on ${samplesB64.length} samples`}
+          {submitting
+            ? t("oracle.dryRun.testing")
+            : t("oracle.dryRun.testButton", { count: samplesB64.length })}
         </button>
       </div>
 
@@ -88,7 +97,7 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
         {dots.map((state, i) => (
           <span
             key={i}
-            title={`sample ${i}: ${state}`}
+            title={t("oracle.dryRun.dotTitle", { index: i, state })}
             className="inline-block w-3 h-3 rounded-full"
             style={dotStyle(state)}
           />
@@ -98,15 +107,15 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
       <div className="flex items-center justify-between text-[10px] md-text-muted">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-green-600" /> pass
+            <span className="inline-block w-2 h-2 rounded-full bg-green-600" /> {t("oracle.dryRun.legendPass")}
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-red-600" /> fail
+            <span className="inline-block w-2 h-2 rounded-full bg-red-600" /> {t("oracle.dryRun.legendFail")}
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-gray-500" /> error
+            <span className="inline-block w-2 h-2 rounded-full bg-gray-500" /> {t("oracle.dryRun.legendError")}
           </span>
-          <span>(random offsets expect mostly red)</span>
+          <span>{t("oracle.dryRun.legendNote")}</span>
         </div>
         {summary && <div className="font-mono">{summary}</div>}
       </div>

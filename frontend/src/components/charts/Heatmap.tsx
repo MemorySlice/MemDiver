@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   libraries: string[];
@@ -7,15 +8,16 @@ interface Props {
 }
 
 export const Heatmap = memo(function Heatmap({ libraries, secretTypes, presenceData }: Props) {
+  const { t } = useTranslation("charts");
   if (!libraries.length || !secretTypes.length) {
-    return <p className="md-text-muted text-sm p-4">No heatmap data available.</p>;
+    return <p className="md-text-muted text-sm p-4">{t("heatmap.empty")}</p>;
   }
   return (
     <div className="overflow-auto">
       <table className="text-xs border-collapse w-full">
         <thead>
           <tr>
-            <th className="p-2 text-left md-text-secondary border-b border-[var(--md-border)]">Library</th>
+            <th className="p-2 text-left md-text-secondary border-b border-[var(--md-border)]">{t("heatmap.library")}</th>
             {secretTypes.map((st) => (
               <th key={st} className="p-2 text-center md-text-secondary border-b border-[var(--md-border)] whitespace-nowrap">
                 {st.replace(/_/g, " ").slice(0, 20)}

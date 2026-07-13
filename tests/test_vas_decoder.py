@@ -142,3 +142,50 @@ def test_vas_map_no_block():
             assert maps == []
     finally:
         tmp_path.unlink()
+
+
+# -- adversarial / bounds-guard regression tests --
+
+from msl.decoders import decode_memory_region
+from msl.types import MslParseError
+
+
+def test_decode_vas_map_truncated_entry_raises():
+    """A truncated entry head raises MslParseError, not struct.error."""
+    # Header advertises one entry but the payload stops mid-entry.
+    payload = struct.pack("<II", 1, 0) + b"\x00" * 4  # only 4 of 0x18 bytes
+    hdr = _make_block_header()
+    with pytest.raises(MslParseError):
+        decode_vas_map(hdr, payload, "<")
+
+
+def test_decode_vas_map_bogus_huge_count_raises():
+    """A bogus huge entry_count cannot drive billions of iterations.
+
+    The per-entry guard raises MslParseError on the very first short entry
+    instead of looping ``entry_count`` times.
+    """
+    payload = struct.pack("<II", 0xFFFFFFFF, 0)  # header only, no entries
+    hdr = _make_block_header()
+    with pytest.raises(MslParseError):
+        decode_vas_map(hdr, payload, "<")
+
+
+def test_decode_vas_map_truncated_path_raises():
+    """An entry whose path_len runs past the payload raises MslParseError."""
+    # One entry header claiming a 0x20-byte path but no path bytes follow.
+    payload = struct.pack("<II", 1, 0) + struct.pack(
+        "<QQBBH4x", 0x1000, 0x1000, 0x07, 0x01, 0x20
+    )
+    hdr = _make_block_header()
+    with pytest.raises(MslParseError):
+        decode_vas_map(hdr, payload, "<")
+
+
+def test_decode_memory_region_short_payload_raises():
+    """A payload shorter than the fixed 0x20 header raises MslParseError."""
+    hdr = _make_block_header()
+    # Only 0x10 bytes — the protection/page_size_log2 reads would overrun.
+    payload = b"\x00" * 0x10
+    with pytest.raises(MslParseError):
+        decode_memory_region(hdr, payload, "<")

@@ -19,7 +19,6 @@ class ToolSession:
         self.scan_cache: Optional[dict] = None
         self._scan_protocols: Optional[tuple] = None
         self.protocol_version: str = ""
-        self._consensus_cache = None
 
     def set_dataset(self, root: str) -> dict:
         """Set dataset root, clear caches, return confirmation."""

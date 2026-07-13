@@ -20,6 +20,14 @@ def merge_continuations(
 
     Non-continuation blocks are yielded immediately if they have no
     pending continuations.
+
+    The MSL framing carries no explicit "last continuation" marker, so a
+    parent stays pending until end-of-stream rather than being flushed the
+    moment an unrelated block arrives. This means a parent whose
+    continuation stream is interrupted by an unrelated block (non-contiguous
+    producers) still has its trailing continuations merged correctly instead
+    of being split off as orphans. ``pending`` preserves insertion order, so
+    parents are emitted in their original arrival order at end-of-stream.
     """
     pending = {}  # parent_uuid -> (parent_hdr, [payloads])
 
@@ -37,21 +45,18 @@ def merge_continuations(
                     hdr.file_offset, hdr.parent_uuid,
                 )
                 yield hdr, payload
+        elif has_children:
+            # A parent re-using a still-pending uuid finalizes the prior one.
+            if hdr.block_uuid in pending:
+                prev_hdr, prev_payloads = pending.pop(hdr.block_uuid)
+                yield prev_hdr, b"".join(prev_payloads)
+            pending[hdr.block_uuid] = (hdr, [payload])
         else:
-            # Flush all completed parents before yielding current block.
-            if pending:
-                completed = [
-                    uuid for uuid in pending
-                    if uuid != hdr.block_uuid
-                ]
-                for uuid in completed:
-                    parent_hdr, payloads = pending.pop(uuid)
-                    yield parent_hdr, b"".join(payloads)
-            if has_children:
-                pending[hdr.block_uuid] = (hdr, [payload])
-            else:
-                yield hdr, payload
+            # Unrelated leaf blocks pass through immediately, but pending
+            # parents are NOT dropped here: their continuations may still
+            # arrive after this block (non-contiguous producers).
+            yield hdr, payload
 
-    # Yield any remaining pending blocks at end of stream.
+    # Yield any remaining pending blocks at end of stream, in arrival order.
     for parent_hdr, payloads in pending.values():
         yield parent_hdr, b"".join(payloads)

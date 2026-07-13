@@ -5,12 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from types import SimpleNamespace
+
 from msl.enums import PageState
 from msl.page_map import (
     PageInterval,
     count_captured_pages,
     decode_page_intervals,
     decode_page_state_map,
+    get_region_page_data,
     iter_captured_ranges,
 )
 
@@ -134,6 +137,57 @@ def test_count_from_intervals():
         PageInterval(101, 50, PageState.CAPTURED),
     ]
     assert count_captured_pages(intervals) == 150
+
+
+class _FakeReader:
+    """Minimal reader stub exposing read_block_payload(hdr)."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read_block_payload(self, hdr):
+        return self._payload
+
+
+def _fake_region(num_pages, page_states, page_size=4096):
+    return SimpleNamespace(
+        block_header=object(),
+        num_pages=num_pages,
+        page_states=page_states,
+        page_size=page_size,
+    )
+
+
+def test_get_region_page_data_skips_header_and_map():
+    """Returns exactly the captured-page bytes after header + padded map."""
+    page_size = 8
+    num_pages = 2
+    region = _fake_region(num_pages, [PageState.CAPTURED] * 2, page_size)
+    # map_bytes = pad8(ceil(2/4)) = 8; data starts at 0x20 + 8 = 0x28
+    map_bytes = ((num_pages + 3) // 4 + 7) & ~7
+    data_start = 0x20 + map_bytes
+    page_bytes = b"\xAB" * (num_pages * page_size)
+    payload = b"\x00" * data_start + page_bytes + b"\xFF" * 16  # trailing slack
+    reader = _FakeReader(payload)
+    assert get_region_page_data(reader, region) == page_bytes
+
+
+def test_get_region_page_data_counts_only_captured():
+    """Only captured pages contribute to the returned length."""
+    page_size = 8
+    num_pages = 3
+    # 2 captured, 1 failed -> expect 2 pages of data returned
+    region = _fake_region(
+        num_pages,
+        [PageState.CAPTURED, PageState.FAILED, PageState.CAPTURED],
+        page_size,
+    )
+    map_bytes = ((num_pages + 3) // 4 + 7) & ~7
+    data_start = 0x20 + map_bytes
+    page_bytes = b"\x11" * (2 * page_size)
+    payload = b"\x00" * data_start + page_bytes
+    reader = _FakeReader(payload)
+    assert get_region_page_data(reader, region) == page_bytes
 
 
 def test_iter_from_intervals():

@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 import { HIGHLIGHT_META } from "@/utils/highlight-types";
 import type { HighlightType } from "@/utils/highlight-types";
 
 export function HexLegend() {
+  const { t } = useTranslation("hex");
   const regions = useHexStore((s) => s.highlightedRegions);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -22,7 +24,7 @@ export function HexLegend() {
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="hover:bg-[var(--md-bg-hover)] rounded px-0.5"
-        title={collapsed ? "Show legend" : "Hide legend"}
+        title={collapsed ? t("legend.show") : t("legend.hide")}
       >
         {collapsed ? "\u25B6" : "\u25BC"}
       </button>

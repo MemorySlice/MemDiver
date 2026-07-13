@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
+import { useTranslation } from "react-i18next";
 
 import { usePipelineStore } from "@/stores/pipeline-store";
 
@@ -29,11 +30,24 @@ function formatTimestamp(ts: number): string {
 }
 
 export function LiveOracleLog(): JSX.Element {
-  const [log, setLog] = useState<LogLine[]>([]);
+  const { t } = useTranslation("pipeline");
+  // Prime the log from the current store state (lazy initializer) so any
+  // message that landed before this component mounted still shows up —
+  // without a setState-in-effect that would cost an extra render.
+  const [log, setLog] = useState<LogLine[]>(() => {
+    const initial = usePipelineStore.getState();
+    return initial.activeStageMsg
+      ? [{ ts: Date.now(), stage: initial.activeStage, msg: initial.activeStageMsg }]
+      : [];
+  });
   const scrollRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
     return usePipelineStore.subscribe((state, prev) => {
+      // Append on every message change. NOTE: this still cannot
+      // distinguish two identical consecutive message strings, since
+      // the store exposes only the latest text, not a sequence — that
+      // residual lossiness is acceptable for a cosmetic log.
       if (
         state.activeStageMsg !== prev.activeStageMsg &&
         state.activeStageMsg
@@ -58,14 +72,14 @@ export function LiveOracleLog(): JSX.Element {
 
   return (
     <div className="md-panel p-3 space-y-2 text-xs md-text-secondary">
-      <div className="md-text-accent font-semibold">Live oracle log</div>
+      <div className="md-text-accent font-semibold">{t("run.log.title")}</div>
       <pre
         ref={scrollRef}
         className="font-mono text-[11px] leading-snug bg-[var(--md-bg-hover)] rounded p-2 overflow-y-auto"
         style={{ maxHeight: 160 }}
       >
         {log.length === 0 ? (
-          <span className="md-text-muted italic">Waiting for events…</span>
+          <span className="md-text-muted italic">{t("run.log.waiting")}</span>
         ) : (
           log.map((line, i) => (
             <div key={`${line.ts}-${i}`}>

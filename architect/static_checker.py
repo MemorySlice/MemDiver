@@ -57,6 +57,10 @@ class StaticChecker:
             for i in range(min(actual_len, len(region))):
                 if region[i] != reference[i]:
                     static_mask[i] = False
+            # Positions past this (shorter) region's length are absent here,
+            # so they cannot be confirmed static across all dumps.
+            for i in range(len(region), actual_len):
+                static_mask[i] = False
 
         static_count = sum(static_mask)
         logger.info(

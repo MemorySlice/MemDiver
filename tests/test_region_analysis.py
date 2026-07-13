@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.region_analysis import (
@@ -58,6 +60,27 @@ def test_analyze_region_hit_miss():
     hit = SimpleNamespace(offset=200, length=10)
     report = analyze_region(data, offset=50, hits=[hit])
     assert len(report.matching_secrets) == 0
+
+
+def test_analyze_region_offset_out_of_bounds_raises():
+    """An offset past the end of data must raise, not silently return 0."""
+    data = b"\x00" * 256
+    with pytest.raises(IndexError):
+        analyze_region(data, offset=256)
+
+
+def test_analyze_region_negative_offset_raises():
+    """A negative offset must raise rather than read from the tail."""
+    data = b"\x00" * 256
+    with pytest.raises(IndexError):
+        analyze_region(data, offset=-1)
+
+
+def test_analyze_region_last_valid_offset():
+    """The last in-bounds offset must still work and report its byte."""
+    data = b"\x00" * 255 + b"\x7f"
+    report = analyze_region(data, offset=255)
+    assert report.byte_value == 0x7F
 
 
 def test_find_pattern_found():

@@ -31,21 +31,28 @@ def test_no_continuations():
 
 
 def test_parent_with_continuation():
-    """Parent + continuation blocks are merged."""
+    """Parent + continuation blocks are merged.
+
+    A parent has no explicit "last continuation" marker, so it is held
+    until end-of-stream; an unrelated leaf block passes through first and
+    the merged parent is emitted last.
+    """
     parent_uuid = uuid4()
     parent = _hdr(block_uuid=parent_uuid, flags=BlockFlag.HAS_CHILDREN)
     cont = _hdr(
         parent_uuid=parent_uuid, flags=BlockFlag.CONTINUATION, offset=200,
     )
-    tail = _hdr(offset=400)  # regular block triggers flush
+    tail = _hdr(offset=400)  # unrelated leaf block
 
     blocks = [(parent, b"part1"), (cont, b"part2"), (tail, b"other")]
     result = list(merge_continuations(iter(blocks)))
     assert len(result) == 2
-    merged_hdr, merged_payload = result[0]
+    # Unrelated leaf passes through immediately.
+    assert result[0] == (tail, b"other")
+    # Merged parent emitted at end-of-stream.
+    merged_hdr, merged_payload = result[1]
     assert merged_hdr.block_uuid == parent_uuid
     assert merged_payload == b"part1part2"
-    assert result[1] == (tail, b"other")
 
 
 def test_multiple_continuations():
@@ -59,8 +66,35 @@ def test_multiple_continuations():
     blocks = [(parent, b"a"), (c1, b"b"), (c2, b"c"), (tail, b"d")]
     result = list(merge_continuations(iter(blocks)))
     assert len(result) == 2
-    assert result[0][1] == b"abc"
-    assert result[1] == (tail, b"d")
+    # Unrelated leaf passes through first; merged parent emitted at end.
+    assert result[0] == (tail, b"d")
+    assert result[1][1] == b"abc"
+
+
+def test_non_contiguous_continuation_not_dropped():
+    """A continuation interrupted by an unrelated block still merges.
+
+    Regression: previously any non-continuation block flushed all pending
+    parents, so a continuation arriving AFTER an unrelated block was split
+    off as an orphan, corrupting the parent's reassembled payload.
+    """
+    parent_uuid = uuid4()
+    parent = _hdr(block_uuid=parent_uuid, flags=BlockFlag.HAS_CHILDREN)
+    interruption = _hdr(offset=200)  # unrelated leaf between continuations
+    cont = _hdr(
+        parent_uuid=parent_uuid, flags=BlockFlag.CONTINUATION, offset=400,
+    )
+
+    blocks = [(parent, b"part1"), (interruption, b"x"), (cont, b"part2")]
+    result = list(merge_continuations(iter(blocks)))
+
+    assert len(result) == 2
+    # Unrelated block passes through inline.
+    assert result[0] == (interruption, b"x")
+    # Trailing continuation is merged into the parent, not orphaned.
+    merged_hdr, merged_payload = result[1]
+    assert merged_hdr.block_uuid == parent_uuid
+    assert merged_payload == b"part1part2"
 
 
 def test_parent_at_end_of_stream():

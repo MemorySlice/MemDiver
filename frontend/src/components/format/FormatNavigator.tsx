@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 import { detectFormat, importKsy } from "@/api/client";
 import type { FormatSuggestion } from "@/api/types";
@@ -115,7 +116,13 @@ function applyOverlayToStore(overlays: OverlaysInfo | null): void {
   store.setActiveStructureOverlay({
     structureName: overlays.structure_name,
     baseOffset: overlays.base_offset,
-    totalSize: Math.max(...overlays.fields.map((f) => f.offset + f.length)),
+    // Use a reduce instead of Math.max(...spread): a large Kaitai parse can
+    // have tens of thousands of fields, and spreading one argument per field
+    // can blow the call-stack limit (RangeError).
+    totalSize: overlays.fields.reduce(
+      (max, f) => Math.max(max, f.offset + f.length),
+      0,
+    ),
     fields: overlays.fields.map((f) => ({
       name: f.field_name,
       offset: f.offset,
@@ -132,6 +139,7 @@ interface PickerProps {
 }
 
 function ParserPicker({ info, onSelect }: PickerProps) {
+  const { t } = useTranslation("misc");
   const [open, setOpen] = useState(false);
   const [showOthers, setShowOthers] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -165,11 +173,11 @@ function ParserPicker({ info, onSelect }: PickerProps) {
         className="px-1.5 py-0.5 rounded bg-[var(--md-bg-hover)] font-mono text-[10px] md-text-secondary hover:bg-[var(--md-bg-active)] transition-colors cursor-pointer"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Change parser"
+        title={t("format.changeParser")}
       >
         {activeFormat}
         {info.forced && (
-          <span className="ml-1 md-text-muted">(forced)</span>
+          <span className="ml-1 md-text-muted">{t("format.forced")}</span>
         )}
         <span className="ml-1 md-text-muted">{"▾"}</span>
       </button>
@@ -179,13 +187,13 @@ function ParserPicker({ info, onSelect }: PickerProps) {
           className="absolute left-0 top-full mt-1 w-56 max-h-[60vh] overflow-auto rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] shadow-lg z-50 text-xs"
         >
           <div className="px-3 py-1.5 border-b border-[var(--md-border)] text-[10px] uppercase tracking-wider font-semibold md-text-muted">
-            Parser
+            {t("format.parser")}
           </div>
 
           {suggested.length > 0 && (
             <div className="py-1 border-b border-[var(--md-border)]">
               <div className="px-3 py-0.5 text-[10px] md-text-muted">
-                Suggested
+                {t("format.suggested")}
               </div>
               {suggested.map((s) => (
                 <SuggestedRow
@@ -207,7 +215,7 @@ function ParserPicker({ info, onSelect }: PickerProps) {
               <span className="w-3 text-center">
                 {showOthers ? "▼" : "▶"}
               </span>
-              <span>Other parsers ({others.length})</span>
+              <span>{t("format.otherParsers", { total: others.length })}</span>
             </button>
             {showOthers &&
               others.map((fmt) => (
@@ -226,7 +234,7 @@ function ParserPicker({ info, onSelect }: PickerProps) {
             role="menuitem"
             className="w-full text-left px-3 py-1 md-text-secondary hover:bg-[var(--md-bg-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Reset to auto
+            {t("format.resetToAuto")}
           </button>
         </div>
       )}
@@ -241,6 +249,7 @@ interface SuggestedRowProps {
 }
 
 function SuggestedRow({ suggestion, active, onSelect }: SuggestedRowProps) {
+  const { t } = useTranslation("misc");
   return (
     <button
       onClick={() => onSelect(suggestion.format)}
@@ -252,7 +261,7 @@ function SuggestedRow({ suggestion, active, onSelect }: SuggestedRowProps) {
         {active ? "✓" : "★"}
       </span>
       <span className="font-mono">{suggestion.format}</span>
-      <span className="ml-auto text-[10px] md-text-muted">recommended</span>
+      <span className="ml-auto text-[10px] md-text-muted">{t("format.recommended")}</span>
     </button>
   );
 }
@@ -264,18 +273,19 @@ interface OtherRowProps {
 }
 
 function OtherRow({ format, active, onSelect }: OtherRowProps) {
+  const { t } = useTranslation("misc");
   return (
     <button
       onClick={() => onSelect(format)}
       role="menuitem"
       className="w-full flex items-center gap-2 px-3 py-1 text-left hover:bg-[var(--md-bg-hover)] md-text-secondary"
-      title="Magic doesn't match — may misparse"
+      title={t("format.magicMismatch")}
     >
       <span className="w-3 text-center">{active ? "✓" : ""}</span>
       <span className="font-mono">{format}</span>
       <span
         className="ml-auto text-[10px] md-text-muted"
-        aria-label="Warning: magic doesn't match"
+        aria-label={t("format.magicMismatchWarning")}
       >
         {"⚠"}
       </span>
@@ -284,6 +294,7 @@ function OtherRow({ format, active, onSelect }: OtherRowProps) {
 }
 
 export function FormatNavigator({ dumpPath }: Props) {
+  const { t } = useTranslation("misc");
   const [info, setInfo] = useState<FormatInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forcedFormat, setForcedFormat] = useState<string | null>(null);
@@ -323,19 +334,19 @@ export function FormatNavigator({ dumpPath }: Props) {
   if (error) {
     return (
       <div className="p-3 text-xs md-text-muted">
-        Format detection failed: {error}
+        {t("format.detectionFailed", { error })}
       </div>
     );
   }
 
   if (!info) {
-    return <div className="p-3 text-xs md-text-muted">Detecting format...</div>;
+    return <div className="p-3 text-xs md-text-muted">{t("format.detecting")}</div>;
   }
 
   if (!info.format) {
     return (
       <div className="p-3 text-xs space-y-2">
-        <p className="md-text-muted">No format detected</p>
+        <p className="md-text-muted">{t("format.noFormatDetected")}</p>
         <KsyImportButton />
       </div>
     );
@@ -344,15 +355,15 @@ export function FormatNavigator({ dumpPath }: Props) {
   return (
     <div className="p-3 text-xs space-y-2">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold md-text-accent">Format</h3>
+        <h3 className="text-sm font-semibold md-text-accent">{t("format.heading")}</h3>
         <ParserPicker info={info} onSelect={setForcedFormat} />
         {info.forced && (
           <button
             onClick={() => setForcedFormat(null)}
             className="text-[10px] md-text-muted hover:md-text-secondary underline"
-            title="Reset to auto-detected parser"
+            title={t("format.resetToAutoTitle")}
           >
-            Reset
+            {t("format.reset")}
           </button>
         )}
       </div>
@@ -362,12 +373,12 @@ export function FormatNavigator({ dumpPath }: Props) {
         </div>
       ) : (
         <p className="md-text-muted">
-          Header structures reference data beyond the loaded window.
+          {t("format.beyondWindow")}
         </p>
       )}
       {info.overlays && (
         <p className="md-text-muted text-[10px]">
-          {info.overlays.fields.length} fields parsed via Kaitai Struct
+          {t("format.fieldsParsed", { total: info.overlays.fields.length })}
         </p>
       )}
       <KsyImportButton />
@@ -376,18 +387,19 @@ export function FormatNavigator({ dumpPath }: Props) {
 }
 
 function KsyImportButton() {
+  const { t } = useTranslation("misc");
   const fileRef = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setMsg("Importing...");
+    setMsg(t("format.importing"));
     try {
       const data = await importKsy(file);
-      setMsg(`Imported: ${data.name}`);
+      setMsg(t("format.imported", { name: data.name }));
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Import failed");
+      setMsg(err instanceof Error ? err.message : t("format.importFailed"));
     }
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -399,7 +411,7 @@ function KsyImportButton() {
         onClick={() => fileRef.current?.click()}
         className="text-[10px] px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors"
       >
-        Import .ksy Template
+        {t("format.importKsyTemplate")}
       </button>
       {msg && <p className="mt-1 text-[10px] md-text-muted">{msg}</p>}
     </div>

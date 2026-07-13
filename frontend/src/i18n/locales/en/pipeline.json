@@ -1,0 +1,248 @@
+{
+  "panel": {
+    "title": "Pipeline",
+    "stageLabel": "stage: {{stage}}",
+    "taskLabel": "task {{taskId}}…",
+    "cancelRun": "Cancel run",
+    "cancelling": "Cancelling…",
+    "cancelTitle": "Stop the running pipeline — best-effort, may take a few hundred ms",
+    "newRun": "New run",
+    "newRunTitle": "Clear the finished run and start a new pipeline",
+    "resuming": "Resuming pipeline run",
+    "resumingTail": "({{stage}}). Live progress will reattach via WebSocket.",
+    "steps": {
+      "recipe": "Recipe",
+      "dumps": "Dumps",
+      "oracle": "Oracle",
+      "thresholds": "Thresholds",
+      "running": "Run",
+      "results": "Results"
+    }
+  },
+  "stages": {
+    "recipe": {
+      "title": "Start your pipeline",
+      "subtitle": "Pick a starting point. You can still edit every field on the following steps.",
+      "blankTitle": "Start blank",
+      "blankBody": "Empty form. Bring your own dumps and oracle; set every threshold yourself. Best for power users running on a new target.",
+      "gocryptfsTitle": "Replicate gocryptfs DFRWS result",
+      "gocryptfsBody": "Loads the thresholds from the DFRWS paper's section 4.2 (variance ≥ 1500, 8-byte alignment, entropy ≥ 4.5). Point it at",
+      "gocryptfsBodyTail": "and upload the gocryptfs oracle on the next step to reproduce both verified hits.",
+      "saveLoadNote": "Recipe save / load / share is planned for a later release; for now the two presets above cover the DFRWS demo and the blank starting point."
+    },
+    "dumps": {
+      "title": "Select memory dumps",
+      "subtitlePrefix": "Paste one absolute path per line.",
+      "subtitleAnd": "and",
+      "subtitleBody": "both work — MSL sources take the ASLR-aware incremental path; raw dumps take the flat path. Minimum 1 dump; 3+ before variance filtering becomes meaningful.",
+      "addPaths": "Add paths",
+      "clearAll": "Clear all",
+      "selectedCount_one": "{{count}} dump selected",
+      "selectedCount_other": "{{count}} dumps selected",
+      "removePath": "remove {{path}}",
+      "empty": "No dumps yet. Paste at least one path above to continue.",
+      "back": "← Back",
+      "next": "Next: Oracle →"
+    },
+    "oracle": {
+      "title": "Pick or upload your oracle",
+      "subtitlePrefix": "The oracle is your decryption check. Upload a",
+      "subtitleMid": "file that exports",
+      "subtitleOr": "or",
+      "subtitleTail": ", then arm it. The armed file's sha256 is what the worker runs.",
+      "tab": {
+        "upload": "Upload",
+        "examples": "Examples"
+      },
+      "exampleHintPrefix": "Copy",
+      "exampleHintMid": "from",
+      "exampleHintTail": ", tweak it for your dataset, then drop the edited file below to upload + arm it.",
+      "back": "← Back",
+      "next": "Next: Thresholds →",
+      "nextTitleEnabled": "Continue to threshold configuration",
+      "nextTitleDisabled": "Upload and arm an oracle to continue"
+    },
+    "thresholds": {
+      "title": "Configure thresholds",
+      "subtitlePrefix": "Tune the variance / alignment / entropy filter chain. Defaults come from the gocryptfs DFRWS case study; hover the",
+      "subtitleTail": "icons for per-field rationale.",
+      "searchReduce": "Search-reduce",
+      "bruteForce": "Brute-force",
+      "exhaustiveLabel": "Exhaustive (try every candidate even after the first hit)",
+      "noOracleError": "No oracle selected. Go back to the Oracle step.",
+      "noDumpsError": "No dump paths provided. Go back to the Dumps step.",
+      "back": "← Back",
+      "run": "Run pipeline",
+      "submitting": "Submitting…",
+      "runTitle": "Start consensus → reduce → verify → sweep → emit",
+      "fields": {
+        "minVariance": "min variance",
+        "minVarianceHelp": "Per-byte variance threshold. Higher values keep only very volatile bytes; in the DFRWS paper 1500 separated real crypto material from noise at N≥20.",
+        "alignment": "alignment",
+        "alignmentHelp": "Byte alignment the key must land on. Go's allocator places keys on 8-byte boundaries; most allocators use 8 or 16.",
+        "blockSize": "block size",
+        "blockSizeHelp": "Window the aligned density filter scores. 32 bytes fits a single AES-256 key; wider windows score pairs of adjacent keys.",
+        "density": "density",
+        "densityHelp": "Minimum survivor fraction inside an aligned block before it's kept. 0.5 means half the bytes in the window must already be candidates.",
+        "entropyWin": "entropy win",
+        "entropyWinHelp": "Sliding-window size for Shannon entropy in bytes. Must be larger than the entropy threshold in bits, raised to 2.",
+        "entropyMin": "entropy min",
+        "entropyMinHelp": "Minimum Shannon entropy (bits) a window must hit. Cryptographic keys saturate near log2(window); keep this ≤ log2(window).",
+        "minRegion": "min region",
+        "minRegionHelp": "Smallest contiguous region the reducer will emit. Regions shorter than this are dropped before brute-force.",
+        "stride": "stride",
+        "strideHelp": "Candidate iteration step. Default = alignment. At stride=1 the hot loop wastes most oracle calls on misaligned offsets.",
+        "jobs": "jobs",
+        "jobsHelp": "Inner worker count for the brute-force ProcessPool. 1 = serial (easiest debugging); >1 = parallel. Memdiver v1 caps concurrent pipelines at 1, so jobs × 1 is the CPU footprint.",
+        "topK": "top K",
+        "topKHelp": "When no hit is found, how many highest-variance regions to report. Zero to disable the fallback."
+      }
+    }
+  },
+  "oracle": {
+    "dryRun": {
+      "smokeTest_one": "Smoke test the oracle on {{count}} sample before committing to a full sweep.",
+      "smokeTest_other": "Smoke test the oracle on {{count}} samples before committing to a full sweep.",
+      "testing": "Testing…",
+      "testButton_one": "Test on {{count}} sample",
+      "testButton_other": "Test on {{count}} samples",
+      "testTitle": "Verify the oracle loads and runs before committing to a full sweep",
+      "dotTitle": "sample {{index}}: {{state}}",
+      "legendPass": "pass",
+      "legendFail": "fail",
+      "legendError": "error",
+      "legendNote": "(random offsets expect mostly red)",
+      "summary": "{{passes}} pass · {{fails}} fail · {{errors}} error · avg {{avg}}µs"
+    },
+    "examples": {
+      "loading": "Loading example oracles…",
+      "loadError": "Failed to load examples: {{error}}",
+      "noneBundledPrefix": "No example oracles bundled in",
+      "intro": "Pick a bundled template to inspect its shape. Examples are read-only — copy one into your own",
+      "introMid": "and upload it via the",
+      "introUpload": "Upload",
+      "introTail": "tab to actually run a pipeline.",
+      "shape": "Shape {{shape}}",
+      "noSummary": "(no summary)",
+      "shaMeta": "sha256: {{sha}}… · {{size}} bytes"
+    },
+    "shape": {
+      "newToOracles": "New to BYO oracles?",
+      "hide": "Hide",
+      "show": "Show",
+      "introPrefix": "An",
+      "introOracle": "oracle",
+      "introMid": "is a short Python file you write that returns",
+      "introTrue": "True",
+      "introForReal": "for the real key and",
+      "introFalse": "False",
+      "introTail": "for everything else. Memdiver's pipeline hands it each surviving candidate from the search-reduce chain and reports the ones that pass. The server never sees the plaintext; you decide what \"verified\" means for your protocol.",
+      "twoShapesPrefix": "Two shapes are supported; pick Shape 1 for simple cases and Shape 2 when",
+      "twoShapesTail": "needs to cache work (like a KDF output or an open socket) between calls.",
+      "shape1Heading": "Shape 1 — stateless",
+      "shape2Heading": "Shape 2 — stateful factory",
+      "securityNotePrefix": "Memdiver refuses to load oracles from world-writable files, purges any stale",
+      "securityNoteMid": "next to the source, and requires an explicit \"Arm oracle\" step that re-hashes the file on disk before the pipeline will run it. See",
+      "securityNoteTail": "for the full contract."
+    },
+    "upload": {
+      "dropTitle": "Drop an oracle .py file here",
+      "dropBodyPrefix": "Up to 1 MB. Shape 1 (stateless",
+      "dropBodyMid": ") and Shape 2 (stateful",
+      "dropBodyTail": ") are auto-detected.",
+      "descriptionLabel": "Description (optional)",
+      "descriptionPlaceholder": "e.g. gocryptfs DFRWS oracle",
+      "sizeError": "Oracle file is {{size}} bytes; the server cap is {{cap}}.",
+      "processing": "Processing upload…",
+      "uploadedHeading": "Uploaded oracles",
+      "shape": "Shape {{shape}}",
+      "armed": "Armed",
+      "unarmed": "Unarmed",
+      "arm": "Arm oracle",
+      "armTitle": "Confirm sha256 and mark this oracle safe to execute",
+      "shaMeta": "sha256: {{sha}} · {{size}} bytes"
+    }
+  },
+  "run": {
+    "funnel": {
+      "title": "Reduction funnel",
+      "awaiting": "Awaiting consensus…",
+      "rows": {
+        "raw": "Raw",
+        "variance": "Variance",
+        "aligned": "Aligned",
+        "highEntropy": "Entropy",
+        "candidates": "Candidates",
+        "verified": "Verified"
+      }
+    },
+    "log": {
+      "title": "Live oracle log",
+      "waiting": "Waiting for events…"
+    },
+    "timings": {
+      "title": "Stage timings",
+      "consensus": "Consensus",
+      "searchReduce": "Search-reduce",
+      "bruteForce": "Brute-force",
+      "total": "Total"
+    },
+    "dashboard": {
+      "failedTitle": "Pipeline failed",
+      "unknownError": "unknown error",
+      "cancelled": "Task cancelled.",
+      "completed": "Pipeline completed.",
+      "hitsTitle": "Verified hits ({{count}})",
+      "hitSize": "({{size}} B)",
+      "openInHex": "Open in hex",
+      "openInHexTitle": "Jump to this offset in the hex viewer"
+    }
+  },
+  "results": {
+    "artifacts": {
+      "noSecondary": "No secondary artifacts registered yet.",
+      "rawOutputs": "Raw outputs ({{count}})",
+      "colName": "name",
+      "colSize": "size",
+      "colSha": "sha256",
+      "colAction": "action",
+      "noRunLoaded": "No pipeline run loaded.",
+      "tabPlugin": "Plugin",
+      "tabReport": "Report",
+      "tabRaw": "Raw",
+      "noPlugin": "No vol3_plugin artifact in this run.",
+      "noReport": "No nsweep_html artifact in this run."
+    },
+    "plugin": {
+      "loading": "Loading plugin…",
+      "loadError": "Failed to load plugin: {{error}}",
+      "fileName": "{{name}}.py",
+      "copied": "Copied!"
+    },
+    "report": {
+      "loading": "Loading report…",
+      "loadError": "Failed to load report: {{error}}",
+      "empty": "Empty report.",
+      "frameTitle": "N-sweep report"
+    },
+    "refine": {
+      "title": "Refine Neighborhood (Phase 2)",
+      "static": "static",
+      "converged": "Converged — adding more dumps unlikely to improve the pattern.",
+      "stillDecreasing": "Variance still decreasing — more dumps recommended.",
+      "pathsPlaceholder": "Paste additional dump paths (one per line)...",
+      "folding": "Folding...",
+      "refineButton": "Refine Consensus",
+      "refineFailed": "Refine failed: {{error}}"
+    },
+    "survivor": {
+      "noData": "No n-sweep data (pipeline ran without --nsweep).",
+      "ariaLabel": "Survivor curve",
+      "xAxis": "N dumps folded",
+      "yAxis": "Survivors (log)",
+      "hit": "hit",
+      "tooltipN": "N = {{n}}",
+      "oracleHit": "oracle hit @ 0x{{offset}}"
+    }
+  }
+}

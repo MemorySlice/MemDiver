@@ -1,0 +1,108 @@
+{
+  "consensus": {
+    "empty": {
+      "title": "No consensus matrix yet",
+      "description": "Batch-classifies every byte as invariant, structural, pointer, or key-candidate across a fixed set of dumps. Needs 2+ dumps and a completed analysis run.",
+      "runAnalysis": "Run analysis",
+      "aboutLink": "About consensus"
+    },
+    "title": "Consensus Matrix",
+    "totalBytes": "Total bytes: {{value}}",
+    "dumpsAnalyzed": "Dumps analyzed: {{value}}",
+    "class": {
+      "invariant": {
+        "label": "Invariant",
+        "desc": "Identical across all runs"
+      },
+      "structural": {
+        "label": "Structural",
+        "desc": "Low variance (< 100)"
+      },
+      "pointer": {
+        "label": "Pointer",
+        "desc": "Medium variance (< 3000)"
+      },
+      "keyCandidate": {
+        "label": "Key Candidate",
+        "desc": "High variance (key material)"
+      }
+    }
+  },
+  "convergence": {
+    "empty": {
+      "title": "No convergence data",
+      "descriptionPrefix": "Plots recall and false-positive rate as N sweeps from 1 to max. Produced by the experiment harness or by ",
+      "cliLink": "CLI quickstart"
+    },
+    "title": "Convergence: Detection Quality vs Number of Dumps",
+    "firstDetection": "First detection: N={{n}}",
+    "firstDecryption": "First decryption: N={{n}}",
+    "fpTargetMet": "FP target met: N={{n}}",
+    "axis": {
+      "recall": "Recall %",
+      "falsePositives": "False Positives"
+    },
+    "legend": {
+      "recall": "Recall",
+      "falsePositives": "False Positives",
+      "firstDetection": "First Detection"
+    }
+  },
+  "crossLibrary": {
+    "empty": "No library data for comparison.",
+    "title": "Cross-Library Comparison: {{secretType}}"
+  },
+  "differential": {
+    "empty": "Need two dumps for differential comparison.",
+    "title": "Differential Diff",
+    "labelA": "Dump A",
+    "labelB": "Dump B",
+    "summary": "{{labelA}} vs {{labelB}} | {{diffCount}} bytes differ ({{pct}}%) | {{compareLen}} bytes compared"
+  },
+  "heatmap": {
+    "empty": "No heatmap data available.",
+    "library": "Library"
+  },
+  "phaseLifecycle": {
+    "empty": "No lifecycle data available.",
+    "title": "Phase Lifecycle: {{library}}"
+  },
+  "entropy": {
+    "defaultTitle": "Entropy Profile",
+    "empty": "No entropy profile available.",
+    "seriesName": "Entropy",
+    "axis": {
+      "offset": "Offset (bytes)",
+      "entropy": "Entropy (bits/byte)"
+    }
+  },
+  "variance": {
+    "defaultTitle": "Variance Map",
+    "empty": "No variance data.",
+    "seriesName": "Variance",
+    "axis": {
+      "offset": "Offset (bytes)",
+      "variance": "Variance",
+      "varianceLog": "Variance (log)"
+    }
+  },
+  "vas": {
+    "defaultTitle": "Virtual Address Space",
+    "empty": "No VAS data.",
+    "axis": {
+      "size": "Size (bytes)"
+    },
+    "tooltip": {
+      "addr": "addr {{addr}}"
+    },
+    "type": {
+      "unknown": "Unknown",
+      "heap": "Heap",
+      "stack": "Stack",
+      "image": "Image",
+      "mapped": "Mapped",
+      "anonymous": "Anonymous",
+      "shared": "Shared"
+    }
+  }
+}

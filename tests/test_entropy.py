@@ -91,6 +91,36 @@ def test_find_high_entropy_no_regions():
     assert result == []
 
 
+def test_find_high_entropy_trailing_region_exclusive_end():
+    """Trailing region uses the same exclusive-end convention as interior ones.
+
+    A high-entropy run that reaches the end of the profile must report
+    region_end = last_offset + step (exclusive), matching how an interior
+    close uses the first below-threshold offset as an exclusive end. With the
+    old inclusive convention (region_end = last_offset) the width was one step
+    short, which could drop a trailing region the interior convention keeps.
+    """
+    # step=1: offsets 0..49 high entropy, runs to the end of the profile.
+    profile = [(i, 7.8) for i in range(50)]
+    result = find_high_entropy_regions(profile, threshold=7.5, min_width=32)
+    assert len(result) == 1
+    start, end, _ = result[0]
+    assert start == 0
+    # last_offset is 49, step is 1 -> exclusive end 50.
+    assert end == 50
+
+
+def test_find_high_entropy_trailing_region_respects_step():
+    """Trailing exclusive-end honors the profile step spacing."""
+    # step=16: offsets 0,16,...,496. Last in-region start 496 -> end 512.
+    profile = [(i, 7.8) for i in range(0, 512, 16)]
+    result = find_high_entropy_regions(profile, threshold=7.5, min_width=32)
+    assert len(result) == 1
+    start, end, _ = result[0]
+    assert start == 0
+    assert end == 496 + 16
+
+
 def test_find_high_entropy_min_width_filter():
     """Region narrower than min_width is filtered out."""
     # Create a short high-entropy spike of 10 offsets, then low

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   mslPath: string;
@@ -16,6 +17,7 @@ interface ReservedResponse {
 }
 
 export function ReservedBlocksList({ mslPath, endpoint, title }: Props) {
+  const { t } = useTranslation("msl");
   const [data, setData] = useState<ReservedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +38,7 @@ export function ReservedBlocksList({ mslPath, endpoint, title }: Props) {
   if (!data) return null;
   if (!data.entries.length) return null;
 
-  const badgeLabel = data.spec_reserved ? "SPEC RESERVED" : "INCOMPLETE";
+  const badgeLabel = data.spec_reserved ? t("reserved.badge.specReserved") : t("reserved.badge.incomplete");
   const badgeColor = data.spec_reserved
     ? "var(--md-accent-orange)"
     : "var(--md-accent-red)";

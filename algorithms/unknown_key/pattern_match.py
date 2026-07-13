@@ -49,11 +49,19 @@ class PatternMatchAlgorithm(BaseAlgorithm):
             key_len = pattern["key_spec"]["length"]
             entropy_min = pattern["key_spec"].get("entropy_min", 7.0)
 
+            # Shipped pattern JSONs specify entropy_min=7.0, which is
+            # unreachable for real 32/48-byte keys (the theoretical max for an
+            # n-byte window is log2(n) bits/byte, e.g. ~5.0 for 32 bytes), so
+            # passing it straight through silently yields zero matches. Clamp
+            # to the entropy scanner's own workable default so the shipped
+            # configs can actually find keys.
+            entropy_threshold = min(entropy_min, self._entropy_scanner.DEFAULT_THRESHOLD)
+
             entropy_ctx = AnalysisContext(
                 library=context.library,
                 tls_version=context.tls_version,
                 phase=context.phase,
-                extra={"window_sizes": [key_len], "entropy_threshold": entropy_min},
+                extra={"window_sizes": [key_len], "entropy_threshold": entropy_threshold},
             )
             entropy_result = self._entropy_scanner.run(dump_data, entropy_ctx)
 

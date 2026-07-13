@@ -131,6 +131,109 @@ class TestDump:
             assert result is False
 
 
+class TestStartTargetTimeout:
+    @patch("core.dump_driver.shutil.which", return_value=None)
+    def test_timeout_fires_when_target_emits_no_newline(self, mock_which, tmp_path):
+        """A target that opens stdout but never emits a newline must still
+        time out. Regression: the deadline was only checked inside
+        ``for line in proc.stdout``, which blocks forever with no newline."""
+        script = tmp_path / "hang.py"
+        # Write a partial line (no newline) then sleep well past the timeout.
+        script.write_text(
+            "import sys, time\n"
+            "sys.stdout.write('partial-no-newline')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+        orch = DumpOrchestrator()
+        import time as _t
+        start = _t.monotonic()
+        with pytest.raises(TimeoutError):
+            orch.start_target(script, timeout=1.0)
+        # Must return promptly around the timeout, not block on the sleep(30).
+        assert _t.monotonic() - start < 10.0
+
+    @patch("core.dump_driver.shutil.which", return_value=None)
+    def test_success_path_reads_pid_key_iv(self, mock_which, tmp_path):
+        """The MEMDIVER_READY success path must still work end-to-end."""
+        script = tmp_path / "ready.py"
+        script.write_text(
+            "import sys, time\n"
+            "print('MEMDIVER_PID=4321')\n"
+            "print('MEMDIVER_KEY=' + 'ab' * 32)\n"
+            "print('MEMDIVER_IV=' + 'cd' * 16)\n"
+            "print('MEMDIVER_READY=1')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+        orch = DumpOrchestrator()
+        target = orch.start_target(script, timeout=10.0)
+        try:
+            assert target.pid == 4321
+            assert target.key_hex == "ab" * 32
+            assert target.iv_hex == "cd" * 16
+        finally:
+            target.process.kill()
+
+    @patch("core.dump_driver.shutil.which", return_value=None)
+    def test_eof_without_ready_raises_runtime_error(self, mock_which, tmp_path):
+        """A target that exits before providing PID/KEY raises RuntimeError."""
+        script = tmp_path / "exit.py"
+        script.write_text("print('nothing useful')\n")
+        orch = DumpOrchestrator()
+        with pytest.raises(RuntimeError):
+            orch.start_target(script, timeout=5.0)
+
+
+class TestRunExperimentKeylog:
+    def _orch_with_one_tool(self):
+        with patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake"):
+            orch = DumpOrchestrator(tools=["memslicer"])
+        return orch
+
+    def test_keylog_uses_protocol_label_and_iv(self, tmp_path):
+        """The keylog line must derive its label from the protocol and use
+        the target's IV as the identifier — not a hardcoded AES256 / zero
+        identifier."""
+        orch = self._orch_with_one_tool()
+        target = TargetProcess(
+            pid=111, key_hex="11" * 32, iv_hex="ab" * 16, process=MagicMock()
+        )
+        with patch.object(orch, "start_target", return_value=target), \
+                patch.object(orch, "dump", return_value=True), \
+                patch.object(orch, "kill_target"), \
+                patch("core.dump_driver.time.sleep"):
+            result = orch.run_experiment(
+                tmp_path / "target.py", num_runs=1, output_dir=tmp_path,
+                protocol="CHACHA20", scenario="scn", delay=0.0,
+            )
+        run_dir = result.tool_dirs["memslicer"] / "memslicer_run_256_1"
+        keylog = (run_dir / "keylog.csv").read_text()
+        assert "CHACHA20_KEY" in keylog
+        assert ("ab" * 16) in keylog
+        assert ("11" * 32) in keylog
+        # The old hardcoded 32-byte zero identifier must be gone.
+        assert ("00" * 32) not in keylog
+
+    def test_keylog_falls_back_to_zero_iv_when_absent(self, tmp_path):
+        orch = self._orch_with_one_tool()
+        target = TargetProcess(
+            pid=222, key_hex="22" * 32, iv_hex="", process=MagicMock()
+        )
+        with patch.object(orch, "start_target", return_value=target), \
+                patch.object(orch, "dump", return_value=True), \
+                patch.object(orch, "kill_target"), \
+                patch("core.dump_driver.time.sleep"):
+            result = orch.run_experiment(
+                tmp_path / "target.py", num_runs=1, output_dir=tmp_path,
+                protocol="AES256", scenario="scn", delay=0.0,
+            )
+        run_dir = result.tool_dirs["memslicer"] / "memslicer_run_256_1"
+        keylog = (run_dir / "keylog.csv").read_text()
+        assert "AES256_KEY" in keylog
+        assert ("00" * 16) in keylog  # zero IV fallback (16 bytes, not 32)
+
+
 class TestKillTarget:
     @patch("core.dump_driver.os.kill")
     @patch("core.dump_driver.shutil.which", return_value=None)

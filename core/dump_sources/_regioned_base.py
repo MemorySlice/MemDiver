@@ -55,8 +55,14 @@ class _RegionedRawSource:
 
     @property
     def size(self) -> int:
-        """Raw file size in bytes (matches mmap'd bin size)."""
-        return self._reader.size if self._reader._mmap is not None else self._raw_file_size()
+        """Raw file size in bytes (matches mmap'd bin size).
+
+        ``DumpReader.size`` returns the mapped length when open and 0 when
+        unmapped, so a falsy result deliberately falls back to a ``stat()``
+        of the bin path — covering the not-yet-opened case without poking
+        the reader's private mmap handle.
+        """
+        return self._reader.size or self._raw_file_size()
 
     def _raw_file_size(self) -> int:
         try:
@@ -147,7 +153,15 @@ class _RegionedRawSource:
     # -- Iteration ----------------------------------------------------------
 
     def iter_ranges(self, view: str = "vas") -> Iterator[Tuple[int, int, int]]:
-        """Yield ``(start_va, end_va, file_offset)`` per captured region."""
+        """Yield ``(start_va, end_va, file_offset)`` per captured region.
+
+        Note: the yielded tuples are always VA-based; this iterator is
+        VA-only. ``view`` is accepted (and validated) only for signature
+        parity with the other DumpSource methods (``read_range``,
+        ``find_all``, ``size_for``) — ``"raw"`` produces the same VA tuples
+        as ``"vas"``. Callers wanting raw-file ranges already have the
+        ``file_offset`` element of each tuple.
+        """
         if view not in ("vas", "raw"):
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
         for idx in range(self._usable_region_count):
@@ -192,6 +206,10 @@ class _RegionedRawSource:
         return bytes(result)
 
     def find_all(self, needle: bytes, view: str = "raw") -> List[int]:
+        # An empty needle would make the underlying byte/mmap search yield one
+        # hit per byte (effective hang). gcore guards this the same way.
+        if not needle:
+            return []
         self._ensure_open()
         if view == "raw":
             return self._reader.find_all(needle)

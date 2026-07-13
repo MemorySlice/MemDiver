@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import { ARTIFACT_NAMES } from "@/components/pipeline/constants";
@@ -19,6 +20,7 @@ export function ReportHtmlFrame({
   taskId,
   artifactName = ARTIFACT_NAMES.NSWEEP_HTML,
 }: Props) {
+  const { t } = useTranslation("pipeline");
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,17 +56,17 @@ export function ReportHtmlFrame({
   }, [taskId, artifactName]);
 
   if (loading) {
-    return <div className="md-panel p-3 text-xs md-text-muted">Loading report&hellip;</div>;
+    return <div className="md-panel p-3 text-xs md-text-muted">{t("results.report.loading")}</div>;
   }
   if (error) {
     return (
       <div className="md-panel p-3 text-xs" style={{ color: "var(--md-accent-red)" }}>
-        Failed to load report: {error}
+        {t("results.report.loadError", { error })}
       </div>
     );
   }
   if (!html) {
-    return <div className="md-panel p-3 text-xs md-text-muted">Empty report.</div>;
+    return <div className="md-panel p-3 text-xs md-text-muted">{t("results.report.empty")}</div>;
   }
 
   return (
@@ -72,7 +74,7 @@ export function ReportHtmlFrame({
       srcDoc={html}
       sandbox="allow-scripts"
       className="w-full h-[500px] rounded border border-[var(--md-border)] md-bg-secondary"
-      title="N-sweep report"
+      title={t("results.report.frameTitle")}
     />
   );
 }

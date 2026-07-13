@@ -265,6 +265,15 @@ class MslReader:
 
     def _parse_block_header(self, offset: int) -> MslBlockHeader:
         buf = self._buf
+        # Defensive bound check: every field below (UUIDs, prev_hash, struct
+        # fields) assumes a full BLOCK_HEADER_SIZE-byte header is available.
+        # All current callers guard the length, but protect future callers
+        # from silently reading short/truncated slices.
+        if offset < 0 or offset + BLOCK_HEADER_SIZE > len(buf):
+            raise MslParseError(
+                f"Truncated block header at 0x{offset:X}: need "
+                f"{BLOCK_HEADER_SIZE} bytes, have {max(0, len(buf) - offset)}"
+            )
         if buf[offset:offset + 4] != BLOCK_MAGIC:
             raise MslParseError(f"Bad block magic at 0x{offset:X}")
         bo = self._byte_order
@@ -293,6 +302,21 @@ class MslReader:
         block stream (encrypted files). ``_buf`` is None for an encrypted
         file opened without a usable key, in which case nothing is yielded.
         """
+        for hdr in self._iter_raw_block_headers():
+            raw = bytes(self._buf[hdr.payload_offset:hdr.file_offset + hdr.block_length])
+            if hdr.compressed:
+                raw = decompress(raw, hdr.comp_algo)
+            yield hdr, raw
+
+    def _iter_raw_block_headers(self) -> Iterator[MslBlockHeader]:
+        """Iterate in-chain block headers WITHOUT decompressing payloads.
+
+        Shares the walk/validation logic with ``_iter_raw_blocks`` but
+        yields only the parsed header, so callers that need just the
+        framing (offset/length/type) avoid decompressing every payload.
+        Stops *after* yielding the End-of-Capture header (see
+        ``_iter_raw_blocks`` for the chain/appendix rationale).
+        """
         buf = self._buf
         if buf is None:
             return
@@ -308,10 +332,7 @@ class MslReader:
             if end > file_size:
                 logger.warning("Truncated block at 0x%X", offset)
                 break
-            raw = bytes(buf[hdr.payload_offset:end])
-            if hdr.compressed:
-                raw = decompress(raw, hdr.comp_algo)
-            yield hdr, raw
+            yield hdr
             offset = end
             if hdr.block_type == BlockType.END_OF_CAPTURE:
                 break
@@ -319,17 +340,17 @@ class MslReader:
     def _appendix_offset(self) -> Optional[int]:
         """Return the file offset where any appendix region begins, or None.
 
-        Reuses ``_iter_raw_blocks`` (which already stops at EoC) and
-        records the byte just past the last in-chain block. Returns None
-        when the file has no EoC, no bytes follow EoC, or block parsing
-        fails before EoC is reached.
+        Walks ``_iter_raw_block_headers`` (header-only, no payload
+        decompression) and records the byte just past the last in-chain
+        block. Returns None when the file has no EoC, no bytes follow EoC,
+        or block parsing fails before EoC is reached.
         """
         if self._buf is None:
             return None
         end_offset: Optional[int] = None
         saw_eoc = False
         try:
-            for hdr, _ in self._iter_raw_blocks():
+            for hdr in self._iter_raw_block_headers():
                 end_offset = hdr.file_offset + hdr.block_length
                 if hdr.block_type == BlockType.END_OF_CAPTURE:
                     saw_eoc = True

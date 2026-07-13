@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   library: string;
@@ -14,14 +15,15 @@ export const PhaseLifecycleGrid = memo(function PhaseLifecycleGrid({
   secretTypes,
   phasePresence,
 }: Props) {
+  const { t } = useTranslation("charts");
   if (!phases.length || !secretTypes.length) {
-    return <p className="p-4 text-sm md-text-muted">No lifecycle data available.</p>;
+    return <p className="p-4 text-sm md-text-muted">{t("phaseLifecycle.empty")}</p>;
   }
 
   return (
     <div className="p-3 text-xs overflow-auto">
       <h3 className="text-sm font-semibold md-text-accent mb-2">
-        Phase Lifecycle: {library}
+        {t("phaseLifecycle.title", { library })}
       </h3>
       <table className="border-collapse">
         <thead>

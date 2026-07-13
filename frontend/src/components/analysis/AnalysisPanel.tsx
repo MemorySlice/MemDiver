@@ -1,47 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { runAnalysis, runFileAnalysis, listPhases, listProtocols, listPatterns } from "@/api/client";
 import type { PatternInfo } from "@/api/types";
 import { useAppStore, ALL_ALGORITHMS, SINGLE_FILE_ALGORITHMS, VERIFICATION_ALGORITHMS } from "@/stores/app-store";
-import type { AlgorithmName } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
 import { getAlgorithmAvailability } from "@/utils/algorithm-availability";
 import { applyHitsToStores } from "@/utils/apply-hits";
 import type { SecretHit } from "@/api/types";
 
-const PROGRESS_STEPS = [
-  "Preparing analysis...",
-  "Loading dump data...",
-  "Running algorithms...",
-  "Scanning for patterns...",
-  "Processing results...",
+const PROGRESS_STEP_KEYS = [
+  "progress.preparing",
+  "progress.loadingDump",
+  "progress.runningAlgorithms",
+  "progress.scanningPatterns",
+  "progress.processingResults",
 ];
 
 const SELECT_CLASS = "w-full bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded px-1.5 py-1 text-xs";
 
-const ALGO_LABELS: Record<AlgorithmName, string> = {
-  entropy_scan: "Entropy Scan",
-  pattern_match: "Pattern Match",
-  change_point: "Change Point",
-  structure_scan: "Structure Scan",
-  user_regex: "User Regex",
-  exact_match: "Exact Match",
-  differential: "Differential",
-  constraint_validator: "Constraint Validator",
-};
-
-const ALGO_DESCRIPTIONS: Record<AlgorithmName, string> = {
-  entropy_scan: "Shannon entropy sliding window — finds high-entropy regions that may contain cryptographic keys or compressed data.",
-  pattern_match: "Structural pattern matching from JSON definitions — uses before/after byte markers to locate key material.",
-  change_point: "CUSUM entropy change-point detection — finds sharp entropy transitions indicating boundaries of key-material plateaus.",
-  structure_scan: "Identifies known data structure layouts (TLS records, SSH key formats) via field-level overlay validation.",
-  user_regex: "Custom regex byte pattern search on raw dump data. Enter your regex pattern below when selected.",
-  exact_match: "Searches for known cryptographic key byte sequences using ground truth from keylog reference data.",
-  differential: "Cross-run byte variance analysis (DPA-inspired) — compares multiple dumps to locate volatile key-sized regions.",
-  constraint_validator: "Validates candidate keys against protocol-specific KDF constraints (key length, derivation relationships).",
-};
-
 export function AnalysisPanel() {
+  const { t } = useTranslation("analysis");
   // Per-field selectors so unrelated app-store writes (hexFocus, wizardStep,
   // fullWidthHex, chunk-load propagation via other stores) do not re-render
   // the algorithm checkbox list. AppState has 35 slice members; this
@@ -137,7 +116,7 @@ export function AnalysisPanel() {
   useEffect(() => {
     if (!isRunning) { setStepIdx(0); return; }
     const interval = setInterval(() => {
-      setStepIdx((prev) => (prev + 1) % PROGRESS_STEPS.length);
+      setStepIdx((prev) => (prev + 1) % PROGRESS_STEP_KEYS.length);
     }, 2500);
     return () => clearInterval(interval);
   }, [isRunning]);
@@ -168,7 +147,7 @@ export function AnalysisPanel() {
       setResult(res);
       applyHitsToStores(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Analysis failed");
+      setError(e instanceof Error ? e.message : t("panel.analysisFailed"));
     }
   }, [selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename, selectedAlgorithms, startAnalysis, setResult, setError]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -193,7 +172,7 @@ export function AnalysisPanel() {
       setResult(res);
       applyHitsToStores(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "File analysis failed");
+      setError(e instanceof Error ? e.message : t("panel.fileAnalysisFailed"));
     }
   }, [inputPath, selectedAlgorithms, startAnalysis, setResult, setError]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -226,41 +205,41 @@ export function AnalysisPanel() {
       {inputMode !== "file" && (
         <div className="space-y-2">
           <div>
-            <label className="font-medium md-text-secondary block mb-0.5">Protocol</label>
+            <label className="font-medium md-text-secondary block mb-0.5">{t("panel.protocol")}</label>
             {protocolVersion ? (
               <span className="px-1.5 py-0.5 rounded bg-[var(--md-bg-hover)] text-xs">
                 {protocolVersion}
               </span>
             ) : (
               <select className={SELECT_CLASS} value="" onChange={(e) => setProtocol(protocolName || "TLS", e.target.value)}>
-                <option value="">Select...</option>
+                <option value="">{t("panel.selectProtocol")}</option>
                 {availableProtocols.map((v) => <option key={v} value={v}>{v}</option>)}
               </select>
             )}
           </div>
           <div>
-            <label className="font-medium md-text-secondary block mb-0.5">Phase</label>
+            <label className="font-medium md-text-secondary block mb-0.5">{t("panel.phase")}</label>
             <select className={SELECT_CLASS} value={selectedPhase} onChange={(e) => setPhase(e.target.value)}>
-              <option value="">Select phase...</option>
+              <option value="">{t("panel.selectPhase")}</option>
               {availablePhases.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
           {/* Libraries */}
           <div>
-            <label className="font-medium md-text-secondary block mb-0.5">Libraries</label>
+            <label className="font-medium md-text-secondary block mb-0.5">{t("panel.libraries")}</label>
             {selectedLibraries.length > 0 ? (
-              <span className="md-text-muted">{selectedLibraries.length} selected</span>
+              <span className="md-text-muted">{t("panel.selected", { count: selectedLibraries.length })}</span>
             ) : loadingMeta ? (
-              <span className="md-text-muted">Loading...</span>
+              <span className="md-text-muted">{t("panel.loading")}</span>
             ) : (
-              <span className="md-text-muted">None detected</span>
+              <span className="md-text-muted">{t("panel.noneDetected")}</span>
             )}
           </div>
         </div>
       )}
       {/* Algorithm checkboxes */}
       <div className="space-y-1">
-        <p className="font-medium md-text-secondary mb-1">Algorithms</p>
+        <p className="font-medium md-text-secondary mb-1">{t("panel.algorithms")}</p>
         {(mode === "verification" ? VERIFICATION_ALGORITHMS : ALL_ALGORITHMS).map((algo) => {
           const avail = getAlgorithmAvailability(algo, availabilityContext);
           const checked = selectedAlgorithms.includes(algo);
@@ -279,10 +258,10 @@ export function AnalysisPanel() {
                   onChange={() => toggleAlgorithm(algo)}
                   className="accent-[var(--md-accent-blue)]"
                 />
-                <span>{ALGO_LABELS[algo]}</span>
+                <span>{t(`algoLabels.${algo}`)}</span>
                 <span
                   className="ml-auto inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[var(--md-border)] text-[9px] md-text-muted cursor-help shrink-0"
-                  title={ALGO_DESCRIPTIONS[algo]}
+                  title={t(`algoDescriptions.${algo}`)}
                 >
                   i
                 </span>
@@ -293,7 +272,7 @@ export function AnalysisPanel() {
                     type="text"
                     value={userRegex}
                     onChange={(e) => setUserRegex(e.target.value)}
-                    placeholder='Regex pattern, e.g. \x00{16,32}'
+                    placeholder={t("panel.userRegexPlaceholder")}
                     className="w-full px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] text-xs font-mono"
                   />
                 </div>
@@ -309,7 +288,7 @@ export function AnalysisPanel() {
                         className="text-[10px] md-text-muted hover:md-text-primary flex items-center gap-1"
                       >
                         <span className="inline-block transition-transform" style={{ transform: patternsExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>&#9654;</span>
-                        Built-in patterns ({builtinPatterns.length})
+                        {t("panel.builtinPatterns", { count: builtinPatterns.length })}
                       </button>
                       {patternsExpanded && (
                         <div className="mt-1 space-y-0.5">
@@ -325,11 +304,11 @@ export function AnalysisPanel() {
                   )}
                   {/* Custom pattern JSON */}
                   <div>
-                    <label className="text-[10px] md-text-secondary block mb-0.5">Custom Pattern (JSON)</label>
+                    <label className="text-[10px] md-text-secondary block mb-0.5">{t("panel.customPattern")}</label>
                     <textarea
                       value={customPatternJson}
                       onChange={(e) => setCustomPatternJson(e.target.value)}
-                      placeholder="Paste a JSON pattern definition..."
+                      placeholder={t("panel.customPatternPlaceholder")}
                       rows={3}
                       className="w-full px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] text-[10px] font-mono resize-y"
                     />
@@ -338,7 +317,7 @@ export function AnalysisPanel() {
                       onClick={() => setShowPatternExample(!showPatternExample)}
                       className="text-[10px] md-text-muted hover:md-text-primary mt-0.5"
                     >
-                      {showPatternExample ? "Hide Example" : "Show Example"}
+                      {showPatternExample ? t("panel.hideExample") : t("panel.showExample")}
                     </button>
                     {showPatternExample && (
                       <pre className="mt-1 p-1.5 rounded bg-[var(--md-bg-tertiary)] text-[9px] font-mono overflow-x-auto whitespace-pre">
@@ -363,9 +342,9 @@ export function AnalysisPanel() {
           className="px-3 py-1.5 rounded text-white disabled:opacity-40 transition-opacity flex items-center gap-1.5"
           style={{ background: "var(--md-accent-blue)" }}>
           {isRunning && <span className="md-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}
-          {isRunning ? "Running..." : "Run Analysis"}
+          {isRunning ? t("panel.running") : t("panel.runAnalysis")}
         </button>
-        {result && <button onClick={reset} className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">Clear</button>}
+        {result && <button onClick={reset} className="px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">{t("common:clear")}</button>}
       </div>
 
       {isRunning && (
@@ -373,7 +352,7 @@ export function AnalysisPanel() {
           <div className="h-1.5 rounded-full bg-[var(--md-bg-tertiary)] overflow-hidden">
             <div className="h-full rounded-full md-progress-indeterminate" />
           </div>
-          <p className="md-text-muted animate-pulse">{PROGRESS_STEPS[stepIdx]}</p>
+          <p className="md-text-muted animate-pulse">{t(PROGRESS_STEP_KEYS[stepIdx])}</p>
         </div>
       )}
 
@@ -385,21 +364,22 @@ export function AnalysisPanel() {
 }
 
 function ResultsTable({ result }: { result: { libraries: { library: string; phase: string; hits: SecretHit[]; num_runs: number }[] } }) {
+  const { t } = useTranslation("analysis");
   const totalHits = result.libraries.reduce((s, l) => s + l.hits.length, 0);
   return (
     <div className="space-y-2">
-      <p className="font-medium">{totalHits} hits across {result.libraries.length} libraries</p>
+      <p className="font-medium">{t("panel.hitsSummary", { hits: totalHits, libraries: result.libraries.length })}</p>
       {result.libraries.map((lib) => (
         <div key={lib.library} className="md-panel p-2">
-          <div className="font-medium mb-1">{lib.library} -- {lib.hits.length} hits ({lib.num_runs} runs)</div>
+          <div className="font-medium mb-1">{t("panel.libHits", { library: lib.library, hits: lib.hits.length, runs: lib.num_runs })}</div>
           {lib.hits.length > 0 && (
             <table className="w-full text-[10px]">
               <thead>
                 <tr className="md-text-muted">
-                  <th className="text-left p-0.5">Type</th>
-                  <th className="text-left p-0.5">Offset</th>
-                  <th className="text-left p-0.5">Length</th>
-                  <th className="text-left p-0.5">Run</th>
+                  <th className="text-left p-0.5">{t("panel.colType")}</th>
+                  <th className="text-left p-0.5">{t("panel.colOffset")}</th>
+                  <th className="text-left p-0.5">{t("panel.colLength")}</th>
+                  <th className="text-left p-0.5">{t("panel.colRun")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -411,7 +391,7 @@ function ResultsTable({ result }: { result: { libraries: { library: string; phas
                     <td className="p-0.5">{h.run_id}</td>
                   </tr>
                 ))}
-                {lib.hits.length > 50 && <tr><td colSpan={4} className="p-0.5 md-text-muted">...and {lib.hits.length - 50} more</td></tr>}
+                {lib.hits.length > 50 && <tr><td colSpan={4} className="p-0.5 md-text-muted">{t("panel.more", { count: lib.hits.length - 50 })}</td></tr>}
               </tbody>
             </table>
           )}

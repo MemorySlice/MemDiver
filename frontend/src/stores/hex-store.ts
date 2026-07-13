@@ -84,6 +84,11 @@ interface HexState {
   highlightedRegions: HighlightRegion[];
   scrollTarget: number | null;
 
+  // Byte-pattern search hits (absolute offsets). Shared between the
+  // toolbar search box (writer) and the viewer's SearchMinimap (reader)
+  // so the two stay decoupled.
+  searchOffsets: number[];
+
   bookmarks: Bookmark[];
   activeStructureOverlay: StructureOverlay | null;
   activeNeighborhoodOverlay: NeighborhoodOverlay | null;
@@ -108,9 +113,10 @@ interface HexState {
   clearScrollTarget: () => void;
 
   setHighlightedRegions: (regions: HighlightRegion[]) => void;
+  setSearchOffsets: (offsets: number[]) => void;
 
   addBookmark: (b: Bookmark) => void;
-  removeBookmark: (offset: number) => void;
+  removeBookmark: (offset: number, length: number) => void;
   setActiveStructureOverlay: (overlay: StructureOverlay | null) => void;
   setActiveNeighborhoodOverlay: (overlay: NeighborhoodOverlay | null) => void;
   setActiveFieldOffset: (offset: number | null) => void;
@@ -224,6 +230,7 @@ export const useHexStore = create<HexState>((set, get) => ({
 
   highlightedRegions: [],
   scrollTarget: null,
+  searchOffsets: [],
   bookmarks: [],
   activeStructureOverlay: null,
   activeNeighborhoodOverlay: null,
@@ -265,6 +272,7 @@ export const useHexStore = create<HexState>((set, get) => ({
         selection: null,
         highlightedRegions: [],
         scrollTarget: null,
+        searchOffsets: [],
         bookmarks: loadBookmarksFor(path),
         activeStructureOverlay: null,
         activeNeighborhoodOverlay: null,
@@ -319,6 +327,7 @@ export const useHexStore = create<HexState>((set, get) => ({
       focusColumn: "hex",
       highlightedRegions: [],
       scrollTarget: null,
+      searchOffsets: [],
       bookmarks: [],
       activeStructureOverlay: null,
       activeNeighborhoodOverlay: null,
@@ -406,6 +415,12 @@ export const useHexStore = create<HexState>((set, get) => ({
     if (!chunk) return undefined;
     const index = offset - chunk.offset;
     if (index < 0 || index >= chunk.data.length) return undefined;
+    // Touch the chunk so LRU eviction treats on-screen chunks as the most
+    // recently used. Every visible byte is read through getByteAt on each
+    // render, so this keeps the current viewport from being evicted (which
+    // would flash empty cells on a back-jump). Mutated in place to avoid
+    // triggering a re-render.
+    chunk.fetchedAt = Date.now();
     return chunk.data[index];
   },
 
@@ -441,19 +456,35 @@ export const useHexStore = create<HexState>((set, get) => ({
 
   setHighlightedRegions: (regions) => set({ highlightedRegions: regions }),
 
+  setSearchOffsets: (offsets) => set({ searchOffsets: offsets }),
+
   addBookmark: (b) =>
     set((state) => {
-      if (state.bookmarks.some((existing) => existing.offset === b.offset)) {
-        return {};
+      // Dedupe on (offset, length): a second bookmark at the same offset but
+      // a different length is a distinct region and must not be dropped. If an
+      // identical-region bookmark exists, update its label in place rather than
+      // silently no-op'ing.
+      const existingIndex = state.bookmarks.findIndex(
+        (existing) => existing.offset === b.offset && existing.length === b.length,
+      );
+      let bookmarks: Bookmark[];
+      if (existingIndex >= 0) {
+        if (state.bookmarks[existingIndex].label === b.label) return {};
+        bookmarks = state.bookmarks.map((existing, i) =>
+          i === existingIndex ? { ...existing, label: b.label } : existing,
+        );
+      } else {
+        bookmarks = [...state.bookmarks, b];
       }
-      const bookmarks = [...state.bookmarks, b];
       persistBookmarksFor(state.dumpPath, bookmarks);
       return { bookmarks };
     }),
 
-  removeBookmark: (offset) =>
+  removeBookmark: (offset, length) =>
     set((state) => {
-      const bookmarks = state.bookmarks.filter((b) => b.offset !== offset);
+      const bookmarks = state.bookmarks.filter(
+        (b) => b.offset !== offset || b.length !== length,
+      );
       persistBookmarksFor(state.dumpPath, bookmarks);
       return { bookmarks };
     }),

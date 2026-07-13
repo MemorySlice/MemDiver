@@ -67,6 +67,21 @@ def test_write_output_to_stdout(capsys):
     assert parsed == data
 
 
+def test_write_output_unwritable_path_exits_nonzero(tmp_path, capsys):
+    """An unwritable -o path yields a clean stderr message and SystemExit(1),
+    not a raw traceback."""
+    import pytest
+
+    # Writing into a path whose parent does not exist raises OSError.
+    bad_path = tmp_path / "missing_dir" / "result.json"
+    with pytest.raises(SystemExit) as exc_info:
+        _write_output({"a": 1}, str(bad_path))
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "cannot write output" in captured.err
+    assert str(bad_path) in captured.err
+
+
 def test_parser_import_command():
     parser = _build_parser()
     args = parser.parse_args(["import", "/tmp/test.dump", "-o", "/tmp/test.msl"])
@@ -414,3 +429,114 @@ class TestVerifyCommand:
         )
         rc = _cmd_verify(args)
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Parser regression — emit-plugin and experiment subparsers must both build
+# without one clobbering the other (formerly both bound to `ep`).
+# ---------------------------------------------------------------------------
+
+
+def test_parser_emit_plugin_and_experiment_independent():
+    parser = _build_parser()
+
+    emit = parser.parse_args([
+        "emit-plugin", "--hit", "hits.json", "--reference", "ref.dump",
+        "--name", "MyPlugin", "-o", "plugin.py",
+    ])
+    assert emit.command == "emit-plugin"
+    assert emit.hit == "hits.json"
+    assert emit.name == "MyPlugin"
+
+    exp = parser.parse_args(["experiment", "--target", "sample.py"])
+    assert exp.command == "experiment"
+    assert exp.target == "sample.py"
+    assert exp.num_runs == 30  # experiment-only default, proves no clobber
+
+
+# ---------------------------------------------------------------------------
+# gen-kem-key — private key must be written with owner-only perms and no
+# partial keypair should survive a write failure.
+# ---------------------------------------------------------------------------
+
+
+def test_gen_kem_key_private_perms_and_atomicity(tmp_path):
+    import stat
+    import pytest
+
+    from cli import _cmd_gen_kem_key
+    from msl.crypto import kem_is_available
+    from msl.enums import KeyEncap
+
+    if not kem_is_available(KeyEncap.X25519):
+        pytest.skip("X25519 KEM unavailable in this environment")
+
+    pub = tmp_path / "kem.pub"
+    priv = tmp_path / "kem.key"
+    args = argparse.Namespace(
+        mechanism="X25519",
+        public_out=str(pub),
+        private_out=str(priv),
+        verbose=False,
+    )
+    rc = _cmd_gen_kem_key(args)
+    assert rc == 0
+    assert pub.exists() and priv.exists()
+    mode = stat.S_IMODE(priv.stat().st_mode)
+    assert mode == 0o600, f"private key perms {oct(mode)} != 0o600"
+
+
+def test_gen_kem_key_unwritable_private_no_partial(tmp_path):
+    import pytest
+
+    from cli import _cmd_gen_kem_key
+    from msl.crypto import kem_is_available
+    from msl.enums import KeyEncap
+
+    if not kem_is_available(KeyEncap.X25519):
+        pytest.skip("X25519 KEM unavailable in this environment")
+
+    pub = tmp_path / "kem.pub"
+    # private_out points into a non-existent directory -> OSError on open.
+    priv = tmp_path / "missing" / "kem.key"
+    args = argparse.Namespace(
+        mechanism="X25519",
+        public_out=str(pub),
+        private_out=str(priv),
+        verbose=False,
+    )
+    rc = _cmd_gen_kem_key(args)
+    assert rc == 1
+    # No half-written keypair left behind.
+    assert not priv.exists()
+    assert not pub.exists()
+
+
+# ---------------------------------------------------------------------------
+# consensus-add — an all-zero folded dump should emit a warning.
+# ---------------------------------------------------------------------------
+
+
+def test_consensus_add_all_zero_dump_warns(tmp_path, caplog):
+    import logging
+    import numpy as np
+
+    from cli import _cmd_consensus_begin, _cmd_consensus_add
+
+    state_path = tmp_path / "session.json"
+    begin_args = argparse.Namespace(state=str(state_path), size=64)
+    assert _cmd_consensus_begin(begin_args) == 0
+
+    zero_dump = tmp_path / "zero.dump"
+    zero_dump.write_bytes(b"\x00" * 64)
+    add_args = argparse.Namespace(
+        state=str(state_path),
+        dump=str(zero_dump),
+        key_file=None,
+        passphrase=None,
+        kem_key_file=None,
+    )
+    with caplog.at_level(logging.WARNING, logger="memdiver.cli"):
+        rc = _cmd_consensus_add(add_args)
+    assert rc == 0
+    assert any("entirely zero bytes" in r.message for r in caplog.records)

@@ -1,0 +1,15 @@
+{
+  "modeLabels": {
+    "single_file": "File",
+    "run_directory": "Directory",
+    "dataset": "Dataset"
+  },
+  "loadSessionsError": "Failed to load sessions",
+  "deleteConfirm": "Delete session \"{{name}}\"?",
+  "sessions": "Sessions",
+  "newSession": "New Session",
+  "loadingSessions": "Loading sessions...",
+  "noSessions": "No saved sessions yet.",
+  "noSessionsHint": "Click \"New Session\" to start analyzing a memory dump.",
+  "loadingSpinner": "Loading..."
+}

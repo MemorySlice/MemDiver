@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface BlockEntry {
   label: string;
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function BlockNavigator({ mslPath, onBlockClick }: Props) {
+  const { t } = useTranslation("misc");
   const [groups, setGroups] = useState<BlockGroup[]>([]);
   const [totalBlocks, setTotalBlocks] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -51,8 +53,8 @@ export function BlockNavigator({ mslPath, onBlockClick }: Props) {
 
   return (
     <div className="p-3 text-xs space-y-2">
-      <h3 className="text-sm font-semibold md-text-accent">MSL Blocks</h3>
-      <p className="md-text-muted">{totalBlocks} blocks total</p>
+      <h3 className="text-sm font-semibold md-text-accent">{t("blocks.heading")}</h3>
+      <p className="md-text-muted">{t("blocks.totalBlocks", { total: totalBlocks })}</p>
       {groups.map((g) => (
         <div key={g.category}>
           <button

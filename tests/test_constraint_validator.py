@@ -5,6 +5,7 @@ HKDF-Expand-Label chain detection, ground-truth confidence boosting, and
 size filtering behavior for mixed-size candidates.
 """
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgor
 from algorithms.base import AnalysisContext, Match
 from core.models import TLSSecret
 from core.kdf import TLS12PRF, TLS13HKDF
+from core.kdf_ssh import SSH2KDF
 
 
 def test_empty_candidates():
@@ -73,7 +75,9 @@ def test_tls13_kdf_link():
     """
     algo = ConstraintValidatorAlgorithm()
     secret_a = b"\x42" * 32
-    empty_hash = bytes(32)
+    # Real TLS 1.3 Derive-Secret over the empty transcript uses SHA256(""),
+    # not zero bytes (RFC 8446 Section 7.1).
+    empty_hash = hashlib.sha256(b"").digest()
     derived = TLS13HKDF.hkdf_expand_label(secret_a, "derived", empty_hash, 32)
 
     match_a = Match(
@@ -189,7 +193,8 @@ def test_plugin_dispatch():
     """
     algo = ConstraintValidatorAlgorithm()
     secret_a = b"\x55" * 32
-    empty_hash = bytes(32)
+    # Real TLS 1.3 Derive-Secret over the empty transcript uses SHA256("").
+    empty_hash = hashlib.sha256(b"").digest()
     derived = TLS13HKDF.hkdf_expand_label(secret_a, "derived", empty_hash, 32)
 
     match_a = Match(
@@ -236,3 +241,149 @@ def test_unknown_protocol_graceful():
     assert len(result.matches) == 0
     assert "reason" in result.metadata
     assert "WPA2" in result.metadata["reason"]
+
+
+def test_ssh2_non_32_byte_candidate_reaches_validation():
+    """SSH-2 mode no longer drops non-32-byte candidates from validation.
+
+    Regression: the chain filter kept only ``len == 32`` candidates, so links
+    to SSH-2 IVs (8/12/16) and HMAC keys (20) were never even tested. A
+    non-32-byte candidate must now participate. This exercises the zero-filled
+    ``_probe_ssh2`` FALLBACK: when no real exchange-hash / session_id blobs are
+    discoverable in the candidate pool, the deterministic zero-filled probe
+    derivation placed in the dump must still validate the candidate.
+
+    A 16-byte IV-length candidate is used: 16 is NOT one of the SSH hash sizes
+    (20/32/64), so it is not mistaken for a discovered H/session_id, and the
+    pool yields no hash candidates -- forcing the zero-filled fallback path.
+    """
+    algo = ConstraintValidatorAlgorithm()
+    iv_candidate = b"\x09" * 16  # 16-byte candidate that previously was dropped
+    assert len(iv_candidate) == 16
+
+    # _probe_ssh2 derives derive_key(data, zero32, "A", zero32, 32) and checks
+    # membership in the dump. Place that exact value in the dump.
+    probe_out = SSH2KDF.derive_key(
+        iv_candidate, b"\x00" * 32, "A", b"\x00" * 32, 32
+    )
+
+    match_hmac = Match(
+        offset=0, length=16, confidence=0.5, label="iv",
+        data=iv_candidate, metadata={},
+    )
+
+    dump_data = iv_candidate + b"\x00" * 64 + probe_out + b"\x00" * 64
+
+    context = AnalysisContext(
+        library="test",
+        tls_version="SSH2",
+        phase="pre_abort",
+        extra={"candidates": [match_hmac]},
+    )
+    result = algo.run(dump_data, context)
+    assert result.metadata["kdf_links_found"] > 0
+    validated_offsets = {m.offset for m in result.matches}
+    assert 0 in validated_offsets, "20-byte SSH-2 candidate should be validated"
+
+
+def test_ssh2_probe_uses_key_size_not_candidate_length():
+    """_probe_ssh2 derives a fixed 32-byte probe regardless of candidate length."""
+    derived = ConstraintValidatorAlgorithm._probe_ssh2(b"\x05" * 20, 32)
+    assert len(derived) == 32
+
+
+# ------------------------------------------------------------------ #
+#  Honest SSH-2 detection via discovered exchange hash / session_id
+# ------------------------------------------------------------------ #
+
+
+def _ssh2_handshake():
+    """Synthetic SSH-2 handshake: K, not-zero 32-byte H and session_id."""
+    K = bytes(range(100, 132))
+    H = bytes(range(32, 64))
+    session_id = bytes(range(64, 96))
+    derived = SSH2KDF.derive_all_keys(K, H, session_id, 32)
+    return K, H, session_id, derived
+
+
+def test_ssh2_probe_validates_lone_k_with_discovered_hashes():
+    """A lone K candidate validates when (H, session_id) are discoverable.
+
+    The candidate pool surfaces H and session_id (32-byte hash-sized blobs) and
+    the shared secret K. The genuine SSH probe derives keys A-F from K using the
+    discovered (H, session_id) pairs; those derived keys planted in the dump
+    confirm K via the probe-in-dump path.
+    """
+    algo = ConstraintValidatorAlgorithm()
+    K, H, session_id, derived = _ssh2_handshake()
+
+    match_k = Match(
+        offset=0, length=32, confidence=0.5, label="k", data=K, metadata={}
+    )
+    match_h = Match(
+        offset=100, length=32, confidence=0.5, label="h", data=H, metadata={}
+    )
+    match_sid = Match(
+        offset=200, length=32, confidence=0.5, label="sid",
+        data=session_id, metadata={},
+    )
+
+    # Dump contains K, H, session_id and the real derived keys among padding.
+    dump_data = (
+        b"\x00" * 8 + K + b"\x11" * 8 + H + b"\x22" * 8 + session_id
+        + b"\x33" * 8 + b"".join(derived.values()) + b"\x44" * 16
+    )
+
+    context = AnalysisContext(
+        library="test",
+        tls_version="SSH2",
+        phase="pre_abort",
+        extra={"candidates": [match_k, match_h, match_sid]},
+    )
+    result = algo.run(dump_data, context)
+    assert result.metadata["kdf_links_found"] > 0
+    validated_offsets = {m.offset for m in result.matches}
+    assert 0 in validated_offsets, "lone K should be validated via discovered hashes"
+
+
+def test_ssh2_full_run_detects_planted_keys():
+    """A full run() over an SSH-2 context detects planted, KDF-linked keys.
+
+    K and a true derived key (type C) form a genuine pair; H and session_id are
+    present in the candidate pool so validate_pair can confirm the link.
+    """
+    algo = ConstraintValidatorAlgorithm()
+    K, H, session_id, derived = _ssh2_handshake()
+
+    match_k = Match(
+        offset=0, length=32, confidence=0.5, label="k", data=K, metadata={}
+    )
+    match_c = Match(
+        offset=300, length=32, confidence=0.5, label="enc",
+        data=derived["C"], metadata={},
+    )
+    match_h = Match(
+        offset=100, length=32, confidence=0.5, label="h", data=H, metadata={}
+    )
+    match_sid = Match(
+        offset=200, length=32, confidence=0.5, label="sid",
+        data=session_id, metadata={},
+    )
+
+    dump_data = (
+        b"\x00" * 8 + K + b"\x11" * 8 + H + b"\x22" * 8 + session_id
+        + b"\x33" * 8 + derived["C"] + b"\x44" * 16
+    )
+
+    context = AnalysisContext(
+        library="test",
+        tls_version="SSH2",
+        phase="pre_abort",
+        extra={"candidates": [match_k, match_c, match_h, match_sid]},
+    )
+    result = algo.run(dump_data, context)
+    assert result.metadata["kdf_links_found"] > 0
+    validated_offsets = {m.offset for m in result.matches}
+    # The genuine K / derived-C pair must be detected.
+    assert 0 in validated_offsets
+    assert 300 in validated_offsets

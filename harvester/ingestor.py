@@ -77,10 +77,15 @@ class DumpIngestor:
         return paths
 
     def list_libraries(self, tls_version: str, scenario: str) -> List[str]:
-        """List available libraries for a version/scenario."""
+        """List available libraries for a version/scenario.
+
+        ``DatasetInfo.libraries`` is keyed by the composite ``"ver/scenario"``
+        string, so a scenario appearing under multiple TLS versions keeps its
+        libraries separated per version.
+        """
         if self._dataset_info is None:
             self.scan()
-        libs = self._dataset_info.libraries.get(scenario, set())
+        libs = self._dataset_info.libraries.get(f"{tls_version}/{scenario}", set())
         return sorted(libs)
 
     def list_scenarios(self, tls_version: str) -> List[str]:

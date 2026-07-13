@@ -5,6 +5,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { refinePipeline } from "@/api/pipeline";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -13,6 +14,7 @@ import { inferNeighborhoodFields } from "@/utils/infer-neighborhood-fields";
 import { notifyError } from "@/utils/errorNotifier";
 
 export function RefinePanel() {
+  const { t } = useTranslation("pipeline");
   const taskId = usePipelineStore((s) => s.taskId);
   const hits = usePipelineStore((s) => s.hits);
   const history = usePipelineStore((s) => s.convergenceHistory);
@@ -57,7 +59,9 @@ export function RefinePanel() {
       }
     } catch (err) {
       notifyError(
-        `Refine failed: ${err instanceof Error ? err.message : String(err)}`,
+        t("results.refine.refineFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
         "pipeline-refine",
       );
     } finally {
@@ -76,7 +80,7 @@ export function RefinePanel() {
   return (
     <div className="border border-zinc-700 rounded-lg p-4 space-y-3">
       <h3 className="text-sm font-semibold text-zinc-300">
-        Refine Neighborhood (Phase 2)
+        {t("results.refine.title")}
       </h3>
 
       {/* Convergence tracker */}
@@ -91,7 +95,7 @@ export function RefinePanel() {
                 <span className="text-zinc-400">
                   {pt.staticCount + pt.dynamicCount}
                 </span>{" "}
-                static
+                {t("results.refine.static")}
               </span>
             </span>
           ))}
@@ -101,12 +105,12 @@ export function RefinePanel() {
       {/* Convergence guidance */}
       {converged && (
         <p className="text-xs md-text-warning">
-          Converged &mdash; adding more dumps unlikely to improve the pattern.
+          {t("results.refine.converged")}
         </p>
       )}
       {!converged && history.length >= 2 && (
         <p className="text-xs md-text-success">
-          Variance still decreasing &mdash; more dumps recommended.
+          {t("results.refine.stillDecreasing")}
         </p>
       )}
 
@@ -115,7 +119,7 @@ export function RefinePanel() {
         <textarea
           className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs font-mono text-zinc-300 placeholder-zinc-600"
           rows={3}
-          placeholder="Paste additional dump paths (one per line)..."
+          placeholder={t("results.refine.pathsPlaceholder")}
           value={paths}
           onChange={(e) => setPaths(e.target.value)}
           disabled={loading}
@@ -125,7 +129,7 @@ export function RefinePanel() {
           onClick={handleRefine}
           disabled={loading || !paths.trim()}
         >
-          {loading ? "Folding..." : "Refine Consensus"}
+          {loading ? t("results.refine.folding") : t("results.refine.refineButton")}
         </button>
       </div>
     </div>

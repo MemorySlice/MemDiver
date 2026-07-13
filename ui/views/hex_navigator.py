@@ -46,15 +46,50 @@ def _build_legend() -> str:
 
 
 def _search_dump(dump_data: bytes, search_text: str) -> tuple:
-    """Search dump; tries hex parse first, falls back to ASCII."""
-    if not search_text.strip():
+    """Search dump for the given term.
+
+    Disambiguation rules (single text control, label "hex or ASCII"):
+      * A leading "0x"/"0X" prefix forces a hex-byte interpretation, so a
+        term that also reads as ASCII (e.g. "0xcafe") is searched as bytes
+        only.
+      * Otherwise the term is searched as literal ASCII first; if it is also
+        valid even-length hex (e.g. "cafe", "deadbeef") the byte
+        interpretation is searched as well and the offsets are merged, so
+        neither reading is silently dropped.
+    """
+    stripped = search_text.strip()
+    if not stripped:
         return (b"", [])
-    pattern = parse_hex_pattern(search_text)
-    if pattern is None:
-        pattern = search_text.encode("utf-8", errors="replace")
-    offsets = find_pattern(dump_data, pattern)
-    logger.debug("search for %r found %d results", search_text, len(offsets))
-    return (pattern, offsets)
+
+    forced_hex = stripped[:2].lower() == "0x"
+    if forced_hex:
+        pattern = parse_hex_pattern(stripped[2:])
+        if pattern is None:
+            # Bad hex after "0x" -> nothing to search rather than guessing.
+            logger.debug("invalid forced-hex search %r", search_text)
+            return (b"", [])
+        offsets = find_pattern(dump_data, pattern)
+        logger.debug(
+            "hex search for %r found %d results", search_text, len(offsets),
+        )
+        return (pattern, offsets)
+
+    ascii_pattern = stripped.encode("utf-8", errors="replace")
+    merged = set(find_pattern(dump_data, ascii_pattern))
+    primary = ascii_pattern
+
+    hex_pattern = parse_hex_pattern(stripped)
+    if hex_pattern is not None and hex_pattern != ascii_pattern:
+        merged |= set(find_pattern(dump_data, hex_pattern))
+        if not primary:
+            primary = hex_pattern
+
+    offsets = sorted(merged)
+    logger.debug(
+        "search for %r found %d results (ascii+hex merged)",
+        search_text, len(offsets),
+    )
+    return (primary, offsets)
 
 
 def _render_search_results(

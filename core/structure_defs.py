@@ -121,10 +121,15 @@ def _check_constraints(value: Any, constraints: Dict[str, Any]) -> bool:
     if value is None:
         return False
     for key, expected in constraints.items():
-        if key == "min" and value < expected:
-            return False
-        if key == "max" and value > expected:
-            return False
+        # min/max are numeric comparisons; applying them to non-numeric values
+        # (e.g. a BYTES field returning `bytes`) would raise TypeError. Guard so
+        # incompatible constraints fail closed instead of throwing.
+        if key == "min":
+            if not isinstance(value, (int, float)) or value < expected:
+                return False
+        if key == "max":
+            if not isinstance(value, (int, float)) or value > expected:
+                return False
         if key == "equals" and value != expected:
             return False
         if key == "not_zero" and expected:

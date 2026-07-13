@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useHexStore } from "@/stores/hex-store";
 import { useConsensusStore } from "@/stores/consensus-store";
@@ -6,6 +7,7 @@ import { HexRow } from "./HexRow";
 import { HexToolbar } from "./HexToolbar";
 import { HexLegend } from "./HexLegend";
 import { HexStatusBar } from "./HexStatusBar";
+import { SearchMinimap } from "./SearchMinimap";
 import { buildRegionIndex } from "./highlight-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 
@@ -19,6 +21,7 @@ interface Props {
 }
 
 export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }: Props) {
+  const { t } = useTranslation("hex");
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +35,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const selection = useHexStore((s) => s.selection);
   const focusColumn = useHexStore((s) => s.focusColumn);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
+  const searchOffsets = useHexStore((s) => s.searchOffsets);
+  const scrollToOffset = useHexStore((s) => s.scrollToOffset);
   const scrollTarget = useHexStore((s) => s.scrollTarget);
   const clearScrollTarget = useHexStore((s) => s.clearScrollTarget);
   const setCursor = useHexStore((s) => s.setCursor);
@@ -88,7 +93,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
 
   // Prefer the store's fileSize once it has been resolved per-view; fall
   // back to the prop while the initial probe is in flight.
-  const effectiveFileSize = storeFileSize || fileSize;
+  const effectiveFileSize = storeFileSize >= 0 ? storeFileSize : fileSize;
   const totalRows = Math.ceil(effectiveFileSize / BYTES_PER_ROW);
 
   const virtualizer = useVirtualizer({
@@ -220,7 +225,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   if (effectiveFileSize === 0) {
     return (
       <div className="h-full flex items-center justify-center md-text-muted text-sm">
-        Empty file
+        {t("viewer.emptyFile")}
       </div>
     );
   }
@@ -234,6 +239,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     >
       <HexToolbar />
       <HexLegend />
+      <div className="flex-1 flex min-h-0">
       <div
         ref={scrollRef}
         className="flex-1 overflow-auto"
@@ -272,6 +278,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
             </div>
           ))}
         </div>
+      </div>
+        {searchOffsets.length > 0 && (
+          <div className="shrink-0 flex items-stretch py-1 pr-1">
+            <SearchMinimap
+              fileSize={effectiveFileSize}
+              offsets={searchOffsets}
+              currentOffset={Math.max(0, firstVisibleIndex) * BYTES_PER_ROW}
+              onClickOffset={scrollToOffset}
+            />
+          </div>
+        )}
       </div>
       <HexStatusBar />
     </div>

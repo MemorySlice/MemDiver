@@ -147,6 +147,33 @@ def test_load_session_404_on_unknown_name(client):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Path-safety regression: a session_name with traversal must be rejected and
+# must not write a file outside the session dir.
+# ---------------------------------------------------------------------------
+
+
+def test_save_session_rejects_traversal_name(client, isolated_env):
+    """A traversal session_name returns 400 and writes nothing outside the dir."""
+    payload = _minimal_payload("../../../../tmp/evil")
+    r = client.post("/api/sessions/", json=payload)
+    assert r.status_code == 400, r.text
+    # No file escaped to /tmp/evil.memdiver.
+    assert not Path("/tmp/evil.memdiver").exists()
+    # And nothing landed in the session dir either.
+    assert list((isolated_env / "sessions").glob("*.memdiver")) == []
+
+
+def test_save_session_normal_name_still_saves(client, isolated_env):
+    """A normal session_name continues to save with 200 after the guard."""
+    payload = _minimal_payload("normal_after_guard")
+    r = client.post("/api/sessions/", json=payload)
+    assert r.status_code == 200, r.text
+    persisted = Path(r.json()["path"])
+    assert persisted.is_file()
+    assert persisted.parent == isolated_env / "sessions"
+
+
 def test_delete_session_round_trip(client, isolated_env):
     """save -> delete removes the persisted file and 404s on subsequent load."""
     payload = _minimal_payload("deletable")

@@ -158,9 +158,15 @@ def find_high_entropy_regions(
                 in_region = False
 
     # Close any region that extends to the end of the profile.
+    # Use the same exclusive-end convention as the interior close branch
+    # above: that branch uses the first below-threshold window start as an
+    # exclusive end. Here there is no following point, so advance the last
+    # in-region window start by one step (inferred from the profile spacing,
+    # defaulting to 1) to obtain the equivalent exclusive end.
     if in_region and region_count > 0:
         last_offset = profile[-1][0]
-        region_end = last_offset
+        step = profile[1][0] - profile[0][0] if len(profile) > 1 else 1
+        region_end = last_offset + step
         if region_end - region_start >= min_width:
             mean_entropy = entropy_sum / region_count
             regions.append((region_start, region_end, mean_entropy))

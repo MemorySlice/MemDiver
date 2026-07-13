@@ -5,6 +5,7 @@
  */
 
 import type { JSX } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useAppStore } from "@/stores/app-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -47,6 +48,7 @@ function openHitInHex(
 }
 
 function HitsList(): JSX.Element | null {
+  const { t } = useTranslation("pipeline");
   const hits = usePipelineStore((s) => s.hits);
   const sources = usePipelineStore((s) => s.form.sourcePaths);
   if (hits.length === 0) return null;
@@ -57,7 +59,7 @@ function HitsList(): JSX.Element | null {
       data-tour-id="pipeline-hits-list"
     >
       <div className="text-xs md-text-accent font-semibold mb-1">
-        Verified hits ({hits.length})
+        {t("run.dashboard.hitsTitle", { count: hits.length })}
       </div>
       <ul className="space-y-1">
         {hits.map((h, i) => (
@@ -67,15 +69,15 @@ function HitsList(): JSX.Element | null {
           >
             <span className="font-mono md-text-secondary">
               0x{h.offset.toString(16).padStart(8, "0")}
-              <span className="md-text-muted ml-1">({h.size} B)</span>
+              <span className="md-text-muted ml-1">{t("run.dashboard.hitSize", { size: h.size })}</span>
             </span>
             <button
               type="button"
               onClick={() => openHitInHex(h, fallback)}
               className="text-xs px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90"
-              title="Jump to this offset in the hex viewer"
+              title={t("run.dashboard.openInHexTitle")}
             >
-              Open in hex
+              {t("run.dashboard.openInHex")}
             </button>
           </li>
         ))}
@@ -85,6 +87,7 @@ function HitsList(): JSX.Element | null {
 }
 
 export function PipelineRunDashboard(): JSX.Element {
+  const { t } = useTranslation("pipeline");
   const status = usePipelineStore((s) => s.status);
   const error = usePipelineStore((s) => s.error);
   const activeStage = usePipelineStore((s) => s.activeStage);
@@ -98,19 +101,19 @@ export function PipelineRunDashboard(): JSX.Element {
     <div className="space-y-3 text-xs md-text-secondary">
       {status === "failed" && (
         <div className="md-panel p-3 border md-border-error md-text-error">
-          <div className="font-semibold mb-0.5">Pipeline failed</div>
-          <div className="font-mono">{error ?? "unknown error"}</div>
+          <div className="font-semibold mb-0.5">{t("run.dashboard.failedTitle")}</div>
+          <div className="font-mono">{error ?? t("run.dashboard.unknownError")}</div>
         </div>
       )}
 
       {status === "cancelled" && (
         <div className="md-panel p-3 border md-border-warning md-text-warning">
-          Task cancelled.
+          {t("run.dashboard.cancelled")}
         </div>
       )}
 
       {status === "succeeded" && (
-        <div className="md-text-muted italic">Pipeline completed.</div>
+        <div className="md-text-muted italic">{t("run.dashboard.completed")}</div>
       )}
 
       {isRunning && activeStage && (

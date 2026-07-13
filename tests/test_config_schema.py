@@ -85,6 +85,33 @@ def test_nested_validation():
     assert any("ui.default_mode" in e for e in errors)
 
 
+def test_bool_rejected_where_int_expected():
+    """bool is a subclass of int; `max_runs: True` must not validate as 1."""
+    cfg = _valid_config()
+    cfg["analysis"]["max_runs"] = True
+    valid, errors = validate_config(cfg)
+    assert not valid
+    assert any("expected int" in e and "got bool" in e for e in errors)
+
+
+def test_bool_rejected_even_when_in_int_range():
+    """False would coerce to 0 (below min); reject as wrong type, not range."""
+    cfg = _valid_config()
+    cfg["analysis"]["context_bytes"] = False
+    valid, errors = validate_config(cfg)
+    assert not valid
+    assert any("expected int" in e and "got bool" in e for e in errors)
+
+
+def test_valid_int_still_passes():
+    """A genuine int in range must still validate after the bool fix."""
+    cfg = _valid_config()
+    cfg["analysis"]["max_runs"] = 5
+    valid, errors = validate_config(cfg)
+    assert valid
+    assert errors == []
+
+
 def test_nullable_field_accepts_none():
     cfg = _valid_config()
     cfg["logging"]["file"] = None

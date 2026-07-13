@@ -265,3 +265,40 @@ def test_run_pipeline_respects_cancel(dumps_dir, oracle_path, artifact_dir):
     }
     with pytest.raises(RuntimeError):
         run_pipeline(params, ctx)
+
+
+class _CountingRawSource:
+    """Fake non-MSL DumpSource that counts read_all() invocations."""
+
+    format_name = "raw"
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self.read_calls = 0
+
+    def read_all(self, *args, **kwargs) -> bytes:
+        self.read_calls += 1
+        return self._data
+
+
+def test_build_consensus_reads_each_raw_source_once(artifact_dir):
+    """Regression: the raw-dump consensus branch must read each source exactly
+    once (cached), not 2-3x (min-size probe + per-fold + reference)."""
+    from engine.pipeline_runner import _build_consensus
+
+    sources = [
+        _CountingRawSource(bytes([i]) * 128 + bytes(range(128)))
+        for i in range(3)
+    ]
+    ctx = _FakeCtx()
+    artifacts: List[Dict[str, Any]] = []
+    _build_consensus(
+        sources,
+        ctx=ctx,
+        artifact_dir=artifact_dir,
+        artifacts=artifacts,
+    )
+    for idx, src in enumerate(sources):
+        assert src.read_calls == 1, (
+            f"source {idx} read {src.read_calls} times, expected 1"
+        )

@@ -53,6 +53,14 @@ def _validate_field(
         return
 
     expected_type = spec["type"]
+    # bool is a subclass of int; reject it where a plain int is expected
+    # (e.g. `max_runs: true` must not validate as 1).
+    if expected_type is int and isinstance(value, bool):
+        errors.append(
+            f"{full_path}: expected {expected_type.__name__}, "
+            f"got {type(value).__name__}"
+        )
+        return
     if not isinstance(value, expected_type):
         errors.append(
             f"{full_path}: expected {expected_type.__name__}, "

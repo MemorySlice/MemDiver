@@ -15,6 +15,7 @@
  */
 
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { OracleExample } from "@/api/oracles";
 import { useOracleStore } from "@/stores/oracle-store";
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export function OracleExamplePicker({ selected, onSelect }: Props) {
+  const { t } = useTranslation("pipeline");
   const examples = useOracleStore((s) => s.examples);
   const loading = useOracleStore((s) => s.loading);
   const error = useOracleStore((s) => s.error);
@@ -38,14 +40,14 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
 
   if (loading && examples.length === 0) {
     return (
-      <p className="p-3 text-xs md-text-muted">Loading example oracles…</p>
+      <p className="p-3 text-xs md-text-muted">{t("oracle.examples.loading")}</p>
     );
   }
 
   if (error && examples.length === 0) {
     return (
       <p className="p-3 text-xs md-text-error">
-        Failed to load examples: {error}
+        {t("oracle.examples.loadError", { error })}
       </p>
     );
   }
@@ -53,7 +55,7 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
   if (examples.length === 0) {
     return (
       <p className="p-3 text-xs md-text-muted">
-        No example oracles bundled in <code>docs/oracle_examples/</code>.
+        {t("oracle.examples.noneBundledPrefix")} <code>docs/oracle_examples/</code>.
       </p>
     );
   }
@@ -61,9 +63,10 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
   return (
     <div className="space-y-2">
       <p className="text-xs md-text-muted">
-        Pick a bundled template to inspect its shape. Examples are
-        read-only — copy one into your own <code>.py</code> and upload it
-        via the <em>Upload</em> tab to actually run a pipeline.
+        {t("oracle.examples.intro")} <code>.py</code>{" "}
+        {t("oracle.examples.introMid")}{" "}
+        <em>{t("oracle.examples.introUpload")}</em>{" "}
+        {t("oracle.examples.introTail")}
       </p>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         {examples.map((ex) => {
@@ -84,14 +87,14 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
                   {ex.filename}
                 </span>
                 <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-indigo-700">
-                  Shape {ex.shape}
+                  {t("oracle.examples.shape", { shape: ex.shape })}
                 </span>
               </div>
               <div className="text-xs md-text-muted truncate">
-                {ex.summary || "(no summary)"}
+                {ex.summary || t("oracle.examples.noSummary")}
               </div>
               <div className="text-[10px] md-text-muted font-mono">
-                sha256: {ex.sha256.slice(0, 12)}… · {ex.size} bytes
+                {t("oracle.examples.shaMeta", { sha: ex.sha256.slice(0, 12), size: ex.size })}
               </div>
             </button>
           );

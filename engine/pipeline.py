@@ -92,8 +92,14 @@ class AnalysisPipeline:
             if dump:
                 run_dumps.append((run, dump))
 
+        # num_runs reflects what was actually analyzed, not merely discovered.
+        # When the requested phase exists in no run, run_dumps is empty: report
+        # 0 analyzed runs so a phase typo isn't masked as a clean "no secrets".
+        num_runs_analyzed = len(run_dumps)
         if runs and not run_dumps:
-            logger.warning("Phase '%s' not found in any of %d runs for %s", phase, len(runs), library_name)
+            logger.warning("Phase '%s' not found in any of %d discovered runs for %s — "
+                           "0 dumps analyzed (check the phase name)",
+                           phase, len(runs), library_name)
 
         # Build consensus matrix (DumpSource-aware for MSL ASLR alignment)
         from core.dump_source import open_dump
@@ -143,7 +149,7 @@ class AnalysisPipeline:
             library=library_name,
             protocol_version=protocol_version,
             phase=phase_out,
-            num_runs=len(runs),
+            num_runs=num_runs_analyzed,
             hits=all_hits,
             static_regions=self.consensus.get_static_regions() if self.consensus.size > 0 else [],
             metadata={
@@ -165,7 +171,7 @@ class AnalysisPipeline:
         if verify_decryption and all_hits and secrets:
             self._verify_hits(all_hits, secrets)
 
-        logger.info("Report: %d hits across %d runs", len(all_hits), len(runs))
+        logger.info("Report: %d hits across %d analyzed runs", len(all_hits), num_runs_analyzed)
 
         # Persist findings to ProjectDB if available and auto_persist enabled
         if self._auto_persist and self._project_db and getattr(self._project_db, '_available', False):

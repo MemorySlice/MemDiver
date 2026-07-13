@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface ModuleIndexEntry {
   module_uuid: string;
@@ -21,6 +22,7 @@ function shortPath(p: string): string {
 }
 
 export function ModuleIndex({ mslPath }: Props) {
+  const { t } = useTranslation("msl");
   const [entries, setEntries] = useState<ModuleIndexEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,13 +39,13 @@ export function ModuleIndex({ mslPath }: Props) {
   }, [mslPath]);
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
-  if (!entries.length) return <p className="p-3 text-xs md-text-muted">No module index blocks</p>;
+  if (!entries.length) return <p className="p-3 text-xs md-text-muted">{t("moduleIndex.empty")}</p>;
 
   return (
     <div className="p-3 text-xs space-y-1">
-      <h3 className="text-sm font-semibold md-text-accent">Module Index ({entries.length})</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("moduleIndex.title", { count: entries.length })}</h3>
       <p className="md-text-muted text-[10px]">
-        Pre-assigned UUIDs for modules — navigation aid (spec §5.3)
+        {t("moduleIndex.description")}
       </p>
       <div className="md-panel p-2 space-y-0.5 max-h-40 overflow-auto">
         {entries.map((e, i) => (

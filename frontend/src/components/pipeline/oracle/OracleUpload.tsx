@@ -17,6 +17,7 @@
  */
 
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import type { OracleEntry } from "@/api/oracles";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -29,6 +30,7 @@ function shortSha(sha: string): string {
 }
 
 export function OracleUpload() {
+  const { t } = useTranslation("pipeline");
   const uploaded = useOracleStore((s) => s.uploaded);
   const selectedOracleId = useOracleStore((s) => s.selectedOracleId);
   const loading = useOracleStore((s) => s.loading);
@@ -51,7 +53,7 @@ export function OracleUpload() {
     clearError();
     if (file.size > MAX_UPLOAD_BYTES) {
       setLocalError(
-        `Oracle file is ${file.size} bytes; the server cap is ${MAX_UPLOAD_BYTES}.`,
+        t("oracle.upload.sizeError", { size: file.size, cap: MAX_UPLOAD_BYTES }),
       );
       return;
     }
@@ -101,23 +103,24 @@ export function OracleUpload() {
           }}
         />
         <div className="md-text-accent font-semibold mb-1">
-          Drop an oracle .py file here
+          {t("oracle.upload.dropTitle")}
         </div>
         <div className="md-text-muted">
-          Up to 1 MB. Shape 1 (stateless <code>verify</code>) and Shape 2
-          (stateful <code>build_oracle</code>) are auto-detected.
+          {t("oracle.upload.dropBodyPrefix")} <code>verify</code>
+          {t("oracle.upload.dropBodyMid")} <code>build_oracle</code>
+          {t("oracle.upload.dropBodyTail")}
         </div>
       </div>
 
       <div>
         <label className="block text-xs md-text-muted mb-1">
-          Description (optional)
+          {t("oracle.upload.descriptionLabel")}
         </label>
         <input
           type="text"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="e.g. gocryptfs DFRWS oracle"
+          placeholder={t("oracle.upload.descriptionPlaceholder")}
           className="w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded"
         />
       </div>
@@ -128,13 +131,13 @@ export function OracleUpload() {
         </div>
       )}
       {loading && (
-        <div className="text-xs md-text-muted">Processing upload…</div>
+        <div className="text-xs md-text-muted">{t("oracle.upload.processing")}</div>
       )}
 
       {uploaded.length > 0 && (
         <div className="space-y-2">
           <div className="text-xs md-text-muted font-semibold uppercase tracking-wide">
-            Uploaded oracles
+            {t("oracle.upload.uploadedHeading")}
           </div>
           {uploaded.map((o) => {
             const isSelected = selectedOracleId === o.id;
@@ -154,21 +157,21 @@ export function OracleUpload() {
                       {o.filename}
                     </span>
                     <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-indigo-700">
-                      Shape {o.shape}
+                      {t("oracle.upload.shape", { shape: o.shape })}
                     </span>
                     {o.armed ? (
                       <span
                         className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
                         style={{ background: "var(--md-accent-green)" }}
                       >
-                        Armed
+                        {t("oracle.upload.armed")}
                       </span>
                     ) : (
                       <span
                         className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
                         style={{ background: "var(--md-accent-orange)" }}
                       >
-                        Unarmed
+                        {t("oracle.upload.unarmed")}
                       </span>
                     )}
                   </div>
@@ -181,9 +184,9 @@ export function OracleUpload() {
                           void handleArm(o);
                         }}
                         className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90"
-                        title="Confirm sha256 and mark this oracle safe to execute"
+                        title={t("oracle.upload.armTitle")}
                       >
-                        Arm oracle
+                        {t("oracle.upload.arm")}
                       </button>
                     )}
                     <button
@@ -194,12 +197,12 @@ export function OracleUpload() {
                       }}
                       className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-red-700 hover:text-white"
                     >
-                      Delete
+                      {t("common:delete")}
                     </button>
                   </div>
                 </div>
                 <div className="text-[10px] md-text-muted font-mono">
-                  sha256: {shortSha(o.sha256)} · {o.size} bytes
+                  {t("oracle.upload.shaMeta", { sha: shortSha(o.sha256), size: o.size })}
                 </div>
                 {o.description && (
                   <div className="text-xs md-text-muted italic">

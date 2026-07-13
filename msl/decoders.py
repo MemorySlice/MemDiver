@@ -61,6 +61,10 @@ def decode_memory_region(
     PageSizeLog2 outside [10, 40] (1 KB to 1 TB pages).
     """
     bo = byte_order
+    # Guard the fixed header (base_addr/region_size/flags/timestamp span
+    # 0x00..0x20) before any read so a short/crafted payload raises
+    # MslParseError instead of a bare struct.error/IndexError.
+    _require(payload, 0x20, "MEMORY_REGION header")
     base_addr = struct.unpack_from(f"{bo}Q", payload, 0)[0]
     region_size = struct.unpack_from(f"{bo}Q", payload, 8)[0]
     protection = payload[0x10]
@@ -194,17 +198,24 @@ def decode_related_dump(hdr: MslBlockHeader, payload: bytes, byte_order: str) ->
 def decode_vas_map(hdr: MslBlockHeader, payload: bytes, byte_order: str) -> MslVasMap:
     """Decode VAS Map payload (type 0x1001)."""
     bo = byte_order
+    _require(payload, 8, "VAS_MAP header")
     entry_count = struct.unpack_from(f"{bo}I", payload, 0)[0]
     entry_size = struct.unpack_from(f"{bo}I", payload, 4)[0]
     entries = []
     offset = 8
-    for _ in range(entry_count):
+    for idx in range(entry_count):
+        # Guard the fixed 0x18-byte entry head before reading. A truncated or
+        # crafted payload (e.g. a bogus huge entry_count) raises MslParseError
+        # — the type callers catch — instead of a bare struct.error/IndexError
+        # or running for billions of iterations.
+        _require(payload, offset + 0x18, f"VAS_MAP entry {idx}")
         base_addr = struct.unpack_from(f"{bo}Q", payload, offset)[0]
         region_size = struct.unpack_from(f"{bo}Q", payload, offset + 8)[0]
         protection = payload[offset + 0x10]
         region_type = payload[offset + 0x11]
         path_len = struct.unpack_from(f"{bo}H", payload, offset + 0x12)[0]
         # 4 bytes padding at offset+0x14
+        _require(payload, offset + 0x18 + path_len, f"VAS_MAP entry {idx} path")
         path = _read_padded_str(payload, offset + 0x18, path_len)
         entries.append(MslVasEntry(
             base_addr=base_addr, region_size=region_size,

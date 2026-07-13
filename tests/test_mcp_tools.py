@@ -67,6 +67,13 @@ class TestScanDataset:
         r2 = session.get_or_scan()
         assert r1 == r2
 
+    def test_scan_invalid_root_returns_structured_error(self, session):
+        """A bad root must return set_dataset's structured {'error': ...}
+        rather than raising an unstructured ValueError via get_or_scan."""
+        result = tools.scan_dataset(session, "/nonexistent/dataset/root")
+        assert "error" in result
+        assert session.dataset_root is None
+
 
 # --- list_phases ---
 
@@ -155,6 +162,22 @@ class TestGetEntropy:
         result = tools_inspect.get_entropy(session, "/nonexistent.dump")
         assert "error" in result
 
+    def test_entropy_sample_spans_full_profile(self, session, tmp_path):
+        """Downsampled profile_sample must span the whole profile (incl. the
+        last entry), not just the first MAX_ENTROPY_SAMPLES window."""
+        dump = tmp_path / "big.dump"
+        dump.write_bytes(bytes(range(256)) * 16)  # 4096 bytes
+        result = tools_inspect.get_entropy(session, str(dump), window=8, step=4)
+        sample = result["profile_sample"]
+        full = tools_inspect.compute_entropy_profile(
+            dump.read_bytes(), window=8, step=4
+        )
+        # Truncation must have triggered for this to be a meaningful check.
+        assert len(full) > tools_inspect.MAX_ENTROPY_SAMPLES
+        assert len(sample) == tools_inspect.MAX_ENTROPY_SAMPLES
+        assert sample[0]["offset"] == full[0][0]
+        assert sample[-1]["offset"] == full[-1][0]
+
 
 # --- extract_strings ---
 
@@ -169,6 +192,78 @@ class TestExtractStrings:
     def test_extract_strings_missing_file(self, session):
         result = tools_inspect._extract_strings(session, "/nonexistent.dump")
         assert "error" in result
+
+
+# --- search_bytes ---
+
+class TestSearchBytes:
+    def test_finds_all_offsets(self, session, tmp_path):
+        dump = tmp_path / "pattern.dump"
+        # "ABAB" at offsets 0 and 8; padded with zeros in between.
+        dump.write_bytes(b"ABAB" + b"\x00\x00\x00\x00" + b"ABAB")
+        result = tools_inspect.search_bytes(session, str(dump), "41424142")
+        assert result["pattern_hex"] == "41424142"
+        assert result["pattern_len"] == 4
+        assert result["offsets"] == [0, 8]
+        assert result["count"] == 2
+        assert result["truncated"] is False
+        assert result["next_cursor"] == 0
+        assert result["file_size"] == 12
+
+    def test_accepts_0x_prefix_and_whitespace(self, session, tmp_path):
+        dump = tmp_path / "prefix.dump"
+        dump.write_bytes(b"\xde\xad\xbe\xef")
+        result = tools_inspect.search_bytes(session, str(dump), " 0xdead beef ")
+        assert result["pattern_hex"] == "deadbeef"
+        assert result["offsets"] == [0]
+
+    def test_empty_pattern_errors(self, session, tmp_path):
+        dump = tmp_path / "empty.dump"
+        dump.write_bytes(b"\x00\x01\x02")
+        result = tools_inspect.search_bytes(session, str(dump), "")
+        assert "error" in result
+
+    def test_odd_length_hex_errors(self, session, tmp_path):
+        dump = tmp_path / "odd.dump"
+        dump.write_bytes(b"\x00\x01\x02")
+        result = tools_inspect.search_bytes(session, str(dump), "abc")
+        assert "error" in result
+
+    def test_non_hex_chars_error(self, session, tmp_path):
+        dump = tmp_path / "nonhex.dump"
+        dump.write_bytes(b"\x00\x01\x02")
+        result = tools_inspect.search_bytes(session, str(dump), "zz")
+        assert "error" in result
+
+    def test_missing_file(self, session):
+        result = tools_inspect.search_bytes(session, "/nonexistent.dump", "41")
+        assert "error" in result
+
+    def test_pagination(self, session, tmp_path):
+        dump = tmp_path / "many.dump"
+        # 5 occurrences of 0xAA at offsets 0,2,4,6,8.
+        dump.write_bytes(b"\xaa\x00" * 5)
+        first = tools_inspect.search_bytes(
+            session, str(dump), "aa", max_results=2,
+        )
+        assert first["offsets"] == [0, 2]
+        assert first["count"] == 5
+        assert first["truncated"] is True
+        assert first["next_cursor"] == 2
+
+        second = tools_inspect.search_bytes(
+            session, str(dump), "aa", max_results=2, cursor=first["next_cursor"],
+        )
+        assert second["offsets"] == [4, 6]
+        assert second["truncated"] is True
+        assert second["next_cursor"] == 4
+
+        third = tools_inspect.search_bytes(
+            session, str(dump), "aa", max_results=2, cursor=second["next_cursor"],
+        )
+        assert third["offsets"] == [8]
+        assert third["truncated"] is False
+        assert third["next_cursor"] == 0
 
 
 # --- get_session_info ---

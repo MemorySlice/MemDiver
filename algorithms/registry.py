@@ -1,6 +1,7 @@
 """Auto-discovery registry for algorithm plugins."""
 
 import importlib
+import logging
 import pkgutil
 from pathlib import Path
 from typing import Dict, List
@@ -8,6 +9,8 @@ from typing import Dict, List
 from core.constants import AlgorithmMode
 
 from .base import BaseAlgorithm
+
+logger = logging.getLogger("memdiver.algorithms.registry")
 
 
 class AlgorithmRegistry:
@@ -46,7 +49,16 @@ class AlgorithmRegistry:
                             and attr is not BaseAlgorithm
                             and hasattr(attr, 'name')
                             and attr.name):
-                        instance = attr()
+                        try:
+                            instance = attr()
+                        except Exception:
+                            # A single algorithm whose __init__ raises must not
+                            # abort discovery of all the others; log and skip it.
+                            logger.warning(
+                                "Skipping algorithm %s.%s: instantiation failed",
+                                modname, attr_name, exc_info=True,
+                            )
+                            continue
                         self._algorithms[instance.name] = instance
 
     def get(self, name: str) -> BaseAlgorithm:

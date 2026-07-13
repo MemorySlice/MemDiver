@@ -174,3 +174,87 @@ def test_structure_def_metadata_defaults():
     assert sd.library_version is None
     assert sd.stability == "stable"
     assert sd.auto_offsets is False
+
+
+def test_min_max_on_bytes_value_fails_closed():
+    """min/max against a bytes value must not raise TypeError; it fails closed."""
+    from core.structure_defs import _check_constraints
+
+    # bytes < int / bytes > int would raise TypeError without the guard.
+    assert _check_constraints(b"\x05" * 4, {"min": 1}) is False
+    assert _check_constraints(b"\x05" * 4, {"max": 10}) is False
+    # Numeric values still validate normally.
+    assert _check_constraints(5, {"min": 1, "max": 10}) is True
+    assert _check_constraints(0, {"min": 1}) is False
+
+
+def test_validate_rejects_min_max_on_bytes_field():
+    """validate_structure_json rejects min/max constraints on a 'bytes' field."""
+    from core.structure_schema import validate_structure_json
+
+    data = {
+        "name": "bad_bytes",
+        "total_size": 4,
+        "fields": [
+            {
+                "name": "blob",
+                "field_type": "bytes",
+                "offset": 0,
+                "size": 4,
+                "constraints": {"min": 1},
+            }
+        ],
+    }
+    valid, errors = validate_structure_json(data)
+    assert valid is False
+    assert any("not valid for field_type 'bytes'" in e for e in errors)
+
+
+def test_validate_accepts_byte_equals_and_byte_in():
+    """byte_equals and byte_in are engine-supported and must pass validation."""
+    from core.structure_schema import validate_structure_json
+
+    data = {
+        "name": "pms_like",
+        "total_size": 48,
+        "fields": [
+            {
+                "name": "pre_master_secret",
+                "field_type": "bytes",
+                "offset": 0,
+                "size": 48,
+                "constraints": {
+                    "not_zero": True,
+                    "byte_in": {"0": [0x03], "1": [0x00, 0x01, 0x02, 0x03, 0x04]},
+                    "byte_equals": {"0": 0x03},
+                },
+            }
+        ],
+    }
+    valid, errors = validate_structure_json(data)
+    assert valid is True, errors
+
+
+def test_size_choices_round_trips_through_json():
+    """size_choices survives structure_def_to_json -> json_to_structure_def."""
+    from core.structure_schema import (
+        json_to_structure_def,
+        structure_def_to_json,
+    )
+
+    sd = StructureDef(
+        name="tls13_secret",
+        total_size=32,
+        fields=(
+            FieldDef(
+                "secret", FieldType.BYTES, offset=0, size=32,
+                constraints={"not_zero": True},
+                size_choices=(48, 32),
+            ),
+        ),
+    )
+    as_json = structure_def_to_json(sd)
+    assert as_json["fields"][0]["size_choices"] == [48, 32]
+
+    restored = json_to_structure_def(as_json)
+    assert restored.fields[0].size_choices == (48, 32)

@@ -84,6 +84,52 @@ def test_structural_check():
     assert score_miss == 0.0
 
 
+def test_entropy_min_seven_is_clamped_to_workable_threshold():
+    """A pattern with the shipped (unreachable) entropy_min=7.0 still finds keys.
+
+    Regression: passing entropy_min=7.0 straight to the entropy scanner (whose
+    real-key default is 4.5) silently yielded zero matches. The threshold must
+    be clamped so shipped configs actually locate high-entropy regions.
+    """
+    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    import os
+    algo = PatternMatchAlgorithm()
+    # 32 bytes of OS randomness has entropy well above 4.5 but below 7.0.
+    key_data = os.urandom(32)
+    dump_data = b"\x00" * 64 + key_data + b"\x00" * 64
+    algo._patterns = [{
+        "name": "clamp_pattern",
+        "applicable_to": {},
+        "key_spec": {"length": 32, "entropy_min": 7.0},
+        # No structural rules -> any entropy candidate yields structural score 0.
+        # We assert via the scanner directly that the clamp produced candidates.
+        "pattern": {"before": [], "after": []},
+    }]
+    ctx = AnalysisContext(library="openssl", tls_version="13", phase="pre_abort")
+
+    # Sanity: the raw 7.0 threshold finds nothing for a real 32-byte key.
+    from algorithms.base import AnalysisContext as _AC
+    raw_ctx = _AC(
+        library="openssl", tls_version="13", phase="pre_abort",
+        extra={"window_sizes": [32], "entropy_threshold": 7.0},
+    )
+    assert len(algo._entropy_scanner.run(dump_data, raw_ctx).matches) == 0
+
+    # The clamped threshold (<= 4.5) must locate the high-entropy region.
+    clamped_ctx = _AC(
+        library="openssl", tls_version="13", phase="pre_abort",
+        extra={
+            "window_sizes": [32],
+            "entropy_threshold": min(7.0, algo._entropy_scanner.DEFAULT_THRESHOLD),
+        },
+    )
+    assert len(algo._entropy_scanner.run(dump_data, clamped_ctx).matches) > 0
+
+    # End-to-end: run() must not crash and reports the pattern was checked.
+    result = algo.run(dump_data, ctx)
+    assert result.metadata["patterns_checked"] == 1
+
+
 def test_run_empty_data():
     """Empty dump data produces no matches."""
     from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm

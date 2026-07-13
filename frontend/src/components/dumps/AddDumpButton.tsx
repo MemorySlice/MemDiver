@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useDumpStore } from "../../stores/dump-store";
 import { getPathInfo } from "@/api/client";
 
 export function AddDumpButton() {
+  const { t } = useTranslation("dumps");
   const [path, setPath] = useState("");
   const [loading, setLoading] = useState(false);
   const addDump = useDumpStore((s) => s.addDump);
@@ -12,7 +14,11 @@ export function AddDumpButton() {
     const trimmed = path.trim();
     if (!trimmed) return;
     const name = trimmed.split("/").pop() ?? trimmed;
-    const format = name.endsWith(".msl") ? "msl" : "raw";
+    // Format detection is extension-based only (case-insensitive .msl).
+    // A misnamed/extensionless MSL file is treated as "raw" and its
+    // tag-status fetch is skipped; reliable detection would require
+    // backend content sniffing, which is intentionally not done here.
+    const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
     setLoading(true);
     try {
       const info = await getPathInfo(trimmed);
@@ -32,7 +38,7 @@ export function AddDumpButton() {
         value={path}
         onChange={(e) => setPath(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-        placeholder="Server path to dump file"
+        placeholder={t("add.placeholder")}
         className="flex-1 px-2 py-1 text-xs rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)]"
       />
       <button
@@ -40,7 +46,7 @@ export function AddDumpButton() {
         disabled={!path.trim() || loading}
         className="px-3 py-1 text-xs font-medium rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] disabled:opacity-40"
       >
-        {loading ? "..." : "Add"}
+        {loading ? t("add.adding") : t("common:add")}
       </button>
     </div>
   );

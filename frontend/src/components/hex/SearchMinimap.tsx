@@ -1,4 +1,5 @@
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 const MAX_MARKERS = 500;
 
@@ -13,8 +14,10 @@ interface Props {
 export const SearchMinimap = memo(function SearchMinimap({
   fileSize, offsets, currentOffset, height = 300, onClickOffset,
 }: Props) {
-  if (!offsets.length || !fileSize) return null;
-
+  const { t } = useTranslation("hex");
+  // Hooks must run unconditionally on every render — keep this above the early
+  // return below, otherwise the hook count changes and React crashes with
+  // "Rendered more hooks than during the previous render".
   const displayOffsets = useMemo(() => {
     if (offsets.length <= MAX_MARKERS) return offsets;
     const step = offsets.length / MAX_MARKERS;
@@ -24,6 +27,8 @@ export const SearchMinimap = memo(function SearchMinimap({
     }
     return sampled;
   }, [offsets]);
+
+  if (!offsets.length || !fileSize) return null;
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -39,7 +44,9 @@ export const SearchMinimap = memo(function SearchMinimap({
       className="relative border border-[var(--md-border)] rounded cursor-pointer"
       style={{ width: 20, height, background: "var(--md-bg-tertiary)" }}
       onClick={handleClick}
-      title={`${offsets.length} results${offsets.length > MAX_MARKERS ? ` (showing ${MAX_MARKERS})` : ""}`}
+      title={offsets.length > MAX_MARKERS
+        ? t("minimap.resultsLimited", { count: offsets.length, max: MAX_MARKERS })
+        : t("minimap.results", { count: offsets.length })}
     >
       {displayOffsets.map((off) => (
         <div

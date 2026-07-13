@@ -15,6 +15,8 @@
  * placeholder that hooks in cleanly once that store exists.
  */
 
+import { useTranslation } from "react-i18next";
+
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
 
@@ -42,6 +44,7 @@ interface Props {
 }
 
 export function StageRecipe({ onAdvance }: Props) {
+  const { t } = useTranslation("pipeline");
   const updateForm = usePipelineStore((s) => s.updateForm);
 
   function startBlank(): void {
@@ -60,11 +63,10 @@ export function StageRecipe({ onAdvance }: Props) {
     <div className="p-4 space-y-3">
       <div>
         <h3 className="text-sm font-semibold md-text-accent">
-          Start your pipeline
+          {t("stages.recipe.title")}
         </h3>
         <p className="text-xs md-text-muted">
-          Pick a starting point. You can still edit every field on the
-          following steps.
+          {t("stages.recipe.subtitle")}
         </p>
       </div>
 
@@ -78,12 +80,10 @@ export function StageRecipe({ onAdvance }: Props) {
           className="md-panel p-4 text-left hover:bg-[var(--md-bg-hover)] transition-colors"
         >
           <div className="md-text-accent font-semibold text-sm mb-1">
-            Start blank
+            {t("stages.recipe.blankTitle")}
           </div>
           <div className="text-xs md-text-muted">
-            Empty form. Bring your own dumps and oracle; set every
-            threshold yourself. Best for power users running on a new
-            target.
+            {t("stages.recipe.blankBody")}
           </div>
         </button>
 
@@ -94,22 +94,18 @@ export function StageRecipe({ onAdvance }: Props) {
           className="md-panel p-4 text-left hover:bg-[var(--md-bg-hover)] transition-colors"
         >
           <div className="md-text-accent font-semibold text-sm mb-1">
-            Replicate gocryptfs DFRWS result
+            {t("stages.recipe.gocryptfsTitle")}
           </div>
           <div className="text-xs md-text-muted">
-            Loads the thresholds from the DFRWS paper's section 4.2
-            (variance ≥ 1500, 8-byte alignment, entropy ≥ 4.5). Point
-            it at <code>dataset_gocryptfs/run_*</code> and upload the
-            gocryptfs oracle on the next step to reproduce both
-            verified hits.
+            {t("stages.recipe.gocryptfsBody")}{" "}
+            <code>dataset_gocryptfs/run_*</code>{" "}
+            {t("stages.recipe.gocryptfsBodyTail")}
           </div>
         </button>
       </div>
 
       <p className="text-[10px] md-text-muted">
-        Recipe save / load / share is planned for a later release; for
-        now the two presets above cover the DFRWS demo and the blank
-        starting point.
+        {t("stages.recipe.saveLoadNote")}
       </p>
     </div>
   );

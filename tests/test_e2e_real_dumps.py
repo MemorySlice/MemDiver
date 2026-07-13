@@ -82,7 +82,7 @@ class TestDiscoveryAtAllLevels:
         info = DatasetScanner(scenario_dir).fast_scan()
         assert "13" in info.protocol_versions
         assert "boringssl" in info.libraries.get(
-            "100_iterations_Abort_KeyUpdate", set()
+            "13/100_iterations_Abort_KeyUpdate", set()
         )
         assert info.total_runs >= 100
 

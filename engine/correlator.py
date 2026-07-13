@@ -75,7 +75,7 @@ class SearchCorrelator:
                     phase=phase,
                     run_id=run_id,
                 ))
-                start = idx + 1
+                start = idx + len(needle)
 
         path_name = resolved_path.name if hasattr(resolved_path, "name") else str(resolved_path)
         logger.debug("Found %d hits in %s", len(hits), path_name)
@@ -123,7 +123,7 @@ class SearchCorrelator:
         secrets: List[CryptoSecret],
     ) -> List[Match]:
         """Search only static regions of dump data for secrets."""
-        if not self.consensus or not self.consensus.classifications:
+        if not self.consensus or len(self.consensus.classifications) == 0:
             return self._search_unfiltered(dump_data, secrets)
 
         matches = []
@@ -143,12 +143,12 @@ class SearchCorrelator:
                         data=needle,
                         metadata={"source": "static_filtered"},
                     ))
-                start = idx + 1
+                start = idx + len(needle)
         return matches
 
     def _is_in_static_region(self, offset: int, length: int) -> bool:
         """Check if the given range falls within a non-volatile region."""
-        if not self.consensus or not self.consensus.classifications:
+        if not self.consensus or len(self.consensus.classifications) == 0:
             return True
         cls = self.consensus.classifications
         end = min(offset + length, len(cls))
@@ -175,5 +175,5 @@ class SearchCorrelator:
                     label=secret.secret_type,
                     data=needle,
                 ))
-                start = idx + 1
+                start = idx + len(needle)
         return matches

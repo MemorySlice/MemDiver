@@ -109,6 +109,60 @@ class SSH2KDFPlugin(BaseKDF):
     _KEY_SIZE = 32
     _CONFIDENCE = 0.95
 
+    @staticmethod
+    def _ssh_hash_sizes() -> Set[int]:
+        """Valid SSH-2 hash output sizes, sourced from the SSH structure library.
+
+        Reads ``size_choices`` off the SSH builtin structure fields (DRY) rather
+        than hardcoding (64, 32, 20). These are the lengths an exchange hash H
+        or session_id may have (SHA-512 / SHA-256 / SHA-1).
+        """
+        # Imported lazily to keep this module importable without the structure
+        # library and to avoid a heavy import at module load time.
+        from core.structure_library_ssh import SSH_BUILTINS
+
+        sizes: Set[int] = set()
+        for struct_def in SSH_BUILTINS:
+            for fld in struct_def.fields:
+                sizes.update(fld.size_choices)
+        return sizes
+
+    @staticmethod
+    def discover_hash_candidates(
+        blobs: List[bytes], cap: int = 32,
+    ) -> List[bytes]:
+        """Filter dump-derived byte-blobs down to plausible SSH-2 hash inputs.
+
+        SSH-2 key validation requires the exchange hash H and session_id, which
+        are themselves hash outputs sitting in the dump. Upstream entropy /
+        change-point detectors already surface high-entropy blobs; this helper
+        keeps only those that could be H / session_id:
+
+        * length must be one of the SSH hash sizes (``size_choices`` from
+          ``core.structure_library_ssh.SSH_BUILTINS`` -- SHA-1/256/512);
+        * the blob must not be all-zero (the ``not_zero`` constraint);
+        * duplicates are removed preserving first-seen order;
+        * the result is capped at *cap* to bound downstream loop cost.
+
+        Takes raw bytes (not Match objects) to keep core decoupled from the
+        algorithms layer.
+        """
+        valid_sizes = SSH2KDFPlugin._ssh_hash_sizes()
+        seen: Set[bytes] = set()
+        result: List[bytes] = []
+        for blob in blobs:
+            if len(blob) not in valid_sizes:
+                continue
+            if not any(blob):  # not_zero constraint: drop all-zero blobs
+                continue
+            if blob in seen:
+                continue
+            seen.add(blob)
+            result.append(blob)
+            if len(result) >= cap:
+                break
+        return result
+
     def derive(self, secret: bytes, params: KDFParams) -> bytes:
         """Derive a single SSH-2 key from shared secret bytes."""
         key_type_char = params.extra.get("key_type_char", "A")
@@ -154,21 +208,49 @@ class SSH2KDFPlugin(BaseKDF):
         candidate_b: bytes,
         dump_data: bytes,
         hash_algo: str = "sha256",
+        hash_candidates: Optional[List[bytes]] = None,
     ) -> float:
-        """Test whether two candidates are related via SSH-2 KDF."""
-        for key_char in KEY_TYPE_CHARS:
-            derived = SSH2KDF.derive_key(
-                candidate_a, candidate_b, key_char,
-                candidate_b, self._KEY_SIZE, hash_algo,
-            )
-            if derived == candidate_a or derived == candidate_b:
-                return self._CONFIDENCE
-            derived = SSH2KDF.derive_key(
-                candidate_b, candidate_a, key_char,
-                candidate_a, self._KEY_SIZE, hash_algo,
-            )
-            if derived == candidate_a or derived == candidate_b:
-                return self._CONFIDENCE
+        """Test whether two candidates are related via the SSH-2 KDF.
+
+        SSH-2 keys A-F are independent outputs of
+        ``HASH(K || H || X || session_id)`` (RFC 4253 Section 7.2). It is
+        cryptographically impossible to decide whether two byte-strings are an
+        SSH-2 key pair without the shared secret K, the exchange hash H, and
+        the session_id. There is no self-contained relationship between two
+        derived keys to verify; H and session_id must come from outside.
+
+        Therefore, without *hash_candidates* this returns 0.0 honestly. When
+        *hash_candidates* (real H / session_id blobs discovered in the dump) is
+        supplied, one candidate is treated as the shared secret K and, for each
+        (H, session_id) pair drawn from the candidates, all six key-type chars
+        are derived at the length of the OTHER candidate. A match against the
+        other candidate -- or presence of a derived value in *dump_data* --
+        confirms the link. SSH-2 derived outputs are not uniformly 32 bytes
+        (IVs A/B are 8/12/16, HMAC keys E/F often 20, encryption keys C/D
+        16/24/32), so derivation length follows the peer candidate.
+
+        Loops are bounded by ``discover_hash_candidates``' cap on the supplied
+        *hash_candidates* list.
+        """
+        if not hash_candidates:
+            # Cannot validate an SSH-2 pair without discovered H / session_id.
+            return 0.0
+
+        directions = (
+            (candidate_a, candidate_b),  # candidate_a as K, derive b-length key
+            (candidate_b, candidate_a),  # candidate_b as K, derive a-length key
+        )
+        for shared_secret, other in directions:
+            target_len = len(other)
+            for exchange_hash in hash_candidates:
+                for session_id in hash_candidates:
+                    for key_char in KEY_TYPE_CHARS:
+                        derived = SSH2KDF.derive_key(
+                            shared_secret, exchange_hash, key_char,
+                            session_id, target_len, hash_algo,
+                        )
+                        if derived == other or derived in dump_data:
+                            return self._CONFIDENCE
         return 0.0
 
     def supported_secret_types(self) -> Set[str]:

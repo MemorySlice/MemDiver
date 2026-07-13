@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from api.dependencies import get_tool_session
+from api.config import Settings
+from api.dependencies import get_api_settings, get_tool_session
+from api.path_safety import ensure_within
 from mcp_server import tools
 from mcp_server.session import ToolSession
 
@@ -25,6 +28,7 @@ async def upload_dump(
     output_dir: str = "",
     pid: int = 0,
     session: ToolSession = Depends(get_tool_session),
+    settings: Settings = Depends(get_api_settings),
 ):
     """Upload a raw dump file and convert to MSL format.
 
@@ -49,9 +53,22 @@ async def upload_dump(
             raise
 
     try:
-        out_dir = output_dir or str(tmp_path.parent)
-        out_path = str(Path(out_dir) / (tmp_path.stem + ".msl"))
-        result = tools.import_raw_dump(session, str(tmp_path), out_path, pid)
+        # A caller-supplied output_dir must stay inside the configured upload
+        # directory; otherwise the converted .msl could be written anywhere the
+        # server process can reach (arbitrary write). With no output_dir the
+        # converted file lands next to the (server-chosen) temp upload.
+        if output_dir:
+            try:
+                out_dir = ensure_within(settings.upload_dir, Path(output_dir))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            out_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            out_dir = tmp_path.parent
+        out_path = str(out_dir / (tmp_path.stem + ".msl"))
+        result = await asyncio.to_thread(
+            tools.import_raw_dump, session, str(tmp_path), out_path, pid
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
 

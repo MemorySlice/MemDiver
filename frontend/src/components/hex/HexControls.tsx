@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Props {
   currentOffset: number;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function HexControls({ currentOffset, fileSize, pageSize, onNavigate, onGoToOffset }: Props) {
+  const { t } = useTranslation("hex");
   const [offsetInput, setOffsetInput] = useState("");
 
   const handleGo = () => {
@@ -31,14 +33,14 @@ export function HexControls({ currentOffset, fileSize, pageSize, onNavigate, onG
     <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--md-border)] text-xs">
       <button onClick={prevPage} disabled={currentOffset === 0}
         className="px-2 py-0.5 rounded border border-[var(--md-border)] disabled:opacity-30 hover:bg-[var(--md-bg-hover)]">
-        Prev
+        {t("controls.prev")}
       </button>
       <span className="md-text-secondary">
-        Page {currentPage}/{totalPages}
+        {t("controls.page", { current: currentPage, total: totalPages })}
       </span>
       <button onClick={nextPage} disabled={currentOffset + pageSize >= fileSize}
         className="px-2 py-0.5 rounded border border-[var(--md-border)] disabled:opacity-30 hover:bg-[var(--md-bg-hover)]">
-        Next
+        {t("controls.next")}
       </button>
       <span className="mx-1 md-text-muted">|</span>
       <input
@@ -46,12 +48,12 @@ export function HexControls({ currentOffset, fileSize, pageSize, onNavigate, onG
         value={offsetInput}
         onChange={(e) => setOffsetInput(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleGo()}
-        placeholder="0x offset"
+        placeholder={t("controls.offsetPlaceholder")}
         className="w-24 px-1.5 py-0.5 rounded border border-[var(--md-border)] bg-[var(--md-bg-secondary)]"
       />
       <button onClick={handleGo}
         className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">
-        Go
+        {t("controls.go")}
       </button>
     </div>
   );

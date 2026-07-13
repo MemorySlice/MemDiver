@@ -1,8 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { useTheme } from "@/providers/ThemeProvider";
 
-const LABELS: Record<string, string> = {
-  light: "Light",
-  dark: "Dark",
+const LABEL_KEYS: Record<string, string> = {
+  light: "app.themeLabelLight",
+  dark: "app.themeLabelDark",
 };
 
 const ICONS: Record<string, string> = {
@@ -11,6 +12,7 @@ const ICONS: Record<string, string> = {
 };
 
 export function ThemeToggle() {
+  const { t } = useTranslation("misc");
   const { theme, setTheme, highContrast, toggleHighContrast } = useTheme();
   const next = theme === "light" ? "dark" : "light";
 
@@ -19,9 +21,12 @@ export function ThemeToggle() {
       <button
         onClick={() => setTheme(next)}
         className="px-2 py-1 rounded text-sm hover:bg-[var(--md-bg-hover)] transition-colors"
-        title={`Theme: ${LABELS[theme]} (click for ${LABELS[next]})`}
+        title={t("app.themeToggleTitle", {
+          current: t(LABEL_KEYS[theme]),
+          next: t(LABEL_KEYS[next]),
+        })}
       >
-        {ICONS[theme]} {LABELS[theme]}
+        {ICONS[theme]} {t(LABEL_KEYS[theme])}
       </button>
       <button
         onClick={toggleHighContrast}
@@ -30,9 +35,11 @@ export function ThemeToggle() {
             ? "bg-[var(--md-accent-blue)] text-white"
             : "hover:bg-[var(--md-bg-hover)] text-[var(--md-text-secondary)]"
         }`}
-        title={`High contrast: ${highContrast ? "ON" : "OFF"}`}
+        title={t("app.highContrastTitle", {
+          state: highContrast ? t("app.highContrastOn") : t("app.highContrastOff"),
+        })}
       >
-        HC
+        {t("app.highContrastAbbr")}
       </button>
     </div>
   );

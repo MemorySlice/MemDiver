@@ -16,6 +16,10 @@ class ExactMatchAlgorithm(BaseAlgorithm):
 
         for secret in context.secrets:
             needle = secret.secret_value
+            if not needle:
+                # An empty needle matches at every offset; skip it to avoid
+                # appending ~len(dump) zero-length matches.
+                continue
             start = 0
             while True:
                 idx = dump_data.find(needle, start)

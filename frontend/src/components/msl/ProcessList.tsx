@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface Process {
   pid: number;
@@ -29,6 +30,7 @@ function shortPath(path: string): string {
 }
 
 export function ProcessList({ mslPath }: Props) {
+  const { t } = useTranslation("msl");
   const [processes, setProcesses] = useState<Process[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,11 +47,11 @@ export function ProcessList({ mslPath }: Props) {
   }, [mslPath]);
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
-  if (!processes.length) return <p className="p-3 text-xs md-text-muted">No process table blocks</p>;
+  if (!processes.length) return <p className="p-3 text-xs md-text-muted">{t("processes.empty")}</p>;
 
   return (
     <div className="p-3 text-xs space-y-1">
-      <h3 className="text-sm font-semibold md-text-accent">Processes ({processes.length})</h3>
+      <h3 className="text-sm font-semibold md-text-accent">{t("processes.title", { count: processes.length })}</h3>
       <div className="md-panel p-2 space-y-1 max-h-64 overflow-auto">
         {processes.map((p, i) => (
           <div
@@ -61,7 +63,7 @@ export function ProcessList({ mslPath }: Props) {
               <span className="font-mono font-medium">{p.pid}</span>
               <span className="md-text-muted text-[10px]">ppid={p.ppid}</span>
               {p.is_target && (
-                <span className="text-[10px] px-1 rounded bg-[var(--md-accent-purple)] text-white">TARGET</span>
+                <span className="text-[10px] px-1 rounded bg-[var(--md-accent-purple)] text-white">{t("processes.targetBadge")}</span>
               )}
               {p.user && <span className="ml-auto md-text-muted text-[10px]">{p.user}</span>}
             </div>
@@ -70,7 +72,7 @@ export function ProcessList({ mslPath }: Props) {
               <div className="md-text-muted text-[10px] truncate">{p.cmd_line}</div>
             )}
             {p.rss > 0 && (
-              <div className="md-text-muted text-[10px]">RSS {formatSize(p.rss)}</div>
+              <div className="md-text-muted text-[10px]">{t("processes.rss", { size: formatSize(p.rss) })}</div>
             )}
           </div>
         ))}

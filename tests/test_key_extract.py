@@ -139,6 +139,35 @@ def test_extract_key_bytes_out_of_bounds(msl_path):
         assert extract_key_bytes(reader, oob_hint) is None
 
 
+def test_extract_key_bytes_zero_length_at_boundary(msl_path):
+    """Zero-length key at region_offset == region_size yields no secret.
+
+    Regression: the bounds check ``region_offset + key_length > region_size``
+    passes when offset == size and length == 0, which previously produced a
+    spurious empty CryptoSecret. A non-positive key_length must be rejected.
+    """
+    with MslReader(msl_path) as reader:
+        hints = reader.collect_key_hints()
+        hint = hints[0]
+        region = next(
+            r for r in reader.collect_regions()
+            if r.block_header.block_uuid == hint.region_uuid
+        )
+        from msl.types import MslKeyHint
+        empty_hint = MslKeyHint(
+            block_header=hint.block_header,
+            region_uuid=hint.region_uuid,
+            region_offset=region.region_size,
+            key_length=0,
+            key_type=hint.key_type,
+            protocol=hint.protocol,
+            confidence=hint.confidence,
+            key_state=hint.key_state,
+            note=hint.note,
+        )
+        assert extract_key_bytes(reader, empty_hint) is None
+
+
 # -- extract_secrets_from_msl tests --
 
 def test_extract_secrets_from_msl_roundtrip(msl_path):

@@ -16,6 +16,9 @@ def apply_theme(dark: bool = True):
     global _dark_mode
     if _dark_mode is None:
         _dark_mode = ui.dark_mode(dark)
+    else:
+        # Honor the dark argument on subsequent calls instead of ignoring it.
+        _dark_mode.value = dark
     ui.add_css(BASE_CSS)
     ui.add_css(_EXTRA_CSS)
 

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from ui.components.html_builder import format_size as _format_size
+from ui.components.hex_renderer import _html_escape
 from ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.session_view")
@@ -48,8 +49,8 @@ def render_session_view(mo, report) -> Any:
         info_rows.extend([
             _info_row(_("Parent PID"), str(pi.ppid), cs),
             _info_row(_("Session ID"), str(pi.session_id), cs),
-            _info_row(_("Executable"), f"<code>{pi.exe_path}</code>", cs),
-            _info_row(_("Command Line"), f"<code>{pi.cmd_line}</code>", cs),
+            _info_row(_("Executable"), f"<code>{_html_escape(str(pi.exe_path))}</code>", cs),
+            _info_row(_("Command Line"), f"<code>{_html_escape(str(pi.cmd_line))}</code>", cs),
         ])
     sections.append(
         f'<div class="memdiver-header">{_("Process Info")}</div>'
@@ -88,7 +89,7 @@ def render_session_view(mo, report) -> Any:
                 f'<td style="padding:3px 10px;color:{cs.TEXT_PRIMARY};'
                 f'text-align:right;">{_format_size(m.module_size)}</td>'
                 f'<td style="padding:3px 10px;color:{cs.TEXT_PRIMARY};">'
-                f'{m.path}</td>'
+                f'{_html_escape(str(m.path))}</td>'
                 f'<td style="padding:3px 10px;color:{cs.TEXT_MUTED};">'
                 f'{m.version or "—"}</td></tr>'
             )

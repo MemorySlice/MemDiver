@@ -19,14 +19,15 @@ except ImportError:
 
 
 def check_deps() -> Dict[str, bool]:
-    """Check which optional dependencies are available."""
-    deps: Dict[str, object] = {"duckdb": False, "ibis": False}
-    try:
-        import duckdb as _d; deps["duckdb"] = True; deps["duckdb_version"] = _d.__version__
-    except ImportError: pass
-    try:
-        import ibis as _i; deps["ibis"] = True; deps["ibis_version"] = _i.__version__
-    except ImportError: pass
+    """Check which optional dependencies are available.
+
+    Reuses the module-level :data:`HAS_DUCKDB` probe (both ``duckdb`` and
+    ``ibis`` are imported together there) rather than re-importing.
+    """
+    deps: Dict[str, object] = {"duckdb": HAS_DUCKDB, "ibis": HAS_DUCKDB}
+    if HAS_DUCKDB:
+        deps["duckdb_version"] = duckdb.__version__
+        deps["ibis_version"] = ibis.__version__
     deps["ready"] = deps["duckdb"] and deps["ibis"]
     return deps
 

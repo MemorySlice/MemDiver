@@ -302,10 +302,18 @@ class Volatility3Exporter:
         wp = pattern.get("wildcard_pattern", "")
         scan_regex = _wildcard_to_regex(wp) if wp else b""
 
+        # static_ratio is emitted as a bare Python literal in the generated
+        # source; coerce to a float so a None/non-numeric value cannot produce
+        # an un-importable plugin.
+        try:
+            static_ratio = float(pattern.get("static_ratio", 0) or 0)
+        except (TypeError, ValueError):
+            static_ratio = 0.0
+
         source = _PLUGIN_TEMPLATE.substitute(
             plugin_name=raw_name, description=desc, timestamp=timestamp,
             pattern_name=raw_name, pattern_length=pattern.get("length", 0),
-            static_ratio=pattern.get("static_ratio", 0),
+            static_ratio=repr(static_ratio),
             yara_rule=rule, fallback_hex=fallback_hex,
             needle_offset=needle_offset, class_name=class_name,
             key_offset=key_offset, key_length=key_length,
