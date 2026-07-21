@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional
 
+# Canonical batch output formats. Shared with the API layer
+# (``api.models.BatchRunRequest`` validates against this same tuple) so the
+# HTTP wire contract and this core dataclass cannot drift apart.
+OUTPUT_FORMATS = ("json", "jsonl")
+
 
 @dataclass
 class AnalyzeRequest:
@@ -55,7 +60,7 @@ class BatchRequest:
     def __post_init__(self):
         if not self.jobs:
             raise ValueError("Batch must contain at least one job")
-        allowed_formats = {"json", "jsonl"}
+        allowed_formats = set(OUTPUT_FORMATS)
         if self.output_format not in allowed_formats:
             raise ValueError(
                 f"output_format '{self.output_format}' not in {allowed_formats}"

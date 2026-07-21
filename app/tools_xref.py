@@ -10,7 +10,7 @@ from memdiver.api.services.reader_cache import cached_dump_source, cached_msl_re
 
 from .session import ToolSession
 
-logger = logging.getLogger("memdiver.mcp_server.tools_xref")
+logger = logging.getLogger("memdiver.app.tools_xref")
 
 
 def get_cross_references(session: ToolSession, msl_path: str) -> dict:

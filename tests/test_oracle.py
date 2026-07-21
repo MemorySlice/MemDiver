@@ -27,6 +27,23 @@ def test_shape1_stateless_function(tmp_path):
     assert verify(b"no") is False
 
 
+def test_load_oracle_emits_sha256_audit_at_warning(tmp_path, caplog):
+    """Security audit: loading an oracle executes arbitrary user Python, so the
+    sha256 'loaded oracle' notice must be visible at the DEFAULT WARNING level
+    (the MCP server / non-verbose CLI default the root logger to WARNING, which
+    would drop an ``info`` record). Regression for the code-review finding that a
+    ``print``→``logger.info`` change silently suppressed this audit trail."""
+    import logging
+
+    src = _write(tmp_path / "o.py", "def verify(c): return True\n")
+    with caplog.at_level(logging.WARNING, logger="memdiver.engine.oracle"):
+        load_oracle(src)
+    assert any(
+        "loaded oracle" in r.getMessage() and r.levelno == logging.WARNING
+        for r in caplog.records
+    ), "oracle-load audit line not emitted at WARNING"
+
+
 def test_shape2_stateful_factory(tmp_path):
     src = _write(
         tmp_path / "o.py",

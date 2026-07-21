@@ -80,6 +80,18 @@ class CapabilityError(Exception):
             "category": self.category.name,
         }
 
+    def to_error_body(self) -> Dict[str, Any]:
+        """Legacy flat error dict: the message plus any details merged at top level.
+
+        Distinct from :meth:`to_dict` (which adds ``code``/``category``) — this is
+        the shape the inspect/pipeline surface presenters reproduce for backward
+        compatibility.
+        """
+        body: Dict[str, Any] = {"error": self.message}
+        if self.details:
+            body.update(self.details)
+        return body
+
 
 # ---------------------------------------------------------------------------
 # Concrete subclasses with sensible default categories/codes.

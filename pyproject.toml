@@ -139,6 +139,7 @@ packages = [
     "memdiver",
     "memdiver.core",
     "memdiver.engine",
+    "memdiver.presentation",
     "memdiver.algorithms",
     "memdiver.algorithms.known_key",
     "memdiver.algorithms.unknown_key",

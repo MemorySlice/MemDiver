@@ -115,6 +115,23 @@ def test_read_hex_result_vas_without_key_reports_missing_key(session, encrypted_
     assert result.status.resolution == Resolution.UNRESOLVED
 
 
+@pytest.mark.parametrize("fn_name", ["read_hex_result", "read_hex_raw_result"])
+def test_read_hex_locked_vas_nonzero_offset_reports_missing_key(
+    session, encrypted_msl, fn_name
+):
+    """Regression (code-review): a locked ``vas`` view must surface the key lock
+    BEFORE the offset-bounds check. ``size_for("vas")`` is 0 for an unkeyed
+    encrypted dump, so a nonzero offset previously raised a misleading
+    ``OffsetOutOfRangeError`` on CLI/MCP instead of reporting ``missing_key``
+    (the legacy ``read_hex`` ran the tag-status guard first)."""
+    msl_path, _ = encrypted_msl
+    result = getattr(tools_inspect, fn_name)(
+        session, msl_path, offset=64, length=64, view="vas")
+    assert result.status.key.tag_status == TagStatus.MISSING_KEY
+    assert result.status.key.decrypted is False
+    assert result.status.resolution == Resolution.UNRESOLVED
+
+
 @pytest.mark.parametrize("fn_name", _MSL_METADATA_PRODUCERS)
 def test_metadata_producer_with_wrong_key_reports_corrupted(session, encrypted_msl, tmp_path, fn_name):
     msl_path, _ = encrypted_msl

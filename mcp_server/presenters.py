@@ -47,7 +47,7 @@ def present_inspect_mcp(result) -> dict:
     """MCP surface: inline the key/tag diagnostic (agents need the lock signal)."""
     key = result.status.key
     if not key.decrypted:
-        return {"error": key.hint, "tag_status": key.tag_status.value}
+        return key.locked_error_dict()
     return result.payload
 
 
@@ -63,7 +63,4 @@ def present_inspect_mcp_call(produce) -> dict:
     try:
         return present_inspect_mcp(produce())
     except CapabilityError as e:
-        body = {"error": e.message}
-        if e.details:
-            body.update(e.details)
-        return body
+        return e.to_error_body()

@@ -1,23 +1,11 @@
-"""Maps raw secret type strings to human-readable display labels.
+"""Deprecated location — display strings relocated to memdiver.presentation.labels
+(presentation-separation refactor).
 
-Delegates to the protocol registry for label lookups, falling back to
-the raw secret_type string if no mapping exists.
+Re-exported here so existing imports keep working; prefer
+memdiver.presentation.labels.
 """
+import sys as _sys
 
-from .protocols import REGISTRY
+from memdiver.presentation import labels as _relocated
 
-
-def get_display_label(secret_type: str, version: str) -> str:
-    """Return a human-readable display label for the given secret type and version.
-
-    Falls back to the raw secret_type string if no mapping exists.
-    """
-    return REGISTRY.lookup_label(secret_type, version) or secret_type
-
-
-def get_short_label(secret_type: str, version: str) -> str:
-    """Return a short display label for the given secret type and version.
-
-    Falls back to the raw secret_type string if no mapping exists.
-    """
-    return REGISTRY.lookup_label(secret_type, version, short=True) or secret_type
+_sys.modules[__name__] = _relocated

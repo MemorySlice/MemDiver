@@ -78,9 +78,17 @@ def _assert_safe_path(path: Path) -> None:
 
 
 def _log_module_fingerprint(path: Path) -> str:
-    """Log the sha256 of the loaded file so the user can audit what ran."""
+    """Emit the sha256 of the loaded file so the user can audit what ran.
+
+    SECURITY audit trail: loading an oracle executes arbitrary user-supplied
+    Python, so this notice is logged at WARNING (not INFO). The MCP server and
+    non-verbose CLI default the root ``memdiver`` logger to WARNING, and an
+    ``info`` record would be silently dropped on exactly the unattended paths
+    that load oracle code — WARNING keeps it visible while still routing through
+    the logging system (capturable to a file/SIEM) rather than a raw print.
+    """
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    logger.info("memdiver: loaded oracle %s sha256=%s", path, digest)
+    logger.warning("memdiver: loaded oracle %s sha256=%s", path, digest)
     return digest
 
 

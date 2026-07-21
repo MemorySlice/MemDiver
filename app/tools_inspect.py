@@ -20,7 +20,7 @@ from memdiver.core.strings import extract_strings
 from .key_material import key_material_kwargs, open_dump_source, open_msl_reader
 from .session import ToolSession
 
-logger = logging.getLogger("memdiver.mcp_server.tools_inspect")
+logger = logging.getLogger("memdiver.app.tools_inspect")
 
 MAX_HEX_LENGTH = 4096
 MAX_ENTROPY_SAMPLES = 200
@@ -48,7 +48,7 @@ def _tag_status_error(reader_or_source) -> Optional[dict]:
 
     key = KeyStatus.from_source(reader_or_source)
     if not key.decrypted:
-        return {"error": key.hint, "tag_status": key.tag_status.value}
+        return key.locked_error_dict()
     return None
 
 
@@ -65,48 +65,25 @@ def read_hex(
 ) -> dict:
     """Read raw bytes from a dump file and return hex + ASCII representation.
 
-    For ``.msl`` files, ``view="raw"`` (default) reads the .msl container
-    bytes; ``view="vas"`` reads the flattened captured memory projection.
-    For ``.dump`` files the ``view`` parameter is accepted but ignored.
-
-    Encrypted ``.msl`` inputs are decrypted when ``key_file`` / ``passphrase``
-    / ``kem_key_file`` are supplied (spec §10).
-
     .. deprecated:: Prefer :func:`read_hex_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
-    """
-    length = min(length, MAX_HEX_LENGTH)
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    try:
-        with open_dump_source(dump_path, km) as source:
-            # A decrypted (vas) read with a missing/wrong key would otherwise
-            # return silently-empty bytes; the raw container view stays keyless.
-            if view == "vas" and report_key_status and (err := _tag_status_error(source)):
-                return err
-            file_size = source.size_for(view)
-            format_name = source.format_name
-            # Reject out-of-range offsets with a clean error message, matching
-            # the sibling _read_hex_raw guard. read_range backstops this, but a
-            # negative offset here should not silently return tail bytes.
-            if offset < 0 or offset > file_size:
-                return {
-                    "error": "offset out of range",
-                    "offset": offset,
-                    "file_size": file_size,
-                    "view": view,
-                    "format": format_name,
-                }
-            data = source.read_range(offset, length, view=view)
-    except FileNotFoundError:
-        return {"error": f"File not found: {dump_path}"}
 
-    return {
-        "hex_lines": _format_hex_lines(data, offset),
-        "offset": offset,
-        "length": len(data),
-        "file_size": file_size,
-        "format": format_name,
-        "view": view,
-    }
+    Thin adapter over :func:`read_hex_result`; see it for the behavioral contract.
+    """
+    # NOTE: For report_key_status=False + a locked vas view + nonzero offset,
+    # this returns the empty payload rather than the pre-collapse legacy's
+    # spurious "offset out of range" dict (a locked dump has size_for("vas")==0).
+    # Unreachable in production (the API routes through read_hex_result) and
+    # consistent with the accepted "locked reads back empty" semantics.
+    try:
+        result = read_hex_result(
+            session, dump_path, offset, length, view,
+            key_file, passphrase, kem_key_file,
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def _read_hex_raw(
@@ -122,41 +99,25 @@ def _read_hex_raw(
 ) -> dict:
     """Read raw bytes from a dump file, returned as base64.
 
-    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
-
     .. deprecated:: Prefer :func:`read_hex_raw_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`read_hex_raw_result`; see it for the behavioral contract.
     """
-    import base64
-
-    length = min(length, 16384)  # cap at 16KB
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    # NOTE: For report_key_status=False + a locked vas view + nonzero offset,
+    # this returns the empty payload rather than the pre-collapse legacy's
+    # spurious "offset out of range" dict (a locked dump has size_for("vas")==0).
+    # Unreachable in production (the API routes through read_hex_raw_result) and
+    # consistent with the accepted "locked reads back empty" semantics.
     try:
-        with open_dump_source(dump_path, km) as source:
-            if view == "vas" and report_key_status and (err := _tag_status_error(source)):
-                return err
-            file_size = source.size_for(view)
-            format_name = source.format_name
-            if offset < 0 or offset > file_size:
-                return {
-                    "error": "offset out of range",
-                    "offset": offset,
-                    "file_size": file_size,
-                    "view": view,
-                    "format": format_name,
-                }
-            actual_length = max(0, min(length, file_size - offset))
-            data = source.read_range(offset, actual_length, view=view)
-    except FileNotFoundError:
-        return {"error": f"File not found: {dump_path}"}
-
-    return {
-        "offset": offset,
-        "length": len(data),
-        "file_size": file_size,
-        "format": format_name,
-        "view": view,
-        "bytes": base64.b64encode(data).decode("ascii"),
-    }
+        result = read_hex_raw_result(
+            session, dump_path, offset, length, view,
+            key_file, passphrase, kem_key_file,
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def _resolve_va(
@@ -170,46 +131,19 @@ def _resolve_va(
 ) -> dict:
     """Translate a virtual address to file and VAS offsets for an MSL dump.
 
-    Returns ``{file_offset, vas_offset, module_path, region_base}`` with
-    ``None`` for any field that could not be resolved. ``.dump`` inputs
-    return an error — raw dumps have no VA mapping. Encrypted ``.msl``
-    inputs are decrypted when key material is supplied.
-
     .. deprecated:: Prefer :func:`resolve_va_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`resolve_va_result`; see it for the behavioral contract.
     """
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
-        with open_dump_source(dump_path, km) as source:
-            if source.format_name != "msl":
-                return {"error": "VA translation requires an MSL dump"}
-            if report_key_status and (err := _tag_status_error(source)):
-                return err
-            file_offset = source.va_to_file_offset(va)
-            vas_offset = source.va_to_vas_offset(va)
-
-            module_path = None
-            region_base = None
-            reader = source.get_reader()
-            for m in reader.collect_modules():
-                if m.base_addr <= va < m.base_addr + m.module_size:
-                    module_path = m.path
-                    region_base = m.base_addr
-                    break
-            if region_base is None:
-                for r in reader.collect_regions():
-                    if r.base_addr <= va < r.base_addr + r.region_size:
-                        region_base = r.base_addr
-                        break
-    except FileNotFoundError:
-        return {"error": f"File not found: {dump_path}"}
-
-    return {
-        "va": va,
-        "file_offset": file_offset,
-        "vas_offset": vas_offset,
-        "module_path": module_path,
-        "region_base": region_base,
-    }
+        result = resolve_va_result(
+            session, dump_path, va, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_entropy(
@@ -407,57 +341,20 @@ def search_bytes(
 ) -> dict:
     """Search a dump for every occurrence of a hex byte pattern.
 
-    ``pattern_hex`` accepts an optional leading ``0x`` and surrounding
-    whitespace (e.g. ``"0x deadbeef"``). It must decode to at least one
-    byte; empty, odd-length, or non-hex input returns a clear error.
-
-    For ``.msl`` files, ``view="raw"`` searches the .msl container bytes
-    while ``view="vas"`` searches the flattened captured memory projection;
-    for ``.dump`` files the ``view`` parameter is accepted but ignored.
-
-    Results are paginated by offset index: ``cursor`` is the index into the
-    full match list to resume from, and ``next_cursor`` (0 when exhausted)
-    feeds straight back into the next call.
-
     .. deprecated:: Prefer :func:`search_bytes_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`search_bytes_result`; see it for the behavioral contract.
     """
-    normalized = pattern_hex.strip()
-    if normalized[:2].lower() == "0x":
-        normalized = normalized[2:]
-    normalized = "".join(normalized.split())
-    if not normalized:
-        return {"error": "Empty byte pattern"}
     try:
-        needle = bytes.fromhex(normalized)
-    except ValueError:
-        return {"error": f"Invalid hex byte pattern: {pattern_hex!r}"}
-    if not needle:
-        return {"error": "Empty byte pattern"}
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    try:
-        with open_dump_source(dump_path, km) as source:
-            if view == "vas" and report_key_status and (err := _tag_status_error(source)):
-                return err
-            file_size = source.size_for(view)
-            offsets = source.find_all(needle, view=view)
-    except FileNotFoundError:
-        return {"error": f"File not found: {dump_path}"}
-
-    page = offsets[cursor:cursor + max_results]
-    truncated = len(offsets) > cursor + max_results
-    next_cursor = cursor + max_results if truncated else 0
-
-    return {
-        "pattern_hex": needle.hex(),
-        "pattern_len": len(needle),
-        "offsets": page,
-        "count": len(offsets),
-        "truncated": truncated,
-        "next_cursor": next_cursor,
-        "view": view,
-        "file_size": file_size,
-    }
+        result = search_bytes_result(
+            session, dump_path, pattern_hex, view, max_results, cursor,
+            key_file, passphrase, kem_key_file,
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_session_info(
@@ -470,61 +367,19 @@ def get_session_info(
 ) -> dict:
     """Extract session metadata from an MSL file.
 
-    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
-
     .. deprecated:: Prefer :func:`session_info_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`session_info_result`; see it for the behavioral contract.
     """
-    path = Path(msl_path)
-    if not path.is_file():
-        return {"error": f"File not found: {msl_path}"}
-    if not path.suffix == ".msl":
-        return {"error": f"Not an MSL file: {msl_path}"}
-
-    from memdiver.msl.session_extract import extract_session_report
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    # Use the cached reader so repeated get_session_info calls (common in
-    # AI-driven investigation sessions) skip the mmap + 6 collect_*
-    # passes on every hit. Keyed opens bypass the cache (see open_msl_reader).
-    with open_msl_reader(msl_path, km) as reader:
-        if report_key_status and (err := _tag_status_error(reader)):
-            return err
-        report = extract_session_report(reader)
-        # Total page count across all regions, for coverage math. Computed
-        # from the same reader while it is hot so the extra collect_regions()
-        # pass reuses the cache rather than reopening the file.
-        total_pages = sum(r.num_pages for r in reader.collect_regions())
-    coverage = (
-        report.captured_page_count / total_pages if total_pages else 0.0
-    )
-    return {
-        "dump_uuid": str(report.dump_uuid),
-        "pid": report.pid,
-        "os_type": report.os_type,
-        "arch_type": report.arch_type,
-        "timestamp_iso": report.timestamp_iso,
-        "exe_path": (
-            report.process_identity.exe_path
-            if report.process_identity else None
-        ),
-        "modules": [
-            {"path": m.path, "base_addr": m.base_addr, "size": m.module_size}
-            for m in report.modules
-        ],
-        "region_count": report.region_count,
-        "total_region_size": report.total_region_size,
-        "captured_page_count": report.captured_page_count,
-        "key_hint_count": report.key_hint_count,
-        "key_hints_by_type": dict(report.key_hints_by_type),
-        "vas_entries": [
-            {"base_addr": e.base_addr, "size": e.region_size, "type": e.region_type}
-            for e in report.vas_entries
-        ],
-        "vas_coverage": dict(report.vas_coverage),
-        "string_count": report.string_count,
-        "total_pages": total_pages,
-        "coverage": coverage,
-    }
+    try:
+        result = session_info_result(
+            session, msl_path, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_page_states(
@@ -537,78 +392,19 @@ def get_page_states(
 ) -> dict:
     """Surface the MSL three-state page model (CAPTURED/FAILED/UNMAPPED).
 
-    Walks every memory region in base-address order — the SAME ordering
-    used by ``MslDumpSource.iter_ranges`` — and emits one entry per RLE
-    page interval, grouped under its region. Non-captured intervals
-    normalise ``RESERVED`` to ``"FAILED"``; captured intervals additionally
-    carry ``vas_offset``, their offset into the flattened ``view="vas"``
-    byte stream, so a UI can map a captured page back to VAS bytes.
-
     .. deprecated:: Prefer :func:`page_states_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`page_states_result`; see it for the behavioral contract.
     """
-    path = Path(msl_path)
-    if not path.is_file():
-        return {"error": f"File not found: {msl_path}"}
-    if not path.suffix == ".msl":
-        return {"error": f"Not an MSL file: {msl_path}"}
-
-    from memdiver.msl.enums import PageState
-    from memdiver.msl.page_map import _states_to_intervals
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_msl_reader(msl_path, km) as reader:
-        if report_key_status and (err := _tag_status_error(reader)):
-            return err
-        regions = reader.collect_regions()
-        # Match MslDumpSource.iter_ranges: sort by base_addr so the running
-        # vas_offset lines up with the flattened captured VAS hex stream.
-        regions.sort(key=lambda r: r.base_addr)
-
-        vas_offset = 0
-        total_pages = 0
-        captured_pages = 0
-        out_regions: List[dict] = []
-        for region in regions:
-            # Prefer the compact RLE intervals; fall back to converting the
-            # per-page state list (populated by the importer, which does not
-            # emit page_intervals).
-            intervals = region.page_intervals or _states_to_intervals(
-                region.page_states
-            )
-            entries: List[dict] = []
-            for iv in intervals:
-                if iv.state == PageState.CAPTURED:
-                    state_name = "CAPTURED"
-                elif iv.state == PageState.UNMAPPED:
-                    state_name = "UNMAPPED"
-                else:  # FAILED or RESERVED -> FAILED
-                    state_name = "FAILED"
-                entry = {
-                    "va": region.base_addr + iv.start_page * region.page_size,
-                    "length": iv.count * region.page_size,
-                    "state": state_name,
-                    "page_count": iv.count,
-                }
-                if iv.state == PageState.CAPTURED:
-                    entry["vas_offset"] = vas_offset
-                    vas_offset += iv.count * region.page_size
-                    captured_pages += iv.count
-                total_pages += iv.count
-                entries.append(entry)
-            out_regions.append({
-                "base_addr": region.base_addr,
-                "region_size": region.region_size,
-                "page_size": region.page_size,
-                "intervals": entries,
-            })
-
-    return {
-        "regions": out_regions,
-        "total_pages": total_pages,
-        "captured_pages": captured_pages,
-        "coverage": captured_pages / total_pages if total_pages else 0.0,
-        "vas_size": vas_offset,
-    }
+    try:
+        result = page_states_result(
+            session, msl_path, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_processes(
@@ -621,37 +417,19 @@ def get_processes(
 ) -> dict:
     """List entries from PROCESS_TABLE blocks (spec §6.3, type 0x0051).
 
-    Mirrors the HTTP ``GET /api/inspect/processes`` field shapes. Encrypted
-    ``.msl`` inputs are decrypted when key material is supplied.
-
     .. deprecated:: Prefer :func:`processes_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
-    """
-    path = Path(msl_path)
-    if not path.is_file():
-        return {"error": f"File not found: {msl_path}"}
-    if not path.suffix == ".msl":
-        return {"error": f"Not an MSL file: {msl_path}"}
 
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_msl_reader(msl_path, km) as reader:
-        if report_key_status and (err := _tag_status_error(reader)):
-            return err
-        tables = reader.collect_processes()
-    processes: List[dict] = []
-    for table in tables:
-        for e in table.entries:
-            processes.append({
-                "pid": e.pid,
-                "ppid": e.ppid,
-                "uid": e.uid,
-                "is_target": e.is_target,
-                "start_time_ns": e.start_time_ns,
-                "rss": e.rss,
-                "exe_name": e.exe_name,
-                "cmd_line": e.cmd_line,
-                "user": e.user,
-            })
-    return {"processes": processes}
+    Thin adapter over :func:`processes_result`; see it for the behavioral contract.
+    """
+    try:
+        result = processes_result(
+            session, msl_path, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_modules(
@@ -664,32 +442,19 @@ def get_modules(
 ) -> dict:
     """List loaded modules from MSL metadata (Module Entry, type 0x0002).
 
-    Mirrors the HTTP ``GET /api/inspect/modules`` field shapes. Encrypted
-    ``.msl`` inputs are decrypted when key material is supplied.
-
     .. deprecated:: Prefer :func:`modules_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
-    """
-    path = Path(msl_path)
-    if not path.is_file():
-        return {"error": f"File not found: {msl_path}"}
-    if not path.suffix == ".msl":
-        return {"error": f"Not an MSL file: {msl_path}"}
 
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_msl_reader(msl_path, km) as reader:
-        if report_key_status and (err := _tag_status_error(reader)):
-            return err
-        collected = reader.collect_modules()
-    modules = [
-        {
-            "path": m.path,
-            "base_addr": m.base_addr,
-            "size": m.module_size,
-            "version": m.version,
-        }
-        for m in collected
-    ]
-    return {"modules": modules}
+    Thin adapter over :func:`modules_result`; see it for the behavioral contract.
+    """
+    try:
+        result = modules_result(
+            session, msl_path, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def get_handles(
@@ -702,42 +467,19 @@ def get_handles(
 ) -> dict:
     """List entries from HANDLE_TABLE blocks (spec §6.5, type 0x0053).
 
-    Mirrors the HTTP ``GET /api/inspect/handles`` field shapes, including the
-    resolved ``handle_type_name``. Encrypted ``.msl`` inputs are decrypted
-    when key material is supplied.
-
     .. deprecated:: Prefer :func:`handles_result`, which always carries key/tag status in a ServiceResult; the ``report_key_status`` flag is retained only for backward compatibility.
+
+    Thin adapter over :func:`handles_result`; see it for the behavioral contract.
     """
-    path = Path(msl_path)
-    if not path.is_file():
-        return {"error": f"File not found: {msl_path}"}
-    if not path.suffix == ".msl":
-        return {"error": f"Not an MSL file: {msl_path}"}
-
-    from memdiver.msl.enums import HandleType
-
-    def handle_type_name(value: int) -> str:
-        try:
-            return HandleType(value).name.capitalize()
-        except ValueError:
-            return "Unknown"
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_msl_reader(msl_path, km) as reader:
-        if report_key_status and (err := _tag_status_error(reader)):
-            return err
-        tables = reader.collect_handles()
-    handles: List[dict] = []
-    for table in tables:
-        for e in table.entries:
-            handles.append({
-                "pid": e.pid,
-                "fd": e.fd,
-                "handle_type": e.handle_type,
-                "handle_type_name": handle_type_name(e.handle_type),
-                "path": e.path,
-            })
-    return {"handles": handles}
+    try:
+        result = handles_result(
+            session, msl_path, key_file, passphrase, kem_key_file
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    if report_key_status and not result.status.key.decrypted:
+        return result.status.key.locked_error_dict()
+    return result.payload
 
 
 def detect_format(
@@ -808,13 +550,38 @@ def _format_hex_lines(data: bytes, base_offset: int = 0) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+def _view_is_keyed(view=None) -> bool:
+    """Whether reads in this view require decryption.
+
+    Single source of truth for the legacy ``view == "vas"`` gate: ``view=None``
+    (the metadata producers) and ``view == "vas"`` are keyed; the raw container
+    view is keyless by design.
+    """
+    return view is None or view == "vas"
+
+
+def _view_locked(src, view=None) -> bool:
+    """True when a keyed view cannot be decrypted with the supplied key material.
+
+    Lets the byte-reading producers surface the lock BEFORE their offset-bounds
+    check, matching the legacy ordering (``read_hex`` ran the tag-status guard
+    first, so an encrypted-without-key dump — whose ``size_for("vas")`` is 0 —
+    reported the key hint rather than a misleading "offset out of range").
+    """
+    if not _view_is_keyed(view):
+        return False
+    from memdiver.core.service_result import KeyStatus
+
+    return not KeyStatus.from_source(src).decrypted
+
+
 def _finalize_inspect(payload: dict, src, *, view=None) -> "ServiceResult":
     """Wrap ``payload`` with a status block carrying the source's key state.
 
     Preserves the exact conditions under which the legacy code surfaced a tag
     error: ``read_hex`` / ``read_hex_raw`` / ``search_bytes`` gate on
     ``view == "vas"`` (the raw container view is keyless by design); the other
-    producers are unconditional. When gated off, no key check is performed so
+    producers are unconditional. When not keyed, no key check is performed so
     the result reports a clean (decrypted) status.
     """
     from memdiver.core.service_result import (
@@ -824,8 +591,7 @@ def _finalize_inspect(payload: dict, src, *, view=None) -> "ServiceResult":
         StatusBlock,
     )
 
-    gated_off = (view is not None and view != "vas")
-    key = KeyStatus() if gated_off else KeyStatus.from_source(src)
+    key = KeyStatus.from_source(src) if _view_is_keyed(view) else KeyStatus()
     res = Resolution.UNRESOLVED if not key.decrypted else Resolution.OK
     return ServiceResult(payload=payload, status=StatusBlock(resolution=res, key=key))
 
@@ -861,7 +627,9 @@ def read_hex_result(
         with open_dump_source(dump_path, km) as source:
             file_size = source.size_for(view)
             format_name = source.format_name
-            if offset < 0 or offset > file_size:
+            # Surface a locked/undecryptable keyed view before the offset-bounds
+            # check (see _view_locked): matches the legacy tag-status-first order.
+            if not _view_locked(source, view) and (offset < 0 or offset > file_size):
                 raise OffsetOutOfRangeError(
                     "offset out of range",
                     details={
@@ -904,7 +672,9 @@ def read_hex_raw_result(
         with open_dump_source(dump_path, km) as source:
             file_size = source.size_for(view)
             format_name = source.format_name
-            if offset < 0 or offset > file_size:
+            # Surface a locked/undecryptable keyed view before the offset-bounds
+            # check (see _view_locked): matches the legacy tag-status-first order.
+            if not _view_locked(source, view) and (offset < 0 or offset > file_size):
                 raise OffsetOutOfRangeError(
                     "offset out of range",
                     details={

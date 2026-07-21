@@ -168,6 +168,26 @@ def test_batch_validation_bad_workers(client, fixture_library_dir):
     assert r.status_code == 422
 
 
+def test_batch_validation_bad_output_format(client, fixture_library_dir):
+    """An unknown ``output_format`` must be rejected synchronously at the wire
+    (422) rather than deferred to an async worker failure. Guards the shared
+    ``OUTPUT_FORMATS`` validation between api.models and core.input_schemas."""
+    r = client.post(
+        "/api/analysis/batch",
+        json={
+            "jobs": [
+                {
+                    "library_dirs": [fixture_library_dir],
+                    "phase": "pre_handshake",
+                    "protocol_version": "12",
+                },
+            ],
+            "output_format": "xml",
+        },
+    )
+    assert r.status_code == 422
+
+
 # ------------------------------------------------------------------
 # verify-key: malformed hex must be a clean 400, not an unhandled 500
 # ------------------------------------------------------------------

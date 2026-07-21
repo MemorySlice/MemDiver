@@ -114,6 +114,13 @@ class KeyStatus:
             "hint": self.hint,
         }
 
+    def locked_error_dict(self) -> Dict[str, Any]:
+        """Legacy 'encrypted-and-locked' diagnostic dict surfaced inline by the
+        CLI/MCP inspect presenters (and the deprecated ``_tag_status_error``).
+        Only meaningful when :attr:`decrypted` is ``False``.
+        """
+        return {"error": self.hint, "tag_status": self.tag_status.value}
+
 
 @dataclass(frozen=True)
 class StatusBlock:

@@ -38,10 +38,7 @@ def _http_inspect(produce):
     try:
         return present_inspect_http(produce())
     except CapabilityError as e:
-        body = {"error": e.message}
-        if e.details:
-            body.update(e.details)
-        return body
+        return e.to_error_body()
 
 
 @router.get("/hex")

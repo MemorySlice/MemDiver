@@ -689,48 +689,10 @@ def write_auto_floor_artifacts(result: AutoFloorResult, output_dir: Path) -> dic
     vjson = output_dir / "verdict.json"
     vjson.write_text(json.dumps(result.to_dict(), indent=2))
 
-    lines = [
-        "# auto-floor verdict", "",
-        f"**Verdict:** `{result.verdict}`"
-        + (f"  (reason: {result.inconclusive_reason})" if result.inconclusive_reason else ""),
-        "",
-    ]
-    if result.verdict in (VERDICT_RECOVERED, VERDICT_FLOOR_TOO_HIGH):
-        lines += [
-            f"- recovered key: `{result.key_hex}`",
-            f"- offset: `0x{result.offset:x}`",
-            f"- phi* (hit variance): **{result.phi_star:.1f}**  "
-            f"(default floor {DEFAULT_FLOOR:.0f})",
-            f"- data-driven phi0: **{result.phi0:.1f}**",
-            f"- oracle calls to hit: {result.tried} / {result.maximal_candidates} maximal",
-        ]
-        if result.verdict == VERDICT_FLOOR_TOO_HIGH:
-            lines.append(f"- NOTE: default floor {DEFAULT_FLOOR:.0f} would have MISSED "
-                         f"this key (phi*={result.phi_star:.1f} < default) — "
-                         f"footnote-2 case, now automated.")
-    elif result.verdict == VERDICT_ABSENT:
-        conf = "n/a (coverage unverified)" if result.confidence is None else f"{result.confidence:.3f}"
-        lines += [
-            f"- oracle rejected all {result.maximal_candidates} maximal candidates",
-            f"- absence confidence (coverage x recall): {conf}",
-            f"- envelope: {json.dumps(result.envelope)}",
-            f"- coverage: {result.coverage}  correspondence: {result.correspondence}",
-        ]
-    elif result.verdict == VERDICT_INCONCLUSIVE and result.maximal_candidates:
-        lines += [
-            f"- no hit, and a precondition failed (reason: {result.inconclusive_reason}) "
-            f"→ NOT reported as ABSENT",
-            f"- oracle calls before stopping: {result.tried} / "
-            f"{result.maximal_candidates} maximal",
-        ]
-    # A negative verdict is only meaningful under its reachability assumptions.
-    if result.verdict in (VERDICT_ABSENT, VERDICT_INCONCLUSIVE) and result.assumptions:
-        lines += ["", "Negative-verdict assumptions (a key violating any of these "
-                  "would be missed):"]
-        lines += [f"  - {a}" for a in result.assumptions]
-    if result.oracle_health:
-        lines += ["", f"Oracle health: {json.dumps(result.oracle_health.to_dict())}"]
-    if result.phi0_detail:
-        lines += [f"phi0 derivation: {result.phi0_detail.detail}"]
+    # Markdown line assembly lives in the presentation layer; the file IO
+    # (join + trailing newline + write) stays here. Lazy import avoids a
+    # module-load cycle.
+    from memdiver.presentation.reports import auto_floor_report_lines
+    lines = auto_floor_report_lines(result)
     (output_dir / "report.md").write_text("\n".join(lines) + "\n")
     return {"verdict_json": str(vjson), "report_md": str(output_dir / "report.md")}

@@ -297,3 +297,28 @@ def test_capability_error_is_used_for_invalid_input(tmp_path):
         )
     assert excinfo.value.category is ErrorCategory.INVALID_INPUT
     assert excinfo.value.message.startswith("Invalid input:")
+
+
+def test_export_pattern_propagates_original_analysis_service_category(tmp_path):
+    """``export_pattern`` must let ``AnalysisServiceError`` (already a
+    ``CapabilityError`` subclass) propagate with its own accurate category
+    instead of catching it and re-raising a blanket ``INVALID_INPUT``.
+
+    ``fmt="xml"`` trips ``UnknownFormatError`` (category ``UNSUPPORTED``,
+    status 400) deep inside ``auto_export_pattern`` — before this fix a
+    surrounding ``except AnalysisServiceError`` in ``tools_pipeline.py``
+    discarded that category and always reported ``INVALID_INPUT``.
+    """
+    dumps = []
+    for i in range(2):
+        p = tmp_path / f"dump_{i}.bin"
+        p.write_bytes(os.urandom(256))
+        dumps.append(str(p))
+
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.export_pattern(
+            dump_paths=dumps, fmt="xml", name="x",
+        )
+    assert excinfo.value.category is ErrorCategory.UNSUPPORTED
+    assert excinfo.value.status == 400
+    assert "Unknown format" in excinfo.value.message

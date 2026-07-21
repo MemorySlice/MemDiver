@@ -33,8 +33,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Union
 
-from memdiver.api.models import AnalyzeRequestAPI, BatchJobDTO, BatchRunRequest
-from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest
+from memdiver.api.models import (
+    AnalyzeRequestAPI,
+    BatchJobDTO,
+    BatchRunRequest,
+    ScanRequest as ScanRequestAPI,
+)
+from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest, ScanRequest
 
 # Both AnalyzeRequestAPI (the ``/run`` body) and BatchJobDTO (one batch job)
 # expose the identical set of analysis fields, so a single converter serves
@@ -77,6 +82,24 @@ def to_batch_request(model: BatchRunRequest) -> BatchRequest:
     return BatchRequest(
         jobs=[to_analyze_request(job) for job in model.jobs],
         output_format=model.output_format,
+    )
+
+
+def to_scan_request(model: ScanRequestAPI) -> ScanRequest:
+    """Build the core :class:`ScanRequest` from the API :class:`ScanRequest`.
+
+    Bridges the one deliberate naming difference between the wire model and the
+    core dataclass: the wire field ``root`` maps to the core field
+    ``dataset_root`` (``str`` -> ``Path``); ``keylog_filename`` / ``protocols``
+    are 1:1. Runs the dataclass ``__post_init__`` (``dataset_root`` must be an
+    existing directory), so — like the other core converters here — it is the
+    typed seam a drift test pins to, not the API scan hot path (which streams
+    ``root`` straight into ``tools.scan_dataset``).
+    """
+    return ScanRequest(
+        dataset_root=Path(model.root),
+        keylog_filename=model.keylog_filename,
+        protocols=model.protocols,
     )
 
 

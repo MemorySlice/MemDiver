@@ -34,7 +34,7 @@ from memdiver.core.service_errors import (
 
 from .key_material import key_material_kwargs
 
-logger = logging.getLogger("memdiver.mcp_server.tools_pipeline")
+logger = logging.getLogger("memdiver.app.tools_pipeline")
 
 
 def _ensure_dir(path: Path) -> Path:
@@ -450,10 +450,13 @@ def export_pattern(
 
     Encrypted ``.msl`` inputs are decrypted when key material is supplied.
     """
-    from memdiver.api.services.analysis_service import (
-        AnalysisServiceError,
-        auto_export_pattern,
-    )
+    # AnalysisServiceError (raised by auto_export_pattern) is already a
+    # CapabilityError subclass carrying its own accurate category/status
+    # (e.g. DumpsNotFoundError -> NOT_FOUND/404, EmptyRegionError ->
+    # INTERNAL/500) -- it is allowed to propagate unmodified so the MCP
+    # funnel and any HTTP translator see the real category instead of a
+    # blanket INVALID_INPUT.
+    from memdiver.api.services.analysis_service import auto_export_pattern
 
     paths = [Path(p) for p in dump_paths]
     missing = [str(p) for p in paths if not p.exists()]
@@ -466,15 +469,10 @@ def export_pattern(
         )
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    try:
-        result = auto_export_pattern(
-            paths, fmt=fmt, name=name, align=align, context=context,
-            min_static_ratio=min_static_ratio, key_material=km,
-        )
-    except AnalysisServiceError as exc:
-        raise CapabilityError(
-            str(exc), category=ErrorCategory.INVALID_INPUT
-        ) from exc
+    result = auto_export_pattern(
+        paths, fmt=fmt, name=name, align=align, context=context,
+        min_static_ratio=min_static_ratio, key_material=km,
+    )
 
     payload: Dict[str, Any] = {
         "format": result["format"],

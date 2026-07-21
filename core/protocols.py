@@ -1,4 +1,14 @@
-"""Protocol descriptors and registry for multi-protocol support."""
+"""Protocol descriptors and registry for multi-protocol support.
+
+This module stays in core as the STABLE-CODE registry: protocol names,
+versions, and secret-type keys are domain data, not UI text. The embedded
+English ``display_labels``/``short_labels`` dicts are the DEFAULT (English)
+display catalog kept here alongside their codes for convenience. Localization,
+when added, would override these at the presentation layer
+(``memdiver.presentation.labels``) rather than in core. The presentation label
+helpers read this registry via a presentation->core import (the correct
+direction); core must never import from presentation.
+"""
 
 import logging
 from dataclasses import dataclass, field

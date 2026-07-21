@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("memdiver.mcp_server.session")
+logger = logging.getLogger("memdiver.app.session")
 
 
 class ToolSession:

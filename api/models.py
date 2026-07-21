@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from memdiver.core.input_schemas import OUTPUT_FORMATS
 
 
 class ScanRequest(BaseModel):
@@ -115,6 +117,16 @@ class BatchRunRequest(BaseModel):
     jobs: list[BatchJobDTO] = Field(..., min_length=1)
     output_format: str = "json"
     workers: int = Field(default=1, ge=1, le=32)
+
+    @field_validator("output_format")
+    @classmethod
+    def _validate_output_format(cls, v: str) -> str:
+        """Reject unknown formats at the wire boundary (HTTP 422) instead of
+        deferring to an async worker failure. Shares ``OUTPUT_FORMATS`` with
+        ``core.input_schemas.BatchRequest`` so the two cannot drift."""
+        if v not in OUTPUT_FORMATS:
+            raise ValueError(f"output_format {v!r} not in {set(OUTPUT_FORMATS)}")
+        return v
 
 
 class BatchRunResponse(BaseModel):

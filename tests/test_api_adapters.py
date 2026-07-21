@@ -12,14 +12,28 @@ from __future__ import annotations
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from memdiver.api.adapters import (
     analyze_run_params,
     batch_run_params,
     to_analyze_request,
     to_batch_request,
+    to_scan_request,
 )
-from memdiver.api.models import AnalyzeRequestAPI, BatchJobDTO, BatchRunRequest
-from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest
+from memdiver.api.models import (
+    AnalyzeRequestAPI,
+    BatchJobDTO,
+    BatchRunRequest,
+    ScanRequest as ScanRequestAPI,
+)
+from memdiver.core.input_schemas import (
+    OUTPUT_FORMATS,
+    AnalyzeRequest,
+    BatchRequest,
+    ScanRequest,
+)
 
 
 def test_to_analyze_request_maps_every_field(tmp_path: Path):
@@ -160,3 +174,61 @@ def test_batch_run_params_shape():
     # jobs are model_dump()'d DTOs (JSON-friendly), not dataclasses.
     assert params["jobs"][0]["library_dirs"] == ["/a"]
     assert params["jobs"][0]["phase"] == "p"
+
+
+# --- ScanRequest converter + api/core drift guards --------------------------
+
+
+def test_to_scan_request_maps_root_to_dataset_root(tmp_path: Path):
+    model = ScanRequestAPI(
+        root=str(tmp_path), keylog_filename="k.csv", protocols=["tls"]
+    )
+
+    req = to_scan_request(model)
+
+    assert isinstance(req, ScanRequest)
+    assert req.dataset_root == tmp_path
+    assert isinstance(req.dataset_root, Path)
+    assert req.keylog_filename == "k.csv"
+    assert req.protocols == ["tls"]
+
+
+def test_scan_request_field_correspondence():
+    """Drift guard: the API ScanRequest and core ScanRequest carry the same
+    fields modulo the one intentional rename (wire ``root`` == core
+    ``dataset_root``). Adding/removing a field on either side breaks this.
+    """
+    api_fields = set(ScanRequestAPI.model_fields)
+    core_fields = {f.name for f in fields(ScanRequest)}
+    assert (core_fields - {"dataset_root"}) == (api_fields - {"root"})
+
+
+def test_batch_run_request_rejects_unknown_output_format():
+    """Wire validation: an unknown output_format is a synchronous 422
+    (ValidationError), not an async worker failure."""
+    with pytest.raises(ValidationError):
+        BatchRunRequest(
+            jobs=[BatchJobDTO(library_dirs=["/a"], phase="p", protocol_version="12")],
+            output_format="xml",
+        )
+
+
+def test_batch_run_request_accepts_every_shared_format():
+    for fmt in OUTPUT_FORMATS:
+        model = BatchRunRequest(
+            jobs=[BatchJobDTO(library_dirs=["/a"], phase="p", protocol_version="12")],
+            output_format=fmt,
+        )
+        assert model.output_format == fmt
+
+
+def test_output_format_set_shared_between_api_and_core(tmp_path: Path):
+    """Drift guard: the API wire validator accepts EXACTLY the set the core
+    BatchRequest enforces — both sourced from OUTPUT_FORMATS."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    job = AnalyzeRequest(library_dirs=[lib], phase="p", protocol_version="12")
+    for fmt in OUTPUT_FORMATS:
+        assert BatchRequest(jobs=[job], output_format=fmt).output_format == fmt
+    with pytest.raises(ValueError, match="output_format"):
+        BatchRequest(jobs=[job], output_format="xml")

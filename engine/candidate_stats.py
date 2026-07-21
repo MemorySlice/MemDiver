@@ -531,49 +531,10 @@ def _locate_key_index(offsets: np.ndarray, sizes: np.ndarray,
 
 
 def render_report(result: PhaseAResult) -> str:
-    o, f = result.ordering, result.floor
-    lines = [
-        "# Phase A — offline auto-floor experiments (zero oracle)", "",
-        f"key offset `0x{result.key_offset:x}`  size {result.key_size}  "
-        f"maximal candidates **{o.maximal}**", "",
-        "## A1 — ordering gate", "",
-        f"- baseline **R_var = {o.r_var}** (candidates with window-variance ≥ key)",
-        f"- composite **R_composite = {o.r_composite}** (uniformity gate × variance)",
-        f"- fresh-clutter floor (wvar ≥ 0.9·σ_k²): **{o.clutter_at_ceiling}** "
-        "— irreducible; only the oracle separates these from the key",
-        f"- key passes uniformity gate: **{o.key_passes_gate}**  "
-        f"(gate-pass candidates: {o.gate_pass_count})",
-        f"- distinct windows (dedup potential): **{o.distinct_windows}** / {o.maximal}",
-        f"- key features: {json.dumps(o.key_features)}",
-        f"- verdict: {'GO — composite beats variance ordering' if o.r_composite < o.r_var else 'NO-GO — composite does not beat variance ordering'}",
-        "", "## A2 — floor selection", "",
-        f"- σ_k²̂ (P90 interior) = **{f.sigma_k2_hat:.1f}** (ceiling {SIGMA_K2:.1f})",
-        f"- φ_knee (descending Kneedle) = **{f.phi_knee:.1f}**",
-        f"- φ_theory = {json.dumps({k: round(v,1) for k,v in f.phi_theory.items()})}",
-        f"- key window-variance = **{f.key_wvar:.1f}**  trimmed-mean = {f.key_trimmed_mean:.1f}",
-        f"- key retained at knee: **{f.key_retained_at_knee}**  "
-        f"at φ_theory: {json.dumps(f.key_retained_at_theory)}",
-        f"- φ_knee vs φ_theory(0.35) agree (within 2×): **{f.agree}**",
-        "", "## C(φ) ladder", "",
-        "| φ | candidates | key retained |", "|---|---|---|",
-    ]
-    for row in f.ladder:
-        lines.append(f"| {row['phi']:.0f} | {row['candidates']} | "
-                     f"{row.get('key_retained')} |")
-    s = result.subsample
-    if s is not None:
-        lines += [
-            "", "## A3 — subsample stability (EXPERIMENTAL)", "",
-            f"- complementary halves: N_a={s.num_dumps_a}, N_b={s.num_dumps_b}  "
-            f"(expected σ² rel-err ≈ {s.expected_rel_err:.2f})",
-            f"- key stability = **{s.key_stability:.3f}**  "
-            f"(rel-err {s.key_rel_err:.3f}); median stability {s.median_stability:.3f}",
-            f"- baseline **R_var = {s.r_var}**  vs  stability-aware "
-            f"**R_stable = {s.r_stable}**",
-            f"- verdict: {'GO — stability beats variance ordering' if s.beats_variance else 'NO-GO — stability does not beat variance ordering'}",
-            "", f"> {s.detail}",
-        ]
-    return "\n".join(lines) + "\n"
+    # Text/markdown logic lives in the presentation layer; lazy import keeps
+    # engine free of a module-load cycle.
+    from memdiver.presentation.reports import candidate_report_md
+    return candidate_report_md(result)
 
 
 def load_consensus(artifact_dir: Path) -> Tuple[np.ndarray, bytes, int]:

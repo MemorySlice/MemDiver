@@ -16,7 +16,7 @@ from memdiver.engine.serializer import serialize_result
 
 from .session import ToolSession
 
-logger = logging.getLogger("memdiver.mcp_server.tools")
+logger = logging.getLogger("memdiver.app.tools")
 
 
 def scan_dataset(

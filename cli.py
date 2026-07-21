@@ -1247,8 +1247,7 @@ def present_inspect_cli(result) -> tuple[dict, int, str | None]:
     """
     key = result.status.key
     if not key.decrypted:
-        machine_payload = {"error": key.hint, "tag_status": key.tag_status.value}
-        return machine_payload, 1, key.hint
+        return key.locked_error_dict(), 1, key.hint
     return result.payload, 0, None
 
 
@@ -1265,10 +1264,7 @@ def _present_inspect_cli_call(produce) -> tuple[dict, int, str | None]:
     try:
         return present_inspect_cli(produce())
     except CapabilityError as e:
-        body = {"error": e.message}
-        if e.details:
-            body.update(e.details)
-        return body, 1, e.message
+        return e.to_error_body(), 1, e.message
 
 
 def _cmd_inspect_hex(args: argparse.Namespace) -> int:

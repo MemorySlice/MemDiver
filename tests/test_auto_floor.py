@@ -240,6 +240,12 @@ def test_write_artifacts(tmp_path):
     import json
     v = json.loads(Path(paths["verdict_json"]).read_text())
     assert v["verdict"] == VERDICT_RECOVERED and v["exit_code"] == 0
+    # Golden: report.md is byte-identical to the relocated presentation
+    # builder's output (presentation-separation refactor — behavior preserved).
+    from memdiver.presentation.reports import auto_floor_report_lines
+
+    expected_md = "\n".join(auto_floor_report_lines(r)) + "\n"
+    assert Path(paths["report_md"]).read_text() == expected_md
 
 
 # ── Phase B: robustness & credibility (conditional ABSENT, budget, dedup) ──
