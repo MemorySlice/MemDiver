@@ -4,13 +4,19 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .dataset_metadata import load_run_meta
 from .models import DumpFile, RunDirectory
 from .keylog import KeylogParser
 from .phase_normalizer import PhaseNormalizer
 from .protocols import REGISTRY
+
+if TYPE_CHECKING:
+    # Only needed for the "CryptoSecret" annotation on _extract_msl_secrets;
+    # the real object is lazily imported inside that function to avoid a heavy
+    # import at module load.
+    from .models import CryptoSecret
 
 logger = logging.getLogger("memdiver.discovery")
 
@@ -54,7 +60,7 @@ def _infer_dump_kind(path: Path) -> str:
 def _extract_msl_secrets(msl_paths: List[Path]) -> List["CryptoSecret"]:
     """Extract CryptoSecret objects from MSL key hints (lazy import)."""
     try:
-        from msl.key_extract import extract_secrets_from_path
+        from memdiver.msl.key_extract import extract_secrets_from_path
     except ImportError:
         logger.debug("msl.key_extract not available")
         return []

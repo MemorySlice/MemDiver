@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple
 
-from core.strings import StringMatch, extract_strings
+from memdiver.core.strings import StringMatch, extract_strings
 
 from .page_map import get_region_page_data
 from .types import MslMemoryRegion

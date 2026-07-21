@@ -6,11 +6,18 @@ import pkgutil
 from pathlib import Path
 from typing import Dict, List
 
-from core.constants import AlgorithmMode
+from memdiver.core.constants import AlgorithmMode
+from memdiver.core.plugin_discovery import (
+    discover_entry_point_subclasses,
+    discover_subclasses,
+)
 
 from .base import BaseAlgorithm
 
 logger = logging.getLogger("memdiver.algorithms.registry")
+
+#: Entry-point group under which out-of-tree packages advertise algorithms.
+ALGORITHM_ENTRY_POINT_GROUP = "memdiver.algorithms"
 
 
 class AlgorithmRegistry:
@@ -20,46 +27,52 @@ class AlgorithmRegistry:
         self._algorithms: Dict[str, BaseAlgorithm] = {}
 
     def discover(self) -> None:
-        """Walk known_key/ and unknown_key/ subdirectories to find algorithms."""
+        """Walk known_key/ and unknown_key/ subdirectories to find algorithms.
+
+        Also loads any algorithms advertised by installed packages under the
+        ``memdiver.algorithms`` entry-point group (additive; a no-op when none
+        are installed).
+        """
         base_dir = Path(__file__).parent
 
+        modules = []
         for subdir in ["known_key", "unknown_key", "patterns"]:
             pkg_path = base_dir / subdir
             if not pkg_path.is_dir():
                 continue
 
-            pkg_name = f"algorithms.{subdir}"
+            pkg_name = f"memdiver.algorithms.{subdir}"
             try:
-                pkg = importlib.import_module(pkg_name)
-            except ImportError:
+                importlib.import_module(pkg_name)
+            except Exception:  # noqa: BLE001 - a broken subpackage __init__ must
+                # not abort discovery of the other subpackages' algorithms.
+                logger.warning(
+                    "Failed to import algorithm subpackage %s; skipping",
+                    pkg_name, exc_info=True,
+                )
                 continue
 
             for importer, modname, ispkg in pkgutil.walk_packages(
                 path=[str(pkg_path)], prefix=f"{pkg_name}."
             ):
                 try:
-                    mod = importlib.import_module(modname)
-                except ImportError:
+                    modules.append(importlib.import_module(modname))
+                except Exception:  # noqa: BLE001 - a broken plugin module must
+                    # not abort discovery of every other algorithm. Isolate it
+                    # (log + skip), matching plugin_discovery's stated guarantee.
+                    logger.warning(
+                        "Failed to import algorithm module %s; skipping",
+                        modname, exc_info=True,
+                    )
                     continue
 
-                for attr_name in dir(mod):
-                    attr = getattr(mod, attr_name)
-                    if (isinstance(attr, type)
-                            and issubclass(attr, BaseAlgorithm)
-                            and attr is not BaseAlgorithm
-                            and hasattr(attr, 'name')
-                            and attr.name):
-                        try:
-                            instance = attr()
-                        except Exception:
-                            # A single algorithm whose __init__ raises must not
-                            # abort discovery of all the others; log and skip it.
-                            logger.warning(
-                                "Skipping algorithm %s.%s: instantiation failed",
-                                modname, attr_name, exc_info=True,
-                            )
-                            continue
-                        self._algorithms[instance.name] = instance
+        for instance in discover_subclasses(modules, BaseAlgorithm):
+            self._algorithms[instance.name] = instance
+
+        for instance in discover_entry_point_subclasses(
+            ALGORITHM_ENTRY_POINT_GROUP, BaseAlgorithm
+        ):
+            self._algorithms[instance.name] = instance
 
     def get(self, name: str) -> BaseAlgorithm:
         return self._algorithms[name]

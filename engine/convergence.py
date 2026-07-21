@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Set
 
-from core.alignment_filter import alignment_filter
-from core.entropy import compute_entropy_profile
-from core.variance import ByteClass
-from engine.consensus import ConsensusVector
+from memdiver.core.alignment_filter import alignment_filter
+from memdiver.core.entropy import compute_entropy_profile
+from memdiver.core.variance import ByteClass
+from memdiver.engine.consensus import ConsensusVector
 
 logger = logging.getLogger("memdiver.engine.convergence")
 

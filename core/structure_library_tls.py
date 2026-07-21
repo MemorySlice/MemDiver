@@ -7,7 +7,7 @@ follow RFC 5246 §§6.3, 8.1.
 
 from typing import List, Tuple
 
-from core.structure_defs import FieldDef, FieldType, StructureDef
+from memdiver.core.structure_defs import FieldDef, FieldType, StructureDef
 
 
 _KEY_SCHEDULE_TAG = "key_schedule"

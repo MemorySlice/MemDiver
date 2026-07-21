@@ -3,7 +3,7 @@
 import logging
 from typing import Any, List, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.variance_map")
 
@@ -40,8 +40,8 @@ def render_variance_map(
     values = [variance_data[i] for i in offsets]
 
     # Color by classification
-    from ui.components import color_scheme as cs
-    from core.variance import ByteClass
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.core.variance import ByteClass
     class_colors = {
         ByteClass.INVARIANT: cs.VARIANCE_INVARIANT,
         ByteClass.STRUCTURAL: cs.VARIANCE_STRUCTURAL,

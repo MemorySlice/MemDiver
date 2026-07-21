@@ -7,11 +7,11 @@ that match known cryptographic or protocol-specific memory layouts.
 import logging
 from typing import List
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
-from core.entropy import compute_entropy_profile, find_high_entropy_regions
-from core.structure_library import get_structure_library
-from core.structure_overlay import best_match_structure
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.entropy import compute_entropy_profile, find_high_entropy_regions
+from memdiver.core.structure_library import get_structure_library
+from memdiver.core.structure_overlay import best_match_structure
 
 logger = logging.getLogger("memdiver.algorithms.structure_scan")
 

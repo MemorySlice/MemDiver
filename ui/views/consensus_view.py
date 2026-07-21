@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.consensus_view")
 
@@ -23,8 +23,8 @@ def render_consensus_view(
     Returns:
         mo.Html with consensus summary and classification chart.
     """
-    from ui.components import color_scheme as cs
-    from ui.components.html_builder import stat_row
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.ui.components.html_builder import stat_row
 
     if not consensus or consensus.size == 0:
         return mo.md(_("*No consensus data. Need >= 2 dumps at the same phase.*"))

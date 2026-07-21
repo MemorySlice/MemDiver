@@ -3,8 +3,8 @@
 import logging
 from typing import Dict, List
 
-from core.constants import TESTING as _TESTING, RESEARCH as _RESEARCH
-from ui.locales import _
+from memdiver.core.constants import TESTING as _TESTING, RESEARCH as _RESEARCH
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.mode")
 

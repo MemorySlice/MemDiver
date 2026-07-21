@@ -1,14 +1,120 @@
 """DumpSource implementations and auto-detect factory."""
 
+import itertools
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Literal, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 from .dump_io import DumpReader, find_all_offsets
 
 logger = logging.getLogger("memdiver.core.dump_source")
 
-ViewMode = Literal["raw", "vas"]
+ViewMode = Literal["raw", "vas", "va"]
+
+
+@runtime_checkable
+class DumpSource(Protocol):
+    """Structural contract shared by every dump-format source.
+
+    Historically each concrete source (:class:`RawDumpSource`,
+    :class:`MslDumpSource`, :class:`core.dump_sources.gcore.GCoreDumpSource`
+    and the ``_RegionedRawSource`` subclasses) re-implemented this contract
+    independently, documented only in prose. This Protocol makes it explicit
+    so callers can type against ``DumpSource`` and new sources have a checklist
+    to satisfy.
+
+    It is ``runtime_checkable``: ``isinstance(obj, DumpSource)`` succeeds for
+    any object exposing the members below (presence only — the check does not
+    inspect signatures). All built-in sources satisfy it.
+
+    Note on ``read_all``: only :class:`RawDumpSource` and
+    :class:`MslDumpSource` provide a ``read_all(view)`` convenience that
+    materialises the whole view into ``bytes``. The regioned-raw and gcore
+    sources deliberately omit it (their views can be multi-GB and are meant to
+    be streamed via :meth:`iter_ranges` / sliced via :meth:`read_range`), so
+    ``read_all`` is NOT part of this universal structural contract. General
+    callers must feature-test with ``hasattr`` before calling.
+
+    Caveat — some engine paths still assume ``read_all``: the raw (non-MSL)
+    branch of the consensus builder (:func:`engine.pipeline_runner._build_consensus`)
+    calls ``read_all()`` on every source. A source lacking it (gcore / regioned
+    raw) therefore cannot currently be fed into that raw-consensus path. This is
+    a pre-existing engine assumption, not a guarantee of this Protocol; migrating
+    that path onto :meth:`iter_ranges` is a tracked follow-up.
+    """
+
+    # -- Identity / metadata ------------------------------------------------
+    @property
+    def path(self) -> Path:
+        """Filesystem path of the backing dump file."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Basename of the backing dump file."""
+        ...
+
+    @property
+    def format_name(self) -> str:
+        """Short format identifier (e.g. ``"raw"``, ``"msl"``, ``"gcore"``)."""
+        ...
+
+    @property
+    def size(self) -> int:
+        """Default size in bytes (the format's canonical view for scanners)."""
+        ...
+
+    def size_for(self, view: str = ...) -> int:
+        """Size in bytes of the requested byte *view* (``"raw"``/``"vas"``…)."""
+        ...
+
+    # -- Lifecycle / context manager ---------------------------------------
+    def open(self) -> None:
+        """Acquire underlying resources (mmap, reader, region tables)."""
+        ...
+
+    def close(self) -> None:
+        """Release resources acquired by :meth:`open`."""
+        ...
+
+    def __enter__(self) -> "DumpSource":
+        ...
+
+    def __exit__(self, *exc: Any) -> Any:
+        ...
+
+    # -- Data access --------------------------------------------------------
+    def read_range(self, offset: int, length: int, view: str = ...) -> bytes:
+        """Read ``length`` bytes starting at ``offset`` within *view*."""
+        ...
+
+    def find_all(self, needle: bytes, view: str = ...) -> List[int]:
+        """Return all offsets of ``needle`` within *view* (may overlap)."""
+        ...
+
+    def iter_ranges(self, *args: Any, **kwargs: Any) -> Iterator[Tuple[int, int, Any]]:
+        """Iterate captured ranges.
+
+        The third tuple element varies by source (inline ``bytes`` for MSL, a
+        file offset ``int`` for the region-table sources); callers that need
+        uniform bytes should use :meth:`read_range`.
+        """
+        ...
+
+    def metadata(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable descriptor of the dump."""
+        ...
 
 
 def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
@@ -98,6 +204,10 @@ class MslDumpSource:
         self._path = path
         self._reader = None
         self._size: int = -1
+        # Cached (span_start, span_size) for the sparse "va" view; None until
+        # first computed. Derived from region base addresses, which are fixed
+        # for a reader's lifetime.
+        self._va_span_cache: "Tuple[int, int] | None" = None
         # close() is a no-op when True; reader lifetime is owned by the
         # caller (see borrow_reader).
         self._borrowed: bool = False
@@ -146,13 +256,42 @@ class MslDumpSource:
                 return self._path.stat().st_size
             except OSError:
                 return 0
+        if view == "va":
+            # Full virtual-address span (sparse); served on demand, never
+            # materialized. Zero when there is no open reader / no regions.
+            return self._va_span()[1]
         if self._reader is None:
             return 0
         if self._size < 0:
-            self._size = sum(
-                r.region_size for r in self._reader.collect_regions()
-            )
+            # The "vas" stream is the flattened concatenation of CAPTURED
+            # page runs only (see read_range/iter_ranges), so its size is the
+            # sum of captured-run lengths — NOT the sum of region_size, which
+            # over-counts FAILED/UNMAPPED pages that contribute zero bytes.
+            # (For all-CAPTURED imports the two are equal.) iter_ranges yields
+            # zero-copy memoryviews, so summing lengths does not read data.
+            self._size = sum(rng_len for _va, rng_len, _chunk in self.iter_ranges())
         return self._size
+
+    def _va_span(self) -> Tuple[int, int]:
+        """Return the cached ``(span_start, span_size)`` of the "va" view.
+
+        ``span_start = min(region.base_addr)`` and
+        ``span_end = max(region.base_addr + region.region_size)`` over all
+        regions; the span is ``span_end - span_start``. This can be huge
+        (the process VA range) and is intentionally NOT materialized —
+        :meth:`_read_range_va` serves slices on demand.
+        """
+        if self._va_span_cache is None:
+            if self._reader is None:
+                return (0, 0)
+            regions = self._reader.collect_regions()
+            if not regions:
+                self._va_span_cache = (0, 0)
+            else:
+                start = min(r.base_addr for r in regions)
+                end = max(r.base_addr + r.region_size for r in regions)
+                self._va_span_cache = (start, max(0, end - start))
+        return self._va_span_cache
 
     def _ensure_raw_reader(self) -> DumpReader:
         """Lazily open a DumpReader over the raw .msl container bytes."""
@@ -175,19 +314,20 @@ class MslDumpSource:
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
 
     def open(self) -> None:
-        from msl.reader import MslReader
+        from memdiver.msl.reader import MslReader
         self._reader = MslReader(
             self._path, key=self._key, passphrase=self._passphrase,
             kem_private_key=self._kem_private_key,
         )
         self._reader.open()
         self._size = -1
+        self._va_span_cache = None
 
     @property
     def tag_status(self):
         """AEAD tag-verification status of the underlying reader (spec §10).
         TagStatus.NOT_ENCRYPTED for plaintext files."""
-        from msl.enums import TagStatus
+        from memdiver.msl.enums import TagStatus
         return self._reader.tag_status if self._reader is not None else TagStatus.NOT_ENCRYPTED
 
     def close(self) -> None:
@@ -198,11 +338,13 @@ class MslDumpSource:
             # Reader ownership stays with the external holder; just detach.
             self._reader = None
             self._size = -1
+            self._va_span_cache = None
             return
         if self._reader:
             self._reader.close()
             self._reader = None
         self._size = -1
+        self._va_span_cache = None
 
     def get_reader(self):
         """Return the underlying MslReader (must be opened first)."""
@@ -226,6 +368,8 @@ class MslDumpSource:
     def read_range(self, offset: int, length: int, view: ViewMode = "vas") -> bytes:
         if view == "raw":
             return self._ensure_raw_reader().read_range(offset, length)
+        if view == "va":
+            return self._read_range_va(offset, length)
         self._require_vas(view)
         result, flat_pos = bytearray(), 0
         for _va, rng_len, chunk in self.iter_ranges():
@@ -239,6 +383,35 @@ class MslDumpSource:
             result.extend(chunk[s:e])
             flat_pos = rng_end
         return bytes(result)
+
+    def _read_range_va(self, offset: int, length: int) -> bytes:
+        """Serve the sparse full-VA view on demand (see class docstring).
+
+        ``offset`` is relative to the VA span start (``_va_span()[0]``), so
+        the requested VA window is ``[span_start + offset, +length)``. Returns
+        a zero-filled buffer of ``length`` bytes with CAPTURED pages copied in
+        at their VA-relative positions; FAILED/UNMAPPED/gap positions stay
+        ``0x00``. Callers rely on ``/page-states`` — not the byte values — to
+        tell real captured bytes from filler. The full span is never
+        materialized; only the overlapping captured runs are copied.
+        """
+        if length <= 0 or self._reader is None:
+            return b""
+        span_start, _span_size = self._va_span()
+        req_start = span_start + offset
+        req_end = req_start + length
+        buf = bytearray(length)
+        for vaddr, clen, chunk in self.iter_ranges():
+            c_end = vaddr + clen
+            if c_end <= req_start:
+                continue
+            if vaddr >= req_end:
+                break  # iter_ranges is ascending by VA — nothing further overlaps
+            ov_start = max(vaddr, req_start)
+            ov_end = min(c_end, req_end)
+            buf[ov_start - req_start:ov_end - req_start] = \
+                chunk[ov_start - vaddr:ov_end - vaddr]
+        return bytes(buf)
 
     def find_all(self, needle: bytes, view: ViewMode = "vas") -> List[int]:
         if view == "raw":
@@ -291,7 +464,7 @@ class MslDumpSource:
     def iter_ranges(self) -> Iterator[Tuple[int, int, bytes]]:
         if self._reader is None:
             return
-        from msl.page_map import iter_captured_ranges
+        from memdiver.msl.page_map import iter_captured_ranges
         regions = self._reader.collect_regions()
         regions.sort(key=lambda r: r.base_addr)
         for region in regions:
@@ -320,19 +493,211 @@ class MslDumpSource:
             "version": f"{hdr.version_major}.{hdr.version_minor}",
             "raw_size": self.size_for("raw"),
             "vas_size": self.size_for("vas"),
+            # Sparse full virtual-address view (Phase 2). va_size is the total
+            # span (span_end - span_start); va_span_start is the base VA so a
+            # UI can map a "va" offset back to an absolute virtual address.
+            "va_size": self.size_for("va"),
+            "va_span_start": self._va_span()[0],
         }
 
     def _get_region_page_data(self, region) -> bytes:
         from .msl_helpers import get_region_page_data
         return get_region_page_data(self._reader, region)
 
+# ---------------------------------------------------------------------------
+# Detector registry
+# ---------------------------------------------------------------------------
+#
+# ``open_dump`` used to be a hand-maintained if/elif chain. The registry
+# replaces that chain with an ordered, extensible list so new dump formats can
+# be supported without editing ``open_dump``. Each entry pairs a *detector*
+# (does this file look like my format?) with a *factory* (build the source).
+#
+# A detector is ``detector(path, header_bytes) -> bool``; ``header_bytes`` is
+# the first :data:`_HEADER_PROBE_LEN` bytes of the file (empty on read error).
+#
+# A factory is ``factory(path, **key_material) -> DumpSource``. It is always
+# called with the ``key`` / ``passphrase`` / ``kem_private_key`` keyword
+# arguments ``open_dump`` received; factories that do not use key material
+# simply accept and ignore ``**_`` (see the built-in wrappers below).
+#
+# Entries are tried in descending ``priority``; ties break by registration
+# order (stable). The built-ins reserve high priorities to preserve the exact
+# legacy precedence (MSL > ELF core > gdb suffix > lldb suffix > raw). A custom
+# source registered with the default ``priority=0`` therefore slots in *after*
+# every built-in specific detector but *before* the always-matching raw
+# fallback — the intended "add a new format" position.
+
+DetectorFn = Callable[[Path, bytes], bool]
+DumpSourceFactory = Callable[..., DumpSource]  # called as factory(path, **key_material)
+
+_HEADER_PROBE_LEN = 18
+
+# Priority tiers for the built-in sources (see module comment above).
+_PRIORITY_MSL = 100
+_PRIORITY_ELF_CORE = 90
+_PRIORITY_GDB_RAW = 80
+_PRIORITY_LLDB_RAW = 70
+_PRIORITY_RAW_FALLBACK = -1_000_000  # always-matching catch-all; stays last
+
+
+@dataclass(frozen=True)
+class _DumpSourceEntry:
+    """One (detector, factory) registration with its dispatch priority."""
+
+    priority: int
+    order: int  # registration sequence; stable tie-breaker within a priority
+    detector: DetectorFn
+    factory: DumpSourceFactory
+
+
+_DUMP_SOURCE_REGISTRY: List[_DumpSourceEntry] = []
+_registration_counter = itertools.count()
+
+
+def register_dump_source(
+    detector: DetectorFn,
+    factory: DumpSourceFactory,
+    *,
+    priority: int = 0,
+) -> None:
+    """Register a dump-source detector/factory pair for :func:`open_dump`.
+
+    ``detector(path, header_bytes) -> bool`` decides whether *path* is this
+    format; ``header_bytes`` holds the file's first
+    :data:`_HEADER_PROBE_LEN` bytes. ``factory(path, **key_material)`` builds
+    the source and is invoked with the ``key`` / ``passphrase`` /
+    ``kem_private_key`` keywords ``open_dump`` received (accept ``**_`` to
+    ignore them).
+
+    ``priority`` orders detection: higher is tried first, ties break by
+    registration order. The default (``0``) places a custom source after all
+    built-in specific detectors but ahead of the always-matching raw fallback,
+    which is the correct slot for a genuinely new format. Pass a higher value
+    to pre-empt a built-in detector.
+    """
+    entry = _DumpSourceEntry(
+        priority=priority,
+        order=next(_registration_counter),
+        detector=detector,
+        factory=factory,
+    )
+    _DUMP_SOURCE_REGISTRY.append(entry)
+    # Keep the list ready-sorted so open_dump can iterate directly.
+    _DUMP_SOURCE_REGISTRY.sort(key=lambda e: (-e.priority, e.order))
+
+
+# -- Built-in detectors ------------------------------------------------------
+
+
+def _detect_msl(path: Path, header: bytes) -> bool:
+    from memdiver.msl.enums import FILE_MAGIC
+    return header[:8] == FILE_MAGIC
+
+
+def _detect_elf_core(path: Path, header: bytes) -> bool:
+    # ELF core dump: \x7fELF magic + e_type == ET_CORE (4) at offset 16.
+    # e_type's byte order follows EI_DATA (header[5]): 1=ELFDATA2LSB
+    # (little-endian), 2=ELFDATA2MSB (big-endian). Reading it unconditionally
+    # little-endian would misdetect big-endian cores.
+    if header[:4] == b"\x7fELF" and len(header) >= 18:
+        byteorder = "big" if header[5] == 2 else "little"
+        return int.from_bytes(header[16:18], byteorder) == 4  # ET_CORE
+    return False
+
+
+def _detect_gdb_raw(path: Path, header: bytes) -> bool:
+    name = path.name
+    return name.endswith("gdb_raw.bin") and not name.endswith("lldb_raw.bin")
+
+
+def _detect_lldb_raw(path: Path, header: bytes) -> bool:
+    return path.name.endswith("lldb_raw.bin")
+
+
+def _detect_raw_fallback(path: Path, header: bytes) -> bool:
+    return True  # opaque catch-all; always matches, registered lowest priority
+
+
+# -- Built-in factories ------------------------------------------------------
+#
+# All accept ``**key_material`` for a uniform call site; only the MSL factory
+# consumes it (encrypted .msl containers, spec §10).
+
+
+def _make_msl(path: Path, **key_material: Any) -> DumpSource:
+    return MslDumpSource(
+        path,
+        key=key_material.get("key"),
+        passphrase=key_material.get("passphrase"),
+        kem_private_key=key_material.get("kem_private_key"),
+    )
+
+
+def _make_gcore(path: Path, **_: Any) -> DumpSource:
+    from memdiver.core.dump_sources.gcore import GCoreDumpSource
+    return GCoreDumpSource(path)
+
+
+def _make_gdb_raw(path: Path, **_: Any) -> DumpSource:
+    from memdiver.core.dump_sources.gdb_raw import GdbRawDumpSource
+    return GdbRawDumpSource(path)
+
+
+def _make_lldb_raw(path: Path, **_: Any) -> DumpSource:
+    from memdiver.core.dump_sources.lldb_raw import LldbRawDumpSource
+    return LldbRawDumpSource(path)
+
+
+def _make_raw(path: Path, **_: Any) -> DumpSource:
+    return RawDumpSource(path)
+
+
+def _register_builtin_sources() -> None:
+    """Register the built-in sources, preserving the legacy dispatch order."""
+    register_dump_source(_detect_msl, _make_msl, priority=_PRIORITY_MSL)
+    register_dump_source(_detect_elf_core, _make_gcore, priority=_PRIORITY_ELF_CORE)
+    register_dump_source(_detect_gdb_raw, _make_gdb_raw, priority=_PRIORITY_GDB_RAW)
+    register_dump_source(_detect_lldb_raw, _make_lldb_raw, priority=_PRIORITY_LLDB_RAW)
+    register_dump_source(_detect_raw_fallback, _make_raw, priority=_PRIORITY_RAW_FALLBACK)
+
+
+#: Entry-point group under which out-of-tree packages advertise dump sources.
+#: Each advertised entry point is a module (imported for its
+#: ``register_dump_source`` side effects) or a callable (invoked to
+#: self-register). See ``docs/contributing/adding_dump_source.md``.
+DUMP_SOURCE_ENTRY_POINT_GROUP = "memdiver.dump_sources"
+
+#: Guards one-time out-of-tree discovery so it runs at most once, adding zero
+#: overhead to normal :func:`open_dump` calls.
+_ENTRY_POINTS_LOADED = False
+
+
+def _load_entry_point_sources_once() -> None:
+    """Load out-of-tree dump sources exactly once, after the built-ins.
+
+    Additive and failure-isolated: a silent no-op when nothing is installed.
+    """
+    global _ENTRY_POINTS_LOADED  # noqa: PLW0603
+    if _ENTRY_POINTS_LOADED:
+        return
+    _ENTRY_POINTS_LOADED = True
+    from memdiver.core.plugin_discovery import load_entry_point_registrations
+    load_entry_point_registrations(DUMP_SOURCE_ENTRY_POINT_GROUP)
+
+
+_register_builtin_sources()
+_load_entry_point_sources_once()
+
+
 def open_dump(path: Path, *,
               key: "bytes | None" = None,
               passphrase: "bytes | None" = None,
-              kem_private_key: "bytes | None" = None) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource":  # noqa: F821
+              kem_private_key: "bytes | None" = None) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource | DumpSource":  # noqa: F821
     """Auto-detect dump format and return appropriate DumpSource.
 
-    Dispatch order:
+    Detection runs through the extensible detector registry (see
+    :func:`register_dump_source`), which preserves the legacy dispatch order:
       1. MSL container (magic bytes).
       2. ELF core dump (``\\x7fELF`` with ``e_type == ET_CORE``) — handled
          by :class:`core.dump_sources.gcore.GCoreDumpSource`. Checked
@@ -342,10 +707,13 @@ def open_dump(path: Path, *,
          ``.lldb_raw.bin``), optionally resolved from a ``.maps`` path.
       4. Fallback: opaque :class:`RawDumpSource`.
 
+    Custom sources registered via :func:`register_dump_source` are consulted
+    according to their priority (default: after the built-in specific
+    detectors, before the raw fallback).
+
     Key material (key / passphrase / kem_private_key) is forwarded to
     encrypted .msl containers (spec §10); it is ignored for other formats.
     """
-    from msl.enums import FILE_MAGIC
     path = Path(path)
     name = path.name
 
@@ -354,35 +722,32 @@ def open_dump(path: Path, *,
         bin_candidate = path.with_suffix(".bin")
         if bin_candidate.exists():
             path = bin_candidate
-            name = path.name
 
     try:
         with open(path, "rb") as f:
-            magic = f.read(18)
+            header = f.read(_HEADER_PROBE_LEN)
     except OSError:
-        magic = b""
+        header = b""
 
-    if magic[:8] == FILE_MAGIC:
-        return MslDumpSource(path, key=key, passphrase=passphrase,
-                             kem_private_key=kem_private_key)
+    for entry in _DUMP_SOURCE_REGISTRY:
+        # Isolate a faulty (e.g. third-party) detector: log and skip it rather
+        # than aborting dispatch for every file. Mirrors the failure-isolation
+        # policy in core/plugin_discovery.py.
+        try:
+            matched = entry.detector(path, header)
+        except Exception:  # noqa: BLE001 - a bad detector must not break open_dump
+            logger.warning(
+                "dump-source detector %r raised; skipping it",
+                getattr(entry.detector, "__name__", entry.detector),
+                exc_info=True,
+            )
+            continue
+        if matched:
+            return entry.factory(
+                path, key=key, passphrase=passphrase,
+                kem_private_key=kem_private_key,
+            )
 
-    # ELF core dump: \x7fELF magic + e_type == ET_CORE (4) at offset 16.
-    # e_type's byte order follows EI_DATA (magic[5]): 1=ELFDATA2LSB
-    # (little-endian), 2=ELFDATA2MSB (big-endian). Reading it unconditionally
-    # little-endian misdetects big-endian cores, which then fall through to
-    # RawDumpSource.
-    if magic[:4] == b"\x7fELF" and len(magic) >= 18:
-        byteorder = "big" if magic[5] == 2 else "little"
-        e_type = int.from_bytes(magic[16:18], byteorder)
-        if e_type == 4:  # ET_CORE
-            from core.dump_sources.gcore import GCoreDumpSource
-            return GCoreDumpSource(path)
-
-    if name.endswith("gdb_raw.bin") and not name.endswith("lldb_raw.bin"):
-        from core.dump_sources.gdb_raw import GdbRawDumpSource
-        return GdbRawDumpSource(path)
-    if name.endswith("lldb_raw.bin"):
-        from core.dump_sources.lldb_raw import LldbRawDumpSource
-        return LldbRawDumpSource(path)
-
+    # The raw fallback always matches, so this is unreachable in practice; kept
+    # for defensive parity with the pre-registry behaviour.
     return RawDumpSource(path)

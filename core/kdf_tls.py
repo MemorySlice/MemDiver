@@ -4,9 +4,9 @@ import hashlib
 import logging
 from typing import List, Optional, Set
 
-from core.kdf import TLS12PRF, TLS13HKDF, _hash_length
-from core.kdf_base import BaseKDF, KDFParams
-from core.models import CryptoSecret
+from memdiver.core.kdf import TLS12PRF, TLS13HKDF, _hash_length
+from memdiver.core.kdf_base import BaseKDF, KDFParams
+from memdiver.core.models import CryptoSecret
 
 logger = logging.getLogger("memdiver.kdf_tls")
 

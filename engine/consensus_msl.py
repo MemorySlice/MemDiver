@@ -12,8 +12,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from core.region_align import build_dump_region_map
-from core.variance import WelfordVariance
+from memdiver.core.region_align import build_dump_region_map
+from memdiver.core.variance import WelfordVariance
 
 logger = logging.getLogger("memdiver.engine.consensus_msl")
 
@@ -30,7 +30,7 @@ def build_msl_consensus(
     ``(variance, total_bytes, reference_bytes)`` where ``reference_bytes``
     is the first source's aligned slab in the same order as variance.
     """
-    from core.region_align import align_dumps
+    from memdiver.core.region_align import align_dumps
 
     region_maps = []
     for i, src in enumerate(sources):

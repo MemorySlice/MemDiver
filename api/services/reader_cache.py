@@ -55,19 +55,63 @@ release are O(1). No lock is held during actual reader use.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, Optional, TYPE_CHECKING
+from typing import Any, Dict, Iterator, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from msl.reader import MslReader
+    from memdiver.msl.reader import MslReader
 
 logger = logging.getLogger("memdiver.api.services.reader_cache")
 
 DEFAULT_MAX_SIZE = 32
+
+
+# --- request-scoped key material (spec §10) ----------------------------
+#
+# Encrypted ``.msl`` containers need key material (key / passphrase / KEM
+# private key) to decrypt. The cache is path-keyed and process-wide, so
+# caching a *decrypted* reader keyed only by path would leak plaintext
+# across callers and cache secrets. Instead, a caller (an HTTP request
+# handler) binds key material for the duration of a call via
+# :func:`key_material_scope`; the cache openers below detect the active
+# scope and open an UNCACHED, keyed reader/source for that call only.
+# Key material therefore never enters the LRU and is never logged.
+#
+# ``.msl`` decryption is the only consumer — plaintext dumps ignore it.
+_KEY_MATERIAL_VAR: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
+    contextvars.ContextVar("msl_key_material", default=None)
+)
+
+_KEY_FIELDS = ("key", "passphrase", "kem_private_key")
+
+
+@contextmanager
+def key_material_scope(key_material: Optional[Dict[str, Any]]) -> Iterator[None]:
+    """Bind ``open_dump`` key kwargs for the current call's cache opens.
+
+    Any ``cached_msl_reader`` / ``cached_dump_source`` opened while this
+    scope is active uses an uncached, keyed reader/source instead of the
+    shared cache entry. A ``None`` or all-``None`` mapping is a no-op — the
+    normal cached (plaintext) path is used.
+    """
+    token = _KEY_MATERIAL_VAR.set(key_material or None)
+    try:
+        yield
+    finally:
+        _KEY_MATERIAL_VAR.reset(token)
+
+
+def _active_key_material() -> Optional[Dict[str, Any]]:
+    """Return the active key material iff it carries at least one secret."""
+    km = _KEY_MATERIAL_VAR.get()
+    if km and any(km.get(field) for field in _KEY_FIELDS):
+        return km
+    return None
 
 
 class _CacheEntry:
@@ -104,7 +148,7 @@ class MslReaderCache:
         Increments the entry's refcount. Must be matched by `_release`.
         Called under self._lock.
         """
-        from msl.reader import MslReader
+        from memdiver.msl.reader import MslReader
 
         key = self._key(path)
         with self._lock:
@@ -284,7 +328,23 @@ def cached_msl_reader(path: Path) -> "Iterator[MslReader]":
 
     The reader stays open in the cache after the `with` block exits, so
     subsequent calls against the same path skip the mmap + header parse.
+
+    When a :func:`key_material_scope` is active, an UNCACHED keyed
+    ``MslReader`` is opened for this call so encrypted containers can be
+    read without the key ever entering the shared cache.
     """
+    km = _active_key_material()
+    if km is not None:
+        from memdiver.msl.reader import MslReader
+
+        reader = MslReader(Path(path), **km)
+        reader.open()
+        try:
+            yield reader
+        finally:
+            reader.close()
+        return
+
     cache = get_default_cache()
     key, entry = cache._acquire(path)
     try:
@@ -305,8 +365,8 @@ def cached_dump_source(path: Path) -> Iterator[object]:
     `RawDumpSource` with its own lazy-open mechanism (no caching needed
     since raw opens are already cheap).
     """
-    from core.dump_source import MslDumpSource, open_dump
-    from msl.enums import FILE_MAGIC
+    from memdiver.core.dump_source import MslDumpSource, open_dump
+    from memdiver.msl.enums import FILE_MAGIC
 
     p = Path(path)
     is_msl = False
@@ -318,7 +378,9 @@ def cached_dump_source(path: Path) -> Iterator[object]:
         pass
 
     if not is_msl:
-        source = open_dump(p)
+        # Key material only matters for encrypted .msl; open_dump ignores it
+        # for other formats, but forward any active scope for consistency.
+        source = open_dump(p, **(_active_key_material() or {}))
         try:
             source.open()
             yield source

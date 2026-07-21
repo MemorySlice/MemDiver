@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from api.services.artifact_store import ArtifactStore
-from api.services.progress_bus import ProgressBus
-from api.services.task_manager import (
+from memdiver.api.services.artifact_store import ArtifactStore
+from memdiver.api.services.progress_bus import ProgressBus
+from memdiver.api.services.task_manager import (
     StageRecord,
     TaskManager,
     TaskRecord,

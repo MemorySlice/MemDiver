@@ -62,7 +62,7 @@ Reference pages for the eight detection algorithms and nine visualization views 
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | `algorithms/` |
-| CLI subcommands | **20** | `cli.py` |
+| CLI subcommands | **22** | `cli.py` |
 | FastAPI routers | **12** + WebSocket | `api/routers/` |
 | MCP tools | **15** | `mcp_server/` |
 | Exporters | YARA · JSON · Volatility3 | `architect/` |
@@ -86,6 +86,7 @@ quickstart/index
 
 user_guide/web_ui_tour
 user_guide/cli_reference
+user_guide/auto_floor
 user_guide/mcp_reference
 ```
 

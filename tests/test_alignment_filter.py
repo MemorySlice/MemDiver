@@ -1,7 +1,7 @@
 """Tests for alignment-based candidate filtering."""
 
 import pytest
-from core.alignment_filter import alignment_filter
+from memdiver.core.alignment_filter import alignment_filter
 
 
 class TestAlignmentFilter:

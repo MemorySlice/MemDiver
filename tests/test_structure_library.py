@@ -5,8 +5,8 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.structure_defs import FieldDef, FieldType, StructureDef
-from core.structure_library import StructureLibrary, get_structure_library
+from memdiver.core.structure_defs import FieldDef, FieldType, StructureDef
+from memdiver.core.structure_library import StructureLibrary, get_structure_library
 
 
 def test_register_and_get():

@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from core.kdf_base import BaseKDF, KDFParams
-from core.models import CryptoSecret
+from memdiver.core.kdf_base import BaseKDF, KDFParams
+from memdiver.core.models import CryptoSecret
 
 
 class _StubKDF(BaseKDF):

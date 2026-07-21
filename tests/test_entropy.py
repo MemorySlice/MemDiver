@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.entropy import (
+from memdiver.core.entropy import (
     entropy_from_freq,
     shannon_entropy,
     compute_entropy_profile,

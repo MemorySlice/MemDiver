@@ -74,7 +74,7 @@ def group_blocks(nodes: List[BlockNode]) -> Dict[str, List[BlockNode]]:
 
 def _block_type_name(type_code: int) -> str:
     """Map block type code to human-readable name via BlockType enum."""
-    from msl.enums import BlockType
+    from memdiver.msl.enums import BlockType
     try:
         return BlockType(type_code).name
     except ValueError:

@@ -8,11 +8,11 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from core.discovery import RunDiscovery
-from core.input_schemas import AnalyzeRequest
-from core.protocols import REGISTRY
-from engine.batch import run_analysis_request
-from engine.serializer import serialize_result
+from memdiver.core.discovery import RunDiscovery
+from memdiver.core.input_schemas import AnalyzeRequest
+from memdiver.core.protocols import REGISTRY
+from memdiver.engine.batch import run_analysis_request
+from memdiver.engine.serializer import serialize_result
 
 from .session import ToolSession
 
@@ -104,18 +104,23 @@ def analyze_library(
     return serialize_result(result)
 
 
-def import_raw_dump(
+def import_dump(
     session: ToolSession,
     raw_path: str,
     output_path: str,
     pid: int = 0,
 ) -> dict:
-    """Import a raw .dump file to .msl format."""
+    """Import a dump (raw .dump, ELF core, or minidump) to .msl format.
+
+    Delegates to :func:`msl.importer.import_dump`, which sniffs the source
+    format and dispatches to the raw, ELF-core, or minidump importer. Plain
+    raw .dump imports remain a byte-for-byte no-op regression.
+    """
     src = Path(raw_path)
     if not src.is_file():
         return {"error": f"File not found: {raw_path}"}
 
-    from msl.importer import import_raw_dump as _import
+    from memdiver.msl.importer import import_dump as _import
 
     result = _import(src, Path(output_path), pid=pid)
     return {
@@ -125,3 +130,17 @@ def import_raw_dump(
         "key_hints_written": result.key_hints_written,
         "total_bytes": result.total_bytes,
     }
+
+
+def import_raw_dump(
+    session: ToolSession,
+    raw_path: str,
+    output_path: str,
+    pid: int = 0,
+) -> dict:
+    """Back-compat alias for :func:`import_dump`.
+
+    Retained so existing callers keep working; new code should call
+    :func:`import_dump`, which routes through the unified dispatcher.
+    """
+    return import_dump(session, raw_path, output_path, pid=pid)

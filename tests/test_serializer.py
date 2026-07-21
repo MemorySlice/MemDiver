@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.discovery import DatasetInfo
-from engine.results import AnalysisResult, LibraryReport, SecretHit, StaticRegion
-from engine.serializer import (
+from memdiver.core.discovery import DatasetInfo
+from memdiver.engine.results import AnalysisResult, LibraryReport, SecretHit, StaticRegion
+from memdiver.engine.serializer import (
     _convert_value,
     serialize_dataset_info,
     serialize_hit,

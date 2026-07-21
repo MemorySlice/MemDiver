@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import { decodeBase64 } from "@/utils/hex-codec";
+import { getPageStates } from "@/api/client";
+import type { PageState } from "@/api/types";
+import { useDumpStore } from "@/stores/dump-store";
 
 const CHUNK_SIZE = 8192; // 512 rows of 16 bytes
 const MAX_CHUNKS = 12;
@@ -57,7 +60,18 @@ interface ByteSelection {
   active: number;
 }
 
-export type HexViewMode = "raw" | "vas";
+export type HexViewMode = "raw" | "vas" | "va";
+
+/**
+ * Flattened, va-sorted page-state interval used by getPageStateAt for an
+ * RLE lookup over the "va" byte stream. `end` is the exclusive VA bound
+ * (`va + length`), precomputed so lookups stay branch-cheap.
+ */
+interface FlatPageInterval {
+  va: number;
+  end: number;
+  state: PageState;
+}
 
 interface HexState {
   dumpPath: string | null;
@@ -68,6 +82,18 @@ interface HexState {
   viewMode: HexViewMode;
   rawSize: number;  // size of the .msl container
   vasSize: number;  // size of the flat VAS projection
+  vaSize: number;   // size of the sparse full virtual-address view
+
+  // Page-state slice (three-state page model). Only fetched for .msl dumps,
+  // lazily, the first time the "va" view is selected. `pageStateIntervals`
+  // is sorted by `va` so getPageStateAt can binary-search it. `vaSpanStart`
+  // is the base VA that "va"-view offset 0 maps to.
+  pageStateIntervals: FlatPageInterval[];
+  pageStatesLoaded: boolean;
+  vaSpanStart: number;
+  // Bumped when page-states resolve so HexRow's memoized callback rotates
+  // its identity and visible rows repaint. Mirrors chunkVersion.
+  pageStateVersion: number;
 
   chunks: Map<number, HexChunk>;
   pendingFetches: Set<number>;
@@ -97,8 +123,10 @@ interface HexState {
 
   // Actions
   setDumpPath: (path: string, fileSize: number, format: string) => void;
-  setViewSizes: (rawSize: number, vasSize: number) => void;
+  setViewSizes: (rawSize: number, vasSize: number, vaSize?: number) => void;
   setViewMode: (mode: HexViewMode) => void;
+  fetchPageStates: () => void;
+  getPageStateAt: (offset: number) => PageState | undefined;
   reset: () => void;
   ensureChunksLoaded: (startRow: number, endRow: number) => void;
   getByteAt: (offset: number) => number | undefined;
@@ -145,10 +173,17 @@ async function fetchChunkData(
   length: number,
   view: HexViewMode,
 ): Promise<Uint8Array> {
-  const url =
-    `/api/inspect/hex-raw?dump_path=${encodeURIComponent(dumpPath)}` +
-    `&offset=${offset}&length=${length}&view=${view}`;
-  const res = await fetch(url);
+  const qs = new URLSearchParams({
+    dump_path: dumpPath,
+    offset: String(offset),
+    length: String(length),
+    view,
+  });
+  const key = useDumpStore.getState().getKeyMaterialByPath(dumpPath);
+  if (key?.passphrase) qs.set("passphrase", key.passphrase);
+  if (key?.key_hex) qs.set("key_hex", key.key_hex);
+  if (key?.kem_key_hex) qs.set("kem_key_hex", key.kem_key_hex);
+  const res = await fetch(`/api/inspect/hex-raw?${qs.toString()}`);
   if (!res.ok) {
     throw new Error(`Hex fetch failed: ${res.status}`);
   }
@@ -165,7 +200,9 @@ const BOOKMARKS_KEY_PREFIX = "memdiver:hex:bookmarks:";
 function loadInitialViewMode(): HexViewMode {
   if (typeof localStorage === "undefined") return "raw";
   const stored = localStorage.getItem(VIEW_MODE_KEY);
-  return stored === "vas" ? "vas" : "raw";
+  if (stored === "vas") return "vas";
+  if (stored === "va") return "va";
+  return "raw";
 }
 
 function persistViewMode(mode: HexViewMode): void {
@@ -219,6 +256,12 @@ export const useHexStore = create<HexState>((set, get) => ({
   viewMode: loadInitialViewMode(),
   rawSize: 0,
   vasSize: 0,
+  vaSize: 0,
+
+  pageStateIntervals: [],
+  pageStatesLoaded: false,
+  vaSpanStart: 0,
+  pageStateVersion: 0,
 
   chunks: new Map(),
   pendingFetches: new Set(),
@@ -247,24 +290,38 @@ export const useHexStore = create<HexState>((set, get) => ({
         // clobbering chunks or cursor state.
         const nextRaw = state.rawSize || fileSize;
         const nextVas = state.vasSize || fileSize;
-        const nextFile = state.viewMode === "vas" ? nextVas : nextRaw;
+        const nextVa = state.vaSize || fileSize;
+        const nextFile =
+          state.viewMode === "vas"
+            ? nextVas
+            : state.viewMode === "va"
+              ? nextVa
+              : nextRaw;
         if (
           state.fileSize === nextFile &&
           state.rawSize === nextRaw &&
-          state.vasSize === nextVas
+          state.vasSize === nextVas &&
+          state.vaSize === nextVa
         ) {
           return {};
         }
-        return { fileSize: nextFile, rawSize: nextRaw, vasSize: nextVas };
+        return { fileSize: nextFile, rawSize: nextRaw, vasSize: nextVas, vaSize: nextVa };
       }
       return {
         dumpPath: path,
         fileSize,
         format,
-        // For raw .dump files the two sizes collapse; MSL callers
-        // overwrite these via setViewSizes once /hex-raw returns.
+        // For raw .dump files the sizes collapse; MSL callers overwrite
+        // these via setViewSizes once /hex-raw returns.
         rawSize: fileSize,
         vasSize: fileSize,
+        vaSize: fileSize,
+        // Page states belong to the previous dump — clear them so the
+        // "va" view re-fetches for the new file.
+        pageStateIntervals: [],
+        pageStatesLoaded: false,
+        vaSpanStart: 0,
+        pageStateVersion: 0,
         chunks: new Map(),
         pendingFetches: new Set(),
         chunkVersion: 0,
@@ -281,24 +338,37 @@ export const useHexStore = create<HexState>((set, get) => ({
       };
     }),
 
-  setViewSizes: (rawSize, vasSize) =>
+  setViewSizes: (rawSize, vasSize, vaSize) =>
     set((state) => {
-      const size = state.viewMode === "vas" ? vasSize : rawSize;
+      const nextVa = vaSize ?? state.vaSize;
+      const size =
+        state.viewMode === "vas"
+          ? vasSize
+          : state.viewMode === "va"
+            ? nextVa
+            : rawSize;
       if (
         state.rawSize === rawSize &&
         state.vasSize === vasSize &&
+        state.vaSize === nextVa &&
         state.fileSize === size
       ) {
         return {};
       }
-      return { rawSize, vasSize, fileSize: size };
+      return { rawSize, vasSize, vaSize: nextVa, fileSize: size };
     }),
 
-  setViewMode: (mode) =>
+  setViewMode: (mode) => {
+    const changed = get().viewMode !== mode;
     set((state) => {
       if (state.viewMode === mode) return {};
       persistViewMode(mode);
-      const size = mode === "vas" ? state.vasSize : state.rawSize;
+      const size =
+        mode === "vas"
+          ? state.vasSize
+          : mode === "va"
+            ? state.vaSize
+            : state.rawSize;
       return {
         viewMode: mode,
         fileSize: size || state.fileSize,
@@ -310,7 +380,61 @@ export const useHexStore = create<HexState>((set, get) => ({
         selection: null,
         scrollTarget: null,
       };
-    }),
+    });
+    // Page-state coloring is only needed in the "va" view; fetch lazily the
+    // first time it is selected.
+    if (changed && mode === "va") {
+      get().fetchPageStates();
+    }
+  },
+
+  fetchPageStates: () => {
+    const { dumpPath, pageStatesLoaded, format } = get();
+    if (!dumpPath || pageStatesLoaded || format !== "msl") return;
+    const key = useDumpStore.getState().getKeyMaterialByPath(dumpPath);
+    getPageStates(dumpPath, key)
+      .then((data) => {
+        // Ignore a stale response if the dump changed mid-flight.
+        if (useHexStore.getState().dumpPath !== dumpPath) return;
+        const flat: FlatPageInterval[] = [];
+        let spanStart = Infinity;
+        for (const region of data.regions) {
+          if (region.base_addr < spanStart) spanStart = region.base_addr;
+          for (const iv of region.intervals) {
+            flat.push({ va: iv.va, end: iv.va + iv.length, state: iv.state });
+          }
+        }
+        flat.sort((a, b) => a.va - b.va);
+        set((prev) => ({
+          pageStateIntervals: flat,
+          pageStatesLoaded: true,
+          vaSpanStart: Number.isFinite(spanStart) ? spanStart : 0,
+          pageStateVersion: prev.pageStateVersion + 1,
+        }));
+      })
+      .catch(() => {
+        // Leave pageStatesLoaded false; the "va" view simply renders
+        // uncolored (bytes only) until a retry succeeds.
+      });
+  },
+
+  getPageStateAt: (offset: number): PageState | undefined => {
+    const { pageStatesLoaded, pageStateIntervals, vaSpanStart } = get();
+    if (!pageStatesLoaded) return undefined;
+    const va = vaSpanStart + offset;
+    let lo = 0;
+    let hi = pageStateIntervals.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const iv = pageStateIntervals[mid];
+      if (va < iv.va) hi = mid - 1;
+      else if (va >= iv.end) lo = mid + 1;
+      else return iv.state;
+    }
+    // A VA that falls in an inter-region gap of the sparse "va" span is
+    // genuinely unmapped memory.
+    return "UNMAPPED";
+  },
 
   reset: () =>
     set({
@@ -319,6 +443,11 @@ export const useHexStore = create<HexState>((set, get) => ({
       format: "",
       rawSize: 0,
       vasSize: 0,
+      vaSize: 0,
+      pageStateIntervals: [],
+      pageStatesLoaded: false,
+      vaSpanStart: 0,
+      pageStateVersion: 0,
       chunks: new Map(),
       pendingFetches: new Set(),
       chunkVersion: 0,

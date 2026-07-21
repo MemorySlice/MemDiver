@@ -108,6 +108,20 @@ export function HexToolbar() {
           >
             {t("toolbar.memoryVas")}
           </button>
+          <button
+            role="tab"
+            aria-selected={viewMode === "va"}
+            onClick={() => setViewMode("va")}
+            title={t("toolbar.mslViewModeVaTitle")}
+            className={
+              "px-2 py-0.5 border-l border-[var(--md-border)] " +
+              (viewMode === "va"
+                ? "md-bg-accent md-text-on-accent"
+                : "hover:bg-[var(--md-bg-hover)]")
+            }
+          >
+            {t("toolbar.virtualAddress")}
+          </button>
         </div>
       )}
       <div className="flex items-center gap-1 shrink-0">

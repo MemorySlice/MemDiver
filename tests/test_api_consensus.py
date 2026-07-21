@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from fastapi.testclient import TestClient
 
-from api.main import create_app
-from api.services.consensus_session import ConsensusSessionManager, get_consensus_manager
+from memdiver.api.main import create_app
+from memdiver.api.services.consensus_session import ConsensusSessionManager, get_consensus_manager
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def client():
 @pytest.fixture(autouse=True)
 def _fresh_manager(monkeypatch):
     """Use a per-test ConsensusSessionManager so tests don't share state."""
-    import api.services.consensus_session as mod
+    import memdiver.api.services.consensus_session as mod
 
     mgr = ConsensusSessionManager()
     monkeypatch.setattr(mod, "_default_manager", mgr)
@@ -72,7 +72,7 @@ def test_add_upload_offloads_add_dump_off_event_loop(client, monkeypatch):
     not stall the event loop for all concurrent requests. We assert the
     handler dispatches through ``asyncio.to_thread`` while preserving the
     AddResponse shape."""
-    import api.routers.consensus as consensus_mod
+    import memdiver.api.routers.consensus as consensus_mod
 
     sid = client.post("/api/consensus/begin", json={"size": 64}).json()["session_id"]
 

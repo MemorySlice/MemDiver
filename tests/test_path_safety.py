@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.path_safety import ensure_within, safe_filename
+from memdiver.api.path_safety import ensure_within, safe_filename
 
 
 # ---------------------------------------------------------------------------

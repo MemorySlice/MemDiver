@@ -128,6 +128,8 @@ export function ArchitectPlaceholder() {
         name: patternName,
         align: autoAlign,
         context: autoContext,
+        // Dumps in a set share one key; carry the first available one.
+        ...useDumpStore.getState().getKeyMaterialByPath(dumpPaths[0]),
       });
       setAutoResult(data);
       const store = useHexStore.getState();

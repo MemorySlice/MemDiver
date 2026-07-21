@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from architect.static_checker import StaticChecker
+from memdiver.architect.static_checker import StaticChecker
 
 
 def _make_dump(data: bytes) -> Path:

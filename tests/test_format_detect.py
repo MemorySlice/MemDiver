@@ -2,7 +2,7 @@
 
 import struct
 import pytest
-from core.format_detect import (
+from memdiver.core.format_detect import (
     detect_format,
     detect_format_at_offset,
     suggest_formats,

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { StructureEditor } from "./StructureEditor";
 import { downloadJsonFile } from "@/utils/download";
 import { useHexStore } from "@/stores/hex-store";
+import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { autoDetectStructure, applyStructure } from "@/api/client";
 import { notifyError } from "@/utils/errorNotifier";
@@ -66,7 +67,12 @@ export function StructureList() {
     if (!canApply) return;
     setApplyingName(name);
     try {
-      const res = await applyStructure(dumpPath, cursorOffset!, name);
+      const res = await applyStructure(
+        dumpPath,
+        cursorOffset!,
+        name,
+        useDumpStore.getState().getKeyMaterialByPath(dumpPath),
+      );
       setOverlay({
         structureName: res.structure.name,
         baseOffset: res.structure.offset,

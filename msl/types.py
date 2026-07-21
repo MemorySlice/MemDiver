@@ -67,6 +67,13 @@ class MslFileHeader:
     def encrypted(self) -> bool:
         return bool(self.flags & HeaderFlag.ENCRYPTED)
 
+    @property
+    def page_states_inferred(self) -> bool:
+        """True if the page-state map was assigned by convention on import,
+        not observed during live acquisition (CapBit.PAGE_STATES_INFERRED,
+        bit 15). Literal is used to avoid a types->writer import cycle."""
+        return bool(self.cap_bitmap & (1 << 15))
+
 
 @dataclass(frozen=True)
 class MslEncryptionParams:

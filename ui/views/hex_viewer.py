@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.hex_viewer")
 
@@ -40,7 +40,7 @@ def render_hex_viewer(
         mo.Html with the rendered hex dump.
     """
     if interactive and controls is not None:
-        from ui.views.hex_navigator import render_hex_navigator
+        from memdiver.ui.views.hex_navigator import render_hex_navigator
         return render_hex_navigator(
             mo, dump_data, controls,
             byte_classes=byte_classes,
@@ -49,8 +49,8 @@ def render_hex_viewer(
             title=title,
             bytes_per_row=bytes_per_row,
         )
-    from ui.components.hex_renderer import render_hex_dump
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components.hex_renderer import render_hex_dump
+    from memdiver.ui.components import color_scheme as cs
 
     if not dump_data:
         return mo.md(_("*No dump data to display.*"))
@@ -105,8 +105,8 @@ def render_hit_details(mo, hits: List[Any], dump_data: bytes) -> Any:
     Returns:
         mo.Html with a table of hit details.
     """
-    from ui.components.html_builder import table
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components.html_builder import table
+    from memdiver.ui.components import color_scheme as cs
 
     if not hits:
         return mo.md(_("*No hits to display.*"))

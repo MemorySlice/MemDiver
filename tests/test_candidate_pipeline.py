@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from engine.candidate_pipeline import (
+from memdiver.engine.candidate_pipeline import (
     MIN_N_FOR_VARIANCE,
     ReductionResult,
     reduce_search_space,

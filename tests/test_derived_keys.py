@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.models import TLSSecret
-from engine.derived_keys import DerivedKeyExpander
+from memdiver.core.models import TLSSecret
+from memdiver.engine.derived_keys import DerivedKeyExpander
 
 
 def test_expand_traffic_secrets():
@@ -44,7 +44,7 @@ def test_expand_preserves_client_random():
 
 def test_ssh_expansion():
     """SSH session keys should be expanded via the SSH KDF plugin."""
-    from core.models import CryptoSecret
+    from memdiver.core.models import CryptoSecret
 
     secret = CryptoSecret(
         secret_type="SSH2_SESSION_KEY",
@@ -69,7 +69,7 @@ def test_ssh_expansion():
 
 def test_protocol_dispatch():
     """Both TLS and SSH secrets should be expanded in one call."""
-    from core.models import CryptoSecret
+    from memdiver.core.models import CryptoSecret
 
     tls_secret = CryptoSecret(
         secret_type="CLIENT_HANDSHAKE_TRAFFIC_SECRET",

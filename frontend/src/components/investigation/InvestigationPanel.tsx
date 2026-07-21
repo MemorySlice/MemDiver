@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readHex, getEntropy } from "@/api/client";
+import { useDumpStore } from "@/stores/dump-store";
 
 interface Props {
   dumpPath: string;
@@ -13,6 +14,7 @@ export function InvestigationPanel({ dumpPath, offset }: Props) {
   const [entropy, setEntropy] = useState<number | null>(null);
   const [byteError, setByteError] = useState<string | null>(null);
   const [entropyError, setEntropyError] = useState<string | null>(null);
+  const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(dumpPath));
 
   useEffect(() => {
     setByteError(null);
@@ -20,17 +22,17 @@ export function InvestigationPanel({ dumpPath, offset }: Props) {
     setByteVal(null);
     setEntropy(null);
 
-    readHex(dumpPath, offset, 1).then((d) => {
+    readHex(dumpPath, offset, 1, keyMaterial).then((d) => {
       if (d.hex_lines.length > 0) {
         const hex = d.hex_lines[0].split(/\s+/)[1];
         if (hex) setByteVal(parseInt(hex, 16));
       }
     }).catch((e) => setByteError(e instanceof Error ? e.message : t("panel.readByteError")));
 
-    getEntropy(dumpPath, Math.max(0, offset - 128), 256).then((d) => {
+    getEntropy(dumpPath, Math.max(0, offset - 128), 256, keyMaterial).then((d) => {
       setEntropy(d.overall_entropy);
     }).catch((e) => setEntropyError(e instanceof Error ? e.message : t("panel.getEntropyError")));
-  }, [dumpPath, offset, t]);
+  }, [dumpPath, offset, t, keyMaterial]);
 
   const entropyPct = entropy !== null ? (entropy / 8) * 100 : 0;
   const entropyColor = entropyPct > 90 ? "var(--md-accent-red)" : entropyPct > 70 ? "var(--md-accent-orange)" : "var(--md-accent-green)";

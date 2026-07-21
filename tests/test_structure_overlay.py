@@ -6,9 +6,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.structure_defs import FieldDef, FieldType, StructureDef
-from core.structure_library import get_structure_library
-from core.structure_overlay import FieldOverlay, best_match_structure, overlay_structure
+from memdiver.core.structure_defs import FieldDef, FieldType, StructureDef
+from memdiver.core.structure_library import get_structure_library
+from memdiver.core.structure_overlay import FieldOverlay, best_match_structure, overlay_structure
 
 
 def _simple_struct() -> StructureDef:
@@ -221,7 +221,7 @@ def test_pre_master_secret_version_check():
 
 def test_variant_label_sha_sizes():
     """variant_label maps total resolved size to hash name."""
-    from core.structure_overlay import variant_label
+    from memdiver.core.structure_overlay import variant_label
 
     sd = StructureDef(name="x", total_size=32, fields=())
     assert variant_label(sd, {"secret": 32}) == "SHA-256"
@@ -237,7 +237,7 @@ def test_serialize_overlay_result_unknown_field_no_crash():
     name absent from struct_def. Such overlays must be skipped for the
     resolved_sizes lookup rather than raising AttributeError on None.
     """
-    from core.structure_overlay import serialize_overlay_result
+    from memdiver.core.structure_overlay import serialize_overlay_result
 
     sd = _simple_struct()  # fields: magic, payload (no size_choices)
     overlays = [

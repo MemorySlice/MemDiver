@@ -22,8 +22,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from api.config import get_settings
-from api.main import create_app
+from memdiver.api.config import get_settings
+from memdiver.api.main import create_app
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ def test_delete_terminal_task_is_409(client):
     test is deterministic and never depends on a worker process running to
     completion within a timeout.
     """
-    from api.services.task_manager import (
+    from memdiver.api.services.task_manager import (
         get_task_manager,
         TaskRecord,
         TaskStatus,

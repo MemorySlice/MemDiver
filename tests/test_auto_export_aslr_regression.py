@@ -48,9 +48,9 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.main import create_app
-from core.dump_source import MslDumpSource
-from engine.consensus import ConsensusVector, _is_native_msl
+from memdiver.api.main import create_app
+from memdiver.core.dump_source import MslDumpSource
+from memdiver.engine.consensus import ConsensusVector, _is_native_msl
 from tests.fixtures.generate_msl_fixtures import write_aslr_fixture
 
 

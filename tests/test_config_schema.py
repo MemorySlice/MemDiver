@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.config_schema import validate_config
+from memdiver.core.config_schema import validate_config
 
 
 def _valid_config():

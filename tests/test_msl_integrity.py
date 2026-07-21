@@ -10,8 +10,8 @@ try:
 except ImportError:
     HAS_BLAKE3 = False
 
-from msl.enums import BLOCK_MAGIC, FILE_MAGIC, BLOCK_HEADER_SIZE, FILE_HEADER_SIZE
-from msl.types import MslParseError
+from memdiver.msl.enums import BLOCK_MAGIC, FILE_MAGIC, BLOCK_HEADER_SIZE, FILE_HEADER_SIZE
+from memdiver.msl.types import MslParseError
 
 
 def _build_file_header():
@@ -43,8 +43,8 @@ def _build_block(block_type, payload, prev_hash=b'\x00' * 32):
 @pytest.mark.skipif(not HAS_BLAKE3, reason="blake3 not installed")
 def test_verify_chain_valid(tmp_path):
     """Valid chain with correct hashes passes."""
-    from msl.reader import MslReader
-    from msl.integrity import verify_chain
+    from memdiver.msl.reader import MslReader
+    from memdiver.msl.integrity import verify_chain
 
     file_hdr = _build_file_header()
     # Block 1: prev_hash = zeros
@@ -67,8 +67,8 @@ def test_verify_chain_valid(tmp_path):
 @pytest.mark.skipif(not HAS_BLAKE3, reason="blake3 not installed")
 def test_verify_chain_corrupted(tmp_path):
     """Corrupted prev_hash is detected."""
-    from msl.reader import MslReader
-    from msl.integrity import verify_chain
+    from memdiver.msl.reader import MslReader
+    from memdiver.msl.integrity import verify_chain
 
     file_hdr = _build_file_header()
     block1 = _build_block(0x0001, b'\xAA' * 32)
@@ -94,7 +94,7 @@ def test_hashing_fallback_produces_32_bytes():
     stays consistent across installs — replacing the previous "hard-fail
     on missing blake3" contract which was inconsistent with the writer.
     """
-    from msl.hashing import hash_bytes
+    from memdiver.msl.hashing import hash_bytes
     digest = hash_bytes(b"integrity-fallback-test")
     assert len(digest) == 32
     assert digest == hash_bytes(b"integrity-fallback-test")

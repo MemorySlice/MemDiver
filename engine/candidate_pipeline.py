@@ -21,9 +21,9 @@ from typing import List
 
 import numpy as np
 
-from core.entropy import compute_entropy_profile, shannon_entropy
-from core.variance import find_contiguous_runs
-from engine.progress import (
+from memdiver.core.entropy import compute_entropy_profile, shannon_entropy
+from memdiver.core.variance import find_contiguous_runs
+from memdiver.engine.progress import (
     ProgressEvent,
     ProgressFn,
     noop_progress,

@@ -11,16 +11,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.strings import StringMatch
-from msl.string_extract import (
+from memdiver.core.strings import StringMatch
+from memdiver.msl.string_extract import (
     MslStringReport,
     extract_region_strings,
     extract_strings_from_msl,
     extract_strings_from_path,
     extract_structured_strings,
 )
-from msl.enums import PageState
-from msl.types import MslBlockHeader, MslMemoryRegion, MslModuleEntry, MslProcessIdentity
+from memdiver.msl.enums import PageState
+from memdiver.msl.types import MslBlockHeader, MslMemoryRegion, MslModuleEntry, MslProcessIdentity
 
 
 # -- Helpers --

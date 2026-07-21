@@ -11,11 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgorithm
-from algorithms.base import AnalysisContext, Match
-from core.models import TLSSecret
-from core.kdf import TLS12PRF, TLS13HKDF
-from core.kdf_ssh import SSH2KDF
+from memdiver.algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgorithm
+from memdiver.algorithms.base import AnalysisContext, Match
+from memdiver.core.models import TLSSecret
+from memdiver.core.kdf import TLS12PRF, TLS13HKDF
+from memdiver.core.kdf_ssh import SSH2KDF
 
 
 def test_empty_candidates():

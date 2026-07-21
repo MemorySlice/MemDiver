@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-from engine.project_db import HAS_DUCKDB
+from memdiver.engine.project_db import HAS_DUCKDB
 
 if HAS_DUCKDB:
-    from engine.project_db import ProjectDB
+    from memdiver.engine.project_db import ProjectDB
 
 needs_duckdb = pytest.mark.skipif(
     not HAS_DUCKDB, reason="duckdb not installed"
@@ -189,10 +189,10 @@ def test_context_manager(tmp_path):
 
 def test_graceful_without_duckdb(tmp_path):
     """When HAS_DUCKDB is False, all methods degrade to no-ops."""
-    with patch("engine.project_db.HAS_DUCKDB", False):
+    with patch("memdiver.engine.project_db.HAS_DUCKDB", False):
         # Re-import not needed; we just instantiate and call open()
         # which checks HAS_DUCKDB at runtime
-        from engine.project_db import ProjectDB as PDB
+        from memdiver.engine.project_db import ProjectDB as PDB
         db = PDB(tmp_path / "noop.db")
         db.open()
         assert db._available is False

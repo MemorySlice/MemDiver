@@ -3,9 +3,9 @@
 from bisect import bisect_left, bisect_right
 from typing import Dict, List, Tuple
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
-from core.entropy import compute_entropy_profile
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.entropy import compute_entropy_profile
 
 
 class ChangePointAlgorithm(BaseAlgorithm):

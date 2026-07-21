@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { runAnalysis } from "@/api/client";
+import { runAnalysisAndWait } from "@/api/analysis";
 import { useResultsStore, type SortField } from "@/stores/results-store";
 import { useAppStore } from "@/stores/app-store";
 import { downloadJsonFile } from "@/utils/download";
@@ -63,7 +63,7 @@ export function ScanResultsPanel() {
     const resultsState = useResultsStore.getState();
     resultsState.setAlgorithmRunning(algo, true);
     try {
-      const res = await runAnalysis(req);
+      const res = await runAnalysisAndWait(req);
       bridgeResults(res);
     } catch (e) {
       resultsState.setAlgorithmError?.(algo, e instanceof Error ? e.message : t("scan.rerunFailed"));
@@ -80,7 +80,7 @@ export function ScanResultsPanel() {
       resultsState.setAlgorithmRunning(algo, true);
     }
     try {
-      const res = await runAnalysis(req);
+      const res = await runAnalysisAndWait(req);
       bridgeResults(res);
     } catch {
       // errors are visible per-algorithm

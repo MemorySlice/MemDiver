@@ -4,9 +4,9 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.discovery import RunDiscovery, DatasetScanner, DatasetInfo
-from core.dump_io import DumpReader
-from core.models import RunDirectory
+from memdiver.core.discovery import RunDiscovery, DatasetScanner, DatasetInfo
+from memdiver.core.dump_io import DumpReader
+from memdiver.core.models import RunDirectory
 
 logger = logging.getLogger("memdiver.harvester.ingestor")
 

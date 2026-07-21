@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from core.proc_maps_parser import (
+from memdiver.core.proc_maps_parser import (
     MapRegion,
     classify_region,
     parse_maps_file,
     parse_maps_text,
 )
-from msl.enums import RegionType
+from memdiver.msl.enums import RegionType
 
 
 # Test using a real captured proc/maps file. Set MEMDIVER_FIXTURE_ROOT

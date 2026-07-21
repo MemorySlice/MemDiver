@@ -19,6 +19,7 @@
     "regions": "Regions",
     "totalSize": "Total Size",
     "capturedPages": "Captured Pages",
+    "coverage": "Coverage",
     "keyHints": "Key Hints",
     "modules": "Modules ({{n}})"
   }

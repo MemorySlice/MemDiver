@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.discovery import RunDiscovery, DatasetScanner
+from memdiver.core.discovery import RunDiscovery, DatasetScanner
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 

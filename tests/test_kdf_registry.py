@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.kdf_registry import KDFRegistry, get_kdf_registry
+from memdiver.core.kdf_registry import KDFRegistry, get_kdf_registry
 
 
 def _fresh_registry():

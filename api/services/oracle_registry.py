@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from engine.oracle import OracleLoadError, load_oracle
+from memdiver.engine.oracle import OracleLoadError, load_oracle
 
 logger = logging.getLogger("memdiver.api.services.oracle_registry")
 
@@ -126,7 +126,7 @@ def _detect_shape(path: Path) -> int:
     """
     import importlib.util
 
-    from engine.oracle import OracleLoadError, _assert_safe_path
+    from memdiver.engine.oracle import OracleLoadError, _assert_safe_path
 
     _purge_pycache(path)
     _assert_safe_path(path)

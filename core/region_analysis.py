@@ -7,8 +7,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from core.entropy import shannon_entropy
-from core.strings import extract_strings
+from memdiver.core.entropy import shannon_entropy
+from memdiver.core.strings import extract_strings
 
 logger = logging.getLogger("memdiver.core.region_analysis")
 

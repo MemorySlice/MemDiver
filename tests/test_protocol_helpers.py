@@ -6,9 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.models import CryptoSecret, deprecated_kwarg
-from core.protocols import ProtocolDescriptor, ProtocolRegistry, TLS_DESCRIPTOR
-from core.discovery import DatasetInfo
+from memdiver.core.models import CryptoSecret, deprecated_kwarg
+from memdiver.core.protocols import ProtocolDescriptor, ProtocolRegistry, TLS_DESCRIPTOR
+from memdiver.core.discovery import DatasetInfo
 
 
 # --- Test dataclass for deprecated_kwarg isolation ---

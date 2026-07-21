@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
-from core.binary_formats.elf_core_reader import ElfCoreReader, PtLoadSegment
+from memdiver.core.binary_formats.elf_core_reader import ElfCoreReader, PtLoadSegment
 
 logger = logging.getLogger("memdiver.core.dump_sources.gcore")
 

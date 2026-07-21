@@ -136,6 +136,24 @@
   opacity: 0.4;
 }
 
+/* --- MSL page-state swatches (CoverageMap legend + region strips) --- */
+.page-state-captured { background: var(--md-page-captured); }
+.page-state-failed { background: var(--md-page-failed); }
+.page-state-unmapped { background: var(--md-page-unmapped); }
+
+/* --- MSL "va" view per-byte page-state overlays --- */
+/* CAPTURED bytes render normally; only FAILED/UNMAPPED get a tint so the
+   zero-filled backend byte stream can be distinguished visually. Composed
+   after the consensus/variance/search overlays in HexRow. */
+.hex-byte.page-failed,
+.hex-char.page-failed {
+  background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
+}
+.hex-byte.page-unmapped,
+.hex-char.page-unmapped {
+  background: color-mix(in srgb, var(--md-page-unmapped) 30%, transparent);
+}
+
 /* Consensus overlay colors */
 .hex-byte.consensus-invariant,
 .hex-char.consensus-invariant {

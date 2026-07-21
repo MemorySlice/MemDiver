@@ -13,11 +13,11 @@ All functions are stdlib-only (hmac, hashlib) with no external dependencies.
 
 from typing import Callable, Dict, List, Optional, Tuple
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
-from core.kdf import TLS12PRF, TLS13HKDF
-from core.kdf_registry import get_kdf_registry
-from core.kdf_ssh import SSH2KDF, SSH2KDFPlugin, KEY_TYPE_CHARS
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.kdf import TLS12PRF, TLS13HKDF
+from memdiver.core.kdf_registry import get_kdf_registry
+from memdiver.core.kdf_ssh import SSH2KDF, SSH2KDFPlugin, KEY_TYPE_CHARS
 
 
 # Expected key sizes per protocol version.
@@ -214,13 +214,25 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
         seen_offsets: set = set()
         links = 0
 
+        # Memoize pairwise validation by the exact ordered candidate byte-pair.
+        # validate_pair's result depends only on the two candidates' bytes plus
+        # the loop-invariant dump_data / hash_candidates, so identical byte-pairs
+        # -- e.g. the same key blob surfaced at multiple offsets -- need the
+        # expensive HMAC/hash KDF derivation only once. Keyed by ordered (a, b)
+        # to reproduce exactly the call the loop would otherwise make.
+        pair_cache: Dict[Tuple[bytes, bytes], float] = {}
+
         for i, cand_a in enumerate(sized):
             for j in range(i + 1, len(sized)):
                 cand_b = sized[j]
-                confidence = kdf_plugin.validate_pair(
-                    cand_a.data, cand_b.data, dump_data,
-                    hash_candidates=hash_candidates,
-                )
+                cache_key = (cand_a.data, cand_b.data)
+                confidence = pair_cache.get(cache_key)
+                if confidence is None:
+                    confidence = kdf_plugin.validate_pair(
+                        cand_a.data, cand_b.data, dump_data,
+                        hash_candidates=hash_candidates,
+                    )
+                    pair_cache[cache_key] = confidence
                 if confidence > 0.0:
                     links += 1
                     for cand in (cand_a, cand_b):
@@ -252,10 +264,17 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
             probe_derive = None
 
         if probe_derive is not None:
+            # The probe outputs are a pure function of the candidate bytes (the
+            # discovered hashes are already bound into the closure), so cache by
+            # data to avoid re-deriving for duplicate blobs at distinct offsets.
+            probe_cache: Dict[bytes, List[bytes]] = {}
             for cand in sized:
                 if cand.offset in seen_offsets:
                     continue
-                derived_values = probe_derive(cand.data)
+                derived_values = probe_cache.get(cand.data)
+                if derived_values is None:
+                    derived_values = probe_derive(cand.data)
+                    probe_cache[cand.data] = derived_values
                 if any(d in dump_data for d in derived_values):
                     seen_offsets.add(cand.offset)
                     links += 1
@@ -287,17 +306,29 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
         *hash_candidates* list.
         """
         derive_lengths = sorted(SSH2KDFPlugin._ssh_hash_sizes())
+        # SSH-2 derive_key(..., L) returns the first L bytes of a single
+        # deterministic hash stream K1||K2||... for a given
+        # (secret, H, key_char, session_id); a shorter length is an exact
+        # prefix of a longer one. So derive once at the largest requested
+        # length and slice, instead of re-running the hash chain per length.
+        # This produces the identical set of byte-strings (hence identical
+        # dump-membership outcome) with H^2 * 6 derivations instead of
+        # H^2 * 6 * L. sorted() puts the largest length last.
+        max_len = derive_lengths[-1] if derive_lengths else 0
 
         def probe(data: bytes) -> List[bytes]:
             derived: List[bytes] = []
+            if not derive_lengths:
+                return derived
             for exchange_hash in hash_candidates:
                 for session_id in hash_candidates:
                     for key_char in KEY_TYPE_CHARS:
+                        full = SSH2KDF.derive_key(
+                            data, exchange_hash, key_char,
+                            session_id, max_len,
+                        )
                         for length in derive_lengths:
-                            derived.append(SSH2KDF.derive_key(
-                                data, exchange_hash, key_char,
-                                session_id, length,
-                            ))
+                            derived.append(full[:length])
             return derived
 
         return probe

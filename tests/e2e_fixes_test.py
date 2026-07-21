@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import time
 import urllib.request
 from pathlib import Path
 
@@ -12,23 +13,45 @@ import pytest
 
 pytest.importorskip("playwright", reason="Playwright not installed; skipping browser e2e tests.")
 
+# Auto-start (or reuse) the MemDiver backend for every test in this module.
+# See the `live_backend` session fixture in tests/conftest.py.
+pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("live_backend")]
+
 from playwright.sync_api import sync_playwright
 
-from tests._paths import artifacts_dir, dataset_root
+from tests._paths import artifacts_dir, dataset_file
 
 BASE_URL = "http://127.0.0.1:8080"
 SCREENSHOT_DIR = str(artifacts_dir("e2e_fixes"))
 
-_DS = dataset_root()
-DUMP_PATH = str(
-    _DS
-    / "TLS13" / "100_iterations_Abort_KeyUpdate" / "boringssl"
-    / "boringssl_run_13_10" / "20251018_124115_148128_pre_abort.dump"
-) if _DS is not None else None
+_RUN_DIR = dataset_file(
+    "TLS13/100_iterations_Abort_KeyUpdate/boringssl/boringssl_run_13_1"
+)
+DUMP_PATH = str(next(_RUN_DIR.glob("*pre_abort.dump")))
+
+# FTUE onboarding tours (frontend/src/ftue/tours/*) auto-start on first
+# workspace mount and render a driver.js overlay that intercepts pointer
+# events on the very tabs/buttons these tests click. Pre-seeding the "seen"
+# localStorage entry stops the tours from starting. This is browser-state
+# setup (like dismissing a cookie banner), not an assertion change.
+_FTUE_SEEN = [
+    {"id": tid, "version": 999, "seenAt": 0, "completed": True}
+    for tid in ("workspace-layout-101", "structure-overlay-101", "pipeline-101")
+]
+
+
+def suppress_ftue_tours(page):
+    """Pre-seed FTUE 'seen' state so onboarding tours never auto-start."""
+    page.add_init_script(
+        "window.localStorage.setItem('memdiver:ftue:seen', "
+        + json.dumps(json.dumps(_FTUE_SEEN))
+        + ")"
+    )
 
 
 def navigate_wizard_to_workspace(page):
     """Helper: navigate from landing through wizard to workspace with a dump file."""
+    suppress_ftue_tours(page)
     page.goto(BASE_URL)
     page.wait_for_load_state("networkidle")
 
@@ -77,8 +100,10 @@ def test_landing_page(page):
     new_btn = page.locator("text=New Session").first
     assert new_btn.is_visible(), "Landing page should show New Session button"
 
-    # Should also show MemDiver branding
-    brand = page.locator("text=MemDiver")
+    # Should also show MemDiver branding. Target the brand span specifically
+    # (session-card file paths can also contain "memdiver", which would trip
+    # Playwright strict mode on a bare text= selector).
+    brand = page.locator("span.md-text-accent", has_text="MemDiver").first
     assert brand.is_visible(), "Landing page should show MemDiver branding"
 
     print("PASS: Landing page shows correctly")
@@ -100,8 +125,37 @@ def test_wizard_navigation(page):
     print("PASS: Wizard navigation works")
 
 
+def _poll_task_result(task_id, timeout=120):
+    """Poll GET /api/tasks/{id}/result until the task reaches a terminal state."""
+    terminal = {"succeeded", "failed", "cancelled", "error"}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with urllib.request.urlopen(
+            f"{BASE_URL}/api/tasks/{task_id}/result", timeout=30
+        ) as resp:
+            res = json.loads(resp.read())
+        if res.get("status") in terminal:
+            return res
+        time.sleep(1)
+    raise AssertionError(f"Task {task_id} did not finish within {timeout}s")
+
+
+def _download_analysis_result(task_id):
+    """Fetch the ``analysis_result`` artifact (the full AnalysisResult)."""
+    url = f"{BASE_URL}/api/pipeline/runs/{task_id}/artifacts/analysis_result"
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
 def test_algorithm_results_api():
-    """Test 3: Analysis API produces results from multiple algorithms."""
+    """Test 3: Analysis API produces results from multiple algorithms.
+
+    ``POST /api/analysis/run-file`` was refactored to run on the TaskManager's
+    ProcessPool: it returns a ``task_id`` and streams progress, and the full
+    ``AnalysisResult`` is downloadable as the ``analysis_result`` artifact once
+    the task succeeds. This test submits, waits for completion, then downloads
+    the result — the assertions on algorithm coverage are unchanged.
+    """
     req_data = json.dumps({
         "dump_path": DUMP_PATH,
         "algorithms": ["entropy_scan", "pattern_match", "change_point", "structure_scan"]
@@ -115,7 +169,15 @@ def test_algorithm_results_api():
     )
 
     with urllib.request.urlopen(req, timeout=60) as resp:
-        result = json.loads(resp.read())
+        submit = json.loads(resp.read())
+
+    task_id = submit["task_id"]
+    assert task_id, f"run-file should return a task_id, got: {submit}"
+
+    task = _poll_task_result(task_id)
+    assert task["status"] == "succeeded", f"Analysis task failed: {task.get('error')}"
+
+    result = _download_analysis_result(task_id)
 
     libs = result.get("libraries", [])
     assert len(libs) > 0, "Should have at least one library in result"
@@ -170,8 +232,11 @@ def test_entropy_chart_no_crash(page):
         page.wait_for_timeout(3000)
         page.screenshot(path=f"{SCREENSHOT_DIR}/05b_entropy.png", full_page=True)
 
-        # Verify no white screen - MemDiver header should still be visible
-        assert page.locator("text=MemDiver").is_visible(), "App should not crash (white screen) when viewing entropy"
+        # Verify no white screen - MemDiver header should still be visible.
+        # Target the brand span specifically to avoid strict-mode ambiguity
+        # with file paths that also contain "memdiver".
+        assert page.locator("span.md-text-accent", has_text="MemDiver").first.is_visible(), \
+            "App should not crash (white screen) when viewing entropy"
 
         # Check for valid states: chart visible, "No entropy" message, or loading
         has_plotly = "plotly" in page.content().lower() or "js-plotly" in page.content()

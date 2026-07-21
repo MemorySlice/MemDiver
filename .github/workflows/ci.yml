@@ -24,10 +24,113 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install memdiver with dev extras
-        run: python -m pip install -e '.[dev]'
+      - name: Install memdiver with dev + all interface extras
+        # `all` = api,mcp,nicegui,marimo — the interfaces that were base deps
+        # before O-4. Installing them keeps the test suite's coverage identical
+        # to pre-O-4 (API tests need fastapi; test_mcp_registration needs the mcp
+        # SDK; nicegui/marimo gated tests would otherwise silently start skipping).
+        run: python -m pip install -e '.[dev,all]'
       - name: Run pytest
-        run: python -m pytest -q
+        # The browser e2e files (tests/e2e_*_test.py) need Playwright + a built
+        # frontend + a live server; they run in the dedicated `test-e2e` job
+        # below. Everything else — including the dataset-backed tests, which now
+        # self-materialise synthetic fixtures — runs here with no dataset or
+        # browser setup. (test_e2e_real_dumps.py is NOT a browser test and DOES
+        # run here.)
+        run: python -m pytest -q --ignore-glob='tests/e2e_*_test.py'
+
+  # Python lint + type gate, introduced by the code-quality campaign. Runs on
+  # the ratchet config in pyproject.toml: ruff enforces E/F/W/B (legacy codes
+  # grandfathered there and burned down per refactor wave); mypy runs on the
+  # curated "typed island" ([tool.mypy] files). Kept a separate lean job (only
+  # ruff+mypy, no package install) so a style regression can't mask test
+  # failures and vice-versa. `ruff format --check` is advisory for now (the
+  # legacy tree is not yet reformatted), mirroring the frontend hex-literal
+  # advisory convention below.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install lint/type tooling
+        run: python -m pip install ruff mypy
+      - name: Ruff lint (enforced)
+        run: ruff check .
+      - name: Ruff format check (advisory)
+        continue-on-error: true
+        run: ruff format --check .
+      - name: mypy (typed-island scope)
+        run: mypy
+
+  # Proves the built WHEEL installs into a clean environment and the
+  # `memdiver.*` namespace resolves WITHOUT the repo root on sys.path. The
+  # `test` job above installs editable and runs under pyproject's
+  # pythonpath=["."], so it cannot catch packaging/namespace regressions
+  # (e.g. a subpackage missing from the wheel, or a bare `from core.` import).
+  # Since O-4 the smoke runs in TWO stages: first a BARE install to prove the
+  # lean library core imports on its own (and that the web/MCP/UI deps are
+  # genuinely absent), then an `[api,mcp]` install to exercise create_app() +
+  # the FastMCP server that those extras unlock.
+  wheel-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir dist
+      - name: Install the BARE wheel into a clean venv (base deps only)
+        run: |
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/python -m pip install --upgrade pip
+          /tmp/wheelenv/bin/python -m pip install dist/*.whl
+      # Run from /tmp so the checked-out repo root is NOT on sys.path — imports
+      # must resolve from the installed package in site-packages.
+      - name: Lean-core smoke from the installed wheel (no extras)
+        working-directory: /tmp
+        run: |
+          /tmp/wheelenv/bin/python -c "import memdiver; assert 'site-packages' in memdiver.__file__, memdiver.__file__; print('memdiver', memdiver.__version__, memdiver.__file__)"
+          /tmp/wheelenv/bin/python -c "import memdiver.msl.importer, memdiver.core.dump_sources.gcore, memdiver.core.dump_sources.gdb_raw, memdiver.core.dump_sources.lldb_raw, memdiver.core.binary_formats.minidump_reader; print('deep + dump_sources imports ok')"
+          /tmp/wheelenv/bin/python -c "import memdiver; [getattr(memdiver, n) for n in memdiver.__all__]; print('public API symbols ok:', len(memdiver.__all__))"
+          # O-4 guarantee: a library-only install must NOT drag in the web/MCP/UI stack.
+          /tmp/wheelenv/bin/python -c "
+          import importlib.util as u
+          heavy = [m for m in ('fastapi', 'uvicorn', 'mcp', 'nicegui', 'marimo') if u.find_spec(m) is not None]
+          assert not heavy, ('base install unexpectedly pulled: ' + repr(heavy))
+          print('lean core install ok: web/mcp/ui deps absent')
+          "
+      - name: CLI entrypoint smoke (core)
+        run: /tmp/wheelenv/bin/memdiver --help > /dev/null && echo "memdiver CLI entrypoint ok"
+      - name: Install the api + mcp extras into the same venv
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          /tmp/wheelenv/bin/python -m pip install "${WHEEL}[api,mcp]"
+      - name: API + MCP smoke (with extras)
+        working-directory: /tmp
+        run: |
+          /tmp/wheelenv/bin/python -c "import memdiver.api.main as m; print('api routes:', len(m.create_app().routes))"
+          /tmp/wheelenv/bin/python -c "
+          from memdiver.mcp_server.server import create_server
+          s = create_server()
+          mgr = getattr(s, '_tool_manager', None)
+          if mgr is not None and callable(getattr(mgr, 'list_tools', None)):
+              names = {t.name for t in mgr.list_tools()}
+          elif isinstance(getattr(mgr, '_tools', None), dict):
+              names = set(mgr._tools)
+          else:
+              names = set(getattr(s, '_tools', {}) or {})
+          need = {'get_processes', 'get_modules', 'get_handles'}
+          assert need <= names, ('missing granular inspect tools', sorted(names))
+          assert len(names) == 26, ('expected 26 tools, got', len(names), sorted(names))
+          print('mcp FastMCP server builds ok:', len(names), 'tools incl', sorted(need))
+          "
 
   # Exercises the post-quantum KEM paths (ML-KEM / hybrid) which are gated
   # behind the optional [crypto] extra and skipped in the main `test` job.
@@ -48,6 +151,47 @@ jobs:
         run: python -m pip install -e '.[dev,crypto]'
       - name: Run post-quantum KEM tests
         run: python -m pytest -q tests/test_msl_crypto.py tests/test_msl_encryption.py
+
+  # Browser e2e (tests/e2e_*_test.py). Excluded from the main `test` job
+  # because they need Playwright + a built frontend + a live backend. The
+  # `live_backend` conftest fixture auto-starts uvicorn on 127.0.0.1:8080;
+  # the dataset-backed dumps they load are the synthetic fixtures materialised
+  # at pytest_configure (no private dataset required). Kept a separate job so a
+  # browser flake can't mask core test failures (mirrors `test-crypto`/`a11y`).
+  test-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install memdiver + Playwright (Python)
+        run: |
+          python -m pip install -e '.[dev,all]'
+          python -m pip install playwright pytest-playwright
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Build the frontend (served by the live backend)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Run browser e2e tests
+        # `-m e2e` overrides the default `-m 'not e2e'` in pyproject addopts
+        # (the browser suite is deselected everywhere else because Playwright's
+        # sync loop can't share a process with the async unit tests).
+        run: |
+          python -m pytest -q -m e2e \
+            tests/e2e_fixes_test.py \
+            tests/e2e_session_cycle_test.py \
+            tests/e2e_session_features_test.py \
+            tests/e2e_workspace_issues_test.py
 
   frontend-lint:
     runs-on: ubuntu-latest
@@ -107,7 +251,9 @@ jobs:
             frontend/package-lock.json
             tests/e2e/package-lock.json
       - name: Install memdiver
-        run: python -m pip install -e '.[dev]'
+        # a11y specs drive the live FastAPI backend, so the `api` extra
+        # (fastapi/uvicorn) is required now that it is no longer a base dep.
+        run: python -m pip install -e '.[dev,api]'
       - name: Install frontend deps
         working-directory: frontend
         run: npm ci

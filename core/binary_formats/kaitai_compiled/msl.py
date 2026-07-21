@@ -11,7 +11,7 @@ from enum import IntEnum
 
 from kaitaistruct import KaitaiStream, KaitaiStruct, BytesIO
 
-from msl.enums import BLOCK_MAGIC, BlockType, FILE_HEADER_SIZE, FILE_MAGIC
+from memdiver.msl.enums import BLOCK_MAGIC, BlockType, FILE_HEADER_SIZE, FILE_MAGIC
 
 _MAX_BLOCKS = 10_000
 _BLOCK_HEADER_SIZE = 80

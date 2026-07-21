@@ -8,9 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from msl.enums import BlockType, Endianness, FILE_MAGIC
-from msl.reader import MslReader
-from msl.types import MslParseError
+from memdiver.msl.enums import BlockType, Endianness, FILE_MAGIC
+from memdiver.msl.reader import MslReader
+from memdiver.msl.types import MslParseError
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -83,7 +83,7 @@ def test_header_only_iter_matches_raw_blocks(msl_path):
 
 def test_header_only_iter_does_not_decompress(monkeypatch, msl_path):
     """The header-only walk must never call decompress()."""
-    import msl.reader as reader_mod
+    import memdiver.msl.reader as reader_mod
 
     def _boom(*_args, **_kwargs):
         raise AssertionError("decompress() called during header-only walk")
@@ -143,7 +143,7 @@ def test_bad_magic_raises(tmp_path):
 def test_encrypted_without_key_reports_missing_key(tmp_path):
     """Opening an encrypted file without a key no longer raises (Phase C):
     it sets tag_status=MISSING_KEY and exposes no plaintext blocks."""
-    from msl.enums import TagStatus
+    from memdiver.msl.enums import TagStatus
     data = bytearray(generate_msl_file())
     # Set Encrypted flag (bit 2) in Flags at offset 0x0C
     flags = struct.unpack_from("<I", data, 0x0C)[0]
@@ -169,7 +169,7 @@ def test_parse_block_header_short_buffer_raises(msl_path):
     """Defensive guard: parsing a header at an offset without a full
     BLOCK_HEADER_SIZE-byte slice available raises MslParseError instead of
     silently reading a truncated header."""
-    from msl.enums import BLOCK_HEADER_SIZE
+    from memdiver.msl.enums import BLOCK_HEADER_SIZE
     with MslReader(msl_path) as reader:
         short_offset = len(reader._buf) - (BLOCK_HEADER_SIZE - 1)
         with pytest.raises(MslParseError, match="Truncated block header"):

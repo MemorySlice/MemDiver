@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import hashlib
 import pytest
-from core.kdf_ssh import SSH2KDF
+from memdiver.core.kdf_ssh import SSH2KDF
 
 
 class TestSSH2KDF:
@@ -83,9 +83,9 @@ class TestSSH2KDF:
 #  SSH2KDFPlugin tests
 # ------------------------------------------------------------------ #
 
-from core.kdf_ssh import SSH2KDFPlugin
-from core.kdf_base import KDFParams
-from core.models import CryptoSecret
+from memdiver.core.kdf_ssh import SSH2KDFPlugin
+from memdiver.core.kdf_base import KDFParams
+from memdiver.core.models import CryptoSecret
 
 
 class TestSSH2KDFPlugin:

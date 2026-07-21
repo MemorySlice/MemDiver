@@ -11,7 +11,7 @@ try:
 except ImportError:
     HAS_POLARS = False
 
-from core.models import RunDirectory
+from memdiver.core.models import RunDirectory
 
 
 class MetadataStore:

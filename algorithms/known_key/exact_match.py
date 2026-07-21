@@ -1,7 +1,7 @@
 """Exact byte match algorithm - search for known secret bytes in dump."""
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import KNOWN_KEY
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import KNOWN_KEY
 
 
 class ExactMatchAlgorithm(BaseAlgorithm):

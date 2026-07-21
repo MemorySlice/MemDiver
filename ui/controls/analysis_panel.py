@@ -3,8 +3,8 @@
 import logging
 from typing import Any, Tuple
 
-from ui.locales import _
-from ui.mode import ModeManager
+from memdiver.ui.locales import _
+from memdiver.ui.mode import ModeManager
 
 logger = logging.getLogger("memdiver.ui.controls.analysis")
 
@@ -116,8 +116,8 @@ def render_results_summary(mo, analysis_result) -> Any:
     if analysis_result is None:
         return mo.md(_("*No analysis results yet.*"))
 
-    from ui.components.html_builder import table, badge, color_cell
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components.html_builder import table, badge, color_cell
+    from memdiver.ui.components import color_scheme as cs
 
     headers = [_("Library"), _("Phase"), _("Runs"), _("Hits"), _("Status")]
     rows = []

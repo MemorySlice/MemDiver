@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from msl import crypto
-from msl.enums import EncAlgo, KdfType, KeyEncap
-from msl.types import MslAuthError, MslCryptoError
+from memdiver.msl import crypto
+from memdiver.msl.enums import EncAlgo, KdfType, KeyEncap
+from memdiver.msl.types import MslAuthError, MslCryptoError
 
 CEK_SIZE = crypto.CEK_SIZE
 

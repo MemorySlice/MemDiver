@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pytest
 
-from engine.pipeline_runner import run_pipeline
+from memdiver.engine.pipeline_runner import run_pipeline
 
 
 # ------------------------------------------------------------------
@@ -284,7 +284,7 @@ class _CountingRawSource:
 def test_build_consensus_reads_each_raw_source_once(artifact_dir):
     """Regression: the raw-dump consensus branch must read each source exactly
     once (cached), not 2-3x (min-size probe + per-fold + reference)."""
-    from engine.pipeline_runner import _build_consensus
+    from memdiver.engine.pipeline_runner import _build_consensus
 
     sources = [
         _CountingRawSource(bytes([i]) * 128 + bytes(range(128)))

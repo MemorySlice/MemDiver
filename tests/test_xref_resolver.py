@@ -9,7 +9,7 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from msl.xref_resolver import Relationship, XrefEntry, XrefResolver
+from memdiver.msl.xref_resolver import Relationship, XrefEntry, XrefResolver
 from tests.fixtures.generate_msl_fixtures import (
     FILE_MAGIC, BLOCK_MAGIC, FILE_HEADER_SIZE, BLOCK_HEADER_SIZE,
     _pad8, _build_file_header, _build_block, _build_related_dump,

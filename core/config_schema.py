@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Tuple
 
-from core.constants import UI_MODES
+from memdiver.core.constants import UI_MODES
 
 logger = logging.getLogger("memdiver.config_schema")
 

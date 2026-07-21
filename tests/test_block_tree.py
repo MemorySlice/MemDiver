@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from msl.block_tree import BlockNode, group_blocks, list_blocks, _block_type_name
-from msl.reader import MslReader
+from memdiver.msl.block_tree import BlockNode, group_blocks, list_blocks, _block_type_name
+from memdiver.msl.reader import MslReader
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 

@@ -6,9 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from core.models import CryptoSecret
-from msl.importer import ImportResult, import_raw_dump, import_run_directory
-from msl.reader import MslReader
+from memdiver.core.models import CryptoSecret
+from memdiver.msl.importer import ImportResult, import_raw_dump, import_run_directory
+from memdiver.msl.reader import MslReader
 
 
 @pytest.fixture

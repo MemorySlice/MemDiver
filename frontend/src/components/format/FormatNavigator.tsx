@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
+import { useDumpStore } from "@/stores/dump-store";
 import { detectFormat, importKsy } from "@/api/client";
 import type { FormatSuggestion } from "@/api/types";
 import { splitSuggested } from "./FormatNavigator.helpers";
@@ -298,6 +299,7 @@ export function FormatNavigator({ dumpPath }: Props) {
   const [info, setInfo] = useState<FormatInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [forcedFormat, setForcedFormat] = useState<string | null>(null);
+  const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(dumpPath));
   // Reset the user's parser override when the viewed dump changes by
   // comparing against the previous prop during render — idiomatic React
   // "adjusting state while rendering" pattern.
@@ -316,7 +318,7 @@ export function FormatNavigator({ dumpPath }: Props) {
     useHexStore.getState().setActiveStructureOverlay(null);
 
     let cancelled = false;
-    detectFormat(dumpPath, 0, forcedFormat ?? undefined)
+    detectFormat(dumpPath, 0, forcedFormat ?? undefined, keyMaterial)
       .then((data) => {
         if (cancelled) return;
         const next = data as unknown as FormatInfo;
@@ -329,7 +331,7 @@ export function FormatNavigator({ dumpPath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [dumpPath, forcedFormat]);
+  }, [dumpPath, forcedFormat, keyMaterial]);
 
   if (error) {
     return (

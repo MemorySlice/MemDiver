@@ -3,9 +3,9 @@
 import logging
 from typing import Any
 
-from ui.components.html_builder import format_size as _format_size
-from ui.components.hex_renderer import _html_escape
-from ui.locales import _
+from memdiver.ui.components.html_builder import format_size as _format_size
+from memdiver.ui.components.hex_renderer import _html_escape
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.session_view")
 
@@ -29,7 +29,7 @@ def render_session_view(mo, report) -> Any:
     Returns:
         mo.Html with the rendered session navigator.
     """
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components import color_scheme as cs
 
     if report is None:
         return mo.md(_("*No session data available.*"))

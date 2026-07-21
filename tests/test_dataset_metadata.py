@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from core.dataset_metadata import DatasetMeta, DumpRef, _decode_hex, load_run_meta
-from tests._paths import SKIP_REASON, dataset_root
+from memdiver.core.dataset_metadata import DatasetMeta, DumpRef, _decode_hex, load_run_meta
+from tests._paths import dataset_file
 
 
 def _write_meta(run_dir: Path, payload: dict) -> Path:
@@ -100,16 +98,10 @@ def test_decode_hex_rejects_odd_length() -> None:
 
 
 def test_load_run_meta_real_dataset() -> None:
-    """Smoke-test against the real dataset when present."""
-    root = dataset_root()
-    if root is None:
-        pytest.skip(SKIP_REASON)
-    run_dir = (
-        root / "dataset_memory_slice" / "gocryptfs"
-        / "dataset_gocryptfs" / "run_0001"
+    """Smoke-test against the dataset run dir (real capture or synthetic)."""
+    run_dir = dataset_file(
+        "dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001"
     )
-    if not run_dir.is_dir():
-        pytest.skip("Real dataset structure not present at expected path")
 
     meta = load_run_meta(run_dir)
     assert meta is not None

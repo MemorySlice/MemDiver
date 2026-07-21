@@ -18,8 +18,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mcp_server import tools_inspect
-from mcp_server.tools_inspect import TAIL_OVERLAP, _extract_strings as extract_strings_tool
+from memdiver.mcp_server import tools_inspect
+from memdiver.mcp_server.tools_inspect import TAIL_OVERLAP, _extract_strings as extract_strings_tool
 
 
 class _DummySession:
@@ -147,7 +147,7 @@ def test_large_file_does_not_read_all(monkeypatch):
 
         # Monkey-patch read_all on every dump source class so any accidental
         # full-buffer slurp blows up the test immediately.
-        import core.dump_source as dump_source_mod
+        import memdiver.core.dump_source as dump_source_mod
 
         def _boom(self, *args, **kwargs):  # noqa: ANN001
             raise AssertionError("read_all should never be called by chunked path")

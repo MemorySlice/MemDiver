@@ -23,11 +23,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from generate_realistic_fixtures import (
     generate_dataset, KEY_OFFSET, KEY_LENGTH, DUMP_SIZE,
 )
-from core.entropy import compute_entropy_profile, find_high_entropy_regions
-from engine.consensus import ConsensusVector
-from engine.convergence import _entropy_candidates, _variance_candidates
-from core.variance import ByteClass
-from core.alignment_filter import alignment_filter
+from memdiver.core.entropy import compute_entropy_profile, find_high_entropy_regions
+from memdiver.engine.consensus import ConsensusVector
+from memdiver.engine.convergence import _entropy_candidates, _variance_candidates
+from memdiver.core.variance import ByteClass
+from memdiver.core.alignment_filter import alignment_filter
 import numpy as np
 
 
@@ -193,7 +193,7 @@ def _print_comparison_table(results: dict, num_runs: int, threshold: float):
 def _print_raw_vs_msl_table(tmpdir: Path, tool: str, num_runs: int,
                             threshold: float, truth: set):
     """Compare raw flat consensus vs MSL-aligned consensus."""
-    from core.dump_source import open_dump
+    from memdiver.core.dump_source import open_dump
     from tests.fixtures.generate_aslr_fixtures import (
         generate_dataset as gen_aslr, STRUCT_OFFSET_IN_HEAP,
     )

@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.unknown_key.differential import DifferentialAlgorithm
-from algorithms.base import AnalysisContext
+from memdiver.algorithms.unknown_key.differential import DifferentialAlgorithm
+from memdiver.algorithms.base import AnalysisContext
 
 
 def _make_dump(data: bytes) -> Path:

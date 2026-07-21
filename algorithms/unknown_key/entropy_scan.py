@@ -1,8 +1,8 @@
 """Shannon entropy sliding window algorithm for detecting high-entropy key material."""
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
-from core.entropy import entropy_from_freq
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.entropy import entropy_from_freq
 
 
 class EntropyScanAlgorithm(BaseAlgorithm):
@@ -69,6 +69,15 @@ class EntropyScanAlgorithm(BaseAlgorithm):
 
     @staticmethod
     def _merge_overlapping(matches: list) -> list:
+        # Sibling interval-merge: differential.DifferentialAnalyzer._merge_nearby_runs.
+        # Deliberately NOT shared -- the semantics diverge on both axes:
+        #   * merge DECISION: here strict overlap only (gap tolerance 0, tracked
+        #     via a running cluster_end); there gaps up to MAX_GAP_BYTES are
+        #     bridged unless the gap contains an invariant byte.
+        #   * merge ACTION: here the higher-confidence (then wider) Match is KEPT
+        #     with its original bounds; there the (start, end) bounds are FUSED
+        #     into a spanning interval.
+        # Unifying would require a behaviour-changing merge, so they stay separate.
         if not matches:
             return []
         matches.sort(key=lambda m: (m.offset, -m.length))

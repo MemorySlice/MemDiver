@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { extractStrings } from "@/api/client";
 import type { StringMatch } from "@/api/types";
 import { useHexStore } from "@/stores/hex-store";
+import { useDumpStore } from "@/stores/dump-store";
 import type { HighlightRegion } from "@/stores/hex-store";
 
 const MAX_ROWS = 10_000;
@@ -166,6 +167,7 @@ export const useStringsStore = create<StringsState>((set, get) => {
           maxResults: PAGE_SIZE,
           cursor: cursor ?? 0,
           chunkSize: CHUNK_SIZE,
+          key: useDumpStore.getState().getKeyMaterialByPath(dumpPath),
         });
         const incoming = res.strings ?? [];
         const merged = get().rows.concat(incoming);

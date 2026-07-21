@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.hex_comparison")
 
@@ -19,7 +19,7 @@ def create_comparison_controls(
 
     Returns dict with page slider and offset jump for both panels.
     """
-    from ui.components.hex_pager import total_pages
+    from memdiver.ui.components.hex_pager import total_pages
 
     max_size = max(dump_size_a, dump_size_b)
     max_page = max(0, total_pages(max_size, rows_per_page, bytes_per_row) - 1)
@@ -57,9 +57,9 @@ def render_hex_comparison(
     Returns:
         mo.Html with side-by-side hex comparison.
     """
-    from ui.components.hex_pager import compute_page
-    from ui.components.hex_renderer import render_hex_dump
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components.hex_pager import compute_page
+    from memdiver.ui.components.hex_renderer import render_hex_dump
+    from memdiver.ui.components import color_scheme as cs
 
     page = controls["page"].value if controls else 0
     highlight_diffs = controls["highlight_diffs"].value if controls else True

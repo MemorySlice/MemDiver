@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.variance import (
+from memdiver.core.variance import (
     ByteClass, STRUCTURAL_MAX, POINTER_MAX,
     compute_variance, classify_variance,
     find_contiguous_runs, count_classifications,

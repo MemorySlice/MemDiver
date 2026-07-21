@@ -12,12 +12,12 @@ from tests.fixtures.generate_fixtures import (
     TLS12_SECRET_OFFSET,
     TLS12_SECRET_VALUES_BY_RUN,
 )
-from core.discovery import DatasetScanner, RunDiscovery
-from core.input_schemas import AnalyzeRequest
-from engine.pipeline import AnalysisPipeline
-from core.variance import ByteClass
-from engine.consensus import ConsensusVector
-from engine.serializer import serialize_result
+from memdiver.core.discovery import DatasetScanner, RunDiscovery
+from memdiver.core.input_schemas import AnalyzeRequest
+from memdiver.engine.pipeline import AnalysisPipeline
+from memdiver.core.variance import ByteClass
+from memdiver.engine.consensus import ConsensusVector
+from memdiver.engine.serializer import serialize_result
 
 
 @pytest.fixture(scope="module", autouse=True)

@@ -1,5 +1,5 @@
 """PE binary format structure definitions."""
-from core.structure_defs import StructureDef, FieldDef, FieldType
+from memdiver.core.structure_defs import StructureDef, FieldDef, FieldType
 
 DOS_HEADER = StructureDef(
     name="dos_header",

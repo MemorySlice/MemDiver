@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-from core.models import CryptoSecret
+from memdiver.core.models import CryptoSecret
 
 
 @dataclass(frozen=True)

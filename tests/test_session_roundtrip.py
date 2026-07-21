@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.config import Settings
-from api.dependencies import get_api_settings
-from api.main import create_app
+from memdiver.api.config import Settings
+from memdiver.api.dependencies import get_api_settings
+from memdiver.api.main import create_app
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from architect.yara_exporter import YaraExporter, _sanitize_identifier
+from memdiver.architect.yara_exporter import YaraExporter, _sanitize_identifier
 
 
 def test_export_basic():

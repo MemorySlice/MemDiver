@@ -8,15 +8,15 @@ from uuid import UUID, uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from msl.compress import is_available as _codec_is_available
-from msl.enums import (BLOCK_HEADER_SIZE, BLOCK_MAGIC, FILE_MAGIC, BlockType,
+from memdiver.msl.compress import is_available as _codec_is_available
+from memdiver.msl.enums import (BLOCK_HEADER_SIZE, BLOCK_MAGIC, FILE_MAGIC, BlockType,
                        CompAlgo, EdgeKind, NodeKind)
-from msl.reader import MslReader
-from msl.types import (MslConnArpEntry, MslConnIfaceStats, MslConnIPv4Route,
+from memdiver.msl.reader import MslReader
+from memdiver.msl.types import (MslConnArpEntry, MslConnIfaceStats, MslConnIPv4Route,
                        MslConnIPv6Route, MslConnMibCounter,
                        MslConnPacketSocket, MslConnSocketFamilyAgg,
                        MslPointerGraphEdge, MslPointerGraphNode)
-from msl.writer import MslWriter
+from memdiver.msl.writer import MslWriter
 
 
 @pytest.fixture
@@ -233,7 +233,7 @@ def _make_target_msl(path: Path, pid: int = 100) -> UUID:
 
 def test_xref_resolver_verify_success(tmp_path):
     """resolve(verify=True) sets hash_verified=True for an unmodified target."""
-    from msl.xref_resolver import XrefResolver
+    from memdiver.msl.xref_resolver import XrefResolver
 
     target_msl = tmp_path / "target.msl"
     target_uuid = _make_target_msl(target_msl)
@@ -260,7 +260,7 @@ def test_xref_resolver_verify_success(tmp_path):
 
 def test_xref_resolver_verify_mismatch_detected(tmp_path):
     """Mutating the target file post-pinning yields hash_verified=False."""
-    from msl.xref_resolver import XrefResolver
+    from memdiver.msl.xref_resolver import XrefResolver
 
     target_msl = tmp_path / "target.msl"
     target_uuid = _make_target_msl(target_msl)
@@ -363,7 +363,7 @@ def test_connectivity_table_byte_equality_with_fixture(tmp_path):
     same logical rows so existing fixtures and new writer output are
     interchangeable.
     """
-    from msl.writer import _build_connectivity_table_payload
+    from memdiver.msl.writer import _build_connectivity_table_payload
 
     # Reference: payload portion of the fixture builder's default block
     # (skip the 80-byte block header that _build_block prepends).
@@ -413,8 +413,8 @@ def test_encode_comp_flags_matches_reader_decode_rule():
     """Writer's flag-encoding rule must match the reader's bit unpacking
     (msl/types.py:85-87). Pins the contract that lets the reader decide
     whether and how to decompress on read."""
-    from msl.enums import BlockFlag
-    from msl.writer import _encode_comp_flags
+    from memdiver.msl.enums import BlockFlag
+    from memdiver.msl.writer import _encode_comp_flags
 
     # NONE => no bits set; reader sees compressed=False
     assert _encode_comp_flags(CompAlgo.NONE) == 0
@@ -466,7 +466,7 @@ def test_memory_region_compressed_roundtrip(tmp_path, algo):
 )
 def test_compressed_block_integrity_chain(tmp_path):
     """BLAKE3 prev_hash chain validates over the on-disk (compressed) bytes."""
-    from msl.integrity import verify_chain
+    from memdiver.msl.integrity import verify_chain
 
     out = tmp_path / "compressed_chain.msl"
     w = MslWriter(out)
@@ -505,7 +505,7 @@ def test_compress_unavailable_codec_raises(tmp_path, monkeypatch):
     """Asking for a codec whose library is missing raises a clean error
     before any bytes hit disk."""
     import builtins
-    from msl.types import MslParseError
+    from memdiver.msl.types import MslParseError
 
     real_import = builtins.__import__
 
@@ -587,7 +587,7 @@ def test_pointer_graph_appendix_roundtrip(tmp_path):
 
 def test_pointer_graph_appendix_integrity_verification(tmp_path):
     """The stored BLAKE3 trailer matches a fresh hash over header+nodes+edges."""
-    from msl.decoders_ext import verify_pointer_graph_integrity
+    from memdiver.msl.decoders_ext import verify_pointer_graph_integrity
 
     out = tmp_path / "pg_integrity.msl"
     nodes, edges = _sample_pointer_graph()
@@ -620,7 +620,7 @@ def test_pointer_graph_appendix_no_integrity_trailer(tmp_path):
 
 def test_pointer_graph_appendix_outside_chain(tmp_path):
     """verify_chain stops at EoC; appendix doesn't poison integrity."""
-    from msl.integrity import verify_chain
+    from memdiver.msl.integrity import verify_chain
 
     out = tmp_path / "pg_chain_isolated.msl"
     nodes, edges = _sample_pointer_graph()
@@ -698,7 +698,7 @@ def test_pointer_graph_replacing_call_overwrites(tmp_path):
 
 def test_pointer_graph_tampered_trailer_detected(tmp_path):
     """Flipping a byte in the appendix trailer makes verifier return False."""
-    from msl.decoders_ext import verify_pointer_graph_integrity
+    from memdiver.msl.decoders_ext import verify_pointer_graph_integrity
 
     out = tmp_path / "pg_tampered.msl"
     nodes, edges = _sample_pointer_graph()

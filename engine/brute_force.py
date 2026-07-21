@@ -24,8 +24,9 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from engine.oracle import OracleFn, load_oracle, load_oracle_config
-from engine.progress import (
+from memdiver.engine.candidate_grid import iter_region_grid
+from memdiver.engine.oracle import OracleFn, load_oracle, load_oracle_config
+from memdiver.engine.progress import (
     Cancelled,
     ProgressEvent,
     ProgressFn,
@@ -129,13 +130,34 @@ def iter_candidate_slices(
     for ridx, region in enumerate(regions):
         r_start = int(region["offset"])
         r_end = r_start + int(region["length"])
-        first_offset = ((r_start + stride - 1) // stride) * stride
-        for offset in range(first_offset, r_end, stride):
-            for size in key_sizes:
-                end = offset + size
-                if end > r_end or end > dump_len:
-                    continue
-                yield ridx, offset, size, reference_data[offset:end]
+        for offset, size in iter_region_grid(r_start, r_end, key_sizes, stride, dump_len):
+            yield ridx, offset, size, reference_data[offset:offset + size]
+
+
+def count_candidate_slices(
+    regions: Sequence[dict],
+    reference_data: bytes,
+    key_sizes: Sequence[int],
+    stride: int,
+) -> int:
+    """Count candidates without materialising their bytes.
+
+    Equivalent to ``sum(1 for _ in iter_candidate_slices(...))`` but iterates
+    the (offset, size) grid directly via :func:`iter_region_grid`, skipping the
+    per-candidate ``reference_data`` slice. Used for the progress-total
+    precomputation pass so counting never allocates candidate byte-strings.
+    """
+    if stride <= 0:
+        raise ValueError("stride must be positive")
+    dump_len = len(reference_data)
+    total = 0
+    for region in regions:
+        r_start = int(region["offset"])
+        r_end = r_start + int(region["length"])
+        total += sum(
+            1 for _ in iter_region_grid(r_start, r_end, key_sizes, stride, dump_len)
+        )
+    return total
 
 
 def _load_neighborhood_variance(
@@ -355,21 +377,25 @@ def brute_force_with_oracle(
     N values. Does NOT attach neighborhood variance — callers that
     need it should invoke ``_load_neighborhood_variance`` themselves.
     """
-    slices = list(iter_candidate_slices(regions, reference_data, key_sizes, stride))
+    # Count candidates without holding the whole list resident: the generator
+    # is memory-bounded, so a discard-count pass keeps peak memory O(1) while
+    # still reporting the exact total upfront. The oracle (the expensive part)
+    # still runs exactly once per candidate, on a fresh generator.
+    total_estimate = count_candidate_slices(regions, reference_data, key_sizes, stride)
     safe_emit(
         progress_callback,
         ProgressEvent(
             stage="brute_force:start",
             pct=0.0,
-            msg=f"candidates={len(slices)}",
-            extra={"total": len(slices)},
+            msg=f"candidates={total_estimate}",
+            extra={"total": total_estimate},
         ),
     )
     raw_hits, total = _run_serial(
-        iter(slices),
+        iter_candidate_slices(regions, reference_data, key_sizes, stride),
         oracle,
         exhaustive,
-        total_estimate=len(slices),
+        total_estimate=total_estimate,
         progress_callback=progress_callback,
         cancel_event=cancel_event,
     )
@@ -413,31 +439,35 @@ def run_brute_force(
     regions: List[dict] = payload.get("regions", [])
     oracle_config = load_oracle_config(oracle_config_path)
 
-    slices = list(
-        iter_candidate_slices(regions, reference_data, key_sizes, stride)
-    )
+    # Count candidates via a slice-free grid pass instead of holding the full
+    # materialized list; the dispatch below then streams a fresh generator
+    # (serial iterates it directly; the parallel path keeps its bounded
+    # in-flight window). Count matches the run exactly because both derive from
+    # the same pure iter_region_grid over identical inputs.
+    total_estimate = count_candidate_slices(regions, reference_data, key_sizes, stride)
     safe_emit(
         progress_callback,
         ProgressEvent(
             stage="brute_force:start",
             pct=0.0,
-            msg=f"candidates={len(slices)} jobs={jobs}",
-            extra={"total": len(slices), "jobs": jobs},
+            msg=f"candidates={total_estimate} jobs={jobs}",
+            extra={"total": total_estimate, "jobs": jobs},
         ),
     )
 
-    if jobs > 1 and len(slices) > 1:
+    job_iter = iter_candidate_slices(regions, reference_data, key_sizes, stride)
+    if jobs > 1 and total_estimate > 1:
         raw_hits, total = _run_parallel(
-            iter(slices), oracle_path, oracle_config, jobs, exhaustive,
-            total_estimate=len(slices),
+            job_iter, oracle_path, oracle_config, jobs, exhaustive,
+            total_estimate=total_estimate,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )
     else:
         oracle = load_oracle(oracle_path, oracle_config)
         raw_hits, total = _run_serial(
-            iter(slices), oracle, exhaustive,
-            total_estimate=len(slices),
+            job_iter, oracle, exhaustive,
+            total_estimate=total_estimate,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )

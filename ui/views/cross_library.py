@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.cross_library")
 
@@ -29,8 +29,8 @@ def render_cross_library(
     Returns:
         mo.Html with side-by-side comparison.
     """
-    from ui.components.hex_renderer import render_hex_dump
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components.hex_renderer import render_hex_dump
+    from memdiver.ui.components import color_scheme as cs
 
     if not library_data:
         return mo.md(_("*No library data for comparison.*"))

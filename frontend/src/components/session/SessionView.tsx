@@ -17,6 +17,8 @@ import { useTranslation } from "react-i18next";
 
 interface Props {
   data: SessionData;
+  /** Fractional page-capture coverage (0..1); rendered as a percentage. */
+  coverage?: number;
 }
 
 function formatSize(bytes: number): string {
@@ -25,7 +27,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-export const SessionView = memo(function SessionView({ data }: Props) {
+export const SessionView = memo(function SessionView({ data, coverage }: Props) {
   const { t } = useTranslation("session");
   return (
     <div className="p-3 space-y-3 text-xs">
@@ -43,6 +45,9 @@ export const SessionView = memo(function SessionView({ data }: Props) {
         <Row label={t("info.regions")} value={String(data.region_count)} />
         <Row label={t("info.totalSize")} value={formatSize(data.total_region_size)} />
         <Row label={t("info.capturedPages")} value={String(data.captured_page_count)} />
+        {coverage !== undefined && (
+          <Row label={t("info.coverage")} value={`${Math.round(coverage * 100)}%`} />
+        )}
         <Row label={t("info.keyHints")} value={String(data.key_hint_count)} />
       </div>
 

@@ -19,8 +19,8 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from api.dependencies import task_manager_or_503 as _manager_or_503
-from api.services.task_manager import get_task_manager
+from memdiver.api.dependencies import task_manager_or_503 as _manager_or_503
+from memdiver.api.services.task_manager import get_task_manager
 
 logger = logging.getLogger("memdiver.api.ws.progress")
 

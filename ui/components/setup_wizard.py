@@ -6,14 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.components.setup_wizard")
 
 
 def _config_path() -> Path:
     """Return the path to user preferences config file."""
-    from core.constants import memdiver_home
+    from memdiver.core.constants import memdiver_home
     return memdiver_home() / "config.json"
 
 
@@ -40,7 +40,7 @@ def should_show_wizard() -> bool:
 
     Shows when DuckDB is not installed and user hasn't opted to skip.
     """
-    from engine.project_db import check_deps
+    from memdiver.engine.project_db import check_deps
     if check_deps().get("ready"):
         return False
     prefs = _load_prefs()
@@ -79,7 +79,7 @@ def render_setup_wizard(mo, install_btn, skip_btn):
     if not should_show_wizard():
         return None
 
-    from engine.project_db import install_hint
+    from memdiver.engine.project_db import install_hint
 
     hint = install_hint()
 

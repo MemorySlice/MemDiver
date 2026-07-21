@@ -14,11 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from msl.enums import (BLOCK_HEADER_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
+from memdiver.msl.enums import (BLOCK_HEADER_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
                        BlockType, PageState)
-from msl.reader import MslReader
-from msl.types import MslParseError
-from msl.writer import (CapBit, ConnectionTableEntry, HandleTableEntry,
+from memdiver.msl.reader import MslReader
+from memdiver.msl.types import MslParseError
+from memdiver.msl.writer import (CapBit, ConnectionTableEntry, HandleTableEntry,
                         ModuleEntrySpec, MslWriter, ProcessTableEntry)
 
 
@@ -305,7 +305,7 @@ def test_investigation_mode_block_ordering(tmp_path):
 
 def test_investigation_block_chain_integrity(tmp_path):
     """Investigation files round-trip through the BLAKE3 chain verifier."""
-    from msl.integrity import verify_chain
+    from memdiver.msl.integrity import verify_chain
 
     out = tmp_path / "investigation_chain.msl"
     w = MslWriter(out, pid=1, imported=False, investigation=True)

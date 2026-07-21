@@ -3,9 +3,9 @@
 import re
 from typing import List
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from algorithms.confidence import regex_specificity, density_penalty
-from core.constants import UNKNOWN_KEY
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.algorithms.confidence import regex_specificity, density_penalty
+from memdiver.core.constants import UNKNOWN_KEY
 
 
 class UserRegexAlgorithm(BaseAlgorithm):

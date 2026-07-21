@@ -59,6 +59,10 @@
   --md-hl-constraint: #8a7a00;
   --md-hl-strings: #2266aa;
 
+  --md-page-captured: #3d7a28;
+  --md-page-failed: #cc2222;
+  --md-page-unmapped: #6a6a70;
+
   --md-field-0: #3a7ec0;
   --md-field-1: #5a8a4a;
   --md-field-2: #b06a40;
@@ -132,6 +136,10 @@
   --md-hl-differential: #4ec9b0;
   --md-hl-constraint: #d7ba7d;
   --md-hl-strings: #9cdcfe;
+
+  --md-page-captured: #6a9955;
+  --md-page-failed: #f44747;
+  --md-page-unmapped: #6a737d;
 
   --md-field-0: #569cd6;
   --md-field-1: #6a9955;

@@ -421,8 +421,23 @@ class MslReader:
     def _collect(self, block_type, decoder, cache_attr):
         cached = getattr(self, cache_attr)
         if cached is None:
-            cached = [decoder(h, p, self._byte_order)
-                      for h, p in self.iter_blocks() if h.block_type == block_type]
+            decoded = []
+            for h, p in self.iter_blocks():
+                if h.block_type != block_type:
+                    continue
+                # A single non-conformant block (e.g. a real-world capture
+                # with an out-of-spec PageSizeLog2) must not abort the whole
+                # collection and take unrelated blocks / consumers down with
+                # it. Skip the offending block with a warning and continue;
+                # decoders remain strict when called directly.
+                try:
+                    decoded.append(decoder(h, p, self._byte_order))
+                except MslParseError as exc:
+                    logger.warning(
+                        "Skipping malformed %s block at 0x%X: %s",
+                        block_type.name, h.file_offset, exc,
+                    )
+            cached = decoded
             setattr(self, cache_attr, cached)
         return cached
 

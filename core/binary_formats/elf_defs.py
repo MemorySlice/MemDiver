@@ -1,5 +1,5 @@
 """ELF binary format structure definitions."""
-from core.structure_defs import StructureDef, FieldDef, FieldType
+from memdiver.core.structure_defs import StructureDef, FieldDef, FieldType
 
 ELF64_HEADER = StructureDef(
     name="elf64_header",

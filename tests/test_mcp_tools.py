@@ -6,10 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from mcp_server.session import ToolSession
-from mcp_server import tools
-from mcp_server import tools_inspect
-from mcp_server import tools_xref
+from memdiver.mcp_server.session import ToolSession
+from memdiver.mcp_server import tools
+from memdiver.mcp_server import tools_inspect
+from memdiver.mcp_server import tools_xref
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "dataset"
 
@@ -285,6 +285,32 @@ class TestGetSessionInfo:
 
     def test_missing_file(self, session):
         result = tools_inspect.get_session_info(session, "/nonexistent.msl")
+        assert "error" in result
+
+
+# --- get_processes / get_modules / get_handles (granular inspect) ---
+
+@pytest.mark.parametrize("fn_name, key", [
+    ("get_processes", "processes"),
+    ("get_modules", "modules"),
+    ("get_handles", "handles"),
+])
+class TestGranularInspect:
+    def test_msl(self, session, fn_name, key):
+        msl_path = FIXTURE_ROOT / "msl" / "test_capture.msl"
+        if not msl_path.exists():
+            pytest.skip("MSL fixture not available")
+        result = getattr(tools_inspect, fn_name)(session, str(msl_path))
+        assert "error" not in result
+        assert isinstance(result[key], list)
+
+    def test_non_msl_file(self, session, fn_name, key):
+        dump = next((FIXTURE_ROOT / "TLS12" / "scenario_a" / "openssl" / "openssl_run_12_1").glob("*.dump"))
+        result = getattr(tools_inspect, fn_name)(session, str(dump))
+        assert "error" in result
+
+    def test_missing_file(self, session, fn_name, key):
+        result = getattr(tools_inspect, fn_name)(session, "/nonexistent.msl")
         assert "error" in result
 
 

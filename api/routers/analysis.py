@@ -5,18 +5,15 @@ from __future__ import annotations
 import json
 import logging
 
-from contextlib import ExitStack
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from algorithms.base import AnalysisContext
-from algorithms.registry import get_registry
-from api.dependencies import (
-    get_tool_session,
+from memdiver.api.dependencies import (
     task_manager_or_503 as _task_manager_or_503,
 )
-from api.models import (
+from memdiver.api.models import (
+    AnalysisRunResponse,
     AnalyzeFileRequest,
     AnalyzeRequestAPI,
     AutoExportRequest,
@@ -26,40 +23,57 @@ from api.models import (
     ConvergenceRequest,
     VerifyKeyRequest,
 )
-from api.services.consensus_session import (
+from memdiver.api.services.consensus_session import (
     ConsensusSessionManager,
     get_consensus_manager,
 )
-from core.dump_source import open_dump
-from engine.consensus import ConsensusVector
-from mcp_server import tools
-from mcp_server.session import ToolSession
+from memdiver.api.services.key_material import decode_key_material
+from memdiver.core.dump_source import open_dump
+from memdiver.engine.consensus_service import build_consensus
 
 logger = logging.getLogger("memdiver.api.routers.analysis")
 
 router = APIRouter()
 
 
-@router.post("/run")
-def run_analysis(
-    request: AnalyzeRequestAPI,
-    session: ToolSession = Depends(get_tool_session),
-):
-    """Run the full analysis pipeline on library directories.
+@router.post("/run", response_model=AnalysisRunResponse)
+def run_analysis(request: AnalyzeRequestAPI):
+    """Submit the full library-analysis pipeline as a task and return a task_id.
 
-    Runs synchronously for now; Phase B adds ProcessPool dispatch.
+    Previously this ran ``tools.analyze_library`` inline on the request
+    thread ("Runs synchronously for now"). The GIL-bound algorithm work
+    is now dispatched to the TaskManager's ProcessPool via
+    ``engine.analysis_task_runner.run_analysis`` — the same async pattern
+    as ``POST /api/analysis/batch`` and the pipeline endpoint. Progress
+    streams over ``/ws/tasks/{task_id}`` and the full ``AnalysisResult``
+    is downloadable as the ``analysis_result`` artifact.
+
+    The identical algorithm logic still lives in
+    ``mcp_server.tools.analyze_library`` (which the runner calls and the
+    MCP server continues to use synchronously), so no behavior is lost.
     """
-    return tools.analyze_library(
-        session,
-        request.library_dirs,
-        request.phase,
-        request.protocol_version,
-        keylog_filename=request.keylog_filename,
-        template_name=request.template_name,
-        max_runs=request.max_runs,
-        normalize=request.normalize,
-        expand_keys=request.expand_keys,
-        algorithms=request.algorithms,
+    manager = _task_manager_or_503()
+    worker_params: dict = {
+        "task_root": str(manager.artifact_store.root),
+        "library_dirs": list(request.library_dirs),
+        "phase": request.phase,
+        "protocol_version": request.protocol_version,
+        "keylog_filename": request.keylog_filename,
+        "template_name": request.template_name,
+        "max_runs": request.max_runs,
+        "normalize": request.normalize,
+        "expand_keys": request.expand_keys,
+        "algorithms": request.algorithms,
+    }
+    record = manager.submit(
+        kind="analysis",
+        params=worker_params,
+        runner_dotted="memdiver.engine.analysis_task_runner.run_analysis",
+        stage_names=["analyze"],
+    )
+    return AnalysisRunResponse(
+        task_id=record.task_id,
+        status=record.status.value,
     )
 
 
@@ -72,13 +86,11 @@ def run_consensus(
     if len(req.dump_paths) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 dumps")
 
-    with ExitStack() as stack:
-        # open_dump() only constructs the source; entering it opens the source
-        # so build_from_sources can read it (an unopened MslDumpSource raises),
-        # and ExitStack guarantees every source is closed on exit.
-        sources = [stack.enter_context(open_dump(Path(p))) for p in req.dump_paths]
-        cm = ConsensusVector()
-        cm.build_from_sources(sources, normalize=req.normalize)
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
+    # open+build is the shared skeleton; build_consensus opens each dump as a
+    # context-managed source, builds the vector while they are all live, and
+    # closes them once the vector holds its own copies. No disk writes here.
+    cm = build_consensus(req.dump_paths, normalize=req.normalize, key_material=km)
 
     # Register the build under its own id so range queries are isolated per
     # client — no shared mutable state on a process-wide singleton.
@@ -143,100 +155,51 @@ def consensus_range(
     }
 
 
-@router.post("/run-file")
-def run_file_analysis(
-    request: AnalyzeFileRequest,
-    session: ToolSession = Depends(get_tool_session),
-):
-    """Run analysis on a single dump file without dataset context."""
+@router.post("/run-file", response_model=AnalysisRunResponse)
+def run_file_analysis(request: AnalyzeFileRequest):
+    """Submit single-file analysis as a task and return a task_id.
+
+    Previously this read the dump and ran every requested algorithm
+    inline on the request thread. A 2026-04-13 benchmark recorded
+    ~102.5 s for ``entropy_scan`` on a 10 MB dump — long enough to trip
+    proxy/gateway timeouts. The GIL-bound work now runs on the
+    TaskManager's ProcessPool via
+    ``engine.analysis_task_runner.run_file`` (which preserves the exact
+    algorithm loop, including optional decryption key material). Progress
+    streams over ``/ws/tasks/{task_id}`` — one event per algorithm — and
+    the full ``AnalysisResult`` is downloadable as the ``analysis_result``
+    artifact.
+
+    The path existence check stays here so callers still get a fast 404
+    for a missing file instead of a task that fails asynchronously.
+    """
     path = Path(request.dump_path)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {request.dump_path}")
 
-    filename = path.name
-
-    # Read dump data via DumpSource
-    source = open_dump(path)
-    with source:
-        dump_data = source.read_all()
-
-    # Build context for algorithms
-    extra: dict = {}
-    if request.user_regex:
-        extra["user_patterns"] = [{"name": "user_regex", "regex": request.user_regex}]
-    if request.custom_patterns:
-        extra["custom_patterns"] = request.custom_patterns
-
-    context = AnalysisContext(
-        library=filename,
-        protocol_version="unknown",
-        phase="file",
-        extra=extra,
-    )
-
-    # Run algorithms sequentially. A prior implementation used
-    # ThreadPoolExecutor here, but every single-file algorithm (entropy_scan,
-    # pattern_match, change_point, structure_scan, user_regex) is a pure-
-    # Python GIL-bound loop with no I/O, so threads delivered zero
-    # parallelism — wall-clock was identical to sequential, minus ~1s of
-    # thread-pool overhead. A 2026-04-13 benchmark on a 10 MB dump recorded
-    # ~102.5 s sequential vs ~103.5 s ThreadPool; entropy_scan alone takes
-    # ~94.7 s, so the dispatch wrapper is not the bottleneck and
-    # ProcessPool parallelism cannot meaningfully help either (total is
-    # gated by the slowest single algorithm). See PR 2 in
-    # .claude-work/plans/curried-jumping-lantern.md for the benchmark
-    # results and the decision rationale.
-    registry = get_registry()
-    hits: list[dict] = []
-    algorithm_metadata: dict = {}
-
-    for algo_name in request.algorithms:
-        try:
-            algorithm = registry.get(algo_name)
-        except KeyError:
-            logger.warning("Unknown algorithm: %s", algo_name)
-            algorithm_metadata[algo_name] = {"error": f"unknown algorithm: {algo_name}"}
-            continue
-
-        try:
-            result = algorithm.run(dump_data, context)
-        except Exception as exc:
-            logger.exception("Algorithm %s failed", algo_name)
-            algorithm_metadata[algo_name] = {"error": str(exc)}
-            continue
-
-        algorithm_metadata[algo_name] = {
-            "confidence": result.confidence,
-            "match_count": len(result.matches),
-        }
-
-        for match in result.matches:
-            hits.append({
-                "secret_type": algo_name,
-                "offset": match.offset,
-                "length": match.length,
-                "dump_path": request.dump_path,
-                "library": filename,
-                "phase": "file",
-                "run_id": 0,
-                "confidence": match.confidence,
-            })
-
-    library_report = {
-        "library": filename,
-        "protocol_version": "unknown",
-        "phase": "file",
-        "num_runs": 1,
-        "hits": hits,
-        "static_regions": [],
-        "metadata": {
-            "algorithms": request.algorithms,
-            "dump_path": request.dump_path,
-            "algorithm_results": algorithm_metadata,
-        },
+    manager = _task_manager_or_503()
+    worker_params: dict = {
+        "task_root": str(manager.artifact_store.root),
+        "dump_path": request.dump_path,
+        "algorithms": list(request.algorithms),
+        "user_regex": request.user_regex,
+        "custom_patterns": request.custom_patterns,
+        # Forward raw key material; the worker decodes it in-process so the
+        # params stay JSON-friendly across the multiprocessing queue.
+        "passphrase": request.passphrase,
+        "key_hex": request.key_hex,
+        "kem_key_hex": request.kem_key_hex,
     }
-
-    return {"libraries": [library_report], "metadata": {}}
+    record = manager.submit(
+        kind="analysis",
+        params=worker_params,
+        runner_dotted="memdiver.engine.analysis_task_runner.run_file",
+        stage_names=["analyze"],
+    )
+    return AnalysisRunResponse(
+        task_id=record.task_id,
+        status=record.status.value,
+    )
 
 
 @router.get("/patterns")
@@ -283,7 +246,7 @@ def run_batch(request: BatchRunRequest):
     record = manager.submit(
         kind="batch",
         params=worker_params,
-        runner_dotted="engine.batch_task_runner.run_batch",
+        runner_dotted="memdiver.engine.batch_task_runner.run_batch",
         stage_names=["batch"],
     )
     return BatchRunResponse(
@@ -295,8 +258,8 @@ def run_batch(request: BatchRunRequest):
 @router.post("/convergence")
 def run_convergence(req: ConvergenceRequest):
     """Run convergence sweep: build consensus at N=[2..max] and return metrics."""
-    from engine.convergence import run_convergence_sweep
-    from engine.serializer import serialize_convergence_result
+    from memdiver.engine.convergence import run_convergence_sweep
+    from memdiver.engine.serializer import serialize_convergence_result
 
     paths = [Path(p) for p in req.dump_paths]
     missing = [p for p in paths if not p.exists()]
@@ -316,7 +279,7 @@ def run_convergence(req: ConvergenceRequest):
 @router.post("/verify-key")
 def verify_key(req: VerifyKeyRequest):
     """Attempt decryption verification of a candidate key."""
-    from engine.verification import (
+    from memdiver.engine.verification import (
         VERIFIER_REGISTRY,
         VERIFICATION_IV,
         VERIFICATION_PLAINTEXT,
@@ -330,8 +293,9 @@ def verify_key(req: VerifyKeyRequest):
 
     verifier = VERIFIER_REGISTRY[req.cipher]
 
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
     try:
-        with open_dump(Path(req.dump_path)) as source:
+        with open_dump(Path(req.dump_path), **km) as source:
             candidate = source.read_range(req.offset, req.length)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Dump not found: {req.dump_path}")
@@ -371,11 +335,12 @@ def auto_export(req: AutoExportRequest):
     producing file-relative offsets for native MSL inputs that users
     could not map back to memory.
     """
-    from api.services.analysis_service import (
+    from memdiver.api.services.analysis_service import (
         AnalysisServiceError,
         auto_export_pattern,
     )
 
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex)
     try:
         return auto_export_pattern(
             req.dump_paths,
@@ -383,6 +348,7 @@ def auto_export(req: AutoExportRequest):
             name=req.name,
             align=req.align,
             context=req.context,
+            key_material=km,
         )
     except AnalysisServiceError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc

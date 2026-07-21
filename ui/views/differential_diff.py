@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.differential_diff")
 
@@ -31,8 +31,8 @@ def render_differential_diff(
     Returns:
         mo.Html with the diff view.
     """
-    from ui.components import color_scheme as cs
-    from ui.components.hex_renderer import render_offset_column
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.ui.components.hex_renderer import render_offset_column
 
     if not dump_a or not dump_b:
         return mo.md(_("*Need two dumps for differential comparison.*"))

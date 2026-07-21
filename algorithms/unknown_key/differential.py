@@ -11,9 +11,9 @@ from array import array
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
-from core.variance import (
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.variance import (
     ByteClass,
     compute_variance,
     classify_variance,
@@ -103,7 +103,23 @@ class DifferentialAlgorithm(BaseAlgorithm):
         if min_size == 0:
             return array("d")
         buffers = [p.read_bytes()[:min_size] for p in dump_paths]
-        return compute_variance(buffers, min_size)
+        return DifferentialAlgorithm._variance_from_buffers(buffers)
+
+    @staticmethod
+    def _variance_from_buffers(buffers: List[bytes]) -> array:
+        """Compute per-byte-position variance from already-loaded buffers.
+
+        Pure computation seam extracted from :meth:`_compute_variance`: it
+        accepts in-memory byte buffers (no file I/O) so the vectorized variance
+        step can be unit-tested without real dump files. Buffers are truncated
+        to the shortest length before reduction, matching the file-reading path.
+        """
+        if not buffers:
+            return array("d")
+        min_size = min(len(b) for b in buffers)
+        if min_size == 0:
+            return array("d")
+        return compute_variance([b[:min_size] for b in buffers], min_size)
 
     def _extract_key_regions(
         self,
@@ -185,6 +201,14 @@ class DifferentialAlgorithm(BaseAlgorithm):
 
         Returns:
             A new list of (start, end) pairs with nearby runs merged.
+
+        Note:
+            Sibling interval-merge: entropy_scan.EntropyScanner._merge_overlapping.
+            Deliberately NOT shared -- semantics diverge on both axes: this routine
+            bridges gaps up to ``max_gap`` (gated on invariant bytes) and FUSES
+            bounds into a spanning (prev_start, end); the sibling merges strict
+            overlaps only (gap tolerance 0) and KEEPS a representative interval's
+            original bounds. Unifying would require a behaviour-changing merge.
         """
         if not runs:
             return []

@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from msl.decoders import decode_vas_map
-from msl.types import MslBlockHeader, MslVasEntry, MslVasMap
+from memdiver.msl.decoders import decode_vas_map
+from memdiver.msl.types import MslBlockHeader, MslVasEntry, MslVasMap
 from tests.fixtures.generate_msl_fixtures import (
     _build_vas_map,
     _det_uuid,
@@ -100,7 +100,7 @@ def test_vas_entry_fields():
 
 def test_collect_vas_map():
     """Reader collect_vas_map returns cached VAS_MAP blocks."""
-    from msl.reader import MslReader
+    from memdiver.msl.reader import MslReader
 
     ensure_msl_fixtures(FIXTURES_ROOT)
     msl_path = FIXTURES_ROOT / "msl" / "test_capture.msl"
@@ -115,7 +115,7 @@ def test_collect_vas_map():
 
 def test_vas_map_no_block():
     """Reader returns empty list when no VAS_MAP blocks exist."""
-    from msl.reader import MslReader
+    from memdiver.msl.reader import MslReader
 
     # Build a minimal MSL with no VAS_MAP block
     from tests.fixtures.generate_msl_fixtures import (
@@ -146,8 +146,8 @@ def test_vas_map_no_block():
 
 # -- adversarial / bounds-guard regression tests --
 
-from msl.decoders import decode_memory_region
-from msl.types import MslParseError
+from memdiver.msl.decoders import decode_memory_region
+from memdiver.msl.types import MslParseError
 
 
 def test_decode_vas_map_truncated_entry_raises():

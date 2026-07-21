@@ -17,7 +17,7 @@ from typing import List
 import numpy as np
 import pytest
 
-from mcp_server import tools_pipeline
+from memdiver.mcp_server import tools_pipeline
 
 
 KEY_BYTES = bytes(range(32))

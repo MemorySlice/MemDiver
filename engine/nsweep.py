@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from core.variance import WelfordVariance
-from engine.progress import (
+from memdiver.core.variance import WelfordVariance
+from memdiver.engine.progress import (
     ProgressEvent,
     ProgressFn,
     check_cancel,
@@ -152,8 +152,8 @@ def run_nsweep(
     O(N_max) not O(sum(N)). The oracle is loaded once and invoked for
     every candidate at every checkpoint.
     """
-    from engine.brute_force import brute_force_with_oracle
-    from engine.candidate_pipeline import reduce_search_space
+    from memdiver.engine.brute_force import brute_force_with_oracle
+    from memdiver.engine.candidate_pipeline import reduce_search_space
 
     if not sources or not n_values:
         return NSweepResult(total_dumps=len(sources))

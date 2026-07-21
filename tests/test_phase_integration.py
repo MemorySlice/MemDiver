@@ -7,9 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 from tests.fixtures.generate_fixtures import generate_dataset, DATASET_ROOT
-from core.discovery import DatasetScanner, RunDiscovery
-from core.phase_normalizer import PhaseNormalizer, CANONICAL_PHASE_ORDER
-from engine.pipeline import AnalysisPipeline
+from memdiver.core.discovery import DatasetScanner, RunDiscovery
+from memdiver.core.phase_normalizer import PhaseNormalizer, CANONICAL_PHASE_ORDER
+from memdiver.engine.pipeline import AnalysisPipeline
 
 
 @pytest.fixture(scope="module", autouse=True)

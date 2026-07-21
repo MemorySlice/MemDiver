@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from architect.pattern_generator import PatternGenerator
+from memdiver.architect.pattern_generator import PatternGenerator
 
 
 def test_generate_empty_inputs():

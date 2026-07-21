@@ -5,7 +5,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.nicegui.wizard")
 
@@ -15,10 +15,10 @@ async def render_wizard(state, mode_mgr):
 
     Populates state fields and redirects to /workspace on completion.
     """
-    from core.constants import INPUT_FILE, INPUT_DIRECTORY, INPUT_DATASET
+    from memdiver.core.constants import INPUT_FILE, INPUT_DIRECTORY, INPUT_DATASET
 
     with ui.row().classes('w-full justify-end'):
-        from ui.nicegui.theme import create_theme_toggle
+        from memdiver.ui.nicegui.theme import create_theme_toggle
         create_theme_toggle()
 
     with ui.stepper().props('vertical animated').classes('w-full max-w-2xl mx-auto') as stepper:

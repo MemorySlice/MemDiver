@@ -76,6 +76,37 @@ def dataset_root() -> Path | None:
     return _load_config_dataset_root()
 
 
+def dataset_file(relpath: "str | Path") -> Path:
+    """Resolve a single dataset resource, preferring the real capture.
+
+    Hybrid resolution (first hit wins):
+
+    1. If a real dataset root is configured (via ``--dataset-root``,
+       ``MEMDIVER_DATASET_ROOT`` or ``config.json``) *and* it actually
+       contains ``relpath``, return that real file.
+    2. Otherwise fall back to the synthetic fixture dataset, materialising it
+       on demand (idempotent), and return the synthetic copy.
+
+    The returned path is guaranteed to exist as long as the synthetic
+    generators cover ``relpath`` — so dataset-backed tests no longer need to
+    skip when the private mempdumps tree is absent. This is the per-resource
+    hybrid: real captures are used where present, synthetic fills the gaps.
+    """
+    from tests.fixtures.synth_dataset import (
+        SYNTH_DATASET_ROOT,
+        ensure_synthetic_dataset,
+    )
+
+    rel = Path(relpath)
+    root = dataset_root()
+    if root is not None:
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
+    ensure_synthetic_dataset()
+    return SYNTH_DATASET_ROOT / rel
+
+
 def artifacts_dir(subdir: str = "") -> Path:
     """Return a portable, git-ignored output directory for e2e artifacts."""
     base = TESTS_DIR / "artifacts"

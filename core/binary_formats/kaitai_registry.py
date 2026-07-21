@@ -11,27 +11,35 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from memdiver.core.binary_formats.format_descriptor import get_default_registry
+
 logger = logging.getLogger("memdiver.kaitai_registry")
 
-# Mapping from format_detect.py names to (module_path, class_name).
-# Extend this dict as new compiled parsers are added.
-_FORMAT_MAP: dict[str, tuple[str, str]] = {
-    "elf64": ("core.binary_formats.kaitai_compiled.elf", "Elf"),
-    "elf32": ("core.binary_formats.kaitai_compiled.elf", "Elf"),
-    "elf": ("core.binary_formats.kaitai_compiled.elf", "Elf"),
-    "pe": ("core.binary_formats.kaitai_compiled.microsoft_pe", "MicrosoftPe"),
-    "pe32": ("core.binary_formats.kaitai_compiled.microsoft_pe", "MicrosoftPe"),
-    "pe64": ("core.binary_formats.kaitai_compiled.microsoft_pe", "MicrosoftPe"),
-    "macho": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho32": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho64": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho64_le": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho32_le": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho64_be": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho32_be": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "macho_fat": ("core.binary_formats.kaitai_compiled.mach_o", "MachO"),
-    "msl": ("core.binary_formats.kaitai_compiled.msl", "MslV1"),
-}
+
+def _build_format_map() -> dict[str, tuple[str, str]]:
+    """Derive the name -> (module_path, class_name) map from the registry.
+
+    Every descriptor that declares a Kaitai parser contributes an entry for its
+    canonical name and each alias, reproducing the former hardcoded table.
+    """
+    format_map: dict[str, tuple[str, str]] = {}
+    for descriptor in get_default_registry().all():
+        if descriptor.kaitai is None:
+            continue
+        for name in descriptor.names:
+            format_map[name] = descriptor.kaitai
+    return format_map
+
+
+# Import-time SNAPSHOT of the name -> (module_path, class_name) map, kept as a
+# module-level name for backward compatibility (e.g. tests asserting agreement
+# with the registry).  It is NOT consulted for live lookups: `parse()` and
+# `available_formats()` re-derive from the registry on every call so a format
+# registered via `register_format()` AFTER this module is imported is still
+# picked up (matching navigator.build_nav_tree and format_detect.detect_format,
+# which also re-derive per call).  To add a parser, register a FormatDescriptor
+# with a ``kaitai`` field instead of editing anything here.
+_FORMAT_MAP: dict[str, tuple[str, str]] = _build_format_map()
 
 _KAITAI_AVAILABLE: bool | None = None
 
@@ -67,7 +75,7 @@ class KaitaiFormatRegistry:
             logger.debug("kaitaistruct not installed; skipping parse")
             return None
 
-        entry = _FORMAT_MAP.get(format_name)
+        entry = _build_format_map().get(format_name)
         if entry is None:
             logger.debug("No Kaitai parser registered for %s", format_name)
             return None
@@ -82,7 +90,7 @@ class KaitaiFormatRegistry:
         """Return format names that have a registered Kaitai parser."""
         if not kaitai_available():
             return []
-        return list(_FORMAT_MAP.keys())
+        return list(_build_format_map().keys())
 
     # ------------------------------------------------------------------
     # Private helpers

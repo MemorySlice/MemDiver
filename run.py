@@ -26,14 +26,14 @@ def boot():
     if str(memdiver_root) not in sys.path:
         sys.path.insert(0, str(memdiver_root))
 
-    from core.log import setup_logging
+    from memdiver.core.log import setup_logging
     config_path = memdiver_root / "config.json"
     logger = setup_logging(config_path=config_path)
     logger.info("MemDiver starting from run.py")
 
-    from ui.state import AppState
-    from ui.mode import ModeManager
-    from core.discovery import RunDiscovery
+    from memdiver.ui.state import AppState
+    from memdiver.ui.mode import ModeManager
+    from memdiver.core.discovery import RunDiscovery
 
     state = AppState(config_path=config_path)
     # Allow ASGI mount to pass dataset context via environment
@@ -45,7 +45,7 @@ def boot():
     # ProjectDB (optional)
     project_db = None
     try:
-        from engine.project_db import ProjectDB, default_db_path, check_deps
+        from memdiver.engine.project_db import ProjectDB, default_db_path, check_deps
         if check_deps().get("ready"):
             project_db = ProjectDB(default_db_path())
             project_db.open()
@@ -71,7 +71,7 @@ def boot():
 def wizard_header(get_wizard_done, mo):
     """Render wizard header with logo."""
     mo.stop(get_wizard_done())
-    from ui.components.header import render_header as _render_header
+    from memdiver.ui.components.header import render_header as _render_header
     wiz_header = _render_header(mo)
     return (wiz_header,)
 
@@ -150,7 +150,7 @@ def wizard_step3(Path, data_picker, get_wizard_done, mo):
         value="auto",
         label="Ground truth",
     )
-    from core.keylog_templates import list_template_names
+    from memdiver.core.keylog_templates import list_template_names
     gt_template_dd = mo.ui.dropdown(
         options=list_template_names(), value="Auto-detect",
         label="Keylog Template",
@@ -214,7 +214,7 @@ def wizard_finalize(
     _session_loaded = False
     if session_load_browser.value:
         try:
-            from engine.session_store import SessionStore as _SL, restore_state as _restore
+            from memdiver.engine.session_store import SessionStore as _SL, restore_state as _restore
             _sf = Path(session_load_browser.value[0].path)
             _loaded_snap = _SL.load(_sf)
             _restore(state, _loaded_snap, mode_mgr)
@@ -296,7 +296,7 @@ def workspace_toolbar(get_wizard_done, mo, mode_mgr):
     """Toolbar: header + mode toggle + new analysis + save session."""
     from types import SimpleNamespace as _NS
     mo.stop(not get_wizard_done())
-    from ui.components.header import render_header as _render_header
+    from memdiver.ui.components.header import render_header as _render_header
     ws_header = _render_header(mo)
     mode_toggle = mo.ui.switch(value=mode_mgr.is_research, label="Research Mode")
     new_btn = mo.ui.button(label="New Analysis", value=0, on_click=lambda v: v + 1)
@@ -314,7 +314,7 @@ def handle_mode_toggle(get_wizard_done, mode_mgr, state, ws_toolbar):
     if not get_wizard_done():
         ws_mode_state = mode_mgr.mode
     else:
-        from core.constants import RESEARCH, TESTING
+        from memdiver.core.constants import RESEARCH, TESTING
         mode_mgr.mode = RESEARCH if ws_toolbar.mode_toggle.value else TESTING
         state.mode = mode_mgr.mode
         ws_mode_state = mode_mgr.mode
@@ -336,7 +336,7 @@ def handle_save_session(get_wizard_done, logger, mo, state, ws_toolbar):
     save_toast = None
     if get_wizard_done() and ws_toolbar.save_btn.value > 0:
         try:
-            from engine.session_store import SessionStore as _SS, snapshot_from_state as _snap_from
+            from memdiver.engine.session_store import SessionStore as _SS, snapshot_from_state as _snap_from
             _snap = _snap_from(state)
             _snap.session_name = f"{state.protocol_name}_{state.protocol_version}"
             path = _SS.save(_snap, _SS.auto_save_path(_snap.session_name))
@@ -372,12 +372,12 @@ def run_import_tool(Path, get_wizard_done, import_widgets, logger, mo):
     mo.stop(not get_wizard_done())
     import_result_el = None
     if import_widgets.btn.value > 0 and import_widgets.file_browser.value:
-        from msl.importer import import_raw_dump
+        from memdiver.msl.importer import import_dump
         raw = Path(import_widgets.file_browser.value[0].path)
         out = raw.with_suffix(".msl")
         try:
             with mo.status.spinner(title="Importing to MSL..."):
-                res = import_raw_dump(raw, out)
+                res = import_dump(raw, out)
             import_result_el = mo.callout(
                 mo.md(f"Imported **{raw.name}** -> **{out.name}**  \n"
                        f"Regions: {res.regions_written}, Key hints: {res.key_hints_written}"),
@@ -395,7 +395,7 @@ def dataset_scan(Path, get_wizard_done, logger, mo, state):
     mo.stop(not get_wizard_done())
     dataset_info = None
     if state.input_mode == "dataset" and state.dataset_root:
-        from core.discovery import DatasetScanner
+        from memdiver.core.discovery import DatasetScanner
         with mo.status.spinner(title="Scanning dataset..."):
             scanner = DatasetScanner(
                 Path(state.dataset_root),
@@ -421,7 +421,7 @@ def dataset_selectors(dataset_info, get_wizard_done, mo, state):
         ds_normalize_cb = mo.ui.checkbox(value=False, label="Normalize phases")
         ds_max_runs = mo.ui.slider(start=1, stop=20, value=10, step=1, label="Max runs")
     else:
-        from ui.controls.selector_panel import (
+        from memdiver.ui.controls.selector_panel import (
             create_protocol_dropdown, create_selector_controls,
             create_scenario_dropdown, create_library_controls, resolve_phases,
         )
@@ -453,7 +453,7 @@ def dataset_analysis_controls(get_wizard_done, mo, mode_mgr, state):
     mo.stop(not get_wizard_done())
     mo.stop(state.input_mode != "dataset")
     from types import SimpleNamespace as _NS
-    from ui.controls.analysis_panel import create_analysis_controls as _create_ac
+    from memdiver.ui.controls.analysis_panel import create_analysis_controls as _create_ac
     ds_algo_dd, ds_run_btn, _toggle = _create_ac(mo, mode_mgr)
     ds_controls = _NS(algo_dd=ds_algo_dd, run_btn=ds_run_btn)
     return (ds_controls,)
@@ -484,9 +484,9 @@ async def dataset_run_analysis(
         state.max_runs = ds_widgets.max_runs.value
         state.algorithm = ds_controls.algo_dd.value
 
-        from core.keylog_templates import get_template
-        from engine.pipeline import AnalysisPipeline
-        from engine.results import AnalysisResult
+        from memdiver.core.keylog_templates import get_template
+        from memdiver.engine.pipeline import AnalysisPipeline
+        from memdiver.engine.results import AnalysisResult
 
         template = get_template(state.template_name)
         pipeline = AnalysisPipeline(project_db=project_db)
@@ -511,7 +511,7 @@ async def dataset_run_analysis(
 
         # Auto-save session after analysis
         try:
-            from engine.session_store import SessionStore as _SS2, snapshot_from_state as _snap_from2
+            from memdiver.engine.session_store import SessionStore as _SS2, snapshot_from_state as _snap_from2
             _snap2 = _snap_from2(state)
             _snap2.session_name = f"{state.protocol_name}_{state.protocol_version}_auto"
             _SS2.save(_snap2, _SS2.auto_save_path(_snap2.session_name))
@@ -536,11 +536,11 @@ def dataset_views(
     ds_view_sections = {}
     if ds_result and ds_result.libraries:
         # Results summary
-        from ui.controls.analysis_panel import render_results_summary
+        from memdiver.ui.controls.analysis_panel import render_results_summary
         ds_view_sections["Results Summary"] = render_results_summary(mo, ds_result)
 
         # Heatmap
-        from ui.views.heatmap import render_heatmap, build_presence_data
+        from memdiver.ui.views.heatmap import render_heatmap, build_presence_data
         reports = ds_result.libraries
         all_types = sorted(set(h.secret_type for r in reports for h in r.hits))
         if all_types:
@@ -568,7 +568,7 @@ def dataset_views(
             hit = first_rpt.hits[0]
             start = max(0, hit.offset - 256)
             end = min(len(first_data), hit.offset + hit.length + 256)
-            from ui.views.hex_viewer import render_hex_viewer, render_hit_details
+            from memdiver.ui.views.hex_viewer import render_hex_viewer, render_hit_details
             ds_view_sections["Hex Viewer"] = mo.vstack([
                 render_hex_viewer(
                     mo, first_data[start:end], start_offset=start,
@@ -579,8 +579,8 @@ def dataset_views(
 
         # Research views
         if mode_mgr.is_research:
-            from ui.views.consensus_view import render_consensus_view
-            from engine.consensus import ConsensusVector
+            from memdiver.ui.views.consensus_view import render_consensus_view
+            from memdiver.engine.consensus import ConsensusVector
             for rpt_c in reports:
                 counts = rpt_c.metadata.get("consensus", {})
                 if counts:
@@ -596,8 +596,8 @@ def dataset_views(
                     break
 
             if first_data and first_rpt:
-                from core.entropy import compute_entropy_profile
-                from ui.views.entropy_chart import render_entropy_chart
+                from memdiver.core.entropy import compute_entropy_profile
+                from memdiver.ui.views.entropy_chart import render_entropy_chart
                 profile = compute_entropy_profile(first_data, window=32, step=16)
                 key_regions = [(h.offset, h.offset + h.length, h.secret_type)
                                for h in first_rpt.hits[:5]]
@@ -615,7 +615,7 @@ def file_load(Path, get_wizard_done, logger, mo, state):
     file_data = None
     file_source = None
     if state.input_mode == "single_file" and state.single_file_path:
-        from core.dump_source import open_dump
+        from memdiver.core.dump_source import open_dump
         with mo.status.spinner(title="Loading dump file..."):
             file_source = open_dump(Path(state.single_file_path))
             file_source.open()
@@ -648,7 +648,7 @@ def _():
     def _build_file_views(mo, state, file_data, file_source, mode_mgr, file_view_sections, Path):
         """Build view sections for a loaded file."""
         # Hex viewer
-        from ui.views.hex_viewer import render_hex_viewer as _render_hex
+        from memdiver.ui.views.hex_viewer import render_hex_viewer as _render_hex
         _end = min(len(file_data), 4096)
         file_view_sections["Hex Viewer"] = _render_hex(
             mo, file_data[:_end], start_offset=0,
@@ -657,16 +657,16 @@ def _():
 
         # Entropy
         if mode_mgr.is_research:
-            from core.entropy import compute_entropy_profile
-            from ui.views.entropy_chart import render_entropy_chart
+            from memdiver.core.entropy import compute_entropy_profile
+            from memdiver.ui.views.entropy_chart import render_entropy_chart
             profile = compute_entropy_profile(file_data, window=32, step=16)
             file_view_sections["Entropy Profile"] = render_entropy_chart(
                 mo, profile, title=f"Entropy: {Path(state.single_file_path).name}",
             )
 
         # Strings
-        from core.strings import extract_strings
-        from ui.components.html_builder import table as html_table
+        from memdiver.core.strings import extract_strings
+        from memdiver.ui.components.html_builder import table as html_table
         strings = extract_strings(file_data, min_length=6)
         if strings:
             str_rows = [[f"0x{s.offset:X}", s.text[:60]] for s in strings[:50]]
@@ -678,8 +678,8 @@ def _():
 
         # Structure detection (works for both raw and MSL)
         try:
-            from core.structure_overlay import best_match_structure
-            from core.structure_library import get_structure_library
+            from memdiver.core.structure_overlay import best_match_structure
+            from memdiver.core.structure_library import get_structure_library
             lib = get_structure_library()
             match = best_match_structure(file_data, 0, lib)
             if match:
@@ -708,15 +708,15 @@ def _():
             try:
                 reader = file_source.get_reader()
                 # Session overview
-                from msl.session_extract import extract_session_report
-                from ui.views.session_view import render_session_view
+                from memdiver.msl.session_extract import extract_session_report
+                from memdiver.ui.views.session_view import render_session_view
                 report = extract_session_report(reader)
                 file_view_sections["Session Overview"] = render_session_view(mo, report)
 
                 # VAS map
                 vas_maps = reader.collect_vas_map()
                 if vas_maps:
-                    from ui.views.vas_view import render_vas_map, render_vas_table
+                    from memdiver.ui.views.vas_view import render_vas_map, render_vas_table
                     all_vas_entries = []
                     for vm in vas_maps:
                         all_vas_entries.extend(vm.entries)
@@ -727,7 +727,7 @@ def _():
                     ])
 
                 # Block navigator
-                from ui.views.block_navigator import render_block_navigator
+                from memdiver.ui.views.block_navigator import render_block_navigator
                 file_view_sections["MSL Blocks"] = render_block_navigator(mo, reader)
 
                 # Cross-references
@@ -775,7 +775,7 @@ def dir_views(Path, RunDiscovery, get_wizard_done, mo, state):
             if _runs[0].dumps:
                 _first_dump = _runs[0].dumps[0]
                 _data = _first_dump.path.read_bytes()
-                from ui.views.hex_viewer import render_hex_viewer as _render_hex
+                from memdiver.ui.views.hex_viewer import render_hex_viewer as _render_hex
                 dir_view_sections["Hex Viewer"] = _render_hex(
                     mo, _data[:4096], start_offset=0,
                     title=f"Hex: {_first_dump.path.name}",
@@ -821,7 +821,7 @@ def workspace_layout(
     """Assemble the unified workspace."""
     mo.stop(not get_wizard_done())
 
-    from ui.controls.analysis_panel import render_mode_banner
+    from memdiver.ui.controls.analysis_panel import render_mode_banner
 
     toolbar = mo.hstack([
         ws_toolbar.mode_toggle, mo.md(""), ws_toolbar.save_btn, ws_toolbar.new_btn,

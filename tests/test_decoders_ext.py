@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from msl.types import MslBlockHeader, MslGenericBlock
-from msl.decoders_ext import (
+from memdiver.msl.types import MslBlockHeader, MslGenericBlock
+from memdiver.msl.decoders_ext import (
     MslEnvironmentBlock,
     MslFileDescriptor,
     MslNetworkConnection,
@@ -96,7 +96,7 @@ def test_decode_security_token_basic():
 def test_decode_system_context_basic():
     """Decode a full spec §6.2 Table 20 payload built via the fixture helper."""
     from tests.fixtures.generate_msl_fixtures import _build_system_context
-    from msl.enums import BLOCK_HEADER_SIZE
+    from memdiver.msl.enums import BLOCK_HEADER_SIZE
 
     sc_block, _ = _build_system_context()
     # Strip the 80-byte block header to get the raw payload

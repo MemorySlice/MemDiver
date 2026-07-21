@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import create_app
+from memdiver.api.main import create_app
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -176,8 +176,8 @@ def test_hex_rejects_negative_offset_422(client, raw_dump):
 def test_read_hex_negative_offset_errors(raw_dump):
     """read_hex itself returns a clean 'out of range' error for a negative
     offset, even when called below the API validation layer."""
-    from mcp_server import tools_inspect
-    from mcp_server.session import ToolSession
+    from memdiver.mcp_server import tools_inspect
+    from memdiver.mcp_server.session import ToolSession
 
     path, _ = raw_dump
     result = tools_inspect.read_hex(ToolSession(), path, offset=-1, length=16)

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from core.dump_source import open_dump
-from core.dump_sources.gdb_raw import GdbRawDumpSource
-from core.dump_sources.lldb_raw import LldbRawDumpSource
+from memdiver.core.dump_source import open_dump
+from memdiver.core.dump_sources.gdb_raw import GdbRawDumpSource
+from memdiver.core.dump_sources.lldb_raw import LldbRawDumpSource
 
 
 # Tests requiring a real captured dataset look under

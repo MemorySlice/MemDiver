@@ -16,10 +16,10 @@ from typing import List
 import numpy as np
 import pytest
 
-from engine.brute_force import brute_force_with_oracle
-from engine.candidate_pipeline import reduce_search_space
-from engine.nsweep import run_nsweep
-from engine.progress import (
+from memdiver.engine.brute_force import brute_force_with_oracle
+from memdiver.engine.candidate_pipeline import reduce_search_space
+from memdiver.engine.nsweep import run_nsweep
+from memdiver.engine.progress import (
     Cancelled,
     CancelEvent,
     ProgressEvent,
@@ -27,7 +27,7 @@ from engine.progress import (
     noop_progress,
     safe_emit,
 )
-from engine.vol3_emit import emit_plugin_for_hit
+from memdiver.engine.vol3_emit import emit_plugin_for_hit
 
 
 class _Collector:

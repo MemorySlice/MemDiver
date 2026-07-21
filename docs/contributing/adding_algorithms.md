@@ -35,10 +35,27 @@ class MyAlgoAlgorithm(BaseAlgorithm):
 
 No registration call is needed — the next `get_registry()` call discovers the class via `pkgutil.walk_packages` + `issubclass(BaseAlgorithm)`.
 
-## 3. Surface in the UI
+## 3. (Optional) Ship an algorithm from an out-of-tree package
+
+Installed packages can advertise algorithms under the `memdiver.algorithms`
+entry-point group without living in `algorithms/`. The entry point may point at
+a `BaseAlgorithm` subclass directly, or at a module that will be scanned for
+subclasses.
+
+```toml
+# pyproject.toml of the external package
+[project.entry-points."memdiver.algorithms"]
+my_algo = "my_package.algo:MyAlgoAlgorithm"
+```
+
+Discovery degrades silently when no such packages are installed. The KDF
+equivalent is the `memdiver.kdfs` entry-point group (see
+[Adding a KDF](adding_kdf.md)).
+
+## 4. Surface in the UI
 
 Add `"my_algo"` to `frontend/src/stores/app-store.ts` `ANALYSIS_ALGORITHMS`. Optionally extend `frontend/src/utils/algorithm-availability.ts` if the algorithm has mode-specific requirements.
 
-## 4. Test
+## 5. Test
 
 Write a unit test under `tests/test_my_algo.py` following the pattern of existing `tests/test_*.py`. Include a fixture dump from `tests/fixtures/generate_*.py` so the test is self-contained.

@@ -31,18 +31,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `msl_v1_0_0.md` to reflect the spec document version (the on-wire
     binary format byte at file header offset `0x0A` remains `0x0101`,
     which the spec calls "format 1.1").
-- **Extras collapsed** to two groups: `[experiment]` (frida-tools + memslicer)
-  and `[dev]` (pytest, pytest-asyncio, httpx). `marimo`, `nicegui`, `mcp`, and
-  `kaitaistruct` are now part of the base install — the `[notebook]`,
-  `[nicegui]`, `[ai]`, `[formats]`, and `[all]` extras were removed.
+- **Interface deps moved to extras (breaking):** `pip install memdiver` now
+  installs only the library + CLI core. The FastAPI web UI + REST API
+  (`fastapi`/`uvicorn`/`pydantic-settings`) live behind `[api]`, the MCP server
+  behind `[mcp]`, and the legacy NiceGUI / Marimo UIs behind `[nicegui]` /
+  `[marimo]`. `[all]` (= `memdiver[api,mcp,nicegui,marimo]`) reproduces the
+  previous all-in-one install. `kaitaistruct` and the crypto stack remain base
+  deps; `[experiment]` and `[dev]` are unchanged.
 - `memdiver experiment` now surfaces an actionable install hint
   (`pip install memdiver[experiment]`) when the experiment extras are missing,
   instead of raising a bare ImportError.
 - `LICENSE` file replaced with the canonical Apache License 2.0 text (was
   previously MIT). The `pyproject.toml` classifier was updated to
   `License :: OSI Approved :: Apache Software License` to match.
-- Install-hint messages in `memdiver app` / `memdiver mcp` updated to the new
-  single-profile install story.
+- Install-hint messages in `memdiver web` / `app` / `mcp` / `ui` now point at
+  the specific extra (`memdiver[api]` / `[nicegui]` / `[mcp]` / `[marimo]`) when
+  the corresponding dependency is not installed.
 
 ### Added
 - `pip install memdiver[experiment]` extra, pinning `frida-tools>=12.0` and
@@ -54,8 +58,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     build` step so the React bundle is baked into every wheel.
 - `MANIFEST.in` — ensures `LICENSE`, `README.md`, `CHANGELOG.md`, algorithm
   patterns, and the full `frontend/dist/` tree ship in the sdist.
-- `frontend/dist/**/*` added to `[tool.setuptools.package-data]` so
-  `pip install memdiver` ships a working web UI out of the box.
+- `frontend/dist/**/*` added to `[tool.setuptools.package-data]` so the built
+  React bundle ships in the wheel; it is served once the web UI is installed via
+  `pip install memdiver[api]`.
 - Sphinx documentation site under `docs/` (Read the Docs theme, MyST-parser),
   published to <https://memoryslice.github.io/MemDiver/> via GitHub Pages.
   Covers quickstart, full user guide, ten-subsystem architecture walkthrough,

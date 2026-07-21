@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pytest
 
-from engine.vol3_emit import emit_plugin_for_hit, emit_plugin_from_hits_file
+from memdiver.engine.vol3_emit import emit_plugin_for_hit, emit_plugin_from_hits_file
 
 
 def _synth_hit(ref_size: int = 1024, key_offset: int = 256, key_length: int = 32):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ui.components.bookmark_store import BookmarkStore
+from memdiver.ui.components.bookmark_store import BookmarkStore
 
 
 def test_add_bookmark():

@@ -27,7 +27,7 @@
 
 # MemDiver
 
-MemDiver is a browser-based workbench for exploring binary memory dumps. A FastAPI backend drives a React dockable workspace, with an optional Marimo sandbox for deeper research workflows and an MCP server that exposes the same analysis engine to AI assistants. For automation and integration into existing pipelines, MemDiver also runs in headless mode via a CLI.
+MemDiver is a browser-based workbench for exploring binary memory dumps. A FastAPI backend drives a React dockable workspace, with an optional Marimo sandbox for deeper research workflows and an MCP server that exposes the same analysis engine to AI assistants. For automation and integration into existing pipelines, the same engine is available through non-interactive CLI subcommands ("headless" use — no separate mode or flag, just the CLI without a UI).
 
 It combines known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis to locate and classify data structures in memory.
 
@@ -36,18 +36,26 @@ It combines known-key search, entropy scanning, change-point detection, structur
 - **Interactive workspace** — React-based dockable UI for hands-on exploration
 - **Research sandbox** — Optional Marimo environment for reproducible notebooks and custom analysis
 - **AI-assisted analysis** — MCP server integration for use with Claude and other assistants
-- **Headless mode** — CLI interface for CI/CD, batch processing, and integration into forensic pipelines
+- **Headless use** — the same engine via non-interactive CLI subcommands (no separate mode or flag) for CI/CD, batch processing, and forensic pipelines
+- **Python library** — `import memdiver` to open dumps, convert to `.msl`, parse containers, and run analysis programmatically (see [library quickstart](docs/quickstart/library.md))
 - **Analysis engine** — Known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis
 
 
 ## Install
 
 ```bash
-pip install memdiver                 # web UI + CLI + MCP server (everything runtime-side)
+pip install memdiver                 # lean core: CLI + Python library (import memdiver)
+pip install "memdiver[api]"          # + FastAPI/uvicorn web UI & REST API (memdiver web)
+pip install "memdiver[mcp]"          # + MCP server for AI agents (memdiver mcp)
+pip install "memdiver[all]"          # every interface (api + mcp + nicegui + marimo)
 pip install "memdiver[experiment]"   # + frida-tools, memslicer for dump collection
 pip install "memdiver[docs]"         # + Sphinx toolchain for building the docs site
 pip install "memdiver[dev]"          # + pytest and contributor tooling
 ```
+
+The base install stays lean for library/CLI users; the web UI, MCP server, and the
+legacy NiceGUI (`memdiver[nicegui]`) / Marimo (`memdiver[marimo]`) UIs are opt-in extras.
+Each CLI command that needs an extra prints the exact `pip install memdiver[...]` hint if it is missing.
 
 LLDB is installed via your operating system — Xcode Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu. `memdiver experiment` exits gracefully with an install hint when no backend is present.
 
@@ -75,7 +83,7 @@ memdiver ui
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
-| CLI subcommands | **20** | [`cli.py`](cli.py) |
+| CLI subcommands | **22** | [`cli.py`](cli.py) |
 | FastAPI routers | **12** + WebSocket | [`api/routers/`](api/routers/) |
 | MCP tools | **15** | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
@@ -100,11 +108,11 @@ Restart the MCP client — the 15 MemDiver tools (`scan_dataset`, `analyze_libra
 
 ## Power-user CLI
 
-All 20 subcommands exposed by [`cli.py`](cli.py):
+All 22 subcommands exposed by [`cli.py`](cli.py):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Format conversion | Runtime shells |
 |---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `emit-plugin` | `export` · `import` · `import-dir` | `web` · `ui` · `app` · `mcp` · `experiment` |
+| `analyze` · `scan` · `batch` · `verify` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `app` · `mcp` · `experiment` |
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from architect.json_exporter import JsonExporter
+from memdiver.architect.json_exporter import JsonExporter
 
 
 def test_export_basic():

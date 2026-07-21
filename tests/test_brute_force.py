@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pytest
 
-from engine.brute_force import (
+from memdiver.engine.brute_force import (
     EXIT_HIT,
     EXIT_NO_HIT,
     _run_parallel,

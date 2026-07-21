@@ -4,6 +4,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Optional
 
+from memdiver.core.binary_formats.format_descriptor import get_default_registry
+
 
 @dataclass
 class NavNode:
@@ -25,17 +27,22 @@ class NavNode:
         }
 
 
+def _nav_builders() -> dict:
+    """Merge every registered descriptor's nav builders into one name->fn map.
+
+    Derived from the shared FormatRegistry so this is the same table the other
+    consumers read from.  The built-in builders are attached to their
+    descriptors by :func:`_register_builtin_nav_builders` at import time.
+    """
+    builders: dict = {}
+    for descriptor in get_default_registry().all():
+        builders.update(descriptor.nav_builders)
+    return builders
+
+
 def build_nav_tree(data: bytes, format_name: str) -> Optional[NavNode]:
     """Parse format headers and build navigation tree."""
-    builders = {
-        "elf64": lambda d: _build_elf_tree(d, 64),
-        "elf32": lambda d: _build_elf_tree(d, 32),
-        "pe32": _build_pe_tree,
-        "pe64": _build_pe_tree,
-        "macho64_le": lambda d: _build_macho_tree(d, 64),
-        "macho32_le": lambda d: _build_macho_tree(d, 32),
-        "msl": _build_msl_tree,
-    }
+    builders = _nav_builders()
     builder = builders.get(format_name)
     if builder is None:
         return None
@@ -202,7 +209,7 @@ def _build_msl_tree(data: bytes) -> Optional[NavNode]:
 
 
 def _msl_block_type_name(bt_raw: int) -> str:
-    from msl.enums import BlockType
+    from memdiver.msl.enums import BlockType
     try:
         return BlockType(bt_raw).name
     except ValueError:
@@ -225,3 +232,34 @@ def _elf_phdr_type(p_type: int) -> str:
 
 def _macho_cmd_name(cmd: int) -> str:
     return _MACHO_CMD.get(cmd & 0x7FFFFFFF, f"0x{cmd:x}")
+
+
+def _register_builtin_nav_builders() -> None:
+    """Attach the built-in tree builders to their FormatDescriptors.
+
+    The builder implementations live here, so they are registered onto the
+    shared registry at import time (rather than referenced from
+    ``format_descriptor`` which would create an import cycle).  This is the
+    single place the ``build_nav_tree`` dispatch table is populated for
+    built-ins.
+    """
+    registry = get_default_registry()
+    per_format: dict[str, dict] = {
+        "elf": {
+            "elf64": lambda d: _build_elf_tree(d, 64),
+            "elf32": lambda d: _build_elf_tree(d, 32),
+        },
+        "pe": {"pe32": _build_pe_tree, "pe64": _build_pe_tree},
+        "macho": {
+            "macho64_le": lambda d: _build_macho_tree(d, 64),
+            "macho32_le": lambda d: _build_macho_tree(d, 32),
+        },
+        "msl": {"msl": _build_msl_tree},
+    }
+    for canonical, builders in per_format.items():
+        descriptor = registry.get(canonical)
+        if descriptor is not None:
+            descriptor.nav_builders.update(builders)
+
+
+_register_builtin_nav_builders()

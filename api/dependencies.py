@@ -6,8 +6,8 @@ import logging
 
 from fastapi import HTTPException
 
-from api.config import Settings, get_settings
-from mcp_server.session import ToolSession
+from memdiver.api.config import Settings, get_settings
+from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.dependencies")
 
@@ -30,7 +30,7 @@ def get_api_settings() -> Settings:
 
 def task_manager_or_503():
     """Return the TaskManager singleton, or raise HTTP 503 if uninitialized."""
-    from api.services.task_manager import get_task_manager
+    from memdiver.api.services.task_manager import get_task_manager
 
     try:
         return get_task_manager()
@@ -40,7 +40,7 @@ def task_manager_or_503():
 
 def oracle_registry_or_503():
     """Return the OracleRegistry singleton, or raise HTTP 503 if uninitialized."""
-    from api.services.oracle_registry import get_oracle_registry
+    from memdiver.api.services.oracle_registry import get_oracle_registry
 
     try:
         return get_oracle_registry()

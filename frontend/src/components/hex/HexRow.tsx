@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import type { RegionIndex } from "./highlight-utils";
 import { getRegionForOffset, highlightClass } from "./highlight-utils";
 import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
+import type { HexViewMode } from "@/stores/hex-store";
+import type { PageState } from "@/api/types";
 
 /** Variance tiers for heatmap CSS classes (aligned with core/variance.py STRUCTURAL_MAX). */
 const VAR_TIER_LOW = 50;
@@ -30,6 +32,8 @@ interface HexRowProps {
   activeFieldEnd?: number | null;
   overlayEnabled?: boolean;
   getClassificationAt?: (offset: number) => number | undefined;
+  view?: HexViewMode;
+  getPageStateAt?: (offset: number) => PageState | undefined;
 }
 
 export const HexRow = memo(function HexRow({
@@ -46,8 +50,11 @@ export const HexRow = memo(function HexRow({
   activeFieldEnd = null,
   overlayEnabled = false,
   getClassificationAt,
+  view = "raw",
+  getPageStateAt,
 }: HexRowProps) {
   const { t } = useTranslation("hex");
+  const isVaView = view === "va";
   const hexCells: ReactElement[] = [];
   const asciiCells: ReactElement[] = [];
 
@@ -55,6 +62,9 @@ export const HexRow = memo(function HexRow({
     const byteOffset = rowOffset + i;
     const byteVal = getByteAt(byteOffset);
     const loaded = byteVal !== undefined;
+    // "va"-view page state (CAPTURED/FAILED/UNMAPPED). undefined until
+    // page-states resolve, or outside the "va" view.
+    const pageState = isVaView ? getPageStateAt?.(byteOffset) : undefined;
 
     // Determine classes
     const classes: string[] = [];
@@ -108,7 +118,22 @@ export const HexRow = memo(function HexRow({
       }
     }
 
-    if (!loaded) classes.push("hex-loading");
+    // "va"-view page-state tint. Composed AFTER the overlays above so a
+    // non-captured page reads as failed/unmapped without clobbering
+    // consensus/variance/search styling. CAPTURED bytes render normally.
+    if (isVaView) {
+      if (pageState === "FAILED") classes.push("page-failed");
+      else if (pageState === "UNMAPPED") classes.push("page-unmapped");
+    }
+
+    // In the "va" view non-captured pages are zero-filled by the backend and
+    // colored above, so the faint "loading" placeholder is reserved for
+    // CAPTURED bytes whose chunk has not yet arrived (or before page-states
+    // resolve, when the state is still unknown).
+    const showLoading =
+      !loaded &&
+      (!isVaView || pageState === undefined || pageState === "CAPTURED");
+    if (showLoading) classes.push("hex-loading");
 
     const classStr = classes.join(" ");
     let tooltip = region?.label ?? "";

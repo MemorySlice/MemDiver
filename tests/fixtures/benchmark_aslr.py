@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from generate_aslr_fixtures import (
     generate_dataset, STRUCT_OFFSET_IN_HEAP, STRUCT_SIZE, PAGE_SIZE,
 )
-from engine.consensus import ConsensusVector
-from core.dump_source import open_dump
-from architect.static_checker import StaticChecker
-from architect.pattern_generator import PatternGenerator
+from memdiver.engine.consensus import ConsensusVector
+from memdiver.core.dump_source import open_dump
+from memdiver.architect.static_checker import StaticChecker
+from memdiver.architect.pattern_generator import PatternGenerator
 
 
 def _raw_consensus(dump_dir: Path, min_length: int = 16):

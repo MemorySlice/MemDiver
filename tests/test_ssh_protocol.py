@@ -7,10 +7,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from core.protocols import REGISTRY
-from core.keylog import KeylogParser
-from core.keylog_templates import get_template, SSH2_TEMPLATE, AUTO_DETECT_TEMPLATE
-from core.discovery import DatasetScanner, RunDiscovery
+from memdiver.core.protocols import REGISTRY
+from memdiver.core.keylog import KeylogParser
+from memdiver.core.keylog_templates import get_template, SSH2_TEMPLATE, AUTO_DETECT_TEMPLATE
+from memdiver.core.discovery import DatasetScanner, RunDiscovery
 from tests.fixtures.generate_fixtures import (
     generate_dataset,
     DATASET_ROOT,
@@ -116,7 +116,7 @@ class TestSSHPipeline:
     """SSH through analysis pipeline."""
 
     def test_pipeline_analyze_ssh(self, dataset_root):
-        from engine.pipeline import AnalysisPipeline
+        from memdiver.engine.pipeline import AnalysisPipeline
 
         pipeline = AnalysisPipeline()
         lib_dir = dataset_root / "SSH2" / "scenario_a" / "openssh"
@@ -130,10 +130,10 @@ class TestSSHPipeline:
         assert report.library == "openssh"
 
     def test_constraint_validator_ssh_dispatch(self):
-        from algorithms.base import AnalysisContext, Match
+        from memdiver.algorithms.base import AnalysisContext, Match
 
         try:
-            from algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgorithm
+            from memdiver.algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgorithm
         except ImportError:
             pytest.skip("constraint_validator not importable (parent dir shadow)")
 

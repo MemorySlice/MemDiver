@@ -28,8 +28,10 @@
     "fileLabel": "{{name}} — {{size}} KB",
     "mslViewModeLabel": "MSL view mode",
     "mslViewModeTitle": "Raw: .msl container bytes. Memory: flattened captured VAS.",
+    "mslViewModeVaTitle": "VA: full virtual-address space with per-page state coloring (captured / failed / unmapped).",
     "rawFile": "Raw file",
     "memoryVas": "Memory (VAS)",
+    "virtualAddress": "VA",
     "offsetPlaceholder": "0x offset",
     "go": "Go",
     "patternPlaceholder": "hex pattern e.g. deadbeef",
@@ -42,6 +44,15 @@
   },
   "viewer": {
     "emptyFile": "Empty file"
+  },
+  "pageState": {
+    "legendTitle": "Page states",
+    "captured": "Captured",
+    "failed": "Failed",
+    "unmapped": "Unmapped",
+    "coverage": "Coverage: {{pct}}%",
+    "coverageTitle": "Page capture coverage",
+    "intervalTitle": "0x{{va}}–0x{{end}} · {{state}} · {{count}} pages"
   },
   "row": {
     "variance": "var: {{value}}"

@@ -7,9 +7,14 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from core.structure_library import get_structure_library
-from core.structure_schema import validate_structure_json, json_to_structure_def, structure_def_to_json
-from core.structure_loader import load_user_structures, save_user_structure, DEFAULT_USER_DIR
+from memdiver.api.path_safety import safe_filename
+from memdiver.core.structure_library import (
+    add_user_structure,
+    get_structure_library,
+    remove_user_structure,
+)
+from memdiver.core.structure_schema import validate_structure_json, json_to_structure_def, structure_def_to_json
+from memdiver.core.structure_loader import load_user_structures, save_user_structure, DEFAULT_USER_DIR
 
 router = APIRouter()
 
@@ -51,20 +56,27 @@ def create_structure(req: StructureCreateRequest):
     if not valid:
         raise HTTPException(status_code=400, detail=errors)
     sd = json_to_structure_def(data)
-    path = save_user_structure(sd)
-    lib = get_structure_library()
-    lib.register(sd)
+    # Persist + register in one step so the live singleton stays in sync with
+    # disk (built-ins-win collision policy preserved by the helper).
+    path = add_user_structure(sd)
     return {"name": sd.name, "path": str(path)}
 
 
 @router.delete("/{name}")
 def delete_structure(name: str):
-    path = DEFAULT_USER_DIR / f"{name}.json"
+    # The name comes straight from the URL and is joined onto DEFAULT_USER_DIR
+    # to build the file to unlink, so contain it to a bare filename inside that
+    # directory — a name with path separators or "../" (e.g. "../../etc/foo")
+    # must not be able to unlink a file outside the user-structures dir.
+    try:
+        path = safe_filename(DEFAULT_USER_DIR, name, ".json")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"User structure '{name}' not found")
-    path.unlink()
-    lib = get_structure_library()
-    lib.unregister(name)
+    # Delete + unregister in one step so the live singleton stays in sync with
+    # disk. The name is already contained to DEFAULT_USER_DIR by safe_filename.
+    remove_user_structure(name, DEFAULT_USER_DIR)
     return {"deleted": name}
 
 

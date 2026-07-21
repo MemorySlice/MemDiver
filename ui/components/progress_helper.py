@@ -3,7 +3,7 @@
 import asyncio
 from typing import Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 
 async def with_progress(output, message: str, coro):

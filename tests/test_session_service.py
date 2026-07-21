@@ -14,8 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.services import session_service
-from engine.session_store import CURRENT_SCHEMA_VERSION, SessionSnapshot, SessionStore
+from memdiver.api.services import session_service
+from memdiver.engine.session_store import CURRENT_SCHEMA_VERSION, SessionSnapshot, SessionStore
 
 
 FULL_PAYLOAD = {

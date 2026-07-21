@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import List
 
-from core.structure_defs import StructureDef
-from core.structure_schema import validate_structure_json, json_to_structure_def, structure_def_to_json
+from memdiver.core.structure_defs import StructureDef
+from memdiver.core.structure_schema import validate_structure_json, json_to_structure_def, structure_def_to_json
 
 logger = logging.getLogger("memdiver.structure_loader")
 
@@ -30,6 +30,8 @@ def load_user_structures(directory: Path = DEFAULT_USER_DIR) -> List[StructureDe
             results.append(json_to_structure_def(data))
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load %s: %s", path.name, exc)
+        except Exception as exc:  # noqa: BLE001 - one bad file must not abort the load
+            logger.warning("Unexpected error loading %s: %s", path.name, exc)
 
     return results
 

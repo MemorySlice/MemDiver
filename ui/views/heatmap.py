@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.heatmap")
 
@@ -27,8 +27,8 @@ def render_heatmap(
     Returns:
         mo.Html with the rendered heatmap.
     """
-    from ui.components import color_scheme as cs
-    from core.display_labels import get_short_label
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.core.display_labels import get_short_label
 
     if not libraries or not secret_types:
         return mo.md(_("*No data for heatmap.*"))

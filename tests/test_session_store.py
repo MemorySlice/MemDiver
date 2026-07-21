@@ -5,7 +5,7 @@ import gzip
 import pytest
 from pathlib import Path
 
-from engine.session_store import (
+from memdiver.engine.session_store import (
     SessionSnapshot, SessionStore, snapshot_from_state,
     restore_state, CURRENT_SCHEMA_VERSION,
 )
@@ -113,7 +113,7 @@ def test_list_sessions(tmp_path):
 
 
 def test_snapshot_from_state():
-    from ui.state import AppState
+    from memdiver.ui.state import AppState
     state = AppState()
     state.dataset_root = "/tmp/data"
     state.protocol_name = "TLS"
@@ -125,8 +125,8 @@ def test_snapshot_from_state():
 
 
 def test_restore_state():
-    from ui.state import AppState
-    from ui.mode import ModeManager
+    from memdiver.ui.state import AppState
+    from memdiver.ui.mode import ModeManager
     state = AppState()
     mgr = ModeManager()
     snap = SessionSnapshot(

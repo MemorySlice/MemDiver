@@ -20,9 +20,13 @@ import pytest
 
 pytest.importorskip("playwright", reason="Playwright not installed; skipping browser e2e tests.")
 
+# Auto-start (or reuse) the MemDiver backend for every test in this module.
+# See the `live_backend` session fixture in tests/conftest.py.
+pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("live_backend")]
+
 from playwright.sync_api import sync_playwright
 
-from tests._paths import REPO_ROOT, artifacts_dir, dataset_root
+from tests._paths import REPO_ROOT, artifacts_dir, dataset_file
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -33,12 +37,10 @@ BASE_URL = "http://127.0.0.1:8080"
 # is resolved from here.
 MEMDIVER_ROOT = str(REPO_ROOT)
 
-_DS = dataset_root()
-DUMP_PATH = str(
-    _DS
-    / "TLS13" / "20_iterations_Abort_KeyUpdate" / "boringssl"
-    / "boringssl_run_13_10" / "20251013_131451_383028_pre_server_key_update.dump"
-) if _DS is not None else None
+_RUN_DIR = dataset_file(
+    "TLS13/20_iterations_Abort_KeyUpdate/boringssl/boringssl_run_13_10"
+)
+DUMP_PATH = str(next(_RUN_DIR.glob("*pre_server_key_update.dump")))
 
 SCREENSHOT_PATH = str(artifacts_dir() / "memdiver_e2e_result.png")
 TIMEOUT_MS = 10_000
@@ -53,7 +55,7 @@ def start_server() -> subprocess.Popen:
     proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn",
-            "api.main:create_app", "--factory",
+            "memdiver.api.main:create_app", "--factory",
             "--host", "127.0.0.1", "--port", "8080",
         ],
         cwd=MEMDIVER_ROOT,

@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.models import DumpFile, RunDirectory
-from core.phase_normalizer import PhaseNormalizer, PhaseMapping
+from memdiver.core.models import DumpFile, RunDirectory
+from memdiver.core.phase_normalizer import PhaseNormalizer, PhaseMapping
 
 
 def _dump(prefix, name, ts="20240101_120000_000001"):

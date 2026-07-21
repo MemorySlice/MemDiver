@@ -23,14 +23,14 @@ from generate_realistic_fixtures import (
 from generate_aslr_fixtures import (
     generate_dataset as gen_aslr, STRUCT_OFFSET_IN_HEAP, STRUCT_SIZE,
 )
-from core.alignment_filter import alignment_filter
-from core.dump_source import open_dump
-from engine.consensus import ConsensusVector
+from memdiver.core.alignment_filter import alignment_filter
+from memdiver.core.dump_source import open_dump
+from memdiver.engine.consensus import ConsensusVector
 
 # Detection helpers: reuse engine.convergence implementations where available.
 # These are the canonical implementations; the local functions in this file
 # previously duplicated them for standalone execution.
-from engine.convergence import (
+from memdiver.engine.convergence import (
     _entropy_candidates,
     _variance_candidates,
     _compute_metrics as _metrics_raw,
@@ -38,7 +38,7 @@ from engine.convergence import (
 
 # Verification: use engine.verification via the decryption_verifier wrapper.
 try:
-    from engine.verification import (
+    from memdiver.engine.verification import (
         AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV, HAS_CRYPTO,
     )
     _HAS_VERIFIER = True

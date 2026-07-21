@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Tuple, List
-from core.structure_defs import StructureDef, FieldDef, FieldType
+from memdiver.core.structure_defs import StructureDef, FieldDef, FieldType
 
 MAX_TOTAL_SIZE = 65536  # 64KB max structure size
 VALID_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")

@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.models import TLSSecret
-from engine.correlator import SearchCorrelator
+from memdiver.core.models import TLSSecret
+from memdiver.engine.correlator import SearchCorrelator
 
 
 def _make_dump(data):
@@ -81,8 +81,8 @@ def test_search_static_with_multielement_consensus_no_truthiness_error():
     'truth value of an array is ambiguous'. Emptiness is tested via len()."""
     import numpy as np
 
-    from core.variance import ByteClass
-    from engine.consensus import ConsensusVector
+    from memdiver.core.variance import ByteClass
+    from memdiver.engine.consensus import ConsensusVector
 
     key = b"\xCC" * 32
     data = b"\x00" * 50 + key + b"\x00" * 50
@@ -104,7 +104,7 @@ def test_search_static_empty_consensus_falls_back():
     """An empty classifications array must route to the unfiltered fallback."""
     import numpy as np
 
-    from engine.consensus import ConsensusVector
+    from memdiver.engine.consensus import ConsensusVector
 
     key = b"\xDD" * 32
     data = b"\x00" * 50 + key + b"\x00" * 50

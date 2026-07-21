@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.base import AnalysisContext
-from algorithms.confidence import count_confidence, density_penalty, regex_specificity
-from algorithms.unknown_key.user_regex import UserRegexAlgorithm
+from memdiver.algorithms.base import AnalysisContext
+from memdiver.algorithms.confidence import count_confidence, density_penalty, regex_specificity
+from memdiver.algorithms.unknown_key.user_regex import UserRegexAlgorithm
 
 
 def _run(dump_bytes: bytes, regex: str, name: str = "n"):

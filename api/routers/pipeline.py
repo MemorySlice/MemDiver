@@ -23,21 +23,22 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from api.dependencies import (
+from memdiver.api.dependencies import (
     oracle_registry_or_503 as _oracle_registry_or_503,
     task_manager_or_503 as _task_manager_or_503,
 )
-from api.services.artifact_store import (
+from memdiver.api.services.artifact_store import (
     ArtifactNotFound,
     ArtifactStoreError,
     InvalidArtifactName,
 )
-from api.services.oracle_registry import (
+from memdiver.api.services.oracle_registry import (
     OracleNotArmed,
     OracleNotFound,
     OracleRegistryError,
 )
-from api.services.task_manager import TERMINAL_STATUSES
+from memdiver.api.services.task_manager import TERMINAL_STATUSES
+from memdiver.engine.pipeline_runner import get_pipeline_stages
 
 logger = logging.getLogger("memdiver.api.routers.pipeline")
 
@@ -103,6 +104,35 @@ class PipelineRunRequest(BaseModel):
     emit: Optional[EmitParams] = None
 
 
+class AutoFloorRunRequest(BaseModel):
+    """Inputs for ``POST /api/pipeline/auto-floor`` (mirrors the CLI).
+
+    ``variance_path`` is a ``.npy`` array (the consensus stage's
+    ``consensus/variance.npy`` artifact, or any equivalent), ``reference_dump``
+    is one dump whose bytes index-align with the variance, and ``oracle_id``
+    names an armed BYO oracle in the registry. Optional ``passphrase`` /
+    ``key_hex`` / ``kem_key_hex`` decrypt an encrypted ``.msl`` reference.
+    """
+
+    variance_path: str
+    reference_dump: str
+    oracle_id: str
+    num_dumps: int = Field(..., ge=1)
+    reduce: ReduceParams = Field(default_factory=ReduceParams)
+    key_sizes: List[int] = Field(default_factory=lambda: [32])
+    stride: int = 8
+    coverage: Optional[float] = None
+    correspondence: Optional[float] = None
+    filter_recall: Optional[float] = None
+    min_coverage: float = 0.80
+    phi0_method: str = "pmin"
+    p_min: float = 0.35
+    positive_control_hex: Optional[str] = None
+    passphrase: Optional[str] = None
+    key_hex: Optional[str] = None
+    kem_key_hex: Optional[str] = None
+
+
 class PipelineRunResponse(BaseModel):
     task_id: str
     status: str
@@ -112,6 +142,83 @@ class PipelineRunResponse(BaseModel):
 # ------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------
+
+
+def _store_task_dir(manager, task_id: str) -> Optional[Path]:
+    """Return ``artifact_store.root / <task_id>`` for a task, if resolvable.
+
+    The pipeline worker writes every stage's artifacts to
+    ``artifact_store.root / <task_id>`` (see
+    :func:`engine.pipeline_runner.run_pipeline`, which derives its
+    ``artifact_dir`` from ``params["task_root"]`` — the artifact-store
+    root — joined with ``ctx.task_id``). ``TaskRecord`` intentionally
+    carries no ``artifact_dir`` field, so this is the authoritative way to
+    locate a real run's output on disk. Returns ``None`` when the manager
+    exposes no artifact store (e.g. a lightweight test double).
+    """
+    store = getattr(manager, "artifact_store", None)
+    root = getattr(store, "root", None)
+    if root is None:
+        return None
+    return Path(root) / task_id
+
+
+def _task_artifact_dir_hint(task) -> Optional[Path]:
+    """Extract a caller-supplied ``artifact_dir`` from the task, if any.
+
+    Kept for backward compatibility with callers/tests that hand the
+    handlers a task carrying an explicit ``artifact_dir`` (dict or object).
+    Production ``TaskRecord`` objects have no such field, so this returns
+    ``None`` there and the store-derived path is used instead.
+    """
+    if isinstance(task, dict):
+        value = task.get("artifact_dir")
+    else:
+        value = getattr(task, "artifact_dir", None)
+    return Path(value) if value else None
+
+
+def _resolve_consensus_state_path(manager, task_id: str, task) -> Optional[Path]:
+    """Locate the persisted ``consensus/state.json`` for a completed run.
+
+    Resolution order:
+
+    1. A genuine registered artifact on the ``TaskRecord`` (the consensus
+       stage registers ``state.json`` under the ``consensus_state`` name /
+       ``consensus/state.json`` relpath), resolved against the store's
+       per-task directory.
+    2. The conventional ``consensus/state.json`` under the store's per-task
+       directory (``artifact_store.root / task_id``).
+    3. An explicit ``artifact_dir`` hint carried on the task, for backward
+       compatibility with callers that pass one directly.
+
+    Returns ``None`` when no candidate exists on disk.
+    """
+    candidates: List[Path] = []
+
+    store_dir = _store_task_dir(manager, task_id)
+    if store_dir is not None:
+        # 1. Derive from a registered artifact spec if present.
+        for spec in getattr(task, "artifacts", []) or []:
+            relpath = getattr(spec, "relpath", None)
+            name = getattr(spec, "name", None)
+            if name == "consensus_state" or (
+                relpath
+                and Path(relpath).as_posix().endswith("consensus/state.json")
+            ):
+                candidates.append(store_dir / relpath)
+        # 2. Conventional location under the store's task dir.
+        candidates.append(store_dir / "consensus" / "state.json")
+
+    # 3. Backward-compat: an explicit artifact_dir hint on the task.
+    hint = _task_artifact_dir_hint(task)
+    if hint is not None:
+        candidates.append(hint / "consensus" / "state.json")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _build_worker_params(
@@ -166,11 +273,21 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
                 detail=f"source path not found: {p}",
             )
 
-    stage_names = ["consensus", "search_reduce", "brute_force"]
-    if request.nsweep is not None:
-        stage_names.append("nsweep")
-    if request.emit is not None:
-        stage_names.append("emit_plugin")
+    # Seed the UI progress stages from the real pipeline registry (in
+    # execution order) rather than a hardcoded literal, so a stage added via
+    # ``register_stage`` shows up in progress tracking automatically. The two
+    # optional stages are gated by the same request params the runner's
+    # ``Stage.enabled`` predicates check (``state.nsweep_params`` /
+    # ``state.emit_params``); every other (always-enabled) stage is kept.
+    optional_stage_present = {
+        "nsweep": request.nsweep is not None,
+        "emit_plugin": request.emit is not None,
+    }
+    stage_names = [
+        stage.name
+        for stage in get_pipeline_stages()
+        if optional_stage_present.get(stage.name, True)
+    ]
 
     worker_params = _build_worker_params(
         request,
@@ -180,7 +297,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
     record = manager.submit(
         kind="pipeline",
         params=worker_params,
-        runner_dotted="engine.pipeline_runner.run_pipeline",
+        runner_dotted="memdiver.engine.pipeline_runner.run_pipeline",
         stage_names=stage_names,
     )
     return PipelineRunResponse(
@@ -188,6 +305,85 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
         status=record.status.value,
         oracle_sha256=entry.sha256,
     )
+
+
+@router.post("/auto-floor")
+def run_auto_floor_endpoint(request: AutoFloorRunRequest):
+    """Run ground-truth-free variance-floor selection and return the verdict.
+
+    Synchronous (the oracle-arbitrated sweep is fast and single-shot): it
+    resolves the armed oracle, then delegates to
+    :func:`engine.pipeline_runner.run_auto_floor_stage`, which loads the
+    variance ``.npy`` + reference dump and calls
+    ``engine.auto_floor.run_auto_floor``. Returns the ``AutoFloorResult``
+    as JSON (``verdict``, ``phi_star``, ``phi0``, ``key_hex``, sweep, …).
+    """
+    from memdiver.api.services.key_material import decode_key_material
+    from memdiver.engine.pipeline_runner import run_auto_floor_stage
+
+    registry = _oracle_registry_or_503()
+    try:
+        entry = registry.require_armed(request.oracle_id)
+    except OracleNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OracleNotArmed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OracleRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not Path(request.variance_path).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"variance array not found: {request.variance_path}",
+        )
+    if not Path(request.reference_dump).is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"reference dump not found: {request.reference_dump}",
+        )
+
+    # Mirror the CLI: auto_floor owns min_variance (it sweeps it), so pass the
+    # rest of the reduce params through untouched.
+    reduce_kwargs = request.reduce.model_dump()
+    reduce_kwargs.pop("min_variance", None)
+
+    try:
+        positive_control = (
+            bytes.fromhex(request.positive_control_hex)
+            if request.positive_control_hex
+            else None
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid positive_control_hex encoding"
+        ) from exc
+
+    key_material = decode_key_material(
+        request.passphrase, request.key_hex, request.kem_key_hex
+    )
+
+    try:
+        result = run_auto_floor_stage(
+            variance_path=request.variance_path,
+            reference_path=request.reference_dump,
+            num_dumps=request.num_dumps,
+            oracle_path=str(entry.path),
+            reduce_kwargs=reduce_kwargs,
+            key_sizes=request.key_sizes,
+            stride=request.stride,
+            coverage=request.coverage,
+            correspondence=request.correspondence,
+            filter_recall=request.filter_recall,
+            min_coverage=request.min_coverage,
+            phi0_method=request.phi0_method,
+            p_min=request.p_min,
+            positive_control=positive_control,
+            key_material=key_material,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"oracle_sha256": entry.sha256, **result.to_dict()}
 
 
 @router.get("/runs/{task_id}")
@@ -269,36 +465,18 @@ async def refine_consensus(task_id: str, body: RefineRequest):
 
     import numpy as np
 
-    from core.dump_source import open_dump
-    from core.variance import WelfordVariance
-    from engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
+    from memdiver.core.dump_source import open_dump
+    from memdiver.core.variance import WelfordVariance
+    from memdiver.engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
 
     manager = _task_manager_or_503()
     task = manager.get(task_id)
     if task is None:
         raise HTTPException(404, f"task {task_id} not found")
 
-    # Find the consensus state.json in the task's artifact dir
-    artifact_dir = (
-        Path(task.get("artifact_dir", ""))
-        if isinstance(task, dict)
-        else Path(getattr(task, "artifact_dir", ""))
-    )
-    # Try common locations
-    state_path = None
-    for candidate in [
-        artifact_dir / "consensus" / "state.json",
-        Path(
-            str(artifact_dir)
-            .replace("/brute_force", "")
-            .replace("/emit_plugin", "")
-        )
-        / "consensus"
-        / "state.json",
-    ]:
-        if candidate.exists():
-            state_path = candidate
-            break
+    # Find the consensus state.json written by the pipeline worker under
+    # the task's artifact directory (artifact_store.root / task_id).
+    state_path = _resolve_consensus_state_path(manager, task_id, task)
 
     if state_path is None:
         raise HTTPException(
@@ -389,13 +567,8 @@ async def get_neighborhood(
     if task is None:
         raise HTTPException(404, f"task {task_id} not found")
 
-    artifact_dir = (
-        Path(task.get("artifact_dir", ""))
-        if isinstance(task, dict)
-        else Path(getattr(task, "artifact_dir", ""))
-    )
-    state_path = artifact_dir / "consensus" / "state.json"
-    if not state_path.exists():
+    state_path = _resolve_consensus_state_path(manager, task_id, task)
+    if state_path is None:
         raise HTTPException(400, "consensus state not found")
 
     state = json.loads(state_path.read_text())

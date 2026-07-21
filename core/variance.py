@@ -4,6 +4,7 @@ Shared by ConsensusVector (engine) and DifferentialAlgorithm (algorithms).
 Uses numpy for vectorized computation (10-30x faster than pure Python loops).
 """
 
+import array
 from enum import IntEnum
 from typing import Dict, List, Tuple, Union
 
@@ -128,7 +129,7 @@ class WelfordVariance:
         return obj
 
 
-def classify_variance(variance: Union[np.ndarray, "array"]) -> np.ndarray:
+def classify_variance(variance: Union[np.ndarray, "array.array"]) -> np.ndarray:
     """Classify every byte position by its variance value.
 
     Args:
@@ -149,7 +150,7 @@ def classify_variance(variance: Union[np.ndarray, "array"]) -> np.ndarray:
 
 
 def find_contiguous_runs(
-    classifications: Union[np.ndarray, "array"], target: int,
+    classifications: Union[np.ndarray, "array.array"], target: int,
 ) -> List[Tuple[int, int]]:
     """Return (start, end) pairs for contiguous runs of *target* ByteClass."""
     if isinstance(classifications, np.ndarray) and len(classifications) > 0:

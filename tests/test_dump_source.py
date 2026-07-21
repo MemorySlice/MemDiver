@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from core.dump_io import find_all_offsets
-from core.dump_source import MslDumpSource, RawDumpSource, _find_all_in_bytes, open_dump
+from memdiver.core.dump_io import find_all_offsets
+from memdiver.core.dump_source import MslDumpSource, RawDumpSource, _find_all_in_bytes, open_dump
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -145,7 +145,7 @@ class TestOpenDump:
         little-endian unconditionally, so a big-endian core's e_type
         (0x0004 stored big-endian) was misread as 0x0400 != ET_CORE and the
         file fell through to RawDumpSource."""
-        from core.dump_sources.gcore import GCoreDumpSource
+        from memdiver.core.dump_sources.gcore import GCoreDumpSource
         # EI_DATA = 2 (ELFDATA2MSB) at magic[5]; e_type stored big-endian.
         e_ident = b"\x7fELF" + bytes([2, 2, 1]) + b"\x00" * 9  # class=2,data=2
         # e_type at offset 16, big-endian ET_CORE (4) -> b"\x00\x04".
@@ -158,7 +158,7 @@ class TestOpenDump:
     def test_auto_detect_little_endian_elf_core_still_works(self, tmp_path):
         """The little-endian path (EI_DATA=1) must keep dispatching to
         GCoreDumpSource — guards against the byteorder fix regressing LE."""
-        from core.dump_sources.gcore import GCoreDumpSource
+        from memdiver.core.dump_sources.gcore import GCoreDumpSource
         e_ident = b"\x7fELF" + bytes([2, 1, 1]) + b"\x00" * 9  # data=1 (LSB)
         header = e_ident + b"\x04\x00" + b"\x00" * 32  # e_type LE = 4
         p = tmp_path / "le_core.elf"
@@ -177,7 +177,7 @@ class TestMslViewModes:
     """
 
     def test_raw_view_starts_with_msl_magic(self, msl_path):
-        from msl.enums import FILE_MAGIC
+        from memdiver.msl.enums import FILE_MAGIC
         with MslDumpSource(msl_path) as src:
             head = src.read_range(0, len(FILE_MAGIC), view="raw")
             assert head == FILE_MAGIC
@@ -225,7 +225,7 @@ class TestMslViewModes:
         """A module's VA should translate to the file offset of a real
         block header — the first 4 bytes there must be the MSLC block
         magic."""
-        from msl.enums import BLOCK_MAGIC
+        from memdiver.msl.enums import BLOCK_MAGIC
         with MslDumpSource(msl_path) as src:
             regions = src.get_reader().collect_regions()
             assert regions

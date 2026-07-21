@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.models import deprecated_kwarg
+from memdiver.core.models import deprecated_kwarg
 
 logger = logging.getLogger("memdiver.engine.results")
 

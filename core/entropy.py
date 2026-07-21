@@ -1,16 +1,26 @@
 """Reusable Shannon entropy computation for TLS memory dump analysis.
 
-Provides sliding-window entropy profiling with O(1) incremental updates
-per step. Used by change_point detection and entropy visualization.
+Provides sliding-window entropy profiling used by change_point detection
+and entropy visualization. The scalar helpers (``entropy_from_freq``,
+``shannon_entropy``) remain pure-Python (math only); the sliding-window
+profile is vectorized with numpy for a large speedup on big dumps.
 
-All functions are stdlib-only (math) with no external dependencies.
+Used by change_point detection and entropy visualization.
 """
 
 import logging
 import math
 from typing import List, Tuple
 
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
 logger = logging.getLogger("memdiver.entropy")
+
+# Number of window positions processed per slab in compute_entropy_profile.
+# Bounds the peak per-slab histogram matrix (CHUNK_POSITIONS x 256 int64) at
+# ~64 MiB regardless of dump size, mirroring the chunking style in variance.py.
+CHUNK_POSITIONS = 1 << 15
 
 
 def entropy_from_freq(freq: list, total: int) -> float:
@@ -64,9 +74,21 @@ def compute_entropy_profile(
 ) -> List[Tuple[int, float]]:
     """Sliding-window entropy profile over byte data.
 
-    Uses an incremental frequency table that adds the incoming byte and
-    removes the outgoing byte at each step, keeping each step O(1)
-    regardless of window size.
+    Vectorized with numpy. A ``sliding_window_view`` exposes every window as a
+    row without copying; window positions are then processed in slabs of
+    ``CHUNK_POSITIONS`` rows. Each slab's per-window 256-bin byte histogram is
+    built in one ``np.bincount`` over a ``row * 256 + byte`` composite key, and
+    entropy is evaluated in the algebraically identical but reduction-friendly
+    form::
+
+        H = log2(window) - (1 / window) * sum_b count_b * log2(count_b)
+
+    The ``0 * log0 = 0`` convention is handled by a per-count lookup table
+    (``flut[0] = 0``), which also replaces millions of ``log2`` evaluations
+    with a cheap gather since counts are integers in ``[0, window]``. This
+    produces the same offsets and step semantics as the previous incremental
+    pure-Python implementation, matching its output to within floating-point
+    tolerance.
 
     For large dumps (e.g. 10 MB), use step=16 to produce ~625K sample
     points instead of ~10M.
@@ -84,28 +106,34 @@ def compute_entropy_profile(
     if data_len < window:
         return []
 
-    # Initialize frequency table for the first window.
-    freq = [0] * 256
-    for i in range(window):
-        freq[data[i]] += 1
+    arr = np.frombuffer(data, dtype=np.uint8)
 
-    profile: List[Tuple[int, float]] = []
-    profile.append((0, entropy_from_freq(freq, window)))
+    # Window start offsets: 0, step, 2*step, ... up to data_len - window.
+    # Matches the original loop's ``pos <= data_len - window`` bound.
+    offsets = np.arange(0, data_len - window + 1, step, dtype=np.int64)
+    num_positions = offsets.shape[0]
 
-    # Slide the window forward by 'step' bytes at a time.
-    pos = step
-    while pos <= data_len - window:
-        # Incrementally update: remove bytes that left, add bytes that entered.
-        old_start = pos - step
-        new_end_start = pos + window - step
-        for i in range(old_start, min(old_start + step, data_len)):
-            freq[data[i]] -= 1
-        for i in range(new_end_start, min(new_end_start + step, data_len)):
-            freq[data[i]] += 1
-        profile.append((pos, entropy_from_freq(freq, window)))
-        pos += step
+    # Per-count contribution lookup: flut[c] = c * log2(c), flut[0] = 0.
+    counts_range = np.arange(1, window + 1, dtype=np.float64)
+    flut = np.zeros(window + 1, dtype=np.float64)
+    flut[1:] = counts_range * np.log2(counts_range)
 
-    return profile
+    windows = sliding_window_view(arr, window)  # (data_len - window + 1, window)
+    log2_window = math.log2(window)
+    entropies = np.empty(num_positions, dtype=np.float64)
+    row_index = np.arange(CHUNK_POSITIONS, dtype=np.int64)
+
+    for start in range(0, num_positions, CHUNK_POSITIONS):
+        stop = min(start + CHUNK_POSITIONS, num_positions)
+        rows = windows[offsets[start:stop]]  # (slab, window) uint8, one row/window
+        slab = stop - start
+        # Composite key row*256 + byte -> one bincount yields all slab histograms.
+        composite = (row_index[:slab, None] * 256 + rows).ravel()
+        counts = np.bincount(composite, minlength=slab * 256).reshape(slab, 256)
+        entropy_sum = flut[counts].sum(axis=1)
+        entropies[start:stop] = log2_window - entropy_sum / window
+
+    return list(zip(offsets.tolist(), entropies.tolist()))
 
 
 def find_high_entropy_regions(

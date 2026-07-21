@@ -17,22 +17,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from tests._paths import dataset_root, SKIP_REASON
+from tests._paths import dataset_file, SKIP_REASON
 
 # ---------------------------------------------------------------------------
-# Paths to real data (resolved via env/CLI/config; skip if unavailable)
+# Paths to data — hybrid resolution via ``dataset_file`` (see tests/_paths.py):
+# the real capture is used where present, else a synthetic BoringSSL TLS 1.3
+# tree is materialised on demand under tests/fixtures/dataset. Either way the
+# paths below now always exist, so these tests run instead of skipping.
 # ---------------------------------------------------------------------------
 
-DATASET_ROOT = dataset_root()
-BORINGSSL_DIR = (
-    DATASET_ROOT / "TLS13" / "100_iterations_Abort_KeyUpdate" / "boringssl"
-    if DATASET_ROOT is not None
-    else None
+BORINGSSL_DIR = dataset_file(
+    "TLS13/100_iterations_Abort_KeyUpdate/boringssl"
 )
-RUN1_DIR = BORINGSSL_DIR / "boringssl_run_13_1" if BORINGSSL_DIR is not None else None
-RUN2_DIR = BORINGSSL_DIR / "boringssl_run_13_2" if BORINGSSL_DIR is not None else None
+# The dataset root is the parent of the ``TLS13/`` protocol dir, so
+# ``DatasetScanner(DATASET_ROOT)`` scans at dataset level.
+DATASET_ROOT = dataset_file("TLS13").parent
+RUN1_DIR = BORINGSSL_DIR / "boringssl_run_13_1"
+RUN2_DIR = BORINGSSL_DIR / "boringssl_run_13_2"
 
-REAL_DUMPS_AVAILABLE = BORINGSSL_DIR is not None and BORINGSSL_DIR.is_dir()
+REAL_DUMPS_AVAILABLE = BORINGSSL_DIR.is_dir()
 
 real_dumps = pytest.mark.skipif(
     not REAL_DUMPS_AVAILABLE, reason=SKIP_REASON
@@ -42,18 +45,18 @@ real_dumps = pytest.mark.skipif(
 # Imports (always importable even without real data)
 # ---------------------------------------------------------------------------
 
-from core.discovery import DatasetScanner, RunDiscovery
-from core.keylog import KeylogParser
-from core.entropy import shannon_entropy, compute_entropy_profile
-from core.dump_source import RawDumpSource
-from engine.pipeline import AnalysisPipeline
-from engine.serializer import (
+from memdiver.core.discovery import DatasetScanner, RunDiscovery
+from memdiver.core.keylog import KeylogParser
+from memdiver.core.entropy import shannon_entropy, compute_entropy_profile
+from memdiver.core.dump_source import RawDumpSource
+from memdiver.engine.pipeline import AnalysisPipeline
+from memdiver.engine.serializer import (
     serialize_result,
     deserialize_result,
     serialize_report,
     deserialize_report,
 )
-from core.input_schemas import AnalyzeRequest
+from memdiver.core.input_schemas import AnalyzeRequest
 
 
 # ===================================================================
@@ -400,7 +403,7 @@ class TestSerializationRoundtrip:
 
 try:
     from fastapi.testclient import TestClient
-    from api.main import create_app
+    from memdiver.api.main import create_app
     _HAS_FASTAPI = True
 except ImportError:
     _HAS_FASTAPI = False
@@ -450,26 +453,53 @@ class TestAPIScanEndpoint:
 class TestAPIAnalysisEndpoint:
     """Test POST /api/analysis/run with real data."""
 
-    def test_analysis_returns_hits(self, api_client):
-        resp = api_client.post(
-            "/api/analysis/run",
-            json={
-                "library_dirs": [str(BORINGSSL_DIR)],
-                "phase": "pre_abort",
-                "protocol_version": "13",
-                "max_runs": 2,
-                "expand_keys": False,
-            },
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, dict)
-        # Response should have hits or libraries with hits
-        total_hits = data.get("total_hits", 0)
-        if total_hits == 0:
-            # Some API formats nest differently
-            for lib in data.get("libraries", []):
-                total_hits += len(lib.get("hits", []))
+    def test_analysis_returns_hits(self, tmp_path, monkeypatch):
+        # ``/api/analysis/run`` is now an async task dispatched to the
+        # TaskManager ProcessPool. Drive submit -> poll -> download the
+        # ``analysis_result`` artifact through a lifespan-enabled client.
+        import time as _time
+
+        from fastapi.testclient import TestClient
+
+        from memdiver.api.config import get_settings
+        from memdiver.api.main import create_app
+
+        monkeypatch.setenv("MEMDIVER_TASK_ROOT", str(tmp_path / "tasks"))
+        monkeypatch.setenv("MEMDIVER_PIPELINE_MAX_WORKERS", "1")
+        get_settings.cache_clear()
+
+        with TestClient(create_app()) as lc:
+            resp = lc.post(
+                "/api/analysis/run",
+                json={
+                    "library_dirs": [str(BORINGSSL_DIR)],
+                    "phase": "pre_abort",
+                    "protocol_version": "13",
+                    "max_runs": 2,
+                    "expand_keys": False,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            task_id = resp.json()["task_id"]
+
+            deadline = _time.time() + 120.0
+            rec = None
+            while _time.time() < deadline:
+                rec = lc.get(f"/api/pipeline/runs/{task_id}").json()
+                if rec["status"] in ("succeeded", "failed", "cancelled"):
+                    break
+                _time.sleep(0.2)
+            assert rec is not None and rec["status"] == "succeeded", rec
+
+            spec = next(a for a in rec["artifacts"] if a["name"] == "analysis_result")
+            data = lc.get(
+                f"/api/pipeline/runs/{task_id}/artifacts/{spec['name']}"
+            ).json()
+        get_settings.cache_clear()
+
+        total_hits = 0
+        for lib in data.get("libraries", []):
+            total_hits += len(lib.get("hits", []))
         assert total_hits > 0, f"Expected hits in analysis response: {data.keys()}"
 
 

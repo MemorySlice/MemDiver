@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.kdf import TLS12PRF, TLS13HKDF
+from memdiver.core.kdf import TLS12PRF, TLS13HKDF
 
 
 # -- RFC 5869 Appendix A Test Case 1 vectors --

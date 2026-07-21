@@ -27,7 +27,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.services.reader_cache import (
+from memdiver.api.services.reader_cache import (
     DEFAULT_MAX_SIZE,
     MslReaderCache,
     cached_dump_source,
@@ -290,8 +290,8 @@ def test_cached_dump_source_aslr_fixture_round_trips(tmp_path):
 def test_mcp_tool_get_session_info_uses_cache(msl_path):
     """Two sequential get_session_info calls on the same file must share
     one reader — proving the tools_inspect.py rewire is effective."""
-    from mcp_server.session import ToolSession
-    from mcp_server.tools_inspect import get_session_info
+    from memdiver.mcp_server.session import ToolSession
+    from memdiver.mcp_server.tools_inspect import get_session_info
 
     session = ToolSession()
     report1 = get_session_info(session, str(msl_path))
@@ -307,8 +307,8 @@ def test_mcp_tool_get_session_info_uses_cache(msl_path):
 
 def test_mcp_tool_read_hex_on_msl_caches(msl_path):
     """read_hex on an MSL file must leave the reader warm in the cache."""
-    from mcp_server.session import ToolSession
-    from mcp_server.tools_inspect import read_hex
+    from memdiver.mcp_server.session import ToolSession
+    from memdiver.mcp_server.tools_inspect import read_hex
 
     session = ToolSession()
     r1 = read_hex(session, str(msl_path), offset=0, length=32)
@@ -319,8 +319,8 @@ def test_mcp_tool_read_hex_on_msl_caches(msl_path):
 
 def test_mcp_tool_read_hex_on_raw_does_not_cache(tmp_path):
     """read_hex on a raw .dump file must not populate the MSL reader cache."""
-    from mcp_server.session import ToolSession
-    from mcp_server.tools_inspect import read_hex
+    from memdiver.mcp_server.session import ToolSession
+    from memdiver.mcp_server.tools_inspect import read_hex
 
     raw = tmp_path / "tiny.dump"
     raw.write_bytes(b"\x42" * 256)

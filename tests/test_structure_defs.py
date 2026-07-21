@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.structure_defs import (
+from memdiver.core.structure_defs import (
     FieldDef,
     FieldType,
     StructureDef,
@@ -113,21 +113,21 @@ def test_constraints_equals():
 
 def test_not_zero_bytes_all_zeros():
     """not_zero constraint rejects all-zero bytes fields."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     assert _check_constraints(b"\x00" * 32, {"not_zero": True}) is False
 
 
 def test_not_zero_bytes_nonzero():
     """not_zero constraint passes for non-zero bytes fields."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     assert _check_constraints(b"\x01" + b"\x00" * 31, {"not_zero": True}) is True
 
 
 def test_not_zero_integer_still_works():
     """not_zero constraint still works for integer fields (regression)."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     assert _check_constraints(0, {"not_zero": True}) is False
     assert _check_constraints(42, {"not_zero": True}) is True
@@ -135,7 +135,7 @@ def test_not_zero_integer_still_works():
 
 def test_byte_equals_constraint():
     """byte_equals checks individual byte positions."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     assert _check_constraints(
         b"\x03\x03AB", {"byte_equals": {"0": 0x03, "1": 0x03}}
@@ -151,7 +151,7 @@ def test_byte_equals_constraint():
 
 def test_byte_in_constraint():
     """byte_in checks byte is in allowed list."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     assert _check_constraints(
         b"\x03\x02", {"byte_in": {"0": [0x03], "1": [0x00, 0x01, 0x02, 0x03]}}
@@ -178,7 +178,7 @@ def test_structure_def_metadata_defaults():
 
 def test_min_max_on_bytes_value_fails_closed():
     """min/max against a bytes value must not raise TypeError; it fails closed."""
-    from core.structure_defs import _check_constraints
+    from memdiver.core.structure_defs import _check_constraints
 
     # bytes < int / bytes > int would raise TypeError without the guard.
     assert _check_constraints(b"\x05" * 4, {"min": 1}) is False
@@ -190,7 +190,7 @@ def test_min_max_on_bytes_value_fails_closed():
 
 def test_validate_rejects_min_max_on_bytes_field():
     """validate_structure_json rejects min/max constraints on a 'bytes' field."""
-    from core.structure_schema import validate_structure_json
+    from memdiver.core.structure_schema import validate_structure_json
 
     data = {
         "name": "bad_bytes",
@@ -212,7 +212,7 @@ def test_validate_rejects_min_max_on_bytes_field():
 
 def test_validate_accepts_byte_equals_and_byte_in():
     """byte_equals and byte_in are engine-supported and must pass validation."""
-    from core.structure_schema import validate_structure_json
+    from memdiver.core.structure_schema import validate_structure_json
 
     data = {
         "name": "pms_like",
@@ -237,7 +237,7 @@ def test_validate_accepts_byte_equals_and_byte_in():
 
 def test_size_choices_round_trips_through_json():
     """size_choices survives structure_def_to_json -> json_to_structure_def."""
-    from core.structure_schema import (
+    from memdiver.core.structure_schema import (
         json_to_structure_def,
         structure_def_to_json,
     )

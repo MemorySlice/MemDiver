@@ -3,9 +3,9 @@
 import pytest
 from uuid import UUID, uuid4
 
-from msl.enums import BlockFlag
-from msl.types import MslBlockHeader
-from msl.block_iter import merge_continuations
+from memdiver.msl.enums import BlockFlag
+from memdiver.msl.types import MslBlockHeader
+from memdiver.msl.block_iter import merge_continuations
 
 
 def _hdr(block_uuid=None, parent_uuid=None, flags=0, offset=0):

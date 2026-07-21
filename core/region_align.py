@@ -94,9 +94,9 @@ def _extract_captured_pages(
     layout-only scans (e.g. MslIncrementalBuilder) that need the offset set
     without materializing ~dump-sized byte dicts per source.
     """
-    from msl.enums import PageState
-    from msl.page_map import PageInterval, iter_captured_ranges
-    from core.msl_helpers import get_region_page_data
+    from memdiver.msl.enums import PageState
+    from memdiver.msl.page_map import PageInterval, iter_captured_ranges
+    from memdiver.core.msl_helpers import get_region_page_data
 
     ps = region.page_size
     src = region.page_intervals or region.page_states
@@ -151,7 +151,7 @@ def build_dump_region_map(
             mod_path, offset = owner
             key = f"mod:{mod_path}:{offset:#x}"
         else:
-            from msl.enums import RegionType
+            from memdiver.msl.enums import RegionType
             try:
                 type_name = RegionType(region.region_type).name
             except ValueError:

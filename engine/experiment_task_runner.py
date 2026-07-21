@@ -122,7 +122,7 @@ def _build_per_tool_consensus(
     ctx,
 ) -> Dict[str, Dict[str, Any]]:
     """Fold each tool's dumps into a ConsensusVector and emit progress events."""
-    from engine.consensus import ConsensusVector
+    from memdiver.engine.consensus import ConsensusVector
 
     tools = list(exp.tool_dirs.items())
     ctx.emit(
@@ -192,15 +192,19 @@ def _verify_and_emit(
     ctx,
 ) -> Dict[str, Dict[str, Any]]:
     """Run decryption verification + auto-export and stream a ``verify`` event per tool."""
-    from engine.verification import (
+    from memdiver.engine.verification import (
         AesCbcVerifier,
+        HAS_CRYPTO,
         VERIFICATION_PLAINTEXT,
         VERIFICATION_IV,
     )
-    from architect.static_checker import StaticChecker
-    from architect.pattern_generator import PatternGenerator
+    from memdiver.architect.static_checker import StaticChecker
+    from memdiver.architect.pattern_generator import PatternGenerator
 
     verifier = AesCbcVerifier()
+    # Bind the verify method once (it is invoked at every offset in the
+    # byte-by-byte scan below) to avoid a per-offset attribute lookup.
+    verify = verifier.verify
     tools = list(per_tool.items())
     ctx.emit(
         "stage_start",
@@ -224,17 +228,24 @@ def _verify_and_emit(
         )
 
         dec_verified = False
-        for region in aligned:
-            for off in range(region.start, region.end - 31):
-                candidate = first_data[off:off + 32]
-                if verifier.verify(
-                    candidate, ciphertext, VERIFICATION_IV,
-                    VERIFICATION_PLAINTEXT,
-                ):
-                    dec_verified = True
+        # Without the crypto backend, verify() returns None (falsy) at every
+        # offset, so the whole scan is a guaranteed no-op: skip it wholesale.
+        # This changes no accepted offset — the result stays False either way.
+        if HAS_CRYPTO:
+            for region in aligned:
+                # Hoist the per-region upper bound out of the inner loop; the
+                # exact offset set (region.start .. region.end - 32) and the
+                # per-offset AES-CBC verify are preserved byte-for-byte.
+                last_off = region.end - 31
+                for off in range(region.start, last_off):
+                    if verify(
+                        first_data[off:off + 32], ciphertext,
+                        VERIFICATION_IV, VERIFICATION_PLAINTEXT,
+                    ):
+                        dec_verified = True
+                        break
+                if dec_verified:
                     break
-            if dec_verified:
-                break
 
         plugin_path = None
         if volatile:
@@ -254,16 +265,16 @@ def _verify_and_emit(
                 plugin_content = None
                 if pattern:
                     if export_format in ("volatility3", "vol3"):
-                        from architect.volatility3_exporter import (
+                        from memdiver.architect.volatility3_exporter import (
                             Volatility3Exporter,
                         )
-                        from architect.yara_exporter import YaraExporter
+                        from memdiver.architect.yara_exporter import YaraExporter
                         yara_rule = YaraExporter.export(pattern)
                         plugin_content = Volatility3Exporter.export(
                             pattern, yara_rule=yara_rule,
                         )
                     elif export_format == "yara":
-                        from architect.yara_exporter import YaraExporter
+                        from memdiver.architect.yara_exporter import YaraExporter
                         plugin_content = YaraExporter.export(pattern)
 
                 if plugin_content:
@@ -374,7 +385,7 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     # of the heavyweight backends (memslicer, frida, architect exporters)
     # are missing on this machine.
     try:
-        from core.dump_driver import DumpOrchestrator
+        from memdiver.core.dump_driver import DumpOrchestrator
     except ImportError as exc:  # pragma: no cover - environmental
         return _missing_backend(
             ctx,

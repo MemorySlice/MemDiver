@@ -23,22 +23,43 @@ import pytest
 
 pytest.importorskip("playwright", reason="Playwright not installed; skipping browser e2e tests.")
 
+# Auto-start (or reuse) the MemDiver backend for every test in this module.
+# See the `live_backend` session fixture in tests/conftest.py.
+pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("live_backend")]
+
 from playwright.sync_api import sync_playwright
 
-from tests._paths import artifacts_dir, dataset_root
+from tests._paths import artifacts_dir, dataset_file
 
-_DS = dataset_root()
-_RUN_DIR = (
-    _DS / "TLS13" / "100_iterations_Abort_KeyUpdate" / "boringssl" / "boringssl_run_13_10"
-    if _DS is not None
-    else None
+_RUN_DIR = dataset_file(
+    "TLS13/100_iterations_Abort_KeyUpdate/boringssl/boringssl_run_13_1"
 )
-DUMP_PATH = str(_RUN_DIR / "20251018_124115_148128_pre_abort.dump") if _RUN_DIR else None
-DUMP_PATH_2 = str(_RUN_DIR / "20251018_124115_148128_pre_server_key_update.dump") if _RUN_DIR else None
+DUMP_PATH = str(next(_RUN_DIR.glob("*pre_abort.dump")))
+DUMP_PATH_2 = str(next(_RUN_DIR.glob("*pre_server_key_update.dump")))
 
 BASE_URL = "http://127.0.0.1:8080"
 SCREENSHOT_DIR = str(artifacts_dir("e2e_issues"))
 SESSION_NAME = "e2e_issues_test"
+
+
+# FTUE onboarding tours (frontend/src/ftue/tours/*) auto-start on first
+# workspace mount and render a driver.js overlay that intercepts pointer
+# events on the tabs/buttons these tests click. Pre-seeding the "seen"
+# localStorage entry stops the tours from starting. This is browser-state
+# setup, not an assertion change.
+_FTUE_SEEN = [
+    {"id": tid, "version": 999, "seenAt": 0, "completed": True}
+    for tid in ("workspace-layout-101", "structure-overlay-101", "pipeline-101")
+]
+
+
+def suppress_ftue_tours(page):
+    """Pre-seed FTUE 'seen' state so onboarding tours never auto-start."""
+    page.add_init_script(
+        "window.localStorage.setItem('memdiver:ftue:seen', "
+        + json.dumps(json.dumps(_FTUE_SEEN))
+        + ")"
+    )
 
 
 def api(method, path, data=None):
@@ -84,7 +105,9 @@ def setup_session_and_load(page):
         "investigation_offset": None,
     })
 
-    # Load the app
+    # Load the app (with onboarding tours suppressed so the overlay does not
+    # intercept clicks on the workspace tabs/buttons).
+    suppress_ftue_tours(page)
     page.goto(BASE_URL)
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1000)
@@ -100,236 +123,207 @@ def setup_session_and_load(page):
     return page.locator('span.uppercase').count() > 0
 
 
-def test_dump_loading():
+def test_dump_loading(page):
     """Test 1: Session-loaded file appears in DumpList (not 'No dumps loaded')."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+    loaded = setup_session_and_load(page)
 
-        loaded = setup_session_and_load(page)
+    # Click Dumps tab
+    dumps_tab = page.locator('button').filter(has_text="Dumps")
+    if dumps_tab.count() > 0 and dumps_tab.first.is_visible():
+        dumps_tab.first.click()
+    page.wait_for_timeout(500)
 
-        # Click Dumps tab
-        dumps_tab = page.locator('button').filter(has_text="Dumps")
-        if dumps_tab.count() > 0 and dumps_tab.first.is_visible():
-            dumps_tab.first.click()
-        page.wait_for_timeout(500)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/01_dump_loading.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/01_dump_loading.png", full_page=True)
+    assert loaded, "Workspace did not load from session"
 
-        assert loaded, "Workspace did not load from session"
+    # Wait for async dump-store population
+    page.wait_for_timeout(2000)
 
-        # Wait for async dump-store population
-        page.wait_for_timeout(2000)
+    # Check that dump appears in list
+    no_dumps = page.locator('p:has-text("No dumps loaded.")')
+    no_dumps_visible = no_dumps.count() > 0 and no_dumps.first.is_visible()
+    assert not no_dumps_visible, "Bug: 'No dumps loaded' shown after session restore"
 
-        # Check that dump appears in list
-        no_dumps = page.locator('p:has-text("No dumps loaded.")')
-        no_dumps_visible = no_dumps.count() > 0 and no_dumps.first.is_visible()
-        assert not no_dumps_visible, "Bug: 'No dumps loaded' shown after session restore"
-
-        dump_entries = page.locator('.font-mono.truncate')
-        assert dump_entries.count() > 0, "No dump entries found in sidebar"
-        print(f"  Dump entries found: {dump_entries.count()}")
-
-        browser.close()
+    dump_entries = page.locator('.font-mono.truncate')
+    assert dump_entries.count() > 0, "No dump entries found in sidebar"
+    print(f"  Dump entries found: {dump_entries.count()}")
 
 
-def test_format_detection():
+def test_format_detection(page):
     """Test 2: Format tab shows format badge (not 'No format detected')."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+    setup_session_and_load(page)
+    page.wait_for_timeout(1000)
 
-        setup_session_and_load(page)
-        page.wait_for_timeout(1000)
+    # Click Format tab
+    format_tab = page.locator('button').filter(has_text="Format")
+    if format_tab.count() > 0 and format_tab.first.is_visible():
+        format_tab.first.click()
+    page.wait_for_timeout(2000)
 
-        # Click Format tab
-        format_tab = page.locator('button').filter(has_text="Format")
-        if format_tab.count() > 0 and format_tab.first.is_visible():
-            format_tab.first.click()
-        page.wait_for_timeout(2000)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/02_format_detection.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/02_format_detection.png", full_page=True)
+    # Key fix: "No format detected" should not appear for ELF files
+    # (even if nav_tree fails, format badge should show)
+    no_format = page.locator('text="No format detected"')
+    has_no_format = no_format.count() > 0 and no_format.first.is_visible()
 
-        # Key fix: "No format detected" should not appear for ELF files
-        # (even if nav_tree fails, format badge should show)
-        no_format = page.locator('text="No format detected"')
-        has_no_format = no_format.count() > 0 and no_format.first.is_visible()
-
-        if not has_no_format:
-            print("  Format detection: no 'No format detected' shown (fix working)")
+    if not has_no_format:
+        print("  Format detection: no 'No format detected' shown (fix working)")
+    else:
+        # Check if format badge is also shown (partial tree case)
+        badge = page.locator('span.font-mono')
+        if badge.count() > 0:
+            print(f"  Format badge found alongside message")
         else:
-            # Check if format badge is also shown (partial tree case)
-            badge = page.locator('span.font-mono')
-            if badge.count() > 0:
-                print(f"  Format badge found alongside message")
-            else:
-                print("  Warning: no format badge found")
-
-        browser.close()
+            print("  Warning: no format badge found")
 
 
-def test_structure_overlay():
+def test_structure_overlay(page):
     """Test 3: Structure definitions tab has Apply and Auto-detect buttons."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+    setup_session_and_load(page)
+    page.wait_for_timeout(1000)
 
-        setup_session_and_load(page)
-        page.wait_for_timeout(1000)
+    # Click Structures tab
+    tabs = page.locator('button')
+    for i in range(tabs.count()):
+        text = tabs.nth(i).inner_text()
+        if "structur" in text.lower():
+            tabs.nth(i).click()
+            break
+    page.wait_for_timeout(1000)
 
-        # Click Structures tab
-        tabs = page.locator('button')
-        for i in range(tabs.count()):
-            text = tabs.nth(i).inner_text()
-            if "structur" in text.lower():
-                tabs.nth(i).click()
-                break
-        page.wait_for_timeout(1000)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/03_structures.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/03_structures.png", full_page=True)
+    # Verify structure heading exists
+    heading = page.locator('h3:has-text("Structure Definitions")')
+    assert heading.count() > 0, "Structure Definitions heading not found"
 
-        # Verify structure heading exists
-        heading = page.locator('h3:has-text("Structure Definitions")')
-        assert heading.count() > 0, "Structure Definitions heading not found"
+    # Verify Auto-detect button
+    auto_btn = page.locator('button:has-text("Auto-detect")')
+    assert auto_btn.count() > 0, "Auto-detect button not found"
 
-        # Verify Auto-detect button
-        auto_btn = page.locator('button:has-text("Auto-detect")')
-        assert auto_btn.count() > 0, "Auto-detect button not found"
+    # Verify Apply buttons (play triangle)
+    apply_btns = page.locator('button:has-text("\u25B6")')
+    assert apply_btns.count() > 0, f"Apply buttons not found"
 
-        # Verify Apply buttons (play triangle)
-        apply_btns = page.locator('button:has-text("\u25B6")')
-        assert apply_btns.count() > 0, f"Apply buttons not found"
-
-        print(f"  Structure panel: {apply_btns.count()} apply buttons + auto-detect")
-        browser.close()
+    print(f"  Structure panel: {apply_btns.count()} apply buttons + auto-detect")
 
 
-def test_mode_switching():
+def test_mode_switching(page):
     """Test 4: Verification and Exploration modes show different features."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+    loaded = setup_session_and_load(page)
+    if not loaded:
+        print("  Skip: workspace did not load")
+        return
 
-        loaded = setup_session_and_load(page)
-        if not loaded:
-            print("  Skip: workspace did not load")
-            browser.close()
-            return
+    page.wait_for_timeout(500)
 
-        page.wait_for_timeout(500)
+    # Verify mode badge
+    badge = page.locator('span.uppercase')
+    assert badge.count() > 0, "Mode badge not found"
+    badge_text = badge.first.inner_text().lower()
+    assert "verification" in badge_text, f"Initial mode should be verification, got: {badge_text}"
 
-        # Verify mode badge
-        badge = page.locator('span.uppercase')
-        assert badge.count() > 0, "Mode badge not found"
-        badge_text = badge.first.inner_text().lower()
-        assert "verification" in badge_text, f"Initial mode should be verification, got: {badge_text}"
+    page.screenshot(path=f"{SCREENSHOT_DIR}/04_verification.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/04_verification.png", full_page=True)
+    # Entropy tab should be hidden in verification
+    entropy_tab = page.locator('button').filter(has_text="entropy")
+    entropy_visible = entropy_tab.count() > 0 and entropy_tab.first.is_visible()
+    assert not entropy_visible, "Entropy tab should be hidden in Verification"
 
-        # Entropy tab should be hidden in verification
-        entropy_tab = page.locator('button').filter(has_text="entropy")
-        entropy_visible = entropy_tab.count() > 0 and entropy_tab.first.is_visible()
-        assert not entropy_visible, "Entropy tab should be hidden in Verification"
+    # Mode description visible
+    desc = page.locator('text=/validate known patterns/i')
+    assert desc.count() > 0, "Verification description not found"
 
-        # Mode description visible
-        desc = page.locator('text=/validate known patterns/i')
-        assert desc.count() > 0, "Verification description not found"
+    # Switch to Exploration
+    exploration_btn = page.locator('button').filter(has_text="Exploration")
+    if exploration_btn.count() > 0:
+        exploration_btn.first.click()
+    page.wait_for_timeout(500)
 
-        # Switch to Exploration
-        exploration_btn = page.locator('button').filter(has_text="Exploration")
-        if exploration_btn.count() > 0:
-            exploration_btn.first.click()
-        page.wait_for_timeout(500)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/04_exploration.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/04_exploration.png", full_page=True)
+    # Badge should change
+    badge_after = page.locator('span.uppercase').first.inner_text().lower()
+    assert "exploration" in badge_after, f"Mode should be exploration, got: {badge_after}"
 
-        # Badge should change
-        badge_after = page.locator('span.uppercase').first.inner_text().lower()
-        assert "exploration" in badge_after, f"Mode should be exploration, got: {badge_after}"
+    # Entropy tab now visible
+    entropy_after = page.locator('button').filter(has_text="entropy")
+    assert entropy_after.count() > 0, "Entropy tab should be visible in Exploration"
 
-        # Entropy tab now visible
-        entropy_after = page.locator('button').filter(has_text="entropy")
-        assert entropy_after.count() > 0, "Entropy tab should be visible in Exploration"
+    # Exploration description
+    exp_desc = page.locator('text=/full discovery toolkit/i')
+    assert exp_desc.count() > 0, "Exploration description not found"
 
-        # Exploration description
-        exp_desc = page.locator('text=/full discovery toolkit/i')
-        assert exp_desc.count() > 0, "Exploration description not found"
-
-        print("  Mode switching: tabs/descriptions change correctly")
-        browser.close()
+    print("  Mode switching: tabs/descriptions change correctly")
 
 
-def test_multi_dump_workflow():
+def test_multi_dump_workflow(page):
     """Test 5: Add dump via AddDumpButton, mode affects consensus visibility."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+    loaded = setup_session_and_load(page)
+    if not loaded:
+        print("  Skip: workspace did not load")
+        return
 
-        loaded = setup_session_and_load(page)
-        if not loaded:
-            print("  Skip: workspace did not load")
-            browser.close()
-            return
+    page.wait_for_timeout(500)
 
-        page.wait_for_timeout(500)
+    # Go to Dumps tab
+    dumps_tab = page.locator('button').filter(has_text="Dumps")
+    if dumps_tab.count() > 0:
+        dumps_tab.first.click()
+    page.wait_for_timeout(500)
 
-        # Go to Dumps tab
-        dumps_tab = page.locator('button').filter(has_text="Dumps")
-        if dumps_tab.count() > 0:
-            dumps_tab.first.click()
-        page.wait_for_timeout(500)
+    # Add first dump manually
+    add_input = page.locator('input[placeholder="Server path to dump file"]')
+    if add_input.count() > 0 and add_input.first.is_visible():
+        add_input.first.fill(DUMP_PATH)
+        add_btn = page.locator('button:has-text("Add")')
+        if add_btn.count() > 0:
+            add_btn.first.click()
+        page.wait_for_timeout(1500)
 
-        # Add first dump manually
-        add_input = page.locator('input[placeholder="Server path to dump file"]')
-        if add_input.count() > 0 and add_input.first.is_visible():
-            add_input.first.fill(DUMP_PATH)
-            add_btn = page.locator('button:has-text("Add")')
-            if add_btn.count() > 0:
-                add_btn.first.click()
-            page.wait_for_timeout(1500)
+    # Add second dump
+    if add_input.count() > 0 and add_input.first.is_visible():
+        add_input.first.fill(DUMP_PATH_2)
+        add_btn = page.locator('button:has-text("Add")')
+        if add_btn.count() > 0:
+            add_btn.first.click()
+        page.wait_for_timeout(1500)
 
-        # Add second dump
-        if add_input.count() > 0 and add_input.first.is_visible():
-            add_input.first.fill(DUMP_PATH_2)
-            add_btn = page.locator('button:has-text("Add")')
-            if add_btn.count() > 0:
-                add_btn.first.click()
-            page.wait_for_timeout(1500)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/05_multi_dump.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/05_multi_dump.png", full_page=True)
+    # Count dump entries
+    dump_entries = page.locator('.font-mono.truncate')
+    count = dump_entries.count()
+    assert count >= 2, f"Expected 2+ dumps, got {count}"
 
-        # Count dump entries
-        dump_entries = page.locator('.font-mono.truncate')
-        count = dump_entries.count()
-        assert count >= 2, f"Expected 2+ dumps, got {count}"
+    # In verification mode, consensus should be hidden
+    consensus_btn = page.locator('button:has-text("Run Consensus")')
+    consensus_visible = consensus_btn.count() > 0 and consensus_btn.first.is_visible()
+    assert not consensus_visible, "Consensus should be hidden in Verification mode"
 
-        # In verification mode, consensus should be hidden
-        consensus_btn = page.locator('button:has-text("Run Consensus")')
-        consensus_visible = consensus_btn.count() > 0 and consensus_btn.first.is_visible()
-        assert not consensus_visible, "Consensus should be hidden in Verification mode"
+    # Switch to Exploration
+    exploration_btn = page.locator('button').filter(has_text="Exploration")
+    if exploration_btn.count() > 0:
+        exploration_btn.first.click()
+    page.wait_for_timeout(500)
 
-        # Switch to Exploration
-        exploration_btn = page.locator('button').filter(has_text="Exploration")
-        if exploration_btn.count() > 0:
-            exploration_btn.first.click()
-        page.wait_for_timeout(500)
+    # Go back to Dumps tab (mode switch might have changed view)
+    dumps_tab2 = page.locator('button').filter(has_text="Dumps")
+    if dumps_tab2.count() > 0:
+        dumps_tab2.first.click()
+    page.wait_for_timeout(500)
 
-        # Go back to Dumps tab (mode switch might have changed view)
-        dumps_tab2 = page.locator('button').filter(has_text="Dumps")
-        if dumps_tab2.count() > 0:
-            dumps_tab2.first.click()
-        page.wait_for_timeout(500)
+    page.screenshot(path=f"{SCREENSHOT_DIR}/05_exploration.png", full_page=True)
 
-        page.screenshot(path=f"{SCREENSHOT_DIR}/05_exploration.png", full_page=True)
+    # Consensus should now be visible
+    consensus_after = page.locator('button:has-text("Run Consensus")')
+    assert consensus_after.count() > 0 and consensus_after.first.is_visible(), (
+        "Consensus should be visible in Exploration mode"
+    )
 
-        # Consensus should now be visible
-        consensus_after = page.locator('button:has-text("Run Consensus")')
-        assert consensus_after.count() > 0 and consensus_after.first.is_visible(), (
-            "Consensus should be visible in Exploration mode"
-        )
-
-        print(f"  Multi-dump: {count} dumps loaded, consensus gated by mode")
-        browser.close()
+    print(f"  Multi-dump: {count} dumps loaded, consensus gated by mode")
 
 
 def cleanup():
@@ -353,13 +347,21 @@ if __name__ == "__main__":
         test_multi_dump_workflow,
     ]
     passed = 0
-    for test in tests:
-        try:
-            test()
-            print(f"  PASS: {test.__name__}")
-            passed += 1
-        except Exception as e:
-            print(f"  FAIL: {test.__name__}: {e}")
+    # Standalone runner: construct one browser page (outside pytest) and pass
+    # it to each test, which now expects the pytest `page` fixture signature.
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        for test in tests:
+            page = browser.new_page(viewport={"width": 1400, "height": 900})
+            try:
+                test(page)
+                print(f"  PASS: {test.__name__}")
+                passed += 1
+            except Exception as e:
+                print(f"  FAIL: {test.__name__}: {e}")
+            finally:
+                page.close()
+        browser.close()
     cleanup()
     print(f"\n{passed}/{len(tests)} tests passed")
     print(f"Screenshots saved to {SCREENSHOT_DIR}")

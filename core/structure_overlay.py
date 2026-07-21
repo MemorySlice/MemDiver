@@ -13,14 +13,14 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.structure_defs import (
+from memdiver.core.structure_defs import (
     FieldDef,
     FieldType,
     StructureDef,
     _check_constraints,
     _parse_field,
 )
-from core.structure_library import StructureLibrary
+from memdiver.core.structure_library import StructureLibrary
 
 logger = logging.getLogger("memdiver.structure_overlay")
 

@@ -6,9 +6,7 @@ import mmap
 import struct
 from pathlib import Path
 
-import pytest
-
-from core.binary_formats.elf_core_reader import (
+from memdiver.core.binary_formats.elf_core_reader import (
     ELF_MAGIC,
     ELFCLASS64,
     ELFDATA2LSB,
@@ -19,9 +17,9 @@ from core.binary_formats.elf_core_reader import (
     _PHDR64_FMT,
     _PHDR64_SIZE,
 )
-from core.dump_source import open_dump
-from core.dump_sources.gcore import GCoreDumpSource
-from tests._paths import SKIP_REASON, dataset_root
+from memdiver.core.dump_source import open_dump
+from memdiver.core.dump_sources.gcore import GCoreDumpSource
+from tests._paths import dataset_file
 
 
 def _build_core_two_segments(tmp_path: Path, body_a: bytes, body_b: bytes) -> Path:
@@ -71,21 +69,20 @@ def _build_core_two_segments(tmp_path: Path, body_a: bytes, body_b: bytes) -> Pa
 
 
 def _gcore_path():
-    root = dataset_root()
-    if root is None:
-        return None
-    p = (
-        root / "dataset_memory_slice" / "gocryptfs"
-        / "dataset_gocryptfs" / "run_0001" / "gcore.core"
+    """Resolve the gcore.core via the hybrid dataset resolver.
+
+    ``dataset_file`` returns the real capture when the private dataset is
+    configured and present, else a synthetic ELF core materialised on demand
+    under ``tests/fixtures/dataset/`` — so this always returns an existing path.
+    """
+    return dataset_file(
+        "dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gcore.core"
     )
-    return p if p.is_file() else None
 
 
 def test_gcore_dispatch() -> None:
     """``open_dump`` must pick the gcore branch for an ELF ET_CORE file."""
     path = _gcore_path()
-    if path is None:
-        pytest.skip(SKIP_REASON)
 
     source = open_dump(path)
     try:
@@ -99,8 +96,6 @@ def test_gcore_dispatch() -> None:
 def test_iter_ranges_covers_content() -> None:
     """PT_LOAD segments cover a non-zero virtual footprint."""
     path = _gcore_path()
-    if path is None:
-        pytest.skip(SKIP_REASON)
 
     with GCoreDumpSource(path) as src:
         spans = [(start, end) for start, end, _ in src.iter_ranges(view="vas")]
@@ -112,8 +107,6 @@ def test_iter_ranges_covers_content() -> None:
 def test_read_range_raw_prefix() -> None:
     """``read_range(0, 16, view="raw")`` returns bytes that start with ELF magic."""
     path = _gcore_path()
-    if path is None:
-        pytest.skip(SKIP_REASON)
 
     with GCoreDumpSource(path) as src:
         header = src.read_range(0, 16, view="raw")
@@ -124,8 +117,6 @@ def test_read_range_raw_prefix() -> None:
 def test_metadata_shape() -> None:
     """``metadata()`` advertises the gcore format and basic PT_LOAD info."""
     path = _gcore_path()
-    if path is None:
-        pytest.skip(SKIP_REASON)
 
     with GCoreDumpSource(path) as src:
         meta = src.metadata()
@@ -138,8 +129,6 @@ def test_metadata_shape() -> None:
 def test_va_to_file_offset_roundtrip() -> None:
     """Every PT_LOAD start VA maps back through ``va_to_file_offset``."""
     path = _gcore_path()
-    if path is None:
-        pytest.skip(SKIP_REASON)
 
     with GCoreDumpSource(path) as src:
         checked = 0

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Tuple
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.controls.config")
 
@@ -19,7 +19,7 @@ def create_config_controls(mo, state: Any) -> Tuple:
     Returns:
         Tuple of (dataset_browser, keylog_input, template_dropdown, scan_button).
     """
-    from core.keylog_templates import list_template_names
+    from memdiver.core.keylog_templates import list_template_names
 
     dataset_browser = mo.ui.file_browser(
         initial_path=state.dataset_root or str(Path.home()),

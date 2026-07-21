@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.models import CryptoSecret, TLSSecret, DumpFile, RunDirectory, ComparisonRegion, KeyOccurrence
+from memdiver.core.models import CryptoSecret, TLSSecret, DumpFile, RunDirectory, ComparisonRegion, KeyOccurrence
 
 
 def test_tls_secret_hash_equality():

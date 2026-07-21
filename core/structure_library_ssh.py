@@ -6,7 +6,7 @@ Polymorphic session_id and exchange_hash structures. Probes hash sizes
 
 from typing import List
 
-from core.structure_defs import FieldDef, FieldType, StructureDef
+from memdiver.core.structure_defs import FieldDef, FieldType, StructureDef
 
 
 def _ssh2_hash_struct(

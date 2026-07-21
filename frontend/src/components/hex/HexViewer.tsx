@@ -31,6 +31,10 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const setDumpPath = useHexStore((s) => s.setDumpPath);
   const setViewSizes = useHexStore((s) => s.setViewSizes);
   const storeFileSize = useHexStore((s) => s.fileSize);
+  const viewMode = useHexStore((s) => s.viewMode);
+  // Rotates getPageStateAtStable's identity when page-states resolve so
+  // HexRow's memo invalidates and "va"-view rows repaint. See chunkVersion.
+  const pageStateVersion = useHexStore((s) => s.pageStateVersion);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const focusColumn = useHexStore((s) => s.focusColumn);
@@ -76,12 +80,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     const base = `/api/inspect/hex-raw?dump_path=${encodeURIComponent(dumpPath)}&offset=0&length=1`;
     (async () => {
       try {
-        const [rawJson, vasJson] = await Promise.all([
+        const [rawJson, vasJson, vaJson] = await Promise.all([
           fetch(`${base}&view=raw`).then((r) => r.json()),
           fetch(`${base}&view=vas`).then((r) => r.json()),
+          fetch(`${base}&view=va`).then((r) => r.json()),
         ]);
         if (cancelled) return;
-        setViewSizes(rawJson.file_size ?? 0, vasJson.file_size ?? 0);
+        setViewSizes(
+          rawJson.file_size ?? 0,
+          vasJson.file_size ?? 0,
+          vaJson.file_size ?? 0,
+        );
       } catch {
         /* leave sizes at defaults on network failure */
       }
@@ -166,6 +175,14 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
       return useHexStore.getState().getByteAt(offset);
     },
     [chunkVersion]
+  );
+
+  const getPageStateAtStable = useCallback(
+    (offset: number) => {
+      void pageStateVersion;
+      return useHexStore.getState().getPageStateAt(offset);
+    },
+    [pageStateVersion]
   );
 
   const getVarianceAt = useCallback(
@@ -274,6 +291,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
                 activeFieldEnd={activeFieldRange?.end ?? null}
                 overlayEnabled={overlayEnabled}
                 getClassificationAt={getClassificationAtStable}
+                view={viewMode}
+                getPageStateAt={getPageStateAtStable}
               />
             </div>
           ))}

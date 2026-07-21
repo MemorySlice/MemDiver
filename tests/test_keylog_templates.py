@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.keylog_templates import get_template, list_template_names
+from memdiver.core.keylog_templates import get_template, list_template_names
 
 
 def test_get_template_tls12():

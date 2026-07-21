@@ -8,15 +8,15 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-from msl.enums import MslKeyType, MslProtocol, Confidence, KeyState
-from msl.key_extract import (
+from memdiver.msl.enums import MslKeyType, MslProtocol, Confidence, KeyState
+from memdiver.msl.key_extract import (
     extract_key_bytes,
     extract_secrets_from_msl,
     extract_secrets_from_path,
     map_key_type,
     map_protocol,
 )
-from msl.reader import MslReader
+from memdiver.msl.reader import MslReader
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -104,7 +104,7 @@ def test_extract_key_bytes_bad_region(msl_path):
         hint = hints[0]
         # Replace region_uuid with a bogus UUID
         from dataclasses import replace
-        from msl.types import MslKeyHint
+        from memdiver.msl.types import MslKeyHint
         bad_hint = MslKeyHint(
             block_header=hint.block_header,
             region_uuid=UUID(int=0),
@@ -124,7 +124,7 @@ def test_extract_key_bytes_out_of_bounds(msl_path):
     with MslReader(msl_path) as reader:
         hints = reader.collect_key_hints()
         hint = hints[0]
-        from msl.types import MslKeyHint
+        from memdiver.msl.types import MslKeyHint
         oob_hint = MslKeyHint(
             block_header=hint.block_header,
             region_uuid=hint.region_uuid,
@@ -153,7 +153,7 @@ def test_extract_key_bytes_zero_length_at_boundary(msl_path):
             r for r in reader.collect_regions()
             if r.block_header.block_uuid == hint.region_uuid
         )
-        from msl.types import MslKeyHint
+        from memdiver.msl.types import MslKeyHint
         empty_hint = MslKeyHint(
             block_header=hint.block_header,
             region_uuid=hint.region_uuid,

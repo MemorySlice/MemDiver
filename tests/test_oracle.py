@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.oracle import (
+from memdiver.engine.oracle import (
     OracleLoadError,
     load_oracle,
     load_oracle_config,

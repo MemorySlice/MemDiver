@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.services.analysis_service import (
+from memdiver.api.services.analysis_service import (
     AnalysisServiceError,
     DumpsNotFoundError,
     InsufficientStaticError,

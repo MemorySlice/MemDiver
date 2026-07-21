@@ -43,44 +43,79 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from core.dump_source import open_dump
-from engine.consensus import ConsensusVector
+from memdiver.core.dump_source import open_dump
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.engine.consensus import ConsensusVector
 
 logger = logging.getLogger("memdiver.api.services.analysis_service")
 
 
-class AnalysisServiceError(ValueError):
+class AnalysisServiceError(CapabilityError, ValueError):
     """Base class for user-correctable service errors.
 
     Carries an integer ``status`` hint so HTTP transports can translate
     directly to an appropriate response code without the service layer
     having to import from ``fastapi``.
+
+    Re-based onto the transport-agnostic :class:`CapabilityError` so the
+    same error carries an :class:`ErrorCategory` for non-HTTP transports,
+    while ``ValueError`` is retained in the bases to preserve the historic
+    ``except ValueError`` / ``isinstance(err, ValueError)`` contract.
     """
 
-    def __init__(self, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.status = status
+    def __init__(
+        self,
+        message: str,
+        status: int = 400,
+        *,
+        category: ErrorCategory = ErrorCategory.INVALID_INPUT,
+        code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(
+            message,
+            category=category,
+            status=status,
+            code=code,
+            details=details,
+        )
 
 
 class DumpsNotFoundError(AnalysisServiceError):
     def __init__(self, missing: List[str]) -> None:
-        super().__init__(f"Files not found: {missing[:3]}", status=404)
+        super().__init__(
+            f"Files not found: {missing[:3]}",
+            status=404,
+            category=ErrorCategory.NOT_FOUND,
+        )
         self.missing = missing
 
 
 class TooFewDumpsError(AnalysisServiceError):
     def __init__(self) -> None:
-        super().__init__("Need at least 2 dumps", status=400)
+        super().__init__(
+            "Need at least 2 dumps",
+            status=400,
+            category=ErrorCategory.PRECONDITION,
+        )
 
 
 class NoVolatileRegionsError(AnalysisServiceError):
     def __init__(self) -> None:
-        super().__init__("No KEY_CANDIDATE regions found", status=404)
+        super().__init__(
+            "No KEY_CANDIDATE regions found",
+            status=404,
+            category=ErrorCategory.NOT_FOUND,
+        )
 
 
 class EmptyRegionError(AnalysisServiceError):
     def __init__(self) -> None:
-        super().__init__("Failed to read region", status=500)
+        super().__init__(
+            "Failed to read region",
+            status=500,
+            category=ErrorCategory.INTERNAL,
+        )
 
 
 class InsufficientStaticError(AnalysisServiceError):
@@ -89,14 +124,18 @@ class InsufficientStaticError(AnalysisServiceError):
             f"Insufficient static bytes for pattern "
             f"({ratio * 100:.1f}% static, need {required * 100:.1f}%)"
         )
-        super().__init__(msg, status=400)
+        super().__init__(msg, status=400, category=ErrorCategory.PRECONDITION)
         self.ratio = ratio
         self.required = required
 
 
 class UnknownFormatError(AnalysisServiceError):
     def __init__(self, fmt: str) -> None:
-        super().__init__(f"Unknown format: {fmt}", status=400)
+        super().__init__(
+            f"Unknown format: {fmt}",
+            status=400,
+            category=ErrorCategory.UNSUPPORTED,
+        )
         self.format = fmt
 
 
@@ -143,7 +182,7 @@ def auto_export_pattern(
             exposes a ``status`` attribute that HTTP transports can map
             directly to an HTTP status code.
     """
-    from architect.pattern_generator import PatternGenerator
+    from memdiver.architect.pattern_generator import PatternGenerator
 
     paths = [Path(p) for p in dump_paths]
     missing = [str(p) for p in paths if not p.exists()]
@@ -237,24 +276,32 @@ def manual_export_pattern(
     fmt: str = "volatility3",
     name: str = "memdiver_pattern",
     min_static_ratio: float = 0.3,
+    key_material: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Export a pattern from a user-specified absolute file offset + length.
+    """Export a pattern from a user-specified offset + length.
 
     This is the manual counterpart to ``auto_export_pattern``. The user
     already knows where the key is (e.g. from previous analysis or from
-    a reverse-engineering session) and passes the file-relative offset
-    explicitly. Because the offset is a flat-file offset — not a
-    memory-relative aligned offset — the service reads file bytes
-    directly via ``StaticChecker.check`` and hands them to
-    ``PatternGenerator`` unchanged. The semantic mismatch that bites the
-    auto path (aligned offsets fed into a file-byte reader) does not
-    apply here because the user's offset IS a file offset.
+    a reverse-engineering session) and passes the offset explicitly.
+
+    The region is read through each dump's DumpSource memory projection
+    (``open_dump(...).read_range``): the flattened VAS view for ``.msl``
+    inputs and raw bytes for ``.dump`` inputs. This means the user's offset
+    is interpreted in the SAME space MemDiver presents offsets in (memory
+    for ``.msl``), and it lets ``key_material`` decrypt encrypted ``.msl``
+    containers — the previous implementation read raw file bytes via
+    ``StaticChecker.check`` and silently ignored any supplied key.
+
+    Args:
+        key_material: Optional decryption kwargs (``key``/``passphrase``/
+            ``kem_private_key``) forwarded to ``open_dump`` so encrypted
+            ``.msl`` inputs can be read (spec §10).
 
     Raises the same ``AnalysisServiceError`` subclasses as the auto path
     on user-correctable errors.
     """
-    from architect.pattern_generator import PatternGenerator
-    from architect.static_checker import StaticChecker
+    from memdiver.architect.pattern_generator import PatternGenerator
+    from memdiver.architect.static_checker import StaticChecker
 
     paths = [Path(p) for p in dump_paths]
     missing = [str(p) for p in paths if not p.exists()]
@@ -269,7 +316,16 @@ def manual_export_pattern(
     if fmt_lower not in SUPPORTED_FORMATS:
         raise UnknownFormatError(fmt)
 
-    static_mask, reference = StaticChecker.check(paths, offset, length)
+    # Read the requested region from each dump through its memory projection
+    # so .msl offsets are memory-relative and encrypted containers decrypt.
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        sources = [stack.enter_context(open_dump(p, **(key_material or {})))
+                   for p in paths]
+        regions = [s.read_range(offset, length) for s in sources]
+
+    static_mask, reference = StaticChecker.check_regions(regions)
     if not reference:
         raise EmptyRegionError()
 
@@ -298,17 +354,17 @@ def manual_export_pattern(
 def _render_content(pattern: Dict[str, Any], fmt: str) -> str:
     """Dispatch pattern dict to the requested exporter."""
     if fmt == "yara":
-        from architect.yara_exporter import YaraExporter
+        from memdiver.architect.yara_exporter import YaraExporter
 
         return YaraExporter.export(pattern)
     if fmt == "json":
-        from architect.json_exporter import JsonExporter
+        from memdiver.architect.json_exporter import JsonExporter
 
         sig = JsonExporter.export(pattern)
         return JsonExporter.to_string(sig)
     if fmt in ("volatility3", "vol3"):
-        from architect.volatility3_exporter import Volatility3Exporter
-        from architect.yara_exporter import YaraExporter
+        from memdiver.architect.volatility3_exporter import Volatility3Exporter
+        from memdiver.architect.yara_exporter import YaraExporter
 
         yara_rule = YaraExporter.export(pattern)
         return Volatility3Exporter.export(pattern, yara_rule=yara_rule)

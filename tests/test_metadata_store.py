@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from core.models import RunDirectory
-from harvester.metadata_store import HAS_POLARS, MetadataStore
+from memdiver.core.models import RunDirectory
+from memdiver.harvester.metadata_store import HAS_POLARS, MetadataStore
 
 
 def _make_run(library: str, version: str, run_number: int,

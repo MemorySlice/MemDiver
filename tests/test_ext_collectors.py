@@ -16,11 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from msl.decoders_ext import (MslEnvironmentBlock, MslFileDescriptor,
+from memdiver.msl.decoders_ext import (MslEnvironmentBlock, MslFileDescriptor,
                               MslNetworkConnection, MslSecurityToken,
                               MslSystemContext, MslThreadContext)
-from msl.reader import MslReader
-from msl.types import MslGenericBlock
+from memdiver.msl.reader import MslReader
+from memdiver.msl.types import MslGenericBlock
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 

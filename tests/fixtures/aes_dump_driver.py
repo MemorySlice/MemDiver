@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from core.dump_driver import DumpOrchestrator
+from memdiver.core.dump_driver import DumpOrchestrator
 from tests.fixtures._aes_sample_builder import ensure_built
 
 

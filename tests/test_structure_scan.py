@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from algorithms.base import AnalysisContext
-from algorithms.unknown_key.structure_scan import StructureScanAlgorithm
-from core.constants import UNKNOWN_KEY
+from memdiver.algorithms.base import AnalysisContext
+from memdiver.algorithms.unknown_key.structure_scan import StructureScanAlgorithm
+from memdiver.core.constants import UNKNOWN_KEY
 
 
 def _make_context(protocol_version="", library="test", phase="post_handshake"):
@@ -64,7 +64,7 @@ def test_protocol_filter():
 
 def test_registry_discovery():
     """structure_scan should be discoverable via AlgorithmRegistry."""
-    from algorithms.registry import AlgorithmRegistry
+    from memdiver.algorithms.registry import AlgorithmRegistry
 
     registry = AlgorithmRegistry()
     registry.discover()

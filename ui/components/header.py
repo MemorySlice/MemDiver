@@ -4,7 +4,7 @@ import base64
 import logging
 from pathlib import Path
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.components.header")
 

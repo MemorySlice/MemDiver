@@ -1,6 +1,6 @@
 """Tests for Volatility3 plugin exporter."""
 import pytest
-from architect.volatility3_exporter import (
+from memdiver.architect.volatility3_exporter import (
     Volatility3Exporter,
     _sanitize_class_name,
     _longest_static_run,

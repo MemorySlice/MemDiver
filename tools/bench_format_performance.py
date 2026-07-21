@@ -46,9 +46,9 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 try:
-    from msl.writer import MslWriter
-    from msl.reader import MslReader
-    from msl.enums import OSType, ArchType
+    from memdiver.msl.writer import MslWriter
+    from memdiver.msl.reader import MslReader
+    from memdiver.msl.enums import OSType, ArchType
     _MSL_AVAILABLE = True
 except Exception as exc:  # pragma: no cover
     logger.warning("memdiver msl package unavailable: %s", exc)
@@ -526,7 +526,7 @@ def idempotency_check(
 def _hash_msl_regions(path: Path) -> Optional[str]:
     if not _MSL_AVAILABLE:
         return None
-    from core.msl_helpers import get_region_page_data
+    from memdiver.core.msl_helpers import get_region_page_data
     h = hashlib.sha256()
     with MslReader(path) as reader:
         for region in reader.collect_regions():

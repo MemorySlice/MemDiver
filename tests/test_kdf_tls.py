@@ -7,10 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.kdf import TLS13HKDF
-from core.kdf_base import KDFParams
-from core.kdf_tls import TLS12KDF, TLS13KDF
-from core.models import CryptoSecret
+from memdiver.core.kdf import TLS13HKDF
+from memdiver.core.kdf_base import KDFParams
+from memdiver.core.kdf_tls import TLS12KDF, TLS13KDF
+from memdiver.core.models import CryptoSecret
 
 
 def test_tls12_derive():

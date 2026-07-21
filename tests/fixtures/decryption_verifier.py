@@ -4,7 +4,7 @@ Re-exports from engine.verification for backward compatibility
 with existing benchmark scripts.
 """
 
-from engine.verification import (  # noqa: F401
+from memdiver.engine.verification import (  # noqa: F401
     AesCbcVerifier,
     CipherVerifier,
     VerificationResult,

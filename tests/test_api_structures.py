@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import api.routers.structures as structures_router
-import core.structure_loader as structure_loader
-from api.config import get_settings
-from api.main import create_app
-from core.structure_library import StructureLibrary
+import memdiver.api.routers.structures as structures_router
+import memdiver.core.structure_loader as structure_loader
+from memdiver.api.config import get_settings
+from memdiver.api.main import create_app
+from memdiver.core.structure_library import StructureLibrary
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ def isolated_env(tmp_path: Path, monkeypatch):
 
     # Reset the global structure library so each test starts from a clean
     # slate (otherwise test order would leak created/deleted structures).
-    import core.structure_library as lib_mod
+    import memdiver.core.structure_library as lib_mod
     monkeypatch.setattr(lib_mod, "_library", None)
 
     yield tmp_path
@@ -174,3 +174,42 @@ def test_delete_structure_round_trip(client, isolated_env):
     # Subsequent GET 404s.
     r = client.get(f"/api/structures/{payload['name']}")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Path-safety regression: a DELETE name with traversal must be contained to
+# the user-structures dir (see api/routers/structures.py::delete_structure).
+# ---------------------------------------------------------------------------
+
+
+def test_delete_structure_rejects_traversal_name(isolated_env):
+    """A traversal name is rejected with 400 and unlinks nothing outside the dir."""
+    from fastapi import HTTPException
+
+    from memdiver.api.routers.structures import delete_structure
+
+    # A secret file living OUTSIDE the user-structures dir. Its name (minus the
+    # ".json" the handler appends) is what a traversal attempt would target.
+    outside = isolated_env / "secret"
+    outside.mkdir()
+    victim = outside / "victim.json"
+    victim.write_text("do not delete me")
+
+    # ``isolated_env`` points DEFAULT_USER_DIR at ``isolated_env/structures``;
+    # "../secret/victim" would escape it to the file above.
+    with pytest.raises(HTTPException) as exc_info:
+        delete_structure("../secret/victim")
+    assert exc_info.value.status_code == 400
+
+    # The out-of-tree file must survive the rejected delete.
+    assert victim.exists()
+
+
+def test_delete_structure_normal_name_still_works(client, isolated_env):
+    """A well-formed name is unaffected by the containment guard."""
+    payload = _valid_create_payload(name="still_deletable")
+    r = client.post("/api/structures/create", json=payload)
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/structures/{payload['name']}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] == payload["name"]

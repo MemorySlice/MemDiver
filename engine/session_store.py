@@ -125,7 +125,7 @@ class SessionStore:
     @staticmethod
     def default_dir() -> Path:
         """Return default session directory."""
-        from core.constants import memdiver_home
+        from memdiver.core.constants import memdiver_home
         d = memdiver_home() / "sessions"
         d.mkdir(parents=True, exist_ok=True)
         return d
@@ -183,7 +183,7 @@ def snapshot_from_state(state) -> SessionSnapshot:
     result_dict = None
     if state.analysis_result:
         try:
-            from engine.serializer import serialize_result
+            from memdiver.engine.serializer import serialize_result
             result_dict = serialize_result(state.analysis_result)
         except Exception:
             pass

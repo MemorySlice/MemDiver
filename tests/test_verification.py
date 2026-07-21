@@ -1,7 +1,7 @@
 """Tests for engine.verification — decryption verification module."""
 
 import pytest
-from engine.verification import (
+from memdiver.engine.verification import (
     AesCbcVerifier,
     VerificationResult,
     extract_and_verify,

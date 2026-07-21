@@ -3,8 +3,8 @@
 import logging
 from typing import Any, Dict, List
 
-from ui.components.hex_renderer import _html_escape
-from ui.locales import _
+from memdiver.ui.components.hex_renderer import _html_escape
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.block_navigator")
 
@@ -20,7 +20,7 @@ def render_block_navigator(mo, reader, selected_type: str = "") -> Any:
     Returns:
         A marimo layout element with block tree and detail panel.
     """
-    from msl.block_tree import list_blocks, group_blocks
+    from memdiver.msl.block_tree import list_blocks, group_blocks
 
     nodes = list_blocks(reader)
     if not nodes:
@@ -104,7 +104,7 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
         if hints:
             rows = []
             for h in hints:
-                from msl.enums import MslKeyType, MslProtocol
+                from memdiver.msl.enums import MslKeyType, MslProtocol
                 try:
                     kt = MslKeyType(h.key_type).name
                 except ValueError:

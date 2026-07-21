@@ -9,11 +9,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from api.config import Settings
-from api.dependencies import get_api_settings, get_tool_session
-from api.path_safety import ensure_within
-from mcp_server import tools
-from mcp_server.session import ToolSession
+from memdiver.api.config import Settings
+from memdiver.api.dependencies import get_api_settings, get_tool_session
+from memdiver.api.path_safety import ensure_within
+from memdiver.mcp_server import tools
+from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.dumps")
 
@@ -30,10 +30,11 @@ async def upload_dump(
     session: ToolSession = Depends(get_tool_session),
     settings: Settings = Depends(get_api_settings),
 ):
-    """Upload a raw dump file and convert to MSL format.
+    """Upload a dump file and convert to MSL format.
 
     The uploaded file is saved to a temp directory, converted via
-    ``tools.import_raw_dump``, then the temp file is cleaned up.
+    ``tools.import_dump`` (which sniffs raw/.dump, ELF core, or minidump and
+    dispatches accordingly), then the temp file is cleaned up.
     """
     suffix = Path(file.filename or "upload").suffix or ".dump"
     tmp_size = 0
@@ -67,7 +68,7 @@ async def upload_dump(
             out_dir = tmp_path.parent
         out_path = str(out_dir / (tmp_path.stem + ".msl"))
         result = await asyncio.to_thread(
-            tools.import_raw_dump, session, str(tmp_path), out_path, pid
+            tools.import_dump, session, str(tmp_path), out_path, pid
         )
     finally:
         tmp_path.unlink(missing_ok=True)

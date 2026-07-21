@@ -6,13 +6,19 @@ BaseKDF subclasses from all ``core/kdf_*.py`` modules via importlib.
 
 import importlib
 import logging
-import pkgutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.kdf_base import BaseKDF
+from memdiver.core.kdf_base import BaseKDF
+from memdiver.core.plugin_discovery import (
+    discover_entry_point_subclasses,
+    discover_subclasses,
+)
 
 logger = logging.getLogger("memdiver.kdf_registry")
+
+#: Entry-point group under which out-of-tree packages advertise KDFs.
+KDF_ENTRY_POINT_GROUP = "memdiver.kdfs"
 
 
 class KDFRegistry:
@@ -22,33 +28,44 @@ class KDFRegistry:
         self._kdfs: Dict[str, BaseKDF] = {}
 
     def discover(self) -> None:
-        """Walk ``core/kdf_*.py`` modules and register BaseKDF subclasses."""
+        """Walk ``core/kdf_*.py`` modules and register BaseKDF subclasses.
+
+        Per-plugin instantiation failures are isolated (a broken KDF no longer
+        aborts discovery of the rest). Also loads any KDFs advertised by
+        installed packages under the ``memdiver.kdfs`` entry-point group.
+        """
         core_dir = Path(__file__).parent
 
+        modules = []
         for py_file in sorted(core_dir.glob("kdf_*.py")):
-            mod_name = f"core.{py_file.stem}"
-            if mod_name == "core.kdf_base" or mod_name == "core.kdf_registry":
+            mod_name = f"memdiver.core.{py_file.stem}"
+            if mod_name == "memdiver.core.kdf_base" or mod_name == "memdiver.core.kdf_registry":
                 continue
             try:
-                mod = importlib.import_module(mod_name)
+                modules.append(importlib.import_module(mod_name))
             except ImportError as exc:
                 if "No module named" in str(exc):
                     logger.debug("Optional KDF module not found: %s", mod_name)
                 else:
                     logger.warning("Failed to import KDF module %s: %s", mod_name, exc)
                 continue
+            except Exception:  # noqa: BLE001 - a broken KDF module must not abort
+                # discovery of every other KDF. Isolate it (log + skip), matching
+                # plugin_discovery's stated per-plugin failure guarantee.
+                logger.warning(
+                    "Failed to import KDF module %s; skipping", mod_name, exc_info=True,
+                )
+                continue
 
-            for attr_name in dir(mod):
-                attr = getattr(mod, attr_name)
-                if (
-                    isinstance(attr, type)
-                    and issubclass(attr, BaseKDF)
-                    and attr is not BaseKDF
-                    and getattr(attr, "name", "")
-                ):
-                    instance = attr()
-                    self._kdfs[instance.name] = instance
-                    logger.debug("Registered KDF: %s", instance.name)
+        for instance in discover_subclasses(modules, BaseKDF):
+            self._kdfs[instance.name] = instance
+            logger.debug("Registered KDF: %s", instance.name)
+
+        for instance in discover_entry_point_subclasses(
+            KDF_ENTRY_POINT_GROUP, BaseKDF
+        ):
+            self._kdfs[instance.name] = instance
+            logger.debug("Registered KDF: %s", instance.name)
 
     def get(self, name: str) -> Optional[BaseKDF]:
         """Return KDF plugin by name, or None."""

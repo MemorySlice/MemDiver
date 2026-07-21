@@ -9,12 +9,12 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.dependencies import get_tool_session
-from api.models import ScanRequest
-from core.dataset_metadata import DatasetMeta, load_run_meta
-from core.models import DumpFile, RunDirectory
-from mcp_server import tools
-from mcp_server.session import ToolSession
+from memdiver.api.dependencies import get_tool_session
+from memdiver.api.models import ScanRequest
+from memdiver.core.dataset_metadata import DatasetMeta, load_run_meta
+from memdiver.core.models import DumpFile, RunDirectory
+from memdiver.mcp_server import tools
+from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.dataset")
 
@@ -83,7 +83,7 @@ def _iter_run_dirs(root: Path) -> List[Path]:
 
     Also returns ``root`` itself if it already looks like a single run.
     """
-    from core.discovery import RunDiscovery
+    from memdiver.core.discovery import RunDiscovery
 
     candidates: List[Path] = []
     if RunDiscovery._looks_like_dataset_run(root) or RunDiscovery.parse_run_dirname(root.name):  # noqa: SLF001
@@ -101,7 +101,7 @@ def _iter_run_dirs(root: Path) -> List[Path]:
 
 def _load_run_entry(run_path: Path) -> Dict[str, Any] | None:
     """Shape a single run directory as a JSON-serialisable dict."""
-    from core.discovery import RunDiscovery
+    from memdiver.core.discovery import RunDiscovery
 
     try:
         run = RunDiscovery.load_run_directory(run_path)

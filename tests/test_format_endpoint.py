@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import create_app
+from memdiver.api.main import create_app
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 

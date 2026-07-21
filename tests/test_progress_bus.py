@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from api.services.progress_bus import DEFAULT_RING_SIZE, Event, ProgressBus
+from memdiver.api.services.progress_bus import DEFAULT_RING_SIZE, Event, ProgressBus
 
 
 def _evt(task_id: str = "t1", type_: str = "progress", **kw) -> Event:

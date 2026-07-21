@@ -16,8 +16,8 @@ import logging
 import struct
 from typing import List, Optional, Set
 
-from core.kdf_base import BaseKDF, KDFParams
-from core.models import CryptoSecret
+from memdiver.core.kdf_base import BaseKDF, KDFParams
+from memdiver.core.models import CryptoSecret
 
 logger = logging.getLogger("memdiver.kdf_ssh")
 
@@ -119,7 +119,7 @@ class SSH2KDFPlugin(BaseKDF):
         """
         # Imported lazily to keep this module importable without the structure
         # library and to avoid a heavy import at module load time.
-        from core.structure_library_ssh import SSH_BUILTINS
+        from memdiver.core.structure_library_ssh import SSH_BUILTINS
 
         sizes: Set[int] = set()
         for struct_def in SSH_BUILTINS:

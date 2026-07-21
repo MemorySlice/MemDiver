@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from api.routers.path import browse_directory, path_info
+from memdiver.api.routers.path import browse_directory, path_info
 
 
 class TestPathInfo:

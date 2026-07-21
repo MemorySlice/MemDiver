@@ -8,14 +8,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from msl.session_extract import (
+from memdiver.msl.session_extract import (
     SessionReport,
     _safe_enum_name,
     extract_session_from_path,
     extract_session_report,
 )
-from msl.enums import ArchType, OSType
-from msl.reader import MslReader
+from memdiver.msl.enums import ArchType, OSType
+from memdiver.msl.reader import MslReader
 from tests.fixtures.generate_msl_fixtures import (
     ensure_msl_fixtures,
     generate_msl_file,

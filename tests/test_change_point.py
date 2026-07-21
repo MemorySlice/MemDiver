@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.unknown_key.change_point import ChangePointAlgorithm
-from algorithms.base import AnalysisContext
+from memdiver.algorithms.unknown_key.change_point import ChangePointAlgorithm
+from memdiver.algorithms.base import AnalysisContext
 
 
 def test_empty_data():

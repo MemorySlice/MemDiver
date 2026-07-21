@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import create_app
+from memdiver.api.main import create_app
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "dataset"
 TLS12_LIB_DIR = FIXTURE_ROOT / "TLS12" / "scenario_a" / "openssl"
@@ -71,18 +71,33 @@ def test_list_phases(client):
 # ---- Analysis endpoint ----
 
 
-def test_run_analysis(client):
-    resp = client.post(
-        "/api/analysis/run",
-        json={
-            "library_dirs": [str(TLS12_LIB_DIR)],
-            "phase": "post_handshake",
-            "protocol_version": "TLS12",
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert isinstance(data, dict)
+def test_run_analysis(tmp_path, monkeypatch):
+    # ``/api/analysis/run`` now dispatches the GIL-bound work to the
+    # TaskManager ProcessPool and returns a ``task_id`` immediately, so a
+    # lifespan-enabled client is required. We only assert the submission
+    # contract here (fast) and cancel to free the pool slot.
+    from memdiver.api.config import get_settings
+
+    monkeypatch.setenv("MEMDIVER_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("MEMDIVER_PIPELINE_MAX_WORKERS", "1")
+    get_settings.cache_clear()
+
+    with TestClient(create_app()) as lc:
+        resp = lc.post(
+            "/api/analysis/run",
+            json={
+                "library_dirs": [str(TLS12_LIB_DIR)],
+                "phase": "post_handshake",
+                "protocol_version": "TLS12",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert isinstance(data, dict)
+        assert isinstance(data["task_id"], str) and data["task_id"]
+        assert data["status"] in {"pending", "running", "succeeded", "failed"}
+        lc.delete(f"/api/pipeline/runs/{data['task_id']}")
+    get_settings.cache_clear()
 
 
 # ---- Inspect endpoints ----

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from harvester.sidecar import SidecarParser
+from memdiver.harvester.sidecar import SidecarParser
 
 
 def test_find_sidecar_empty_dir():

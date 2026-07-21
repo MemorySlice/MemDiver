@@ -2,11 +2,11 @@
 
 The dumps router exposes ``POST /api/dumps/upload`` which streams a
 multipart file to a temp path, enforces a 4 GiB size cap
-(``DUMP_UPLOAD_MAX_BYTES``), then converts it via ``tools.import_raw_dump``.
+(``DUMP_UPLOAD_MAX_BYTES``), then converts it via ``tools.import_dump``.
 
 We redirect every settings-controlled directory into ``tmp_path`` (same
 fixtures as tests/test_api_sessions.py) and monkeypatch
-``import_raw_dump`` for the happy path so the test doesn't depend on the
+``import_dump`` for the happy path so the test doesn't depend on the
 real MSL importer accepting garbage bytes.
 """
 
@@ -17,10 +17,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from api.config import get_settings
-from api.main import create_app
-from api.routers import dumps as dumps_router
-from mcp_server import tools
+from memdiver.api.config import get_settings
+from memdiver.api.main import create_app
+from memdiver.api.routers import dumps as dumps_router
+from memdiver.mcp_server import tools
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +59,9 @@ def client(isolated_env):
 
 
 def test_upload_dump_happy_path(client, monkeypatch):
-    """A valid upload streams through to ``import_raw_dump`` and returns
-    its dict result. We patch ``import_raw_dump`` where the router calls
-    it (``mcp_server.tools.import_raw_dump``) so the test does not depend
+    """A valid upload streams through to ``import_dump`` and returns
+    its dict result. We patch ``import_dump`` where the router calls
+    it (``mcp_server.tools.import_dump``) so the test does not depend
     on the real MSL importer parsing garbage bytes.
     """
     sentinel = {"source": "x", "output": "y", "regions_written": 3}
@@ -72,7 +72,7 @@ def test_upload_dump_happy_path(client, monkeypatch):
         assert Path(raw_path).is_file()
         return sentinel
 
-    monkeypatch.setattr(tools, "import_raw_dump", _fake_import)
+    monkeypatch.setattr(tools, "import_dump", _fake_import)
 
     r = client.post(
         "/api/dumps/upload",
@@ -90,7 +90,7 @@ def test_upload_dump_happy_path(client, monkeypatch):
 
 
 def test_upload_dump_offloads_import_to_thread(client, monkeypatch):
-    """Regression: ``tools.import_raw_dump`` (up to 4 GiB parse/convert) is
+    """Regression: ``tools.import_dump`` (up to 4 GiB parse/convert) is
     CPU/IO-heavy and synchronous, so the async handler must run it via
     ``asyncio.to_thread`` instead of blocking the event loop. We assert the
     router dispatches the importer through ``asyncio.to_thread`` while
@@ -101,7 +101,7 @@ def test_upload_dump_offloads_import_to_thread(client, monkeypatch):
         assert Path(raw_path).is_file()
         return sentinel
 
-    monkeypatch.setattr(tools, "import_raw_dump", _fake_import)
+    monkeypatch.setattr(tools, "import_dump", _fake_import)
 
     calls: list[str] = []
     real_to_thread = dumps_router.asyncio.to_thread
@@ -118,7 +118,7 @@ def test_upload_dump_offloads_import_to_thread(client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json() == sentinel
-    assert "_fake_import" in calls, "import_raw_dump must be offloaded via asyncio.to_thread"
+    assert "_fake_import" in calls, "import_dump must be offloaded via asyncio.to_thread"
 
 
 # ---------------------------------------------------------------------------

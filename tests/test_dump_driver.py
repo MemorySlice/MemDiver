@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-from core.dump_driver import (
+from memdiver.core.dump_driver import (
     DumpOrchestrator,
     DumpToolInfo,
     TargetProcess,
@@ -63,7 +63,7 @@ class TestDetectTools:
         assert by_name["lldb"].extension == "dump"
         assert by_name["fridump"].extension == "dump"
 
-    @patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_all_available_when_which_succeeds(self, mock_which):
         tools = DumpOrchestrator._detect_tools()
         # memslicer and lldb use shutil.which; fridump checks which first
@@ -71,7 +71,7 @@ class TestDetectTools:
             if t.name in ("memslicer", "lldb"):
                 assert t.available is True
 
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_none_available_when_which_fails(self, mock_which):
         tools = DumpOrchestrator._detect_tools()
         for t in tools:
@@ -79,18 +79,18 @@ class TestDetectTools:
 
 
 class TestOrchestratorInit:
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_filter_by_name(self, mock_which):
         orch = DumpOrchestrator(tools=["lldb"])
         names = {t.name for t in orch._tools}
         assert names == {"lldb"}
 
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_no_tools_available(self, mock_which):
         orch = DumpOrchestrator()
         assert orch.available_tools == []
 
-    @patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_available_tools_property(self, mock_which):
         orch = DumpOrchestrator()
         available = orch.available_tools
@@ -98,14 +98,14 @@ class TestOrchestratorInit:
 
 
 class TestDump:
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_unknown_tool_returns_false(self, mock_which):
         orch = DumpOrchestrator()
         from pathlib import Path
         assert orch.dump(123, Path("/tmp/test.bin"), "nonexistent") is False
 
-    @patch("core.dump_driver.subprocess.run")
-    @patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake")
+    @patch("memdiver.core.dump_driver.subprocess.run")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_memslicer_success(self, mock_which, mock_run, tmp_path):
         dump_path = tmp_path / "out.msl"
         dump_path.write_bytes(b"\x00" * 100)
@@ -114,8 +114,8 @@ class TestDump:
         result = orch.dump(999, dump_path, "memslicer")
         assert result is True
 
-    @patch("core.dump_driver.subprocess.run")
-    @patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake")
+    @patch("memdiver.core.dump_driver.subprocess.run")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_memslicer_failure(self, mock_which, mock_run, tmp_path):
         dump_path = tmp_path / "out.msl"
         mock_run.return_value = MagicMock(returncode=1)
@@ -123,7 +123,7 @@ class TestDump:
         result = orch.dump(999, dump_path, "memslicer")
         assert result is False
 
-    @patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_dump_exception_returns_false(self, mock_which, tmp_path):
         orch = DumpOrchestrator(tools=["memslicer"])
         with patch.object(orch, "_dump_memslicer", side_effect=OSError("fail")):
@@ -132,7 +132,7 @@ class TestDump:
 
 
 class TestStartTargetTimeout:
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_timeout_fires_when_target_emits_no_newline(self, mock_which, tmp_path):
         """A target that opens stdout but never emits a newline must still
         time out. Regression: the deadline was only checked inside
@@ -153,7 +153,7 @@ class TestStartTargetTimeout:
         # Must return promptly around the timeout, not block on the sleep(30).
         assert _t.monotonic() - start < 10.0
 
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_success_path_reads_pid_key_iv(self, mock_which, tmp_path):
         """The MEMDIVER_READY success path must still work end-to-end."""
         script = tmp_path / "ready.py"
@@ -175,7 +175,7 @@ class TestStartTargetTimeout:
         finally:
             target.process.kill()
 
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_eof_without_ready_raises_runtime_error(self, mock_which, tmp_path):
         """A target that exits before providing PID/KEY raises RuntimeError."""
         script = tmp_path / "exit.py"
@@ -187,7 +187,7 @@ class TestStartTargetTimeout:
 
 class TestRunExperimentKeylog:
     def _orch_with_one_tool(self):
-        with patch("core.dump_driver.shutil.which", return_value="/usr/bin/fake"):
+        with patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake"):
             orch = DumpOrchestrator(tools=["memslicer"])
         return orch
 
@@ -202,7 +202,7 @@ class TestRunExperimentKeylog:
         with patch.object(orch, "start_target", return_value=target), \
                 patch.object(orch, "dump", return_value=True), \
                 patch.object(orch, "kill_target"), \
-                patch("core.dump_driver.time.sleep"):
+                patch("memdiver.core.dump_driver.time.sleep"):
             result = orch.run_experiment(
                 tmp_path / "target.py", num_runs=1, output_dir=tmp_path,
                 protocol="CHACHA20", scenario="scn", delay=0.0,
@@ -223,7 +223,7 @@ class TestRunExperimentKeylog:
         with patch.object(orch, "start_target", return_value=target), \
                 patch.object(orch, "dump", return_value=True), \
                 patch.object(orch, "kill_target"), \
-                patch("core.dump_driver.time.sleep"):
+                patch("memdiver.core.dump_driver.time.sleep"):
             result = orch.run_experiment(
                 tmp_path / "target.py", num_runs=1, output_dir=tmp_path,
                 protocol="AES256", scenario="scn", delay=0.0,
@@ -235,8 +235,8 @@ class TestRunExperimentKeylog:
 
 
 class TestKillTarget:
-    @patch("core.dump_driver.os.kill")
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.os.kill")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_kill_sends_sigterm(self, mock_which, mock_kill):
         proc = MagicMock()
         proc.wait.return_value = None
@@ -245,8 +245,8 @@ class TestKillTarget:
         orch.kill_target(target)
         mock_kill.assert_called_once_with(42, 15)  # SIGTERM = 15
 
-    @patch("core.dump_driver.os.kill")
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.os.kill")
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_kill_escalates_to_sigkill(self, mock_which, mock_kill):
         import subprocess as sp
         proc = MagicMock()
@@ -259,8 +259,8 @@ class TestKillTarget:
         assert len(calls) == 2
         assert calls[1][0] == (42, 9)  # SIGKILL = 9
 
-    @patch("core.dump_driver.os.kill", side_effect=ProcessLookupError)
-    @patch("core.dump_driver.shutil.which", return_value=None)
+    @patch("memdiver.core.dump_driver.os.kill", side_effect=ProcessLookupError)
+    @patch("memdiver.core.dump_driver.shutil.which", return_value=None)
     def test_kill_already_dead(self, mock_which, mock_kill):
         proc = MagicMock()
         target = TargetProcess(pid=42, key_hex="aa", iv_hex="bb", process=proc)

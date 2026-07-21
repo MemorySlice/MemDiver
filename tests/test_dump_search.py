@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.dump_search import DumpSearcher
-from core.models import TLSSecret
+from memdiver.core.dump_search import DumpSearcher
+from memdiver.core.models import TLSSecret
 
 
 def _make_dump(data: bytes) -> Path:

@@ -15,10 +15,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from api.config import Settings
-from api.dependencies import get_api_settings
-from api.services import session_service
-from engine.session_store import SessionStore
+from memdiver.api.config import Settings
+from memdiver.api.dependencies import get_api_settings
+from memdiver.api.services import session_service
+from memdiver.engine.session_store import SessionStore
 
 logger = logging.getLogger("memdiver.api.routers.sessions")
 

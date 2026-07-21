@@ -21,7 +21,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from api.dependencies import task_manager_or_503 as _task_manager_or_503
+from memdiver.api.dependencies import task_manager_or_503 as _task_manager_or_503
 
 logger = logging.getLogger("memdiver.api.routers.experiment")
 
@@ -92,7 +92,7 @@ def run_experiment_endpoint(request: ExperimentRunRequest):
     record = manager.submit(
         kind="experiment",
         params=params,
-        runner_dotted="engine.experiment_task_runner.run_experiment",
+        runner_dotted="memdiver.engine.experiment_task_runner.run_experiment",
         stage_names=["capture", "consensus", "verify"],
     )
     return ExperimentRunResponse(

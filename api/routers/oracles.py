@@ -30,8 +30,8 @@ from typing import List, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.dependencies import oracle_registry_or_503 as _registry
-from api.services.oracle_registry import (
+from memdiver.api.dependencies import oracle_registry_or_503 as _registry
+from memdiver.api.services.oracle_registry import (
     OracleDisabled,
     OracleNotArmed,
     OracleNotFound,

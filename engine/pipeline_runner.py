@@ -43,9 +43,12 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memdiver.engine.auto_floor import AutoFloorResult
 
 logger = logging.getLogger("memdiver.engine.pipeline_runner")
 
@@ -107,7 +110,7 @@ def _register_artifact(
 
 def _load_sources(source_paths: List[str]):
     """Open each dump path via the DumpSource factory and context-manage them."""
-    from core.dump_source import open_dump
+    from memdiver.core.dump_source import open_dump
 
     opened = []
     for path in source_paths:
@@ -129,6 +132,44 @@ def _is_msl(source) -> bool:
     return getattr(source, "format_name", "") == "msl"
 
 
+def _persist_welford_state(
+    artifact_dir: Path,
+    artifacts: List[Dict[str, Any]],
+    *,
+    mean_arr,
+    m2_arr,
+    total: int,
+    n_welford: int,
+) -> Path:
+    """Persist the Welford accumulators + a state.json pointer, register it.
+
+    Extracted verbatim from :func:`_build_consensus`; brute-force reads
+    these to compute ``neighborhood_variance`` and the refine workflow
+    folds more dumps on top of them. Callers must have created the
+    ``consensus`` subdirectory first.
+    """
+    import numpy as np
+
+    mean_path = artifact_dir / "consensus" / "mean.npy"
+    m2_path = artifact_dir / "consensus" / "m2.npy"
+    state_json_path = artifact_dir / "consensus" / "state.json"
+    np.save(mean_path, mean_arr)
+    np.save(m2_path, m2_arr)
+    state_json_path.write_text(json.dumps({
+        "size": int(total),
+        "num_dumps": int(n_welford),
+        "mean_path": str(mean_path),
+        "m2_path": str(m2_path),
+    }, indent=2))
+    _register_artifact(
+        artifacts, artifact_dir,
+        name="consensus_state",
+        relpath="consensus/state.json",
+        media_type="application/json",
+    )
+    return state_json_path
+
+
 def _build_consensus(
     sources: List,
     *,
@@ -140,8 +181,8 @@ def _build_consensus(
 
     Emits progress per-fold so the UI sees the matrix accumulating.
     """
-    from engine.consensus_msl import MslIncrementalBuilder, build_msl_consensus
-    from engine.consensus import ConsensusVector
+    from memdiver.engine.consensus_msl import MslIncrementalBuilder, build_msl_consensus
+    from memdiver.engine.consensus import ConsensusVector
 
     import numpy as np
 
@@ -218,22 +259,9 @@ def _build_consensus(
     )
     # Persist Welford accumulators so brute-force can compute
     # neighborhood_variance and the refine workflow can fold more dumps.
-    mean_path = artifact_dir / "consensus" / "mean.npy"
-    m2_path = artifact_dir / "consensus" / "m2.npy"
-    state_json_path = artifact_dir / "consensus" / "state.json"
-    np.save(mean_path, mean_arr)
-    np.save(m2_path, m2_arr)
-    state_json_path.write_text(json.dumps({
-        "size": int(total),
-        "num_dumps": int(n_welford),
-        "mean_path": str(mean_path),
-        "m2_path": str(m2_path),
-    }, indent=2))
-    _register_artifact(
-        artifacts, artifact_dir,
-        name="consensus_state",
-        relpath="consensus/state.json",
-        media_type="application/json",
+    state_json_path = _persist_welford_state(
+        artifact_dir, artifacts,
+        mean_arr=mean_arr, m2_arr=m2_arr, total=total, n_welford=n_welford,
     )
     ctx.emit(
         "stage_end", stage="consensus", pct=1.0,
@@ -262,7 +290,7 @@ def _run_reduce(
     """Run search-reduce and persist the resulting candidates.json."""
     import numpy as np
 
-    from engine.candidate_pipeline import reduce_search_space
+    from memdiver.engine.candidate_pipeline import reduce_search_space
 
     variance = np.load(variance_path)
     reference = Path(reference_path).read_bytes()
@@ -308,7 +336,7 @@ def _run_brute_force(
     artifacts: List[Dict[str, Any]],
 ) -> Path:
     """Run the BYO oracle against surviving candidates and persist hits.json."""
-    from engine.brute_force import run_brute_force
+    from memdiver.engine.brute_force import run_brute_force
 
     reference = Path(reference_path).read_bytes()
     ctx.emit("stage_start", stage="brute_force", pct=0.0,
@@ -352,8 +380,8 @@ def _run_nsweep(
     artifacts: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Run the N-sweep harness and persist report.{json,md,html}."""
-    from engine.nsweep import run_nsweep, write_nsweep_artifacts
-    from engine.oracle import load_oracle
+    from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
+    from memdiver.engine.oracle import load_oracle
 
     ctx.emit("stage_start", stage="nsweep", pct=0.0,
              msg=f"N values: {nsweep_params['n_values']}")
@@ -399,7 +427,7 @@ def _run_emit_plugin(
     artifacts: List[Dict[str, Any]],
 ) -> Optional[Path]:
     """Emit a Vol3 plugin from the first hit, or return None if hits empty."""
-    from engine.vol3_emit import emit_plugin_for_hit
+    from memdiver.engine.vol3_emit import emit_plugin_for_hit
 
     payload = json.loads(Path(hits_path).read_text())
     hits = payload.get("hits", [])
@@ -435,7 +463,7 @@ def _run_emit_plugin(
         relpath=f"emit_plugin/{output_path.name}",
         media_type="text/x-python",
     )
-    from engine.vol3_emit import extract_inferred_fields
+    from memdiver.engine.vol3_emit import extract_inferred_fields
 
     hit = hits[hit_index]
     thresh = float(v_thresh) if v_thresh is not None else None
@@ -458,6 +486,329 @@ def _run_emit_plugin(
         },
     )
     return output_path
+
+
+def run_auto_floor_stage(
+    *,
+    variance_path: str,
+    reference_path: str,
+    num_dumps: int,
+    oracle_path: str,
+    oracle_config: Optional[Dict[str, Any]] = None,
+    reduce_kwargs: Optional[Dict[str, Any]] = None,
+    key_sizes: Sequence[int] = (32,),
+    stride: int = 8,
+    coverage: Optional[float] = None,
+    correspondence: Optional[float] = None,
+    filter_recall: Optional[float] = None,
+    min_coverage: float = 0.80,
+    phi0_method: str = "pmin",
+    p_min: float = 0.35,
+    positive_control: Optional[bytes] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable] = None,
+) -> "AutoFloorResult":
+    """Ground-truth-free variance-floor selection for the pipeline / API.
+
+    Mirrors the CLI ``_cmd_auto_floor`` assembly so the two transports
+    cannot drift: it loads the persisted variance array (``.npy`` written
+    by the consensus stage), reads the reference dump through a proper
+    ``open_dump`` lifecycle (with optional ``key_material`` so an encrypted
+    ``.msl`` reference can be decrypted, spec §10), loads the armed BYO
+    oracle, then delegates the verdict to
+    :func:`engine.auto_floor.run_auto_floor` — the single source of truth
+    for the oracle-arbitrated sweep.
+
+    ``reference_data`` is truncated to the variance length so the two arrays
+    are index-aligned, exactly as the CLI does.
+    """
+    import numpy as np
+
+    from memdiver.core.dump_source import open_dump
+    from memdiver.engine.auto_floor import run_auto_floor
+    from memdiver.engine.oracle import load_oracle
+
+    variance = np.load(variance_path)
+    with open_dump(Path(reference_path), **(key_material or {})) as source:
+        reference_data = source.read_all()[: len(variance)]
+
+    oracle = load_oracle(Path(oracle_path), config=oracle_config or {})
+
+    extra: Dict[str, Any] = {}
+    if progress_callback is not None:
+        extra["progress_callback"] = progress_callback
+
+    return run_auto_floor(
+        variance,
+        reference_data,
+        int(num_dumps),
+        oracle,
+        reduce_kwargs=dict(reduce_kwargs or {}),
+        key_sizes=tuple(key_sizes),
+        stride=stride,
+        coverage=coverage,
+        correspondence=correspondence,
+        filter_recall=filter_recall,
+        min_coverage=min_coverage,
+        positive_control=positive_control,
+        phi0_method=phi0_method,
+        p_min=p_min,
+        **extra,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage abstraction + ordered registry.
+#
+# Historically :func:`run_pipeline` inlined a hardcoded 5-stage sequence.
+# The abstraction below composes that same sequence from a module-level
+# ordered registry so a new stage can be registered/inserted without editing
+# ``run_pipeline``'s body. It is intentionally thin: each default stage is a
+# wrapper delegating to the existing ``_build_consensus`` / ``_run_*``
+# functions unchanged, so the default pipeline's ordering, optional gating,
+# artifacts, emits and return value are byte-for-byte preserved.
+#
+# Pickle/spawn note: the registry is a module global rebuilt at import time in
+# each worker (spawn re-imports the module). Neither ``Stage`` objects nor the
+# wrapper functions are pickled — only ``run_pipeline`` and ``params``/``ctx``
+# cross the process boundary — and every wrapper is a top-level function that
+# captures no state, so the fragile spawn contract is upheld.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PipelineState:
+    """Mutable state threaded through the composed pipeline stages.
+
+    Stages read the parsed request fields + upstream results and write their
+    own outputs back onto the same instance. This replaces the ad-hoc local
+    variables the inline sequence used (``consensus``/``candidates_path``/
+    ``hits_path``) without changing what flows between stages.
+    """
+
+    ctx: Any
+    artifact_dir: Path
+    sources: List[Any]
+    reduce_kwargs: Dict[str, Any]
+    oracle_path: Path
+    bf_kwargs: Dict[str, Any]
+    nsweep_params: Optional[Dict[str, Any]]
+    emit_params: Optional[Dict[str, Any]]
+    artifacts: List[Dict[str, Any]] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    # Upstream results shared between stages.
+    consensus: Optional[Dict[str, Any]] = None
+    candidates_path: Optional[Path] = None
+    hits_path: Optional[Path] = None
+
+
+def _always_enabled(state: "PipelineState") -> bool:
+    return True
+
+
+def _nsweep_enabled(state: "PipelineState") -> bool:
+    return state.nsweep_params is not None
+
+
+def _emit_enabled(state: "PipelineState") -> bool:
+    return state.emit_params is not None
+
+
+@dataclass
+class Stage:
+    """A named, optionally-gated step in the pipeline.
+
+    ``run(state)`` mutates ``state`` in place (writes artifacts/summary and any
+    result other stages consume). ``enabled(state)`` decides whether the stage
+    runs at all — this is where the historical optional gating for nsweep/emit
+    lives. ``check_cancel_before`` mirrors the pre-refactor placement of the
+    ``ctx.is_cancelled()`` guard (consensus checked cancellation only inside
+    its fold loop; every later stage was guarded before it ran).
+    """
+
+    name: str
+    run: Callable[["PipelineState"], None]
+    enabled: Callable[["PipelineState"], bool] = _always_enabled
+    check_cancel_before: bool = True
+
+
+def _stage_consensus(state: "PipelineState") -> None:
+    state.consensus = _build_consensus(
+        state.sources,
+        ctx=state.ctx,
+        artifact_dir=state.artifact_dir,
+        artifacts=state.artifacts,
+    )
+    state.summary["consensus"] = state.consensus
+
+
+def _stage_reduce(state: "PipelineState") -> None:
+    consensus = state.consensus
+    state.candidates_path = _run_reduce(
+        Path(consensus["variance_path"]),
+        Path(consensus["reference_path"]),
+        consensus["num_dumps"],
+        state.reduce_kwargs,
+        ctx=state.ctx,
+        artifact_dir=state.artifact_dir,
+        artifacts=state.artifacts,
+    )
+    state.summary["candidates_path"] = str(state.candidates_path)
+
+
+def _stage_brute_force(state: "PipelineState") -> None:
+    consensus = state.consensus
+    state.hits_path = _run_brute_force(
+        state.candidates_path,
+        Path(consensus["reference_path"]),
+        state.oracle_path,
+        state.bf_kwargs,
+        state_path=Path(consensus["state_path"]),
+        ctx=state.ctx,
+        artifact_dir=state.artifact_dir,
+        artifacts=state.artifacts,
+    )
+    state.summary["hits_path"] = str(state.hits_path)
+
+
+def _stage_nsweep(state: "PipelineState") -> None:
+    state.summary["nsweep"] = _run_nsweep(
+        state.sources,
+        state.oracle_path,
+        state.nsweep_params,
+        ctx=state.ctx,
+        artifact_dir=state.artifact_dir,
+        artifacts=state.artifacts,
+    )
+
+
+def _stage_emit_plugin(state: "PipelineState") -> None:
+    plugin_path = _run_emit_plugin(
+        state.hits_path,
+        Path(state.consensus["reference_path"]),
+        state.emit_params,
+        ctx=state.ctx,
+        artifact_dir=state.artifact_dir,
+        artifacts=state.artifacts,
+    )
+    state.summary["plugin_path"] = str(plugin_path) if plugin_path else None
+
+
+def _default_stages() -> List[Stage]:
+    """Build a fresh list of the default stages in canonical order."""
+    return [
+        Stage("consensus", _stage_consensus, check_cancel_before=False),
+        Stage("search_reduce", _stage_reduce),
+        Stage("brute_force", _stage_brute_force),
+        Stage("nsweep", _stage_nsweep, enabled=_nsweep_enabled),
+        Stage("emit_plugin", _stage_emit_plugin, enabled=_emit_enabled),
+    ]
+
+
+# Ordered registry the composed pipeline iterates over. Mutated by
+# ``register_stage``; snapshotted by ``get_pipeline_stages``.
+_STAGE_REGISTRY: List[Stage] = _default_stages()
+
+#: Entry-point group under which out-of-tree packages advertise pipeline stages.
+#: Each advertised entry point is a module (imported for its ``register_stage``
+#: side effects) or a callable (invoked to self-register). See
+#: ``docs/contributing/adding_pipeline_stage.md``.
+STAGE_ENTRY_POINT_GROUP = "memdiver.pipeline_stages"
+
+#: Guards one-time out-of-tree discovery so it runs at most once per process.
+_ENTRY_POINTS_LOADED = False
+
+
+def _load_entry_point_stages_once() -> None:
+    """Load out-of-tree pipeline stages exactly once, after the defaults.
+
+    Runs at module import so SPAWNED workers (which re-import this module under
+    ``mp_context="spawn"``) also pick up out-of-tree stages — closing the known
+    spawn-visibility gap where ``register_stage`` calls made only in the parent
+    process never reached the workers. Additive, import-safe and
+    failure-isolated: a silent no-op when nothing is installed, and a broken
+    plugin can never abort import.
+    """
+    global _ENTRY_POINTS_LOADED  # noqa: PLW0603
+    if _ENTRY_POINTS_LOADED:
+        return
+    _ENTRY_POINTS_LOADED = True
+    try:
+        from memdiver.core.plugin_discovery import load_entry_point_registrations
+        load_entry_point_registrations(STAGE_ENTRY_POINT_GROUP)
+    except Exception:  # noqa: BLE001 - discovery must never break module import
+        logger.warning(
+            "out-of-tree pipeline-stage discovery failed; using built-in "
+            "stages only", exc_info=True,
+        )
+
+
+_load_entry_point_stages_once()
+
+
+def get_pipeline_stages() -> List[Stage]:
+    """Return a shallow copy of the registered stages in execution order."""
+    return list(_STAGE_REGISTRY)
+
+
+def register_stage(
+    stage: Stage,
+    *,
+    index: Optional[int] = None,
+    before: Optional[str] = None,
+    after: Optional[str] = None,
+) -> None:
+    """Register ``stage`` into the ordered pipeline.
+
+    Position may be given as an explicit ``index``, or relative to an existing
+    stage's ``name`` via ``before`` / ``after``. With none supplied the stage
+    is appended. At most one of ``index`` / ``before`` / ``after`` may be set.
+    """
+    supplied = [x for x in (index, before, after) if x is not None]
+    if len(supplied) > 1:
+        raise ValueError("register_stage: pass at most one of index/before/after")
+
+    # Idempotent replace-by-name: a stage registered twice (double import,
+    # plugin setup invoked twice, hot-reload) must NOT end up executing twice.
+    # Drop any existing stage with the same name before (re)inserting. Mirrors
+    # FormatRegistry.register()'s replace-by-name semantics.
+    existing = [s for s in _STAGE_REGISTRY if s.name == stage.name]
+    if existing:
+        logger.debug("register_stage: replacing existing stage %r", stage.name)
+        _STAGE_REGISTRY[:] = [s for s in _STAGE_REGISTRY if s.name != stage.name]
+
+    if before is not None:
+        pos = _index_of(before)
+    elif after is not None:
+        pos = _index_of(after) + 1
+    elif index is not None:
+        pos = index
+    else:
+        pos = len(_STAGE_REGISTRY)
+    _STAGE_REGISTRY.insert(pos, stage)
+
+
+def _index_of(name: str) -> int:
+    for i, stage in enumerate(_STAGE_REGISTRY):
+        if stage.name == name:
+            return i
+    raise KeyError(f"register_stage: no registered stage named {name!r}")
+
+
+def _execute_stages(state: "PipelineState", stages: Sequence[Stage]) -> None:
+    """Run ``stages`` in order against ``state``, preserving gating + cancel.
+
+    A stage runs only when ``enabled(state)`` is truthy; a stage with
+    ``check_cancel_before`` raises :class:`_CancelledByContext` if the context
+    was cancelled before it starts. This reproduces the pre-refactor control
+    flow exactly.
+    """
+    for stage in stages:
+        if not stage.enabled(state):
+            continue
+        if stage.check_cancel_before and state.ctx.is_cancelled():
+            raise _CancelledByContext()
+        stage.run(state)
 
 
 def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
@@ -512,79 +863,28 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     nsweep_params = params.get("nsweep")
     emit_params = params.get("emit")
 
-    artifacts: List[Dict[str, Any]] = []
-    summary: Dict[str, Any] = {}
-
     sources = _load_sources(source_paths)
+    state = PipelineState(
+        ctx=ctx,
+        artifact_dir=artifact_dir,
+        sources=sources,
+        reduce_kwargs=reduce_kwargs,
+        oracle_path=oracle_path,
+        bf_kwargs=bf_kwargs,
+        nsweep_params=nsweep_params,
+        emit_params=emit_params,
+    )
     try:
-        # Stage 1: consensus.
-        consensus = _build_consensus(
-            sources,
-            ctx=ctx,
-            artifact_dir=artifact_dir,
-            artifacts=artifacts,
-        )
-        summary["consensus"] = consensus
-
-        # Stage 2: search-reduce.
-        if ctx.is_cancelled():
-            raise _CancelledByContext()
-        candidates_path = _run_reduce(
-            Path(consensus["variance_path"]),
-            Path(consensus["reference_path"]),
-            consensus["num_dumps"],
-            reduce_kwargs,
-            ctx=ctx,
-            artifact_dir=artifact_dir,
-            artifacts=artifacts,
-        )
-        summary["candidates_path"] = str(candidates_path)
-
-        # Stage 3: brute-force.
-        if ctx.is_cancelled():
-            raise _CancelledByContext()
-        hits_path = _run_brute_force(
-            candidates_path,
-            Path(consensus["reference_path"]),
-            oracle_path,
-            bf_kwargs,
-            state_path=Path(consensus["state_path"]),
-            ctx=ctx,
-            artifact_dir=artifact_dir,
-            artifacts=artifacts,
-        )
-        summary["hits_path"] = str(hits_path)
-
-        # Stage 4 (optional): n-sweep.
-        if nsweep_params is not None:
-            if ctx.is_cancelled():
-                raise _CancelledByContext()
-            summary["nsweep"] = _run_nsweep(
-                sources,
-                oracle_path,
-                nsweep_params,
-                ctx=ctx,
-                artifact_dir=artifact_dir,
-                artifacts=artifacts,
-            )
-
-        # Stage 5 (optional): emit plugin from first hit.
-        if emit_params is not None:
-            if ctx.is_cancelled():
-                raise _CancelledByContext()
-            plugin_path = _run_emit_plugin(
-                hits_path,
-                Path(consensus["reference_path"]),
-                emit_params,
-                ctx=ctx,
-                artifact_dir=artifact_dir,
-                artifacts=artifacts,
-            )
-            summary["plugin_path"] = str(plugin_path) if plugin_path else None
+        # Compose the registered stages (default order below) instead of an
+        # inline sequence. Ordering, optional gating and per-stage cancel
+        # guards are carried by the Stage objects / _execute_stages:
+        #   consensus → search_reduce → brute_force
+        #   → [nsweep if params.nsweep] → [emit_plugin if params.emit]
+        _execute_stages(state, get_pipeline_stages())
     except _CancelledByContext:
         ctx.emit("error", error="cancelled")
         raise RuntimeError("pipeline cancelled")
     finally:
         _close_sources(sources)
 
-    return {"artifacts": artifacts, "summary": summary}
+    return {"artifacts": state.artifacts, "summary": state.summary}

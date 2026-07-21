@@ -16,6 +16,11 @@ env/
 tests/fixtures/aes_sample
 tests/fixtures/aes_sample.dSYM/
 tests/fixtures/dataset/
+# Synthetic realistic captures (ELF cores, boringssl TLS trees) + fixture-root
+# region dumps (gdb_raw/lldb_raw), regenerated at pytest_configure — see
+# tests/fixtures/synth_dataset.py.
+tests/fixtures/synthetic_dataset/
+tests/fixtures/datasets/
 
 # E2E test artifacts (screenshots, ad-hoc outputs).
 tests/artifacts/
@@ -32,3 +37,4 @@ docs/_static/screenshots/.backup_20260422T221132/
 docs/_static/screenshots/.triptych_parts/
 .claude/
 docs/issue-drafts/
+docs/dev/

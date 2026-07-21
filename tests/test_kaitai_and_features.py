@@ -7,24 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from tests._paths import dataset_root, SKIP_REASON
+from tests._paths import dataset_file, SKIP_REASON
 
 # ---------------------------------------------------------------------------
 # Synthetic binary helpers
 # ---------------------------------------------------------------------------
 
-_DS = dataset_root()
-_REAL_DUMP = (
-    _DS
-    / "TLS13"
-    / "20_iterations_Abort_KeyUpdate"
-    / "boringssl"
-    / "boringssl_run_13_10"
-    / "20251013_131451_383028_pre_server_key_update.dump"
-) if _DS is not None else None
+# Hybrid resolution (see tests/_paths.py): a real capture is used where present,
+# else a synthetic ELF64 BoringSSL dump is materialised on demand. The path
+# therefore always exists, so the ``has_real_dump`` tests run instead of skip.
+_REAL_DUMP = dataset_file(
+    "TLS13/20_iterations_Abort_KeyUpdate/boringssl/boringssl_run_13_10/"
+    "20251013_131451_383028_pre_server_key_update.dump"
+)
 
 has_real_dump = pytest.mark.skipif(
-    _REAL_DUMP is None or not _REAL_DUMP.is_file(), reason=SKIP_REASON
+    not _REAL_DUMP.is_file(), reason=SKIP_REASON
 )
 
 
@@ -94,7 +92,7 @@ class TestKaitaiElf:
         pytest.importorskip("kaitaistruct")
 
     def test_parse_elf64_header(self):
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         obj = Elf.from_bytes(_make_elf64_le())
         assert obj.magic == b"\x7fELF"
@@ -102,7 +100,7 @@ class TestKaitaiElf:
         assert obj.endian == 1
 
     def test_debug_positions(self):
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         obj = Elf.from_bytes(_make_elf64_le())
         assert "magic" in obj._debug
@@ -110,7 +108,7 @@ class TestKaitaiElf:
         assert obj._debug["magic"]["end"] == 4
 
     def test_enum_decoding(self):
-        from core.binary_formats.kaitai_compiled.elf import Elf, Machine, ObjType
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf, Machine, ObjType
 
         obj = Elf.from_bytes(_make_elf64_le())
         assert obj.header is not None
@@ -118,7 +116,7 @@ class TestKaitaiElf:
         assert obj.header.machine == Machine.EM_X86_64
 
     def test_truncated_data_no_crash(self):
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         # Only first 20 bytes -- enough for magic + ident, header parse fails gracefully
         data = _make_elf64_le()[:20]
@@ -138,20 +136,20 @@ class TestKaitaiPe:
         pytest.importorskip("kaitaistruct")
 
     def test_parse_pe_dos_header(self):
-        from core.binary_formats.kaitai_compiled.microsoft_pe import MicrosoftPe
+        from memdiver.core.binary_formats.kaitai_compiled.microsoft_pe import MicrosoftPe
 
         obj = MicrosoftPe.from_bytes(_make_pe_minimal())
         assert obj.dos_header.magic == b"MZ"
         assert obj.dos_header.ofs_pe == 0x80
 
     def test_pe_signature(self):
-        from core.binary_formats.kaitai_compiled.microsoft_pe import MicrosoftPe
+        from memdiver.core.binary_formats.kaitai_compiled.microsoft_pe import MicrosoftPe
 
         obj = MicrosoftPe.from_bytes(_make_pe_minimal())
         assert obj.pe_signature == b"PE\x00\x00"
 
     def test_coff_machine(self):
-        from core.binary_formats.kaitai_compiled.microsoft_pe import (
+        from memdiver.core.binary_formats.kaitai_compiled.microsoft_pe import (
             MicrosoftPe,
             PeMachine,
         )
@@ -172,7 +170,7 @@ class TestKaitaiMachO:
         pytest.importorskip("kaitaistruct")
 
     def test_parse_macho64(self):
-        from core.binary_formats.kaitai_compiled.mach_o import CpuType, FileType, MachO
+        from memdiver.core.binary_formats.kaitai_compiled.mach_o import CpuType, FileType, MachO
 
         obj = MachO.from_bytes(_make_macho64_le())
         assert obj.cputype == CpuType.X86_64
@@ -191,8 +189,8 @@ class TestKaitaiAdapter:
         pytest.importorskip("kaitaistruct")
 
     def test_walk_fields_returns_overlays(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         obj = Elf.from_bytes(_make_elf64_le())
         adapter = KaitaiOverlayAdapter()
@@ -200,8 +198,8 @@ class TestKaitaiAdapter:
         assert len(overlays) > 0
 
     def test_overlay_attributes(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         obj = Elf.from_bytes(_make_elf64_le())
         adapter = KaitaiOverlayAdapter()
@@ -216,8 +214,8 @@ class TestKaitaiAdapter:
         assert isinstance(first.length, int)
 
     def test_intenum_display(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
-        from core.binary_formats.kaitai_compiled.elf import Elf
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_compiled.elf import Elf
 
         obj = Elf.from_bytes(_make_elf64_le())
         adapter = KaitaiOverlayAdapter()
@@ -238,7 +236,7 @@ class TestKaitaiPrimitiveArrayOverlay:
     """
 
     def test_primitive_array_emits_single_span_overlay(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
 
         adapter = KaitaiOverlayAdapter()
         # parent_offset=10, parent_length=4 (a u1 array of 4 elements).
@@ -257,7 +255,7 @@ class TestKaitaiPrimitiveArrayOverlay:
         assert "4 items" in ov.display
 
     def test_empty_primitive_array_emits_nothing(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
 
         adapter = KaitaiOverlayAdapter()
         overlays = adapter._process_array(
@@ -281,12 +279,12 @@ class TestKaitaiRegistry:
         pytest.importorskip("kaitaistruct")
 
     def test_kaitai_available(self):
-        from core.binary_formats.kaitai_registry import kaitai_available
+        from memdiver.core.binary_formats.kaitai_registry import kaitai_available
 
         assert kaitai_available() is True
 
     def test_available_formats(self):
-        from core.binary_formats.kaitai_registry import get_kaitai_registry
+        from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
 
         reg = get_kaitai_registry()
         fmts = reg.available_formats()
@@ -295,7 +293,7 @@ class TestKaitaiRegistry:
         assert "macho" in fmts
 
     def test_parse_elf64(self):
-        from core.binary_formats.kaitai_registry import get_kaitai_registry
+        from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
 
         reg = get_kaitai_registry()
         obj = reg.parse("elf64", _make_elf64_le())
@@ -303,7 +301,7 @@ class TestKaitaiRegistry:
         assert obj.magic == b"\x7fELF"
 
     def test_parse_unknown_returns_none(self):
-        from core.binary_formats.kaitai_registry import get_kaitai_registry
+        from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
 
         reg = get_kaitai_registry()
         assert reg.parse("unknown_format", b"\x00" * 64) is None
@@ -317,7 +315,7 @@ class TestKaitaiRegistry:
 @pytest.fixture(scope="module")
 def client():
     from fastapi.testclient import TestClient
-    from api.main import create_app
+    from memdiver.api.main import create_app
 
     app = create_app()
     return TestClient(app)
@@ -434,23 +432,55 @@ class TestKsyImport:
 
 class TestCustomPatternsRoundTrip:
     @has_real_dump
-    def test_run_file_with_custom_patterns(self, client):
+    def test_run_file_with_custom_patterns(self, tmp_path, monkeypatch):
+        # ``run-file`` is now an async task submitted to the TaskManager's
+        # ProcessPool, so this needs a lifespan-enabled client (the
+        # module ``client`` fixture skips the lifespan). We isolate the
+        # task root into tmp_path and drive submit -> poll -> download.
+        import time as _time
+
+        from fastapi.testclient import TestClient
+
+        from memdiver.api.config import get_settings
+        from memdiver.api.main import create_app
+
+        monkeypatch.setenv("MEMDIVER_TASK_ROOT", str(tmp_path / "tasks"))
+        monkeypatch.setenv("MEMDIVER_PIPELINE_MAX_WORKERS", "1")
+        get_settings.cache_clear()
+
         pattern = {
             "name": "test_custom",
             "wildcard_hex": "7f 45 4c 46",
             "byte_length": 4,
             "static_count": 4,
         }
-        resp = client.post(
-            "/api/analysis/run-file",
-            json={
-                "dump_path": str(_REAL_DUMP),
-                "algorithms": ["pattern_match"],
-                "custom_patterns": [pattern],
-            },
-        )
-        assert resp.status_code == 200
-        data = resp.json()
+        with TestClient(create_app()) as lc:
+            resp = lc.post(
+                "/api/analysis/run-file",
+                json={
+                    "dump_path": str(_REAL_DUMP),
+                    "algorithms": ["pattern_match"],
+                    "custom_patterns": [pattern],
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            task_id = resp.json()["task_id"]
+
+            deadline = _time.time() + 60.0
+            rec = None
+            while _time.time() < deadline:
+                rr = lc.get(f"/api/pipeline/runs/{task_id}")
+                rec = rr.json()
+                if rec["status"] in ("succeeded", "failed", "cancelled"):
+                    break
+                _time.sleep(0.1)
+            assert rec is not None and rec["status"] == "succeeded", rec
+
+            spec = next(a for a in rec["artifacts"] if a["name"] == "analysis_result")
+            dl = lc.get(f"/api/pipeline/runs/{task_id}/artifacts/{spec['name']}")
+            assert dl.status_code == 200, dl.text
+            data = dl.json()
+        get_settings.cache_clear()
         assert "libraries" in data
         assert len(data["libraries"]) == 1
 
@@ -466,9 +496,9 @@ class TestMachoDetectionRoundTrip:
         pytest.importorskip("kaitaistruct")
 
     def test_detect_parse_and_overlay(self):
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
-        from core.binary_formats.kaitai_registry import get_kaitai_registry
-        from core.format_detect import detect_format
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
+        from memdiver.core.format_detect import detect_format
 
         data = _make_macho64_le()
 

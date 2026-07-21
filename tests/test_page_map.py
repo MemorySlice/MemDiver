@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from types import SimpleNamespace
 
-from msl.enums import PageState
-from msl.page_map import (
+from memdiver.msl.enums import PageState
+from memdiver.msl.page_map import (
     PageInterval,
     count_captured_pages,
     decode_page_intervals,

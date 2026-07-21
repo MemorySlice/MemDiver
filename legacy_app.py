@@ -14,10 +14,10 @@ if str(_root) not in sys.path:
 
 from nicegui import ui, app  # noqa: E402
 
-from core.log import setup_logging  # noqa: E402
-from ui.locales import _  # noqa: E402
-from ui.state import AppState  # noqa: E402
-from ui.mode import ModeManager  # noqa: E402
+from memdiver.core.log import setup_logging  # noqa: E402
+from memdiver.ui.locales import _  # noqa: E402
+from memdiver.ui.state import AppState  # noqa: E402
+from memdiver.ui.mode import ModeManager  # noqa: E402
 
 
 def _detect_startup(state):
@@ -31,14 +31,14 @@ def _detect_startup(state):
     if state.dataset_root and state.input_mode:
         return 'normal', []
     try:
-        from engine.session_store import SessionStore
+        from memdiver.engine.session_store import SessionStore
         sessions = SessionStore.list_sessions()
         if sessions and sessions[0].get('input_mode'):
             return 'restore', sessions
     except (ImportError, OSError):
         pass
     try:
-        from engine.project_db import default_db_path
+        from memdiver.engine.project_db import default_db_path
         if not default_db_path().exists():
             return 'first_run', []
     except ImportError:
@@ -60,7 +60,7 @@ def main():
 
     def _on_shutdown():
         try:
-            from engine.session_store import snapshot_from_state, SessionStore
+            from memdiver.engine.session_store import snapshot_from_state, SessionStore
             snapshot = snapshot_from_state(state)
             save_path = SessionStore.auto_save_path("autosave")
             SessionStore.save(snapshot, save_path)
@@ -71,15 +71,15 @@ def main():
 
     app.on_shutdown(_on_shutdown)
 
-    from ui.nicegui.theme import apply_theme
-    from ui.nicegui.api_routes import register_api_routes
+    from memdiver.ui.nicegui.theme import apply_theme
+    from memdiver.ui.nicegui.api_routes import register_api_routes
     register_api_routes()
 
     @ui.page("/")
     async def index():
         """Splash screen with logo and spinner, then redirect."""
         apply_theme()
-        from ui.components.header import load_logo_b64
+        from memdiver.ui.components.header import load_logo_b64
         with ui.column().classes('w-full h-screen items-center justify-center'):
             with ui.row().classes('items-center gap-4'):
                 b64 = load_logo_b64()
@@ -96,7 +96,7 @@ def main():
 
         if startup == 'restore':
             try:
-                from engine.session_store import SessionStore, restore_state
+                from memdiver.engine.session_store import SessionStore, restore_state
                 sessions = cached_sessions or SessionStore.list_sessions()
                 if sessions:
                     snapshot = SessionStore.load(Path(sessions[0]['path']))
@@ -120,14 +120,14 @@ def main():
     async def wizard_page():
         """Onboarding wizard."""
         apply_theme()
-        from ui.nicegui.wizard import render_wizard
+        from memdiver.ui.nicegui.wizard import render_wizard
         await render_wizard(state, mode_mgr)
 
     @ui.page("/workspace")
     async def workspace_page():
         """Main analysis workspace."""
         apply_theme()
-        from ui.nicegui.workspace import render_workspace
+        from memdiver.ui.nicegui.workspace import render_workspace
         await render_workspace(state, mode_mgr)
 
     try:

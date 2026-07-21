@@ -23,6 +23,7 @@ import { FormatNavigator } from "@/components/format/FormatNavigator";
 import { StructureList } from "@/components/structures/StructureList";
 import { StructureOverlayPanel } from "@/components/structures/StructureOverlayPanel";
 import { BlockNavigator } from "@/components/blocks/BlockNavigator";
+import { SessionInfoPanel } from "@/components/session/SessionInfoPanel";
 import { ModuleList } from "@/components/msl/ModuleList";
 import { ModuleIndex } from "@/components/msl/ModuleIndex";
 import { ProcessList } from "@/components/msl/ProcessList";
@@ -157,6 +158,7 @@ function Sidebar() {
             <FormatNavigator dumpPath={dumpPath} />
             {dumpPath.endsWith(".msl") && (
               <>
+                <SessionInfoPanel mslPath={dumpPath} />
                 <div className="border-t border-[var(--md-border)] mt-2 pt-2 px-3">
                   <h4 className="text-xs font-semibold mb-1 md-text-muted">{t("mslBlocks")}</h4>
                 </div>
@@ -397,7 +399,7 @@ function BottomTabs() {
     entropyPathRef.current = dumpPath;
     let cancelled = false;
     setEntropyLoading(true);
-    getEntropy(dumpPath)
+    getEntropy(dumpPath, 0, 0, useDumpStore.getState().getKeyMaterialByPath(dumpPath))
       .then((d) => { if (!cancelled) setEntropyData(d); })
       .catch((err) => {
         if (!cancelled) setEntropyData(null);

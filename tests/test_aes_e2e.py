@@ -38,14 +38,14 @@ def lldb_dump_paths(aes_dataset):
 
 class TestAesProtocol:
     def test_aes_protocol_registered(self):
-        from core.protocols import REGISTRY
+        from memdiver.core.protocols import REGISTRY
         desc = REGISTRY.get("AES")
         assert desc is not None
         assert "256" in desc.versions
         assert "AES256_KEY" in desc.secret_types["256"]
 
     def test_aes_keylog_parses(self, tmp_path):
-        from core.keylog import KeylogParser
+        from memdiver.core.keylog import KeylogParser
         keylog = tmp_path / "keylog.csv"
         key_hex = "aa" * 32
         keylog.write_text(f"line\nAES256_KEY {'00' * 32} {key_hex}\n")
@@ -57,7 +57,7 @@ class TestAesProtocol:
 
 class TestAesConsensus:
     def test_consensus_identifies_key_region(self, lldb_dump_paths):
-        from engine.consensus import ConsensusVector
+        from memdiver.engine.consensus import ConsensusVector
         assert len(lldb_dump_paths) >= 2
 
         cm = ConsensusVector()
@@ -74,7 +74,7 @@ class TestAesConsensus:
         )
 
     def test_consensus_finds_anchors(self, lldb_dump_paths):
-        from engine.consensus import ConsensusVector
+        from memdiver.engine.consensus import ConsensusVector
         cm = ConsensusVector()
         cm.build(lldb_dump_paths)
         static = cm.get_static_regions(min_length=8)
@@ -88,7 +88,7 @@ class TestAesConsensus:
         )
 
     def test_consensus_classification_counts(self, lldb_dump_paths):
-        from engine.consensus import ConsensusVector
+        from memdiver.engine.consensus import ConsensusVector
         cm = ConsensusVector()
         cm.build(lldb_dump_paths)
         counts = cm.classification_counts()
@@ -99,7 +99,7 @@ class TestAesConsensus:
 
 class TestAesPatternExport:
     def test_static_check_key_region(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
+        from memdiver.architect.static_checker import StaticChecker
         # Check the key region: should be volatile (different keys per run)
         static_mask, ref = StaticChecker.check(lldb_dump_paths, KEY_OFFSET, KEY_LENGTH)
         assert len(static_mask) == KEY_LENGTH
@@ -110,15 +110,15 @@ class TestAesPatternExport:
         )
 
     def test_static_check_anchor_region(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
+        from memdiver.architect.static_checker import StaticChecker
         # Check the pre-anchor: should be static (identical across runs)
         static_mask, ref = StaticChecker.check(lldb_dump_paths, 112, 16)
         static_count = sum(static_mask)
         assert static_count == 16, f"Expected all 16 anchor bytes static, got {static_count}"
 
     def test_pattern_generation(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
-        from architect.pattern_generator import PatternGenerator
+        from memdiver.architect.static_checker import StaticChecker
+        from memdiver.architect.pattern_generator import PatternGenerator
         # Region spanning anchor + key + anchor (offset 112, length 64)
         static_mask, ref = StaticChecker.check(lldb_dump_paths, 112, 64)
         pattern = PatternGenerator.generate(ref, static_mask, "aes_test", min_static_ratio=0.2)
@@ -131,9 +131,9 @@ class TestAesPatternExport:
         assert "??" in pattern["wildcard_pattern"]
 
     def test_yara_export(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
-        from architect.pattern_generator import PatternGenerator
-        from architect.yara_exporter import YaraExporter
+        from memdiver.architect.static_checker import StaticChecker
+        from memdiver.architect.pattern_generator import PatternGenerator
+        from memdiver.architect.yara_exporter import YaraExporter
         static_mask, ref = StaticChecker.check(lldb_dump_paths, 112, 64)
         pattern = PatternGenerator.generate(ref, static_mask, "aes_yara_test", min_static_ratio=0.2)
         rule = YaraExporter.export(pattern)
@@ -141,9 +141,9 @@ class TestAesPatternExport:
         assert "$key" in rule
 
     def test_vol3_export(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
-        from architect.pattern_generator import PatternGenerator
-        from architect.volatility3_exporter import Volatility3Exporter
+        from memdiver.architect.static_checker import StaticChecker
+        from memdiver.architect.pattern_generator import PatternGenerator
+        from memdiver.architect.volatility3_exporter import Volatility3Exporter
         static_mask, ref = StaticChecker.check(lldb_dump_paths, 112, 64)
         pattern = PatternGenerator.generate(ref, static_mask, "aes_vol3_test", min_static_ratio=0.2)
         source = Volatility3Exporter.export(pattern)
@@ -153,9 +153,9 @@ class TestAesPatternExport:
         assert "YARA_RULE" in source
 
     def test_vol3_export_has_anchors_and_wildcards(self, lldb_dump_paths):
-        from architect.static_checker import StaticChecker
-        from architect.pattern_generator import PatternGenerator
-        from architect.volatility3_exporter import Volatility3Exporter
+        from memdiver.architect.static_checker import StaticChecker
+        from memdiver.architect.pattern_generator import PatternGenerator
+        from memdiver.architect.volatility3_exporter import Volatility3Exporter
         static_mask, ref = StaticChecker.check(lldb_dump_paths, 112, 64)
         pattern = PatternGenerator.generate(ref, static_mask, "aes_anchors", min_static_ratio=0.2)
         source = Volatility3Exporter.export(pattern)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.protocols import REGISTRY, ProtocolDescriptor, ProtocolRegistry, TLS_DESCRIPTOR
+from memdiver.core.protocols import REGISTRY, ProtocolDescriptor, ProtocolRegistry, TLS_DESCRIPTOR
 
 
 def test_tls_descriptor_name():

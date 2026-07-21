@@ -19,11 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from architect.json_exporter import JsonExporter
-from architect.pattern_generator import PatternGenerator
-from architect.static_checker import StaticChecker
-from architect.volatility3_exporter import Volatility3Exporter
-from architect.yara_exporter import YaraExporter
+from memdiver.architect.json_exporter import JsonExporter
+from memdiver.architect.pattern_generator import PatternGenerator
+from memdiver.architect.static_checker import StaticChecker
+from memdiver.architect.volatility3_exporter import Volatility3Exporter
+from memdiver.architect.yara_exporter import YaraExporter
 
 
 # ---------------------------------------------------------------------------

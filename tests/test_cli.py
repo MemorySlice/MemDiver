@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cli import _build_parser, _write_output
+from memdiver.cli import _build_parser, _write_output
 
 FIXTURES_DATASET = Path(__file__).parent / "fixtures" / "dataset"
 
@@ -104,7 +104,7 @@ def test_parser_import_dir_command():
 
 
 def test_cmd_scan_fixture_dataset(tmp_path):
-    from cli import _cmd_scan
+    from memdiver.cli import _cmd_scan
 
     args = argparse.Namespace(
         root=str(FIXTURES_DATASET),
@@ -121,7 +121,7 @@ def test_cmd_scan_fixture_dataset(tmp_path):
 
 
 def test_cmd_analyze_tls13(tmp_path):
-    from cli import _cmd_analyze
+    from memdiver.cli import _cmd_analyze
 
     lib_dir = FIXTURES_DATASET / "TLS13" / "scenario_a" / "boringssl"
     args = argparse.Namespace(
@@ -146,7 +146,7 @@ def test_cmd_analyze_tls13(tmp_path):
 
 
 def test_cmd_analyze_tls12(tmp_path):
-    from cli import _cmd_analyze
+    from memdiver.cli import _cmd_analyze
 
     lib_dir = FIXTURES_DATASET / "TLS12" / "scenario_a" / "openssl"
     args = argparse.Namespace(
@@ -169,7 +169,7 @@ def test_cmd_analyze_tls12(tmp_path):
 
 
 def test_cmd_batch_fixture(tmp_path):
-    from cli import _cmd_batch
+    from memdiver.cli import _cmd_batch
 
     batch_config = {
         "jobs": [
@@ -242,7 +242,7 @@ def test_write_output_jsonl_batch_shape(tmp_path):
 
 
 def test_cmd_batch_jsonl_end_to_end(tmp_path):
-    from cli import _cmd_batch
+    from memdiver.cli import _cmd_batch
 
     batch_config = {
         "jobs": [
@@ -282,7 +282,7 @@ def test_cmd_batch_jsonl_end_to_end(tmp_path):
 
 
 def test_cmd_analyze_nonexistent_dir():
-    from cli import _cmd_analyze
+    from memdiver.cli import _cmd_analyze
 
     args = argparse.Namespace(
         library_dirs=["/nonexistent/path"],
@@ -308,8 +308,8 @@ def test_cmd_analyze_nonexistent_dir():
 class TestVerifyCommand:
     def test_verify_valid_key(self, tmp_path):
         """Verify a known key in a synthetic dump."""
-        from cli import _cmd_verify
-        from engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
+        from memdiver.cli import _cmd_verify
+        from memdiver.engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
 
         # Create a dump with a known key at offset 0x100
         key = bytes(range(32))
@@ -337,8 +337,8 @@ class TestVerifyCommand:
 
     def test_verify_wrong_offset(self, tmp_path):
         """Wrong offset should show verified=false but command succeeds."""
-        from cli import _cmd_verify
-        from engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
+        from memdiver.cli import _cmd_verify
+        from memdiver.engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
 
         key = bytes(range(32))
         dump = bytearray(1024)
@@ -364,7 +364,7 @@ class TestVerifyCommand:
 
     def test_verify_missing_dump(self):
         """Missing dump file should fail."""
-        from cli import _cmd_verify
+        from memdiver.cli import _cmd_verify
 
         args = argparse.Namespace(
             dump="/nonexistent/dump.bin",
@@ -381,8 +381,8 @@ class TestVerifyCommand:
 
     def test_verify_output_to_file(self, tmp_path):
         """Verify command writes JSON output to file."""
-        from cli import _cmd_verify
-        from engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
+        from memdiver.cli import _cmd_verify
+        from memdiver.engine.verification import AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV
 
         key = bytes(range(32))
         dump = bytearray(1024)
@@ -412,7 +412,7 @@ class TestVerifyCommand:
 
     def test_verify_unknown_cipher(self, tmp_path):
         """Unknown cipher name should fail."""
-        from cli import _cmd_verify
+        from memdiver.cli import _cmd_verify
 
         dump_path = tmp_path / "test.dump"
         dump_path.write_bytes(b"\x00" * 1024)
@@ -429,6 +429,60 @@ class TestVerifyCommand:
         )
         rc = _cmd_verify(args)
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# inspect — reading an encrypted .msl without a key must surface a diagnostic
+# (non-zero exit + stderr message) instead of the old silent empty exit-0 (O-3).
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_encrypted_msl_without_key_errors(tmp_path, capsys):
+    """`inspect session-info` on an encrypted .msl with no key must fail loudly.
+
+    Previously an undecryptable container looked like an empty capture and
+    exited 0; O-3 now returns a non-zero rc and tags the result missing_key
+    with an ``encrypted`` diagnostic on stderr.
+    """
+    import os
+
+    import pytest
+
+    from memdiver.msl import crypto
+    from memdiver.msl.enums import EncAlgo
+
+    if not crypto.cipher_is_available(EncAlgo.AES_256_GCM):
+        pytest.skip("AES-256-GCM backend unavailable")
+
+    from memdiver.cli import _cmd_inspect_session_info
+    from memdiver.msl.writer import MslEncryptionConfig, MslWriter
+
+    # Build an encrypted .msl with a random content-encryption key.
+    key = os.urandom(32)
+    msl_path = tmp_path / "encrypted.msl"
+    cfg = MslEncryptionConfig(raw_key=key)
+    w = MslWriter(msl_path, pid=7, encryption=cfg)
+    w.add_memory_region(0x1000, b"\xCD" * 4096)
+    w.add_end_of_capture()
+    w.write()
+
+    # Invoke `inspect session-info <path>` with NO decryption flags.
+    args = argparse.Namespace(
+        msl_path=str(msl_path),
+        key_file=None,
+        passphrase=None,
+        kem_key_file=None,
+        output=None,
+    )
+    rc = _cmd_inspect_session_info(args)
+
+    # Non-zero exit + a diagnostic the operator can see.
+    assert rc == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result.get("tag_status") == "missing_key"
+    assert "error" in result
+    assert "encrypted" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +518,9 @@ def test_gen_kem_key_private_perms_and_atomicity(tmp_path):
     import stat
     import pytest
 
-    from cli import _cmd_gen_kem_key
-    from msl.crypto import kem_is_available
-    from msl.enums import KeyEncap
+    from memdiver.cli import _cmd_gen_kem_key
+    from memdiver.msl.crypto import kem_is_available
+    from memdiver.msl.enums import KeyEncap
 
     if not kem_is_available(KeyEncap.X25519):
         pytest.skip("X25519 KEM unavailable in this environment")
@@ -489,9 +543,9 @@ def test_gen_kem_key_private_perms_and_atomicity(tmp_path):
 def test_gen_kem_key_unwritable_private_no_partial(tmp_path):
     import pytest
 
-    from cli import _cmd_gen_kem_key
-    from msl.crypto import kem_is_available
-    from msl.enums import KeyEncap
+    from memdiver.cli import _cmd_gen_kem_key
+    from memdiver.msl.crypto import kem_is_available
+    from memdiver.msl.enums import KeyEncap
 
     if not kem_is_available(KeyEncap.X25519):
         pytest.skip("X25519 KEM unavailable in this environment")
@@ -521,7 +575,7 @@ def test_consensus_add_all_zero_dump_warns(tmp_path, caplog):
     import logging
     import numpy as np
 
-    from cli import _cmd_consensus_begin, _cmd_consensus_add
+    from memdiver.cli import _cmd_consensus_begin, _cmd_consensus_add
 
     state_path = tmp_path / "session.json"
     begin_args = argparse.Namespace(state=str(state_path), size=64)

@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from generate_aes_fixtures import (
     generate_dataset, KEY_OFFSET, KEY_LENGTH, DUMP_SIZE,
 )
-from engine.consensus import ConsensusVector
-from core.variance import ByteClass, POINTER_MAX
+from memdiver.engine.consensus import ConsensusVector
+from memdiver.core.variance import ByteClass, POINTER_MAX
 
 
 def main():

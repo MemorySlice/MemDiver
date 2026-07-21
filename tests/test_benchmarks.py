@@ -13,7 +13,7 @@ import time
 import numpy as np
 import pytest
 
-from core.variance import ByteClass, compute_variance, classify_variance
+from memdiver.core.variance import ByteClass, compute_variance, classify_variance
 
 
 # --- Variance benchmarks ---
@@ -84,8 +84,8 @@ def test_aho_corasick_available():
 
 def test_search_correctness():
     """Verify Aho-Corasick search finds all expected hits."""
-    from core.models import CryptoSecret
-    from engine.correlator import SearchCorrelator
+    from memdiver.core.models import CryptoSecret
+    from memdiver.engine.correlator import SearchCorrelator
 
     # Plant known secrets in synthetic data
     data = bytearray(1000)
@@ -112,8 +112,8 @@ def test_search_correctness():
 
 def test_search_performance():
     """Benchmark: search 1MB data for 20 secrets."""
-    from core.models import CryptoSecret
-    from engine.correlator import SearchCorrelator
+    from memdiver.core.models import CryptoSecret
+    from memdiver.engine.correlator import SearchCorrelator
 
     rng = np.random.default_rng(42)
     data = rng.integers(0, 256, size=1_000_000, dtype=np.uint8).tobytes()

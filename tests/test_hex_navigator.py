@@ -41,10 +41,10 @@ class _MockMo:
         return text
 
 
-from ui.views.hex_navigator import (
+from memdiver.ui.views.hex_navigator import (
     create_hex_controls, render_hex_navigator, _search_dump,
 )
-from ui.components.bookmark_store import BookmarkStore
+from memdiver.ui.components.bookmark_store import BookmarkStore
 
 
 def test_create_hex_controls_keys():

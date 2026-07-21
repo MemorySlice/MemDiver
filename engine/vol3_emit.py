@@ -19,11 +19,11 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from architect.pattern_generator import PatternGenerator
-from architect.volatility3_exporter import Volatility3Exporter
-from architect.yara_exporter import YaraExporter
-from core.variance import POINTER_MAX
-from engine.progress import (
+from memdiver.architect.pattern_generator import PatternGenerator
+from memdiver.architect.volatility3_exporter import Volatility3Exporter
+from memdiver.architect.yara_exporter import YaraExporter
+from memdiver.core.variance import POINTER_MAX
+from memdiver.engine.progress import (
     ProgressEvent,
     ProgressFn,
     noop_progress,

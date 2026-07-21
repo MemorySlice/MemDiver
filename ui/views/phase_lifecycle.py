@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.phase_lifecycle")
 
@@ -31,8 +31,8 @@ def render_phase_lifecycle(
     Returns:
         mo.Html with the lifecycle grid.
     """
-    from ui.components import color_scheme as cs
-    from core.display_labels import get_short_label
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.core.display_labels import get_short_label
 
     if not phases or not secret_types:
         return mo.md(_("*No lifecycle data available.*"))

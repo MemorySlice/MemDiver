@@ -3,11 +3,11 @@
 import json
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
-from core.constants import UNKNOWN_KEY
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
+from memdiver.core.constants import UNKNOWN_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,22 @@ class PatternMatchAlgorithm(BaseAlgorithm):
     description = "Structural pattern matching from JSON definitions"
     mode = UNKNOWN_KEY
 
-    def __init__(self):
+    def __init__(self, patterns: Optional[List[dict]] = None):
+        """Construct the algorithm.
+
+        Args:
+            patterns: Optional pre-loaded pattern definitions to inject. When
+                ``None`` (the default), patterns are loaded from the shipped
+                JSON files on disk exactly as before, so no-arg construction is
+                unchanged. Injecting patterns skips disk I/O, which makes the
+                algorithm testable with in-memory definitions.
+        """
         self._patterns = []
         self._entropy_scanner = EntropyScanAlgorithm()
-        self._load_patterns()
+        if patterns is None:
+            self._load_patterns()
+        else:
+            self._patterns = list(patterns)
 
     def _load_patterns(self):
         pattern_dir = Path(__file__).parent.parent / "patterns"

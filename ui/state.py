@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.config_schema import validate_config
-from core.constants import TESTING, INPUT_DATASET
+from memdiver.core.config_schema import validate_config
+from memdiver.core.constants import TESTING, INPUT_DATASET
 
 logger = logging.getLogger("memdiver.ui.state")
 
@@ -99,14 +99,14 @@ class AppState:
     def get_bookmarks(self):
         """Get or create the BookmarkStore (lazy init)."""
         if self.bookmarks is None:
-            from ui.components.bookmark_store import BookmarkStore
+            from memdiver.ui.components.bookmark_store import BookmarkStore
             self.bookmarks = BookmarkStore()
         return self.bookmarks
 
     def build_lib_dir(self, library: str):
         """Build the library directory path for analysis."""
         from pathlib import Path as _Path
-        from core.protocols import REGISTRY
+        from memdiver.core.protocols import REGISTRY
         desc = REGISTRY.get(self.protocol_name)
         prefix = desc.dir_prefix if desc else "TLS"
         return _Path(self.dataset_root) / f"{prefix}{self.protocol_version}" / self.scenario / library

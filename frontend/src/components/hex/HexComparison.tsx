@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readHex } from "@/api/client";
 import type { HexData } from "@/api/types";
+import { useDumpStore } from "@/stores/dump-store";
 
 interface Props {
   pathA: string;
@@ -23,18 +24,23 @@ export function HexComparison({ pathA, pathB, labelA, labelB }: Props) {
   const scrollRefA = useRef<HTMLDivElement>(null);
   const scrollRefB = useRef<HTMLDivElement>(null);
   const isScrolling = useRef(false);
+  const keyA = useDumpStore((s) => s.getKeyMaterialByPath(pathA));
+  const keyB = useDumpStore((s) => s.getKeyMaterialByPath(pathB));
 
   const fetchBoth = useCallback(async (off: number) => {
     try {
       setError(null);
-      const [a, b] = await Promise.all([readHex(pathA, off, PAGE_SIZE), readHex(pathB, off, PAGE_SIZE)]);
+      const [a, b] = await Promise.all([
+        readHex(pathA, off, PAGE_SIZE, keyA),
+        readHex(pathB, off, PAGE_SIZE, keyB),
+      ]);
       setDataA(a);
       setDataB(b);
       setOffset(off);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("comparison.loadError"));
     }
-  }, [pathA, pathB, t]);
+  }, [pathA, pathB, t, keyA, keyB]);
 
   useEffect(() => { fetchBoth(0); }, [fetchBoth]);
 

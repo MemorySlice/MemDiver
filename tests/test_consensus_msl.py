@@ -9,9 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.dump_source import MslDumpSource, RawDumpSource, open_dump
-from core.variance import ByteClass
-from engine.consensus import ConsensusVector, STRUCTURAL_MAX, POINTER_MAX, _is_native_msl
+from memdiver.core.dump_source import MslDumpSource, RawDumpSource, open_dump
+from memdiver.core.variance import ByteClass
+from memdiver.engine.consensus import ConsensusVector, STRUCTURAL_MAX, POINTER_MAX, _is_native_msl
 from tests.fixtures.generate_msl_fixtures import (
     generate_msl_file, _build_file_header, _build_memory_region, _det_uuid,
     FILE_MAGIC, PAGE_SIZE,
@@ -99,7 +99,7 @@ def test_mixed_sources_fallback(tmp_path):
 def test_imported_msl_uses_flat_fallback(tmp_path):
     blob = generate_msl_file()
 
-    from msl.enums import HeaderFlag
+    from memdiver.msl.enums import HeaderFlag
     p1 = _write_msl_with_flags(tmp_path / "a.msl", blob, HeaderFlag.IMPORTED)
     p2 = _write_msl_with_flags(tmp_path / "b.msl", blob, HeaderFlag.IMPORTED)
 

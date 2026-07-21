@@ -31,19 +31,19 @@ from generate_realistic_fixtures import (
     generate_dataset, KEY_OFFSET, KEY_LENGTH, DUMP_SIZE,
     VERIFICATION_IV, VERIFICATION_PLAINTEXT,
 )
-from core.alignment_filter import alignment_filter
-from engine.consensus import ConsensusVector
+from memdiver.core.alignment_filter import alignment_filter
+from memdiver.engine.consensus import ConsensusVector
 
 # Detection helpers: reuse engine.convergence implementations.
 # See engine/convergence.py for the canonical convergence sweep logic.
-from engine.convergence import (
+from memdiver.engine.convergence import (
     _entropy_candidates,
     _variance_candidates,
 )
 
 # Verification: use engine.verification (the canonical implementation).
 try:
-    from engine.verification import (
+    from memdiver.engine.verification import (
         AesCbcVerifier, VERIFICATION_PLAINTEXT as VP, VERIFICATION_IV as VI,
         extract_and_verify, HAS_CRYPTO,
     )

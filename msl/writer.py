@@ -61,6 +61,13 @@ class CapBit:
     SYSTEM_NETWORK_TABLE = 1 << 13
     SYSTEM_HANDLE_TABLE = 1 << 14
 
+    # MemDiver extension (not spec-registered; occupies a Reserved bit).
+    # Marks that the page-state map was assigned by convention on import,
+    # not observed during live acquisition. A static source (ELF core,
+    # Minidump) performs no reads, so its page states are inferred, not
+    # genuine acquisition observations. Set on every imported file.
+    PAGE_STATES_INFERRED = 1 << 15
+
 
 # Spec §6.2 System Context TableBitmap bits — distinct from FileHeader CapBitmap.
 # These describe which tables are referenced under this System Context block.
@@ -361,6 +368,9 @@ class MslWriter:
         payload += _file_digest_or_zero(source_path)
         block_uuid = uuid4()
         self._import_provenance = (payload, block_uuid)
+        # Every imported file carries inferred (not observed) page states:
+        # a static source performs no live reads. See CapBit.PAGE_STATES_INFERRED.
+        self._cap_bitmap |= CapBit.PAGE_STATES_INFERRED
         return block_uuid
 
     def add_related_dump(self, related_uuid: UUID, related_pid: int,

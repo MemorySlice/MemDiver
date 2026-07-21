@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.classify import ByteClassifier
-from core.models import ComparisonRegion
+from memdiver.core.classify import ByteClassifier
+from memdiver.core.models import ComparisonRegion
 
 
 def test_classify_empty():

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from msl.enums import RegionType
+from memdiver.msl.enums import RegionType
 
 
 @dataclass(frozen=True)

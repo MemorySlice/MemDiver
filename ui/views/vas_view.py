@@ -3,10 +3,10 @@
 import logging
 from typing import Any, Dict, List
 
-from ui.components import color_scheme as _cs
-from ui.components.html_builder import format_size as _format_size
-from ui.components.hex_renderer import _html_escape
-from ui.locales import _
+from memdiver.ui.components import color_scheme as _cs
+from memdiver.ui.components.html_builder import format_size as _format_size
+from memdiver.ui.components.hex_renderer import _html_escape
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.vas_view")
 
@@ -134,7 +134,7 @@ def render_vas_table(mo, vas_entries, regions=None) -> Any:
     Returns:
         mo.Html with the VAS detail table.
     """
-    from ui.components import color_scheme as cs
+    from memdiver.ui.components import color_scheme as cs
 
     if not vas_entries:
         return mo.md(_("*No VAS map data available.*"))

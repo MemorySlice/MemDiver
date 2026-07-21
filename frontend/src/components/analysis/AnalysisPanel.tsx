@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { runAnalysis, runFileAnalysis, listPhases, listProtocols, listPatterns } from "@/api/client";
+import { fetchAnalysisResult } from "@/api/analysis";
 import type { PatternInfo } from "@/api/types";
 import { useAppStore, ALL_ALGORITHMS, SINGLE_FILE_ALGORITHMS, VERIFICATION_ALGORITHMS } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
+import { useDumpStore } from "@/stores/dump-store";
+import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { getAlgorithmAvailability } from "@/utils/algorithm-availability";
 import { applyHitsToStores } from "@/utils/apply-hits";
 import type { SecretHit } from "@/api/types";
@@ -45,7 +48,7 @@ export function AnalysisPanel() {
   const analysisApproach = useAppStore((s) => s.analysisApproach);
   const setAnalysisApproach = useAppStore((s) => s.setAnalysisApproach);
   const mode = useAppStore((s) => s.mode);
-  const { isRunning, result, error, startAnalysis, setResult, setError, reset } = useAnalysisStore();
+  const { isRunning, result, error, message, taskId, startAnalysis, setTaskId, setProgress, setResult, setError, reset } = useAnalysisStore();
 
   const [availablePhases, setAvailablePhases] = useState<string[]>([]);
   const [availableProtocols, setAvailableProtocols] = useState<string[]>([]);
@@ -129,6 +132,10 @@ export function AnalysisPanel() {
     hasCandidateKeys,
   };
 
+  // Both run paths now SUBMIT a task and store its id; progress + the
+  // final result arrive over ``/ws/tasks/{taskId}`` (see useTaskProgress
+  // wiring below). The GIL-bound algorithm work runs on the backend
+  // TaskManager ProcessPool instead of blocking the request.
   const handleRun = useCallback(async () => {
     if (!selectedLibraries.length || !selectedPhase || !protocolVersion) return;
     useResultsStore.getState().clearResults();
@@ -137,19 +144,18 @@ export function AnalysisPanel() {
       const dirs = selectedLibraries.map((lib) =>
         datasetRoot ? `${datasetRoot}/${lib}` : lib
       );
-      const res = await runAnalysis({
+      const { task_id } = await runAnalysis({
         library_dirs: dirs,
         phase: selectedPhase,
         protocol_version: protocolVersion,
         keylog_filename: keylogFilename,
         algorithms: selectedAlgorithms,
       });
-      setResult(res);
-      applyHitsToStores(res);
+      setTaskId(task_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("panel.analysisFailed"));
     }
-  }, [selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename, selectedAlgorithms, startAnalysis, setResult, setError]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename, selectedAlgorithms, startAnalysis, setTaskId, setError]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleRunFile = useCallback(async () => {
     if (!inputPath) return;
@@ -163,18 +169,42 @@ export function AnalysisPanel() {
       if (customPatternJson.trim()) {
         try { parsedPatterns = [JSON.parse(customPatternJson)]; } catch { /* ignore invalid JSON */ }
       }
-      const res = await runFileAnalysis({
+      const { task_id } = await runFileAnalysis({
         dump_path: inputPath,
         algorithms: fileAlgos.length > 0 ? fileAlgos : [...SINGLE_FILE_ALGORITHMS],
         user_regex: userRegex || undefined,
         custom_patterns: parsedPatterns,
+        ...useDumpStore.getState().getKeyMaterialByPath(inputPath),
       });
-      setResult(res);
-      applyHitsToStores(res);
+      setTaskId(task_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("panel.fileAnalysisFailed"));
     }
-  }, [inputPath, selectedAlgorithms, startAnalysis, setResult, setError]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [inputPath, selectedAlgorithms, customPatternJson, userRegex, startAnalysis, setTaskId, setError]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe to the in-flight task's progress stream. The hook owns the
+  // reconnecting WebSocket (websocket.ts) + HTTP backfill; we translate
+  // its events into the analysis-store and, on completion, download the
+  // full AnalysisResult from the ``analysis_result`` artifact.
+  useTaskProgress(taskId, {
+    onProgress: (pct, msg) =>
+      setProgress(pct != null && pct >= 0 ? Math.round(pct * 100) : 0, msg ?? ""),
+    onDone: () => {
+      const activeTask = taskId;
+      if (!activeTask) return;
+      setProgress(100, t("progress.fetchingResult"));
+      void (async () => {
+        try {
+          const res = await fetchAnalysisResult(activeTask);
+          setResult(res);
+          applyHitsToStores(res);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : t("panel.analysisFailed"));
+        }
+      })();
+    },
+    onError: (err) => setError(err || t("panel.analysisFailed")),
+  });
 
   // Auto-run analysis when wizard completes with "auto" approach
   useEffect(() => {
@@ -352,7 +382,7 @@ export function AnalysisPanel() {
           <div className="h-1.5 rounded-full bg-[var(--md-bg-tertiary)] overflow-hidden">
             <div className="h-full rounded-full md-progress-indeterminate" />
           </div>
-          <p className="md-text-muted animate-pulse">{t(PROGRESS_STEP_KEYS[stepIdx])}</p>
+          <p className="md-text-muted animate-pulse">{message || t(PROGRESS_STEP_KEYS[stepIdx])}</p>
         </div>
       )}
 

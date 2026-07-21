@@ -1,6 +1,6 @@
 # Quick start
 
-Four ways to run MemDiver, ordered by increasing scope.
+Five ways to use MemDiver, ordered by increasing scope.
 
 ::::{grid} 2
 :gutter: 3
@@ -32,16 +32,29 @@ Expose 15 analysis tools to Claude Code, Claude Desktop, or any MCP-speaking age
 
 Spawn target processes and collect memory dumps via `memslicer`, `lldb`, or `fridump` backends.
 :::
+
+:::{grid-item-card} Python library
+:link: library
+:link-type: doc
+
+`import memdiver` — open dumps, convert to `.msl`, parse containers, and run analysis programmatically.
+:::
 ::::
 
 ## Install
 
 ```bash
-pip install memdiver                 # web UI + CLI + MCP server (everything runtime-side)
+pip install memdiver                 # lean core: CLI + Python library (import memdiver)
+pip install "memdiver[api]"          # + FastAPI/uvicorn web UI & REST API (memdiver web)
+pip install "memdiver[mcp]"          # + MCP server for AI agents (memdiver mcp)
+pip install "memdiver[all]"          # every interface (api + mcp + nicegui + marimo)
 pip install "memdiver[experiment]"   # + frida-tools, memslicer for dump collection
 pip install "memdiver[docs]"         # + Sphinx toolchain for building this site
 pip install "memdiver[dev]"          # + pytest and contributor tooling
 ```
+
+The web UI (`api`), MCP server (`mcp`), and the legacy NiceGUI (`nicegui`) / Marimo (`marimo`)
+UIs are opt-in extras — a plain `pip install memdiver` keeps the library/CLI footprint small.
 
 LLDB is installed via the operating system (Xcode on macOS, `apt install lldb` on Debian/Ubuntu). `memdiver experiment` exits gracefully with an install hint when no backend is present.
 
@@ -52,4 +65,5 @@ web
 cli
 mcp
 experiment
+library
 ```

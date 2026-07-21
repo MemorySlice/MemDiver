@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from engine.diff_store import DiffStore
-from engine.results import SecretHit
+from memdiver.engine.diff_store import DiffStore
+from memdiver.engine.results import SecretHit
 
 try:
     import polars
@@ -96,7 +96,7 @@ def test_polars_guard():
 
 def test_fallback_cross_dump_variance():
     """Stdlib fallback computes per-offset variance correctly."""
-    import engine.diff_store as ds_mod
+    import memdiver.engine.diff_store as ds_mod
     orig = ds_mod.HAS_POLARS
     try:
         ds_mod.HAS_POLARS = False
@@ -119,7 +119,7 @@ def test_fallback_cross_dump_variance():
 
 def test_fallback_filter_candidates():
     """Stdlib fallback filters by run count correctly."""
-    import engine.diff_store as ds_mod
+    import memdiver.engine.diff_store as ds_mod
     orig = ds_mod.HAS_POLARS
     try:
         ds_mod.HAS_POLARS = False
@@ -139,7 +139,7 @@ def test_fallback_filter_candidates():
 
 def test_fallback_summary_stats():
     """Stdlib fallback includes unique_offsets, unique_libraries, secret_types."""
-    import engine.diff_store as ds_mod
+    import memdiver.engine.diff_store as ds_mod
     orig = ds_mod.HAS_POLARS
     try:
         ds_mod.HAS_POLARS = False

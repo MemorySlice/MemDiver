@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from ui.components.hex_renderer import _html_escape
-from ui.locales import _
+from memdiver.ui.components.hex_renderer import _html_escape
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.investigation_panel")
 
@@ -45,9 +45,9 @@ def render_investigation(
     Returns:
         mo.Html with the rendered investigation panel.
     """
-    from core.region_analysis import RegionReport, analyze_region
-    from ui.components import color_scheme as cs
-    from ui.components.hex_renderer import render_hex_line
+    from memdiver.core.region_analysis import RegionReport, analyze_region
+    from memdiver.ui.components import color_scheme as cs
+    from memdiver.ui.components.hex_renderer import render_hex_line
 
     if offset < 0 or offset >= len(dump_data):
         return mo.md(_("*Offset out of range*"))

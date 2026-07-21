@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.input_schemas import AnalyzeRequest, BatchRequest
-from engine.batch import BatchResult, BatchRunner, JobResult
-from engine.results import AnalysisResult, LibraryReport
+from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest
+from memdiver.engine.batch import BatchResult, BatchRunner, JobResult
+from memdiver.engine.results import AnalysisResult, LibraryReport
 
 
 def _mock_run_analysis(request, **kwargs):
@@ -40,7 +40,7 @@ def test_single_job_succeeds(tmp_path):
     req = _make_request(tmp_path)
     batch = BatchRequest(jobs=[req])
     runner = BatchRunner()
-    with patch("engine.batch.run_analysis_request", _mock_run_analysis):
+    with patch("memdiver.engine.batch.run_analysis_request", _mock_run_analysis):
         result = runner.run(batch)
     assert len(result.succeeded) == 1
     assert len(result.failed) == 0
@@ -51,7 +51,7 @@ def test_progress_callback_called(tmp_path):
     batch = BatchRequest(jobs=[req])
     runner = BatchRunner()
     calls = []
-    with patch("engine.batch.run_analysis_request", _mock_run_analysis):
+    with patch("memdiver.engine.batch.run_analysis_request", _mock_run_analysis):
         result = runner.run(batch, progress_callback=lambda c, t, s: calls.append((c, t, s)))
     assert len(calls) >= 2  # at least start + complete
 
@@ -73,7 +73,7 @@ def test_failure_does_not_abort_batch(tmp_path):
             raise RuntimeError("first job fails")
         return _mock_run_analysis(request)
 
-    with patch("engine.batch.run_analysis_request", _alternating_run):
+    with patch("memdiver.engine.batch.run_analysis_request", _alternating_run):
         result = runner.run(batch)
     assert len(result.succeeded) == 1
     assert len(result.failed) == 1
@@ -84,7 +84,7 @@ def test_to_dict_serializable(tmp_path):
     req = _make_request(tmp_path)
     batch = BatchRequest(jobs=[req])
     runner = BatchRunner()
-    with patch("engine.batch.run_analysis_request", _mock_run_analysis):
+    with patch("memdiver.engine.batch.run_analysis_request", _mock_run_analysis):
         result = runner.run(batch)
     d = result.to_dict()
     text = json.dumps(d)
@@ -134,7 +134,7 @@ def test_parallel_basic(tmp_path):
     ]
     batch = BatchRequest(jobs=jobs)
 
-    with patch("engine.batch.run_analysis_request") as mock_run:
+    with patch("memdiver.engine.batch.run_analysis_request") as mock_run:
         mock_run.return_value = _mock_result()
         runner = BatchRunner(workers=2)
         result = runner.run(batch)
@@ -159,7 +159,7 @@ def test_parallel_failure_isolation(tmp_path):
             raise RuntimeError("job 1 failed")
         return _mock_result()
 
-    with patch("engine.batch.run_analysis_request", side_effect=mock_run):
+    with patch("memdiver.engine.batch.run_analysis_request", side_effect=mock_run):
         runner = BatchRunner(workers=2)
         result = runner.run(batch)
 
@@ -183,7 +183,7 @@ def test_parallel_progress_callback(tmp_path):
         with lock:
             calls.append((current, total, status))
 
-    with patch("engine.batch.run_analysis_request") as mock_run:
+    with patch("memdiver.engine.batch.run_analysis_request") as mock_run:
         mock_run.return_value = _mock_result()
         runner = BatchRunner(workers=2)
         result = runner.run(batch, progress_callback=cb)
@@ -237,7 +237,7 @@ def test_process_pool_basic(tmp_path):
     ]
     batch = BatchRequest(jobs=jobs)
 
-    with patch("engine.batch.run_analysis_request") as mock_run:
+    with patch("memdiver.engine.batch.run_analysis_request") as mock_run:
         mock_run.return_value = _mock_result()
         runner = BatchRunner(workers=2, use_processes=False)  # threads for test safety
         result = runner.run(batch)
@@ -258,7 +258,7 @@ def test_auto_persist_false_when_project_db_set(tmp_path):
         return _mock_result()
 
     runner = BatchRunner(project_db="fake_db")
-    with patch("engine.batch.run_analysis_request", tracking_run):
+    with patch("memdiver.engine.batch.run_analysis_request", tracking_run):
         runner.run(batch)
 
     assert len(calls) == 1
@@ -277,7 +277,7 @@ def test_auto_persist_true_when_no_project_db(tmp_path):
         return _mock_result()
 
     runner = BatchRunner()
-    with patch("engine.batch.run_analysis_request", tracking_run):
+    with patch("memdiver.engine.batch.run_analysis_request", tracking_run):
         runner.run(batch)
 
     assert len(calls) == 1
@@ -303,7 +303,7 @@ def test_unavailable_project_db_warns_on_silent_skip(tmp_path, caplog):
     batch = BatchRequest(jobs=[req])
 
     runner = BatchRunner(project_db=_UnavailableDB())
-    with patch("engine.batch.run_analysis_request", _mock_run_analysis):
+    with patch("memdiver.engine.batch.run_analysis_request", _mock_run_analysis):
         with caplog.at_level(logging.WARNING, logger="memdiver.engine.batch"):
             result = runner.run(batch)
 
@@ -341,7 +341,7 @@ def test_process_pool_dispatch_does_not_pickle_batchrunner(tmp_path):
     """
     import pickle
 
-    from engine.batch import _execute_batch_job
+    from memdiver.engine.batch import _execute_batch_job
 
     req = _make_request(tmp_path)
 

@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from core.dump_source import open_dump
-from engine.consensus_msl import build_msl_consensus, build_msl_incremental
+from memdiver.core.dump_source import open_dump
+from memdiver.engine.consensus_msl import build_msl_consensus, build_msl_incremental
 
 
 def _fixture_paths(tmp_path: Path, count: int = 3) -> list[Path]:

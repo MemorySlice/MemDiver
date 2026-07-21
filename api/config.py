@@ -19,12 +19,12 @@ def _cpu_workers() -> int:
 
 
 def _default_db_path() -> Path:
-    from engine.project_db import default_db_path
+    from memdiver.engine.project_db import default_db_path
     return default_db_path()
 
 
 def _default_session_dir() -> Path:
-    from engine.session_store import SessionStore
+    from memdiver.engine.session_store import SessionStore
     return SessionStore.default_dir()
 
 

@@ -4,10 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.base import AnalysisContext, BaseAlgorithm, Match
-from algorithms.known_key.exact_match import ExactMatchAlgorithm
-from algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
-from core.models import TLSSecret
+from memdiver.algorithms.base import AnalysisContext, BaseAlgorithm, Match
+from memdiver.algorithms.known_key.exact_match import ExactMatchAlgorithm
+from memdiver.algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
+from memdiver.core.models import TLSSecret
 
 
 def test_exact_match_finds_key():
@@ -128,7 +128,7 @@ def test_registry_discover_skips_failing_algorithm(monkeypatch):
     and skip the broken one rather than aborting the whole walk.
     """
     import types
-    import algorithms.registry as registry_mod
+    import memdiver.algorithms.registry as registry_mod
 
     class GoodAlgo(BaseAlgorithm):
         name = "good_test_algo"
@@ -142,18 +142,18 @@ def test_registry_discover_skips_failing_algorithm(monkeypatch):
         def run(self, dump_data, context):  # pragma: no cover - not invoked
             raise NotImplementedError
 
-    fake_mod = types.ModuleType("algorithms.unknown_key._fake_test_mod")
+    fake_mod = types.ModuleType("memdiver.algorithms.unknown_key._fake_test_mod")
     fake_mod.GoodAlgo = GoodAlgo
     fake_mod.BrokenAlgo = BrokenAlgo
 
     def fake_walk_packages(path=None, prefix=""):
-        if prefix == "algorithms.unknown_key.":
-            yield (None, "algorithms.unknown_key._fake_test_mod", False)
+        if prefix == "memdiver.algorithms.unknown_key.":
+            yield (None, "memdiver.algorithms.unknown_key._fake_test_mod", False)
 
     def fake_import_module(name):
-        if name == "algorithms.unknown_key._fake_test_mod":
+        if name == "memdiver.algorithms.unknown_key._fake_test_mod":
             return fake_mod
-        if name.startswith("algorithms."):
+        if name.startswith("memdiver.algorithms."):
             return types.ModuleType(name)
         raise ImportError(name)
 

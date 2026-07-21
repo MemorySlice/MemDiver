@@ -17,9 +17,9 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from api.path_safety import safe_filename
-from engine.session_store import _EXT as _SESSION_EXT
-from engine.session_store import SessionSnapshot, SessionStore
+from memdiver.api.path_safety import safe_filename
+from memdiver.engine.session_store import _EXT as _SESSION_EXT
+from memdiver.engine.session_store import SessionSnapshot, SessionStore
 
 logger = logging.getLogger("memdiver.api.services.session_service")
 

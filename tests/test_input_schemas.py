@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.input_schemas import AnalyzeRequest, BatchRequest, ScanRequest
+from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest, ScanRequest
 
 
 def test_analyze_request_valid(tmp_path):

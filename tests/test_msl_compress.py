@@ -2,9 +2,9 @@
 
 import pytest
 
-from msl.compress import compress, decompress, is_available
-from msl.enums import CompAlgo
-from msl.types import MslParseError
+from memdiver.msl.compress import compress, decompress, is_available
+from memdiver.msl.enums import CompAlgo
+from memdiver.msl.types import MslParseError
 
 try:
     import zstandard

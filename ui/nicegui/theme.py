@@ -2,8 +2,8 @@
 
 from nicegui import ui
 
-from ui.components.color_scheme import BASE_CSS
-from ui.locales import _
+from memdiver.ui.components.color_scheme import BASE_CSS
+from memdiver.ui.locales import _
 
 
 # Single-user desktop app: one dark_mode binding cached for the process.

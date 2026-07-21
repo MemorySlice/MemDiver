@@ -14,8 +14,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
-from core.dump_io import DumpReader
-from core.proc_maps_parser import MapRegion, parse_maps_file
+from memdiver.core.dump_io import DumpReader
+from memdiver.core.proc_maps_parser import MapRegion, parse_maps_file
 
 logger = logging.getLogger("memdiver.core.dump_sources.regioned")
 

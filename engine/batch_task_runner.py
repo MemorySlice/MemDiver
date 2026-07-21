@@ -3,7 +3,7 @@
 Mirrors :mod:`engine.pipeline_runner` for the Phase B
 ``POST /api/analysis/batch`` endpoint. The router translates a
 :class:`BatchRunRequest` into a JSON-friendly ``params`` dict and
-hands it to ``TaskManager.submit(runner_dotted="engine.batch_task_runner.run_batch")``.
+hands it to ``TaskManager.submit(runner_dotted="memdiver.engine.batch_task_runner.run_batch")``.
 This module then reconstructs a :class:`core.input_schemas.BatchRequest`
 from those params, drives the existing :class:`engine.batch.BatchRunner`,
 and writes the aggregated result JSON into the per-task artifact
@@ -71,7 +71,7 @@ def _job_dict_to_request(job: Dict[str, Any]):
     validates that each library_dir exists; any failure surfaces as a
     pickled exception that ``TaskManager._on_error`` reports.
     """
-    from core.input_schemas import AnalyzeRequest
+    from memdiver.core.input_schemas import AnalyzeRequest
 
     return AnalyzeRequest(
         library_dirs=[Path(d) for d in job["library_dirs"]],
@@ -110,8 +110,8 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
           "summary": { ... batch totals ... }
         }
     """
-    from core.input_schemas import BatchRequest
-    from engine.batch import BatchRunner
+    from memdiver.core.input_schemas import BatchRequest
+    from memdiver.engine.batch import BatchRunner
 
     if "artifact_dir" in params:
         artifact_dir = Path(params["artifact_dir"]).expanduser()

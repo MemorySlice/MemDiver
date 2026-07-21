@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from generate_realistic_fixtures import generate_dataset, KEY_OFFSET, KEY_LENGTH
 from benchmark_methods import _entropy_candidates, _variance_candidates, _ground_truth, _compute_metrics
-from engine.consensus import ConsensusVector
+from memdiver.engine.consensus import ConsensusVector
 
 
 def main():

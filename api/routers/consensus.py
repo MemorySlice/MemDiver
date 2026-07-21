@@ -10,12 +10,12 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from api.services.consensus_session import (
+from memdiver.api.services.consensus_session import (
     ConsensusSessionManager,
     get_consensus_manager,
 )
-from core.dump_source import open_dump
-from core.variance import count_classifications
+from memdiver.core.dump_source import open_dump
+from memdiver.core.variance import count_classifications
 
 logger = logging.getLogger("memdiver.api.routers.consensus")
 

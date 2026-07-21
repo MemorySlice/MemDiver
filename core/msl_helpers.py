@@ -16,7 +16,7 @@ def get_region_page_data(reader, region) -> bytes:
     Returns:
         Raw bytes of all CAPTURED pages concatenated.
     """
-    from msl.page_map import count_captured_pages
+    from memdiver.msl.page_map import count_captured_pages
 
     hdr = region.block_header
     ps = region.page_size

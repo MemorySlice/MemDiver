@@ -1,5 +1,5 @@
 """Mach-O binary format structure definitions."""
-from core.structure_defs import StructureDef, FieldDef, FieldType
+from memdiver.core.structure_defs import StructureDef, FieldDef, FieldType
 
 MACH_HEADER_64 = StructureDef(
     name="mach_header_64",

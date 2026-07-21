@@ -12,9 +12,9 @@ try:
 except ImportError:
     _HAS_AC = False
 
-from algorithms.base import Match
-from core.models import CryptoSecret
-from core.variance import ByteClass
+from memdiver.algorithms.base import Match
+from memdiver.core.models import CryptoSecret
+from memdiver.core.variance import ByteClass
 from .consensus import ConsensusVector
 from .results import SecretHit
 

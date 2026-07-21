@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from algorithms.base import AnalysisContext
+from memdiver.algorithms.base import AnalysisContext
 
 
 def test_run_no_patterns():
     """Empty patterns directory produces confidence=0.0 and no matches."""
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     algo = PatternMatchAlgorithm()
     # Override patterns to empty
     algo._patterns = []
@@ -24,7 +24,7 @@ def test_run_no_patterns():
 
 def test_run_with_matching_pattern():
     """A pattern matching high-entropy dump data should find matches."""
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     import os
     algo = PatternMatchAlgorithm()
     # Create a synthetic pattern that matches high-entropy regions
@@ -47,7 +47,7 @@ def test_run_with_matching_pattern():
 
 def test_filter_patterns_by_library():
     """Pattern with applicable_to libraries filters correctly."""
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     algo = PatternMatchAlgorithm()
     algo._patterns = [
         {"name": "openssl_only", "applicable_to": {"libraries": ["openssl"]}, "key_spec": {"length": 32}, "pattern": {}},
@@ -61,7 +61,7 @@ def test_filter_patterns_by_library():
 
 def test_structural_check():
     """Pattern with hex mask produces correct byte-level matching."""
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     data = bytes([0x00] * 10 + [0xAA, 0xBB] + [0x00] * 20)
     pattern = {
         "pattern": {
@@ -91,7 +91,7 @@ def test_entropy_min_seven_is_clamped_to_workable_threshold():
     real-key default is 4.5) silently yielded zero matches. The threshold must
     be clamped so shipped configs actually locate high-entropy regions.
     """
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     import os
     algo = PatternMatchAlgorithm()
     # 32 bytes of OS randomness has entropy well above 4.5 but below 7.0.
@@ -108,7 +108,7 @@ def test_entropy_min_seven_is_clamped_to_workable_threshold():
     ctx = AnalysisContext(library="openssl", tls_version="13", phase="pre_abort")
 
     # Sanity: the raw 7.0 threshold finds nothing for a real 32-byte key.
-    from algorithms.base import AnalysisContext as _AC
+    from memdiver.algorithms.base import AnalysisContext as _AC
     raw_ctx = _AC(
         library="openssl", tls_version="13", phase="pre_abort",
         extra={"window_sizes": [32], "entropy_threshold": 7.0},
@@ -132,7 +132,7 @@ def test_entropy_min_seven_is_clamped_to_workable_threshold():
 
 def test_run_empty_data():
     """Empty dump data produces no matches."""
-    from algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
+    from memdiver.algorithms.unknown_key.pattern_match import PatternMatchAlgorithm
     algo = PatternMatchAlgorithm()
     algo._patterns = [{
         "name": "test",

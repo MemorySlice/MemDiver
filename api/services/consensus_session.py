@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from engine.consensus import ConsensusVector
+from memdiver.engine.consensus import ConsensusVector
 
 logger = logging.getLogger("memdiver.api.services.consensus_session")
 

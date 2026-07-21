@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._paths import artifacts_dir, dataset_root
+from tests._paths import artifacts_dir, dataset_file
 
 BASE_URL = "http://127.0.0.1:8080"
 
@@ -32,21 +32,39 @@ def _backend_listening(host: str = "127.0.0.1", port: int = 8080) -> bool:
         return False
 
 
-if not _backend_listening():
-    pytest.skip(
-        "Backend not running at 127.0.0.1:8080; skipping e2e session-cycle tests.",
-        allow_module_level=True,
-    )
+# The `live_backend` session fixture (see tests/conftest.py) auto-starts a
+# uvicorn server for these tests, reusing one already running if present.
+# Requesting it here replaces the previous module-level early skip that
+# fired whenever no backend was manually running.
+pytestmark = [pytest.mark.e2e, pytest.mark.usefixtures("live_backend")]
 
-_DS = dataset_root()
-DUMP_PATH = str(
-    _DS
-    / "TLS13" / "100_iterations_Abort_KeyUpdate" / "boringssl"
-    / "boringssl_run_13_10" / "20251018_124115_148128_pre_abort.dump"
-) if _DS is not None else None
+_RUN_DIR = dataset_file(
+    "TLS13/100_iterations_Abort_KeyUpdate/boringssl/boringssl_run_13_1"
+)
+DUMP_PATH = str(next(_RUN_DIR.glob("*pre_abort.dump")))
 
 SCREENSHOT_DIR = str(artifacts_dir("e2e_cycle"))
 TEST_SESSION_NAME = "e2e_cycle_test"
+
+
+# FTUE onboarding tours (frontend/src/ftue/tours/*) auto-start on first
+# workspace mount and render a driver.js overlay that intercepts pointer
+# events (e.g. the toolbar "New Session" button). Pre-seeding the "seen"
+# localStorage entry stops the tours from starting. Browser-state setup,
+# not an assertion change.
+_FTUE_SEEN = [
+    {"id": tid, "version": 999, "seenAt": 0, "completed": True}
+    for tid in ("workspace-layout-101", "structure-overlay-101", "pipeline-101")
+]
+
+
+def suppress_ftue_tours(page):
+    """Pre-seed FTUE 'seen' state so onboarding tours never auto-start."""
+    page.add_init_script(
+        "window.localStorage.setItem('memdiver:ftue:seen', "
+        + json.dumps(json.dumps(_FTUE_SEEN))
+        + ")"
+    )
 
 
 def api_request(method, path, data=None, timeout=30):
@@ -175,7 +193,7 @@ def test_api_save_load_delete():
     print("PASS: API save/load/delete cycle complete")
 
 
-def test_browser_session_load():
+def test_browser_session_load(page):
     """Test 2: Browser-level session load from landing page."""
     print("\n--- Test 2: Browser Session Load ---")
 
@@ -193,91 +211,84 @@ def test_browser_session_load():
     }
     api_request("POST", "/api/sessions/", save_payload)
 
-    from playwright.sync_api import sync_playwright
+    try:
+        # Step 1: Navigate to app — should show landing page
+        suppress_ftue_tours(page)
+        page.goto(BASE_URL)
+        page.wait_for_load_state("networkidle")
+        page.screenshot(path=f"{SCREENSHOT_DIR}/session_01_landing.png", full_page=True)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        # Step 2: Verify our test session is visible
+        session_card = page.locator(f"text={TEST_SESSION_NAME}")
+        assert session_card.first.is_visible(), f"Test session '{TEST_SESSION_NAME}' should be visible on landing"
+        print("  Session visible on landing page")
 
-        try:
-            # Step 1: Navigate to app — should show landing page
-            page.goto(BASE_URL)
-            page.wait_for_load_state("networkidle")
-            page.screenshot(path=f"{SCREENSHOT_DIR}/session_01_landing.png", full_page=True)
+        # Step 3: Verify session metadata is shown
+        # Should show input_path and mode
+        page_content = page.content()
+        # The path should be visible (truncated, but the filename part should be there)
+        assert "pre_abort.dump" in page_content or DUMP_PATH in page_content, \
+            "Session input_path should be visible"
+        print("  Session metadata (path) visible")
 
-            # Step 2: Verify our test session is visible
-            session_card = page.locator(f"text={TEST_SESSION_NAME}")
-            assert session_card.is_visible(), f"Test session '{TEST_SESSION_NAME}' should be visible on landing"
-            print("  Session visible on landing page")
+        # Step 4: Click Load button for our session
+        # Find the session card that contains our test session name, then click its Load button
+        session_cards = page.locator("div.md-panel")
+        target_card = None
+        for i in range(session_cards.count()):
+            card = session_cards.nth(i)
+            if TEST_SESSION_NAME in card.inner_text():
+                target_card = card
+                break
+        assert target_card is not None, f"Could not find card for session '{TEST_SESSION_NAME}'"
+        load_btn = target_card.locator("button:has-text('Load')")
+        load_btn.click()
+        page.wait_for_timeout(2000)
+        page.screenshot(path=f"{SCREENSHOT_DIR}/session_02_after_load.png", full_page=True)
 
-            # Step 3: Verify session metadata is shown
-            # Should show input_path and mode
-            page_content = page.content()
-            # The path should be visible (truncated, but the filename part should be there)
-            assert "pre_abort.dump" in page_content or DUMP_PATH in page_content, \
-                "Session input_path should be visible"
-            print("  Session metadata (path) visible")
+        # Step 5: Verify we're now in the workspace
+        # The workspace should have the MemDiver toolbar with mode indicator
+        workspace_content = page.content()
+        has_workspace = (
+            "verification" in workspace_content.lower() or
+            "exploration" in workspace_content.lower() or
+            "New Session" in workspace_content  # Toolbar has "New Session" button
+        )
 
-            # Step 4: Click Load button for our session
-            # Find the session card that contains our test session name, then click its Load button
-            session_cards = page.locator("div.md-panel")
-            target_card = None
-            for i in range(session_cards.count()):
-                card = session_cards.nth(i)
-                if TEST_SESSION_NAME in card.inner_text():
-                    target_card = card
-                    break
-            assert target_card is not None, f"Could not find card for session '{TEST_SESSION_NAME}'"
-            load_btn = target_card.locator("button:has-text('Load')")
-            load_btn.click()
-            page.wait_for_timeout(2000)
-            page.screenshot(path=f"{SCREENSHOT_DIR}/session_02_after_load.png", full_page=True)
+        # Check we're NOT on the landing page anymore
+        # Landing has "Sessions" as a heading but workspace has it as a sidebar tab
+        heading = page.locator("h2:has-text('Sessions')")
+        on_landing = heading.is_visible()
 
-            # Step 5: Verify we're now in the workspace
-            # The workspace should have the MemDiver toolbar with mode indicator
-            workspace_content = page.content()
-            has_workspace = (
-                "verification" in workspace_content.lower() or
-                "exploration" in workspace_content.lower() or
-                "New Session" in workspace_content  # Toolbar has "New Session" button
-            )
+        assert not on_landing, "Should have left the landing page after Load"
+        print("  Successfully navigated to workspace after Load")
 
-            # Check we're NOT on the landing page anymore
-            # Landing has "Sessions" as a heading but workspace has it as a sidebar tab
-            heading = page.locator("h2:has-text('Sessions')")
-            on_landing = heading.is_visible()
+        # Step 6: Verify the loaded state is reflected
+        # The workspace toolbar should show the mode badge
+        toolbar_badge = page.locator("span:has-text('verification')").first
+        if toolbar_badge.is_visible():
+            print("  Mode 'verification' correctly restored in toolbar")
+        else:
+            print("  (Mode indicator not visible in toolbar, may be styled differently)")
 
-            assert not on_landing, "Should have left the landing page after Load"
-            print("  Successfully navigated to workspace after Load")
+        # Step 7: Click "New Session" in toolbar to go back to landing
+        new_session_btn = page.locator("button:has-text('New Session')").first
+        if new_session_btn.is_visible():
+            new_session_btn.click()
+            page.wait_for_timeout(1000)
+            page.screenshot(path=f"{SCREENSHOT_DIR}/session_03_back_to_landing.png", full_page=True)
 
-            # Step 6: Verify the loaded state is reflected
-            # The workspace toolbar should show the mode badge
-            toolbar_badge = page.locator("span:has-text('verification')").first
-            if toolbar_badge.is_visible():
-                print("  Mode 'verification' correctly restored in toolbar")
-            else:
-                print("  (Mode indicator not visible in toolbar, may be styled differently)")
+            # Should be back on landing
+            landing_heading = page.locator("h2:has-text('Sessions')")
+            assert landing_heading.is_visible(), "Should return to landing page after 'New Session'"
+            print("  Successfully returned to landing via 'New Session' button")
+        else:
+            print("  (New Session button not found in toolbar)")
 
-            # Step 7: Click "New Session" in toolbar to go back to landing
-            new_session_btn = page.locator("button:has-text('New Session')").first
-            if new_session_btn.is_visible():
-                new_session_btn.click()
-                page.wait_for_timeout(1000)
-                page.screenshot(path=f"{SCREENSHOT_DIR}/session_03_back_to_landing.png", full_page=True)
+        print("PASS: Browser session load cycle complete")
 
-                # Should be back on landing
-                landing_heading = page.locator("h2:has-text('Sessions')")
-                assert landing_heading.is_visible(), "Should return to landing page after 'New Session'"
-                print("  Successfully returned to landing via 'New Session' button")
-            else:
-                print("  (New Session button not found in toolbar)")
-
-            print("PASS: Browser session load cycle complete")
-
-        finally:
-            page.close()
-            browser.close()
-            cleanup_test_session()
+    finally:
+        cleanup_test_session()
 
 
 def main():
@@ -287,18 +298,33 @@ def main():
 
     results = {}
 
-    for name, test_fn in [
-        ("API Save/Load/Delete", test_api_save_load_delete),
-        ("Browser Session Load", test_browser_session_load),
-    ]:
+    # API test (no browser needed).
+    try:
+        test_api_save_load_delete()
+        results["API Save/Load/Delete"] = "PASS"
+    except Exception as e:
+        results["API Save/Load/Delete"] = f"FAIL: {e}"
+        print(f"\nFAIL [API Save/Load/Delete]: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Browser test — construct a page here (outside pytest) and pass it in.
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
         try:
-            test_fn()
-            results[name] = "PASS"
+            test_browser_session_load(page)
+            results["Browser Session Load"] = "PASS"
         except Exception as e:
-            results[name] = f"FAIL: {e}"
-            print(f"\nFAIL [{name}]: {e}")
+            results["Browser Session Load"] = f"FAIL: {e}"
+            print(f"\nFAIL [Browser Session Load]: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            page.close()
+            browser.close()
 
     print("\n" + "=" * 60)
     print("Session Cycle Test Results:")

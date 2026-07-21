@@ -125,6 +125,18 @@ class ArchType(IntEnum):
     UNKNOWN = 0xFFFF
 
 
+class SourceFormat(IntEnum):
+    """Source artifact format for the IMPORT_PROVENANCE block `source_format`.
+
+    MemDiver-assigned codes identifying what an .msl was converted from. The
+    spec does not fix a registry for this field, so these values are local to
+    MemDiver's importer.
+    """
+    RAW_DUMP = 0x01    # opaque raw memory .dump (fritap-style)
+    ELF_CORE = 0x02    # ELF ET_CORE process core dump
+    MINIDUMP = 0x03    # Windows Minidump (.dmp)
+
+
 class MslKeyType(IntEnum):
     """Crypto key type codes (spec Table 17)."""
     UNKNOWN = 0x0000

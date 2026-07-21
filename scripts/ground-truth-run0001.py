@@ -32,9 +32,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core.dataset_metadata import load_run_meta
-from core.dump_source import open_dump
-from mcp_server.tools_inspect import _extract_strings as extract_strings_tool, get_session_info
+from memdiver.core.dataset_metadata import load_run_meta
+from memdiver.core.dump_source import open_dump
+from memdiver.mcp_server.tools_inspect import _extract_strings as extract_strings_tool, get_session_info
 
 
 import os

@@ -7,10 +7,10 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from core.input_schemas import AnalyzeRequest, BatchRequest
-from engine.pipeline import AnalysisPipeline
-from engine.results import AnalysisResult
-from engine.serializer import serialize_result
+from memdiver.core.input_schemas import AnalyzeRequest, BatchRequest
+from memdiver.engine.pipeline import AnalysisPipeline
+from memdiver.engine.results import AnalysisResult
+from memdiver.engine.serializer import serialize_result
 
 logger = logging.getLogger("memdiver.engine.batch")
 

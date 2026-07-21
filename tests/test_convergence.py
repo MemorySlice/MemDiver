@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.convergence import (
+from memdiver.engine.convergence import (
     ConvergencePoint,
     ConvergenceSweepResult,
     DetectionMetrics,

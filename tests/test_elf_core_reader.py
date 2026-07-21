@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from core.binary_formats.elf_core_reader import (
+from memdiver.core.binary_formats.elf_core_reader import (
     ElfCoreReader,
     _align4,
     _align_padding,
     _parse_nt_file,
     _parse_prstatus_pid,
 )
-from tests._paths import SKIP_REASON, dataset_root
+from tests._paths import dataset_file
 
 
 def test_align4_helpers() -> None:
@@ -58,16 +58,11 @@ def test_parse_nt_file_synthetic() -> None:
 
 
 def test_open_real_gcore() -> None:
-    """Open a real ``gcore.core`` and assert we parsed plausible data."""
-    root = dataset_root()
-    if root is None:
-        pytest.skip(SKIP_REASON)
-    core_path = (
-        root / "dataset_memory_slice" / "gocryptfs"
-        / "dataset_gocryptfs" / "run_0001" / "gcore.core"
+    """Open a ``gcore.core`` (real capture or synthetic) and assert we parsed
+    plausible data."""
+    core_path = dataset_file(
+        "dataset_memory_slice/gocryptfs/dataset_gocryptfs/run_0001/gcore.core"
     )
-    if not core_path.is_file():
-        pytest.skip("Real gcore.core not present at expected path")
 
     reader = ElfCoreReader(core_path)
     try:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from engine.pipeline import AnalysisPipeline
-from engine.results import AnalysisResult, LibraryReport
+from memdiver.engine.pipeline import AnalysisPipeline
+from memdiver.engine.results import AnalysisResult, LibraryReport
 
 
 def test_analysis_result_get_library():

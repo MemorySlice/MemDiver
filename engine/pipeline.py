@@ -4,12 +4,12 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.discovery import RunDiscovery
-from core.input_schemas import AnalyzeRequest
-from core.keylog import KeylogParser
-from core.keylog_templates import get_template
-from core.models import CryptoSecret
-from core.phase_normalizer import PhaseNormalizer
+from memdiver.core.discovery import RunDiscovery
+from memdiver.core.input_schemas import AnalyzeRequest
+from memdiver.core.keylog import KeylogParser
+from memdiver.core.keylog_templates import get_template
+from memdiver.core.models import CryptoSecret
+from memdiver.core.phase_normalizer import PhaseNormalizer
 from .consensus import ConsensusVector
 from .correlator import SearchCorrelator
 from .derived_keys import DerivedKeyExpander
@@ -102,7 +102,7 @@ class AnalysisPipeline:
                            phase, len(runs), library_name)
 
         # Build consensus matrix (DumpSource-aware for MSL ASLR alignment)
-        from core.dump_source import open_dump
+        from memdiver.core.dump_source import open_dump
         _sources = []
         if len(run_dumps) >= 2:
             try:
@@ -191,7 +191,7 @@ class AnalysisPipeline:
             return
 
         from collections import defaultdict
-        from core.dump_source import open_dump
+        from memdiver.core.dump_source import open_dump
 
         verifier = AesCbcVerifier()
         key_len = verifier.key_length

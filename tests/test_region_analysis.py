@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.region_analysis import (
+from memdiver.core.region_analysis import (
     RegionReport,
     analyze_region,
     find_pattern,

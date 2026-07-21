@@ -1,0 +1,252 @@
+"""Tests for the ``inspect`` CLI subcommand group.
+
+Exercises both the parser (argument wiring, nested action dispatch, decrypt
+flag parsing) and the handlers end-to-end against a synthetic MSL fixture.
+The handlers reuse the same pure tool functions as the HTTP `/api/inspect`
+endpoints, so these tests focus on the CLI adapter layer.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from memdiver.cli import _build_parser
+from tests.fixtures.generate_msl_fixtures import write_msl_fixture
+
+
+@pytest.fixture
+def msl_fixture(tmp_path) -> Path:
+    """A complete synthetic .msl capture on disk."""
+    return write_msl_fixture(tmp_path / "capture.msl")
+
+
+# ---------------------------------------------------------------------------
+# Parser wiring
+# ---------------------------------------------------------------------------
+
+
+def test_parser_inspect_hex_command():
+    parser = _build_parser()
+    args = parser.parse_args([
+        "inspect", "hex", "/tmp/x.msl", "--offset", "0x10", "--length", "64",
+        "--view", "vas",
+    ])
+    assert args.command == "inspect"
+    assert args.inspect_action == "hex"
+    assert args.dump_path == "/tmp/x.msl"
+    assert args.offset == 0x10
+    assert args.length == 64
+    assert args.view == "vas"
+
+
+def test_parser_inspect_byte_search_requires_pattern():
+    parser = _build_parser()
+    args = parser.parse_args([
+        "inspect", "byte-search", "/tmp/x.msl", "--pattern", "0xdeadbeef",
+    ])
+    assert args.inspect_action == "byte-search"
+    assert args.pattern == "0xdeadbeef"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["inspect", "byte-search", "/tmp/x.msl"])
+
+
+def test_parser_inspect_all_actions_build():
+    """Every advertised action parses and dispatches to a distinct handler."""
+    from memdiver.cli import _INSPECT_HANDLERS
+
+    parser = _build_parser()
+    for action in ("page-states", "session-info", "processes", "modules",
+                   "handles", "xref"):
+        args = parser.parse_args(["inspect", action, "/tmp/x.msl"])
+        assert args.inspect_action == action
+    assert set(_INSPECT_HANDLERS) == {
+        "hex", "entropy", "strings", "byte-search",
+        "page-states", "session-info", "processes", "modules", "handles",
+        "xref", "structure",
+    }
+
+
+def test_parser_inspect_decrypt_flags_parse():
+    """The decrypt parent parser is attached to inspect actions."""
+    parser = _build_parser()
+    args = parser.parse_args([
+        "inspect", "session-info", "/tmp/x.msl",
+        "--key-file", "/tmp/k.bin",
+        "--passphrase", "hunter2",
+        "--kem-key-file", "/tmp/kem.priv",
+    ])
+    assert args.key_file == "/tmp/k.bin"
+    assert args.passphrase == "hunter2"
+    assert args.kem_key_file == "/tmp/kem.priv"
+
+
+# ---------------------------------------------------------------------------
+# Handlers end-to-end against a fixture
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_inspect_session_info(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_session_info
+
+    out = tmp_path / "session.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_session_info(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["pid"] == 1234
+    assert data["region_count"] >= 1
+    assert data["captured_page_count"] >= 1
+
+
+def test_cmd_inspect_hex(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_hex
+
+    out = tmp_path / "hex.json"
+    args = argparse.Namespace(
+        dump_path=str(msl_fixture), offset=0, length=16,
+        view="raw", output=str(out),
+    )
+    rc = _cmd_inspect_hex(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["format"] == "msl"
+    assert data["offset"] == 0
+    assert data["length"] == 16
+    assert len(data["hex_lines"]) == 1
+    # The MSL container starts with the "MEMSLICE" magic.
+    assert data["hex_lines"][0].split("|")[1].startswith("MEMSLICE")
+
+
+def test_cmd_inspect_page_states(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_page_states
+
+    out = tmp_path / "pages.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_page_states(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["total_pages"] >= 1
+    assert data["captured_pages"] >= 1
+    assert data["coverage"] == pytest.approx(1.0)
+    assert data["regions"]
+    assert data["regions"][0]["intervals"][0]["state"] == "CAPTURED"
+
+
+def test_cmd_inspect_processes(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_processes
+
+    out = tmp_path / "processes.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_processes(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert "processes" in data
+    procs = data["processes"]
+    assert len(procs) >= 1
+    entry = procs[0]
+    assert set(entry) == {
+        "pid", "ppid", "uid", "is_target", "start_time_ns",
+        "rss", "exe_name", "cmd_line", "user",
+    }
+    pids = {p["pid"] for p in procs}
+    assert 1234 in pids
+
+
+def test_cmd_inspect_modules(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_modules
+
+    out = tmp_path / "modules.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_modules(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert "modules" in data
+    mods = data["modules"]
+    assert len(mods) >= 1
+    entry = mods[0]
+    assert set(entry) == {"path", "base_addr", "size", "version"}
+    assert isinstance(entry["base_addr"], int)
+
+
+def test_cmd_inspect_handles(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_handles
+
+    out = tmp_path / "handles.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_handles(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert "handles" in data
+    handles = data["handles"]
+    assert len(handles) >= 1
+    entry = handles[0]
+    assert set(entry) == {
+        "pid", "fd", "handle_type", "handle_type_name", "path",
+    }
+    assert isinstance(entry["handle_type_name"], str)
+
+
+def test_cmd_inspect_processes_missing_file(tmp_path, capsys):
+    """A missing file yields an error dict and a non-zero exit code."""
+    from memdiver.cli import _cmd_inspect_processes
+
+    args = argparse.Namespace(msl_path=str(tmp_path / "nope.msl"), output=None)
+    rc = _cmd_inspect_processes(args)
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert "error" in data
+
+
+def test_cmd_inspect_byte_search(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_byte_search
+
+    out = tmp_path / "search.json"
+    # The captured page begins with 0xAA*32 then 0xBB*32; "aabb" straddles it.
+    args = argparse.Namespace(
+        dump_path=str(msl_fixture), pattern="aabb",
+        view="raw", max_results=500, output=str(out),
+    )
+    rc = _cmd_inspect_byte_search(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["pattern_hex"] == "aabb"
+    assert data["count"] >= 1
+
+
+def test_cmd_inspect_entropy(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_entropy
+
+    out = tmp_path / "entropy.json"
+    args = argparse.Namespace(
+        dump_path=str(msl_fixture), offset=0, length=0,
+        window=32, step=16, threshold=7.5, output=str(out),
+    )
+    rc = _cmd_inspect_entropy(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert "overall_entropy" in data
+    assert "stats" in data
+
+
+def test_cmd_inspect_session_info_missing_file(tmp_path, capsys):
+    """A missing file yields an error dict and a non-zero exit code."""
+    from memdiver.cli import _cmd_inspect_session_info
+
+    args = argparse.Namespace(msl_path=str(tmp_path / "nope.msl"), output=None)
+    rc = _cmd_inspect_session_info(args)
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert "error" in data
+
+
+def test_cmd_inspect_dispatch_unknown_action(capsys):
+    """`inspect` with no action prints the available actions and exits 1."""
+    from memdiver.cli import _cmd_inspect
+
+    rc = _cmd_inspect(argparse.Namespace(inspect_action=None))
+    assert rc == 1
+    assert "pick an action" in capsys.readouterr().err

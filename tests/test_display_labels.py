@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.display_labels import get_display_label, get_short_label
+from memdiver.core.display_labels import get_display_label, get_short_label
 
 
 def test_display_label_client_random():

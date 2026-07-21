@@ -39,8 +39,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from api.services.artifact_store import ArtifactSpec, ArtifactStore
-from api.services.progress_bus import Event, ProgressBus
+from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
+from memdiver.api.services.progress_bus import Event, ProgressBus
 
 logger = logging.getLogger("memdiver.api.services.task_manager")
 

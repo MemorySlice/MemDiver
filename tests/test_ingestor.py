@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from harvester.ingestor import DumpIngestor
+from memdiver.harvester.ingestor import DumpIngestor
 
 
 def _create_synthetic_dataset(tmp_dir):
@@ -63,7 +63,7 @@ def test_list_libraries_separated_by_tls_version():
 def test_fast_scan_serialize_round_trip_composite_keys():
     """A full fast_scan round-trips through serialize_dataset_info with the
     composite "ver/scenario" library keys intact."""
-    from engine.serializer import serialize_dataset_info
+    from memdiver.engine.serializer import serialize_dataset_info
 
     tmp_dir = tempfile.mkdtemp()
     try:

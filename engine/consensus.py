@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 
-from core.variance import (
+from memdiver.core.variance import (
     ByteClass,
     INVARIANT_MAX,
     STRUCTURAL_MAX,
@@ -261,7 +261,7 @@ class ConsensusVector:
         Like get_volatile_regions but with additional alignment filtering:
         only keeps candidate blocks that are dense and aligned.
         """
-        from core.alignment_filter import alignment_filter
+        from memdiver.core.alignment_filter import alignment_filter
 
         # Extract KEY_CANDIDATE offsets (vectorized)
         candidate_offsets = set(

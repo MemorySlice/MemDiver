@@ -4,12 +4,12 @@ import os
 
 import pytest
 
-from msl import crypto
-from msl.enums import (FILE_HEADER_ENC_SIZE, BlockType, EncAlgo, HeaderFlag,
+from memdiver.msl import crypto
+from memdiver.msl.enums import (FILE_HEADER_ENC_SIZE, BlockType, EncAlgo, HeaderFlag,
                        KdfType, KeyEncap, NodeKind, TagStatus)
-from msl.reader import MslReader
-from msl.writer import MslEncryptionConfig, MslWriter
-from msl.types import MslPointerGraphEdge, MslPointerGraphNode
+from memdiver.msl.reader import MslReader
+from memdiver.msl.writer import MslEncryptionConfig, MslWriter
+from memdiver.msl.types import MslPointerGraphEdge, MslPointerGraphNode
 
 _CIPHERS = [EncAlgo.AES_256_GCM, EncAlgo.XCHACHA20_POLY1305]
 
@@ -160,7 +160,7 @@ def test_encrypt_configured_nonce_stored_in_header(tmp_path):
 def test_encrypt_verify_chain_skips_prevhash(tmp_path):
     """verify_chain on an encrypted file skips PrevHash (spec §14.2.16) and
     reports valid; integrity came from the AEAD tag at open()."""
-    from msl.integrity import verify_chain
+    from memdiver.msl.integrity import verify_chain
     key = os.urandom(32)
     out = tmp_path / "chain.msl"
     _write_encrypted(out, MslEncryptionConfig(raw_key=key))
@@ -217,7 +217,7 @@ def test_encrypt_hybrid_kem_roundtrip(tmp_path):
 def test_open_dump_decrypts_with_key(tmp_path):
     """open_dump forwards key material to the MslReader; the source reports
     VALID tag_status and reads decrypted regions."""
-    from core.dump_source import open_dump
+    from memdiver.core.dump_source import open_dump
     key = os.urandom(32)
     out = tmp_path / "dumpsrc.msl"
     _write_encrypted(out, MslEncryptionConfig(raw_key=key))
@@ -227,7 +227,7 @@ def test_open_dump_decrypts_with_key(tmp_path):
 
 
 def test_open_dump_encrypted_without_key_reports_missing(tmp_path):
-    from core.dump_source import open_dump
+    from memdiver.core.dump_source import open_dump
     out = tmp_path / "dumpsrc_nokey.msl"
     _write_encrypted(out, MslEncryptionConfig(raw_key=os.urandom(32)))
     with open_dump(out) as source:
@@ -237,7 +237,7 @@ def test_open_dump_encrypted_without_key_reports_missing(tmp_path):
 def test_cli_key_material_from_args_reads_key_file(tmp_path):
     """The CLI helper loads a raw key from --key-file and a passphrase."""
     import argparse
-    from cli import _key_material_from_args
+    from memdiver.cli import _key_material_from_args
     key = os.urandom(32)
     keyfile = tmp_path / "cek.bin"
     keyfile.write_bytes(key)
@@ -250,7 +250,7 @@ def test_cli_key_material_from_args_reads_key_file(tmp_path):
 
 def test_cli_parser_accepts_decrypt_flags():
     """The brute-force and consensus subcommands accept --key-file."""
-    from cli import _build_parser
+    from memdiver.cli import _build_parser
     parser = _build_parser()
     ns = parser.parse_args([
         "brute-force", "--candidates", "c.json", "--dump", "d.msl",
@@ -276,7 +276,7 @@ _DECRYPT_COMMAND_ARGV = {
                          ids=list(_DECRYPT_COMMAND_ARGV))
 def test_cli_dump_commands_accept_decrypt_flags(argv):
     """Each dump-reading subcommand wires in the decrypt parent parser."""
-    from cli import _build_parser
+    from memdiver.cli import _build_parser
     parser = _build_parser()
     ns = parser.parse_args(argv + ["--key-file", "k.bin",
                                    "--passphrase", "pw", "--kem-key-file", "kp.bin"])
@@ -289,7 +289,7 @@ def test_cli_consensus_add_decrypts_with_key(tmp_path, capsys):
     """consensus-add folds an encrypted dump when given --key-file and
     surfaces the VALID AEAD line on stderr."""
     import argparse
-    from cli import _cmd_consensus_begin, _cmd_consensus_add
+    from memdiver.cli import _cmd_consensus_begin, _cmd_consensus_add
 
     key = os.urandom(32)
     keyfile = tmp_path / "cek.bin"
@@ -313,7 +313,7 @@ def test_cli_consensus_add_decrypts_with_key(tmp_path, capsys):
 def test_cli_consensus_add_without_key_warns_missing(tmp_path, capsys):
     """consensus-add on an encrypted dump with no key warns MISSING_KEY."""
     import argparse
-    from cli import _cmd_consensus_begin, _cmd_consensus_add
+    from memdiver.cli import _cmd_consensus_begin, _cmd_consensus_add
 
     dump = tmp_path / "enc_nokey.msl"
     _write_encrypted(dump, MslEncryptionConfig(raw_key=os.urandom(32)))
@@ -333,7 +333,7 @@ def test_cli_consensus_add_without_key_warns_missing(tmp_path, capsys):
 def test_cli_gen_kem_key_x25519(tmp_path):
     """gen-kem-key writes a 32/32-byte X25519 keypair (no liboqs needed)."""
     import argparse
-    from cli import _cmd_gen_kem_key
+    from memdiver.cli import _cmd_gen_kem_key
     pub, priv = tmp_path / "pub.bin", tmp_path / "priv.bin"
     rc = _cmd_gen_kem_key(argparse.Namespace(
         mechanism="X25519", public_out=str(pub), private_out=str(priv),
@@ -344,7 +344,7 @@ def test_cli_gen_kem_key_x25519(tmp_path):
 
 
 def test_cli_gen_kem_key_parser_accepts_all_mechanisms():
-    from cli import _build_parser
+    from memdiver.cli import _build_parser
     parser = _build_parser()
     ns = parser.parse_args(["gen-kem-key", "--mechanism", "X25519+ML-KEM-768",
                             "--public-out", "p.bin", "--private-out", "s.bin"])
@@ -352,12 +352,18 @@ def test_cli_gen_kem_key_parser_accepts_all_mechanisms():
     assert ns.public_out == "p.bin" and ns.private_out == "s.bin"
 
 
-def test_cli_gen_kem_key_unavailable_mechanism(tmp_path, capsys):
-    """ML-KEM keygen without liboqs exits non-zero with an install hint."""
-    if crypto.kem_is_available(KeyEncap.ML_KEM_768):
-        pytest.skip("liboqs installed; unavailability path not exercised")
+def test_cli_gen_kem_key_unavailable_mechanism(tmp_path, capsys, monkeypatch):
+    """ML-KEM keygen without liboqs exits non-zero with an install hint.
+
+    The unavailability branch is forced by patching ``kem_is_available`` to
+    report the mechanism as absent, so the test exercises the install-hint path
+    regardless of whether liboqs is actually installed in the environment.
+    ``_cmd_gen_kem_key`` imports ``kem_is_available`` from ``memdiver.msl.crypto``
+    at call time, so patching the module attribute here takes effect.
+    """
+    monkeypatch.setattr(crypto, "kem_is_available", lambda mech: False)
     import argparse
-    from cli import _cmd_gen_kem_key
+    from memdiver.cli import _cmd_gen_kem_key
     rc = _cmd_gen_kem_key(argparse.Namespace(
         mechanism="ML-KEM-768", public_out=str(tmp_path / "p"),
         private_out=str(tmp_path / "s"), verbose=False))
@@ -370,8 +376,8 @@ def test_cli_gen_kem_key_unavailable_mechanism(tmp_path, capsys):
 def test_cli_gen_kem_key_hybrid_roundtrip(tmp_path):
     """A hybrid keypair from gen-kem-key decrypts an encrypted dump end-to-end."""
     import argparse
-    from cli import _cmd_gen_kem_key
-    from core.dump_source import open_dump
+    from memdiver.cli import _cmd_gen_kem_key
+    from memdiver.core.dump_source import open_dump
     pub, priv = tmp_path / "hpub.bin", tmp_path / "hpriv.bin"
     rc = _cmd_gen_kem_key(argparse.Namespace(
         mechanism="X25519+ML-KEM-768", public_out=str(pub),

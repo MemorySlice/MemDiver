@@ -181,10 +181,32 @@ def _ensure_ssh_fixtures(root):
     return root
 
 
+def _ensure_msl_fixture(root):
+    """Materialise ``<root>/msl/test_capture.msl`` if absent (idempotent).
+
+    Delegates to the reference MSL encoder in
+    :mod:`tests.fixtures.generate_msl_fixtures`. Kept here so the flat scenario
+    dataset always ships its MSL capture alongside the TLS/SSH dumps — the MCP
+    inspect tests (tests/test_mcp_tools.py) resolve it by path and would
+    otherwise skip on a fresh checkout.
+    """
+    from tests.fixtures.generate_msl_fixtures import ensure_msl_fixtures
+    ensure_msl_fixtures(root)
+
+
 def generate_dataset(root=DATASET_ROOT):
     """Generate the complete fixture dataset. Idempotent: skips if exists."""
+    # Materialise the realistic synthetic captures (ELF cores, raw region
+    # dumps, boringssl TLS 1.3 trees) that back the ``requires_dataset`` tests.
+    # Called unconditionally (and before the early-return below) so it also
+    # runs on repositories where the flat TLS/SSH ``dataset/`` dir already
+    # exists from a previous run. Idempotent per-artifact.
+    from tests.fixtures.synth_dataset import ensure_synthetic_dataset
+    ensure_synthetic_dataset()
+
     if root.exists():
         _ensure_ssh_fixtures(root)
+        _ensure_msl_fixture(root)
         return root
 
     # TLS 1.2 openssl
@@ -205,6 +227,10 @@ def generate_dataset(root=DATASET_ROOT):
 
     # SSH 2 openssh (reuse _ensure_ssh_fixtures to avoid duplication)
     _ensure_ssh_fixtures(root)
+
+    # MSL capture fixture consumed by the MCP inspect tests
+    # (tests/test_mcp_tools.py looks for ``<root>/msl/test_capture.msl``).
+    _ensure_msl_fixture(root)
 
     return root
 

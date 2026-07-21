@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ui.views.hex_comparison import render_hex_comparison
+from memdiver.ui.views.hex_comparison import render_hex_comparison
 
 
 class _FakeHtml:

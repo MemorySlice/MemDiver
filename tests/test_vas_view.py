@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from msl.types import MslVasEntry
+from memdiver.msl.types import MslVasEntry
 
 
 def _make_mo():
@@ -32,7 +32,7 @@ def _make_vas_entries():
 
 def test_render_vas_table_basic():
     """VAS table renders HTML with expected columns."""
-    from ui.views.vas_view import render_vas_table
+    from memdiver.ui.views.vas_view import render_vas_table
     mo = _make_mo()
     entries = _make_vas_entries()
     result = render_vas_table(mo, entries)
@@ -45,7 +45,7 @@ def test_render_vas_table_basic():
 
 def test_render_vas_table_empty():
     """Empty VAS entries returns fallback message."""
-    from ui.views.vas_view import render_vas_table
+    from memdiver.ui.views.vas_view import render_vas_table
     mo = _make_mo()
     render_vas_table(mo, [])
     mo.md.assert_called_once()
@@ -53,7 +53,7 @@ def test_render_vas_table_empty():
 
 def test_render_vas_map_empty():
     """Empty VAS entries returns fallback message."""
-    from ui.views.vas_view import render_vas_map
+    from memdiver.ui.views.vas_view import render_vas_map
     mo = _make_mo()
     render_vas_map(mo, [])
     mo.md.assert_called_once()
@@ -61,9 +61,9 @@ def test_render_vas_map_empty():
 
 def test_render_session_view_basic():
     """Session view renders process info."""
-    from ui.views.session_view import render_session_view
-    from msl.session_extract import SessionReport
-    from msl.types import MslProcessIdentity, MslBlockHeader
+    from memdiver.ui.views.session_view import render_session_view
+    from memdiver.msl.session_extract import SessionReport
+    from memdiver.msl.types import MslProcessIdentity, MslBlockHeader
 
     mo = _make_mo()
     hdr = MslBlockHeader(
@@ -95,8 +95,8 @@ def test_render_session_view_basic():
 
 def test_render_session_view_no_modules():
     """Session view handles empty modules gracefully."""
-    from ui.views.session_view import render_session_view
-    from msl.session_extract import SessionReport
+    from memdiver.ui.views.session_view import render_session_view
+    from memdiver.msl.session_extract import SessionReport
 
     mo = _make_mo()
     report = SessionReport(
@@ -112,7 +112,7 @@ def test_render_session_view_no_modules():
 
 def test_render_session_view_none():
     """None report returns fallback."""
-    from ui.views.session_view import render_session_view
+    from memdiver.ui.views.session_view import render_session_view
     mo = _make_mo()
     render_session_view(mo, None)
     mo.md.assert_called_once()
@@ -120,7 +120,7 @@ def test_render_session_view_none():
 
 def test_render_vas_table_escapes_malicious_path():
     """Untrusted mapped_path with HTML markup is escaped, not injected."""
-    from ui.views.vas_view import render_vas_table
+    from memdiver.ui.views.vas_view import render_vas_table
     mo = _make_mo()
     payload = '<script>alert(1)</script>'
     entries = [MslVasEntry(0x00400000, 0x10000, 0x05, 0x03, payload)]
@@ -132,9 +132,9 @@ def test_render_vas_table_escapes_malicious_path():
 
 def test_render_session_view_escapes_malicious_exe_path():
     """Untrusted process exe_path with HTML markup is escaped."""
-    from ui.views.session_view import render_session_view
-    from msl.session_extract import SessionReport
-    from msl.types import MslProcessIdentity, MslBlockHeader
+    from memdiver.ui.views.session_view import render_session_view
+    from memdiver.msl.session_extract import SessionReport
+    from memdiver.msl.types import MslProcessIdentity, MslBlockHeader
 
     mo = _make_mo()
     hdr = MslBlockHeader(

@@ -7,14 +7,41 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from api.dependencies import get_tool_session
-from core.dump_source import ViewMode
-from mcp_server import tools_inspect, tools_xref
-from mcp_server.session import ToolSession
+from memdiver.api.dependencies import get_tool_session
+from memdiver.api.services.key_material import decode_key_material
+from memdiver.api.services.reader_cache import key_material_scope
+from memdiver.core.dump_source import ViewMode
+from memdiver.core.service_errors import CapabilityError
+from memdiver.mcp_server import tools_inspect, tools_xref
+from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.inspect")
 
 router = APIRouter()
+
+
+def present_inspect_http(result):
+    """API surface: emit only the payload; the key/tag diagnostic is dropped
+    here (the Web UI reads it from the dedicated /tag-status endpoints), so a
+    locked dump reads back empty exactly as before."""
+    return result.payload
+
+
+def _http_inspect(produce):
+    """Run a ServiceResult producer and present it on the HTTP surface.
+
+    Preserves today's contract: success payloads are emitted without the status
+    block, and the hard-error raises are turned back into the legacy
+    200-with-error-dict bodies. A later phase introduces a global handler that
+    maps these to proper HTTP status codes.
+    """
+    try:
+        return present_inspect_http(produce())
+    except CapabilityError as e:
+        body = {"error": e.message}
+        if e.details:
+            body.update(e.details)
+        return body
 
 
 @router.get("/hex")
@@ -23,15 +50,25 @@ def read_hex(
     offset: int = Query(0, ge=0),
     length: int = 256,
     view: ViewMode = "raw",
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Read raw bytes from a dump file as hex + ASCII.
 
     For MSL files, ``view`` selects the byte source:
     ``raw`` (default) → .msl container bytes; ``vas`` → flattened
-    captured memory projection.
+    captured memory projection. Optional ``passphrase`` / ``key_hex`` /
+    ``kem_key_hex`` unlock an encrypted ``.msl`` container (spec §10).
     """
-    return tools_inspect.read_hex(session, dump_path, offset, length, view=view)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        # The API keeps the "encrypted-and-locked reads back empty" UI contract
+        # (the diagnostic lives on the dedicated /tag-status endpoints): the
+        # status-carrying producer always builds the payload, and
+        # present_inspect_http drops the status block on the way out.
+        return _http_inspect(lambda: tools_inspect.read_hex_result(
+            session, dump_path, offset, length, view=view))
 
 
 @router.get("/hex-raw")
@@ -40,20 +77,30 @@ def read_hex_raw(
     offset: int = 0,
     length: int = 8192,
     view: ViewMode = "raw",
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Read raw bytes from a dump file as base64."""
-    return tools_inspect._read_hex_raw(session, dump_path, offset, length, view=view)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.read_hex_raw_result(
+            session, dump_path, offset, length, view=view))
 
 
 @router.get("/resolve-va")
 def resolve_va(
     dump_path: str,
     va: int,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Translate a virtual address to file and VAS offsets (MSL only)."""
-    return tools_inspect._resolve_va(session, dump_path, va)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.resolve_va_result(
+            session, dump_path, va))
 
 
 @router.get("/entropy")
@@ -64,12 +111,16 @@ def get_entropy(
     window: int = 32,
     step: int = 16,
     threshold: float = 7.5,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Compute entropy profile for a dump file region."""
-    return tools_inspect.get_entropy(
-        session, dump_path, offset, length, window, step, threshold,
-    )
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return tools_inspect.get_entropy(
+            session, dump_path, offset, length, window, step, threshold,
+        )
 
 
 @router.get("/strings")
@@ -82,6 +133,9 @@ def extract_strings(
     max_results: int = 500,
     cursor: int = 0,
     chunk_size: int = 8 * 1024 * 1024,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Extract printable strings from a dump file via chunked streaming.
@@ -90,10 +144,11 @@ def extract_strings(
     last response). ``chunk_size`` controls how many bytes are read per chunk;
     larger chunks reduce overhead but raise peak RSS.
     """
-    return tools_inspect._extract_strings(
-        session, dump_path, offset, length, min_length, encoding, max_results,
-        cursor=cursor, chunk_size=chunk_size,
-    )
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return tools_inspect._extract_strings(
+            session, dump_path, offset, length, min_length, encoding, max_results,
+            cursor=cursor, chunk_size=chunk_size,
+        )
 
 
 @router.get("/byte-search")
@@ -103,6 +158,9 @@ def search_bytes(
     view: ViewMode = "raw",
     max_results: int = 500,
     cursor: int = 0,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Search a dump for every occurrence of a hex byte pattern.
@@ -113,10 +171,11 @@ def search_bytes(
     the byte source: ``raw`` (default) → .msl container bytes; ``vas`` →
     flattened captured memory projection.
     """
-    return tools_inspect.search_bytes(
-        session, dump_path, pattern_hex, view=view,
-        max_results=max_results, cursor=cursor,
-    )
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.search_bytes_result(
+            session, dump_path, pattern_hex, view=view,
+            max_results=max_results, cursor=cursor,
+        ))
 
 
 @router.get("/structure")
@@ -135,14 +194,17 @@ def apply_structure(
     dump_path: str,
     offset: int = 0,
     structure_name: str = "",
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Apply a named structure definition at the given offset."""
     from pathlib import Path
 
-    from core.dump_source import open_dump
-    from core.structure_library import get_structure_library
-    from core.structure_overlay import (
+    from memdiver.core.dump_source import open_dump
+    from memdiver.core.structure_library import get_structure_library
+    from memdiver.core.structure_overlay import (
         compute_max_size,
         overlay_structure,
         serialize_overlay_result,
@@ -153,8 +215,9 @@ def apply_structure(
     if struct_def is None:
         raise HTTPException(status_code=404, detail=f"Structure '{structure_name}' not found")
 
+    km = decode_key_material(passphrase, key_hex, kem_key_hex)
     try:
-        src_ctx = open_dump(Path(dump_path))
+        src_ctx = open_dump(Path(dump_path), **(km or {}))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {dump_path}")
 
@@ -182,30 +245,56 @@ def get_cross_references(
 @router.get("/session-info")
 def get_session_info(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Extract session metadata from an MSL file."""
-    return tools_inspect.get_session_info(session, msl_path)
+    """Extract session metadata from an MSL file.
+
+    Optional ``passphrase`` / ``key_hex`` / ``kem_key_hex`` unlock an
+    encrypted container (spec §10); without them an encrypted dump reads
+    back empty (no captured regions).
+    """
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.session_info_result(session, msl_path))
+
+
+@router.get("/page-states")
+def get_page_states(
+    msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Surface the MSL three-state page model (CAPTURED/FAILED/UNMAPPED)."""
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.page_states_result(session, msl_path))
 
 
 @router.get("/blocks")
 def list_blocks(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List all blocks in an MSL file grouped by type."""
     from pathlib import Path
 
-    from api.services.reader_cache import cached_msl_reader
-    from msl.block_tree import group_blocks
-    from msl.block_tree import list_blocks as msl_list_blocks
+    from memdiver.api.services.reader_cache import cached_msl_reader
+    from memdiver.msl.block_tree import group_blocks
+    from memdiver.msl.block_tree import list_blocks as msl_list_blocks
 
     path = Path(msl_path)
     if path.suffix != ".msl":
         raise HTTPException(status_code=400, detail="Not a valid MSL file")
 
     try:
-        with cached_msl_reader(path) as reader:
+        with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+                cached_msl_reader(path) as reader:
             blocks = msl_list_blocks(reader)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
@@ -232,19 +321,23 @@ def list_blocks(
 @router.get("/modules")
 def list_modules(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List loaded modules from MSL metadata."""
     from pathlib import Path
 
-    from api.services.reader_cache import cached_msl_reader
+    from memdiver.api.services.reader_cache import cached_msl_reader
 
     path = Path(msl_path)
     if path.suffix != ".msl":
         raise HTTPException(status_code=400, detail="Not a valid MSL file")
 
     try:
-        with cached_msl_reader(path) as reader:
+        with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+                cached_msl_reader(path) as reader:
             modules = reader.collect_modules()
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
@@ -264,7 +357,7 @@ def list_modules(
 
 def _handle_type_name(value: int) -> str:
     """Map a raw HANDLE_TABLE handle_type int to its spec Table 24 name."""
-    from msl.enums import HandleType
+    from memdiver.msl.enums import HandleType
     try:
         return HandleType(value).name.capitalize()
     except ValueError:
@@ -295,7 +388,7 @@ def _open_msl(msl_path: str):
     manager's __enter__, we must wrap the whole yield — not just the
     cached_msl_reader() call.
     """
-    from api.services.reader_cache import cached_msl_reader
+    from memdiver.api.services.reader_cache import cached_msl_reader
 
     path = _validate_msl_path(msl_path)
     try:
@@ -342,9 +435,9 @@ def probe_tag_status_with_key(
     material is never cached or logged. A wrong key surfaces as
     ``corrupted`` rather than an error.
     """
-    from msl.enums import TagStatus
-    from msl.reader import MslReader
-    from msl.types import MslAuthError, MslCryptoError
+    from memdiver.msl.enums import TagStatus
+    from memdiver.msl.reader import MslReader
+    from memdiver.msl.types import MslAuthError, MslCryptoError
 
     path = _validate_msl_path(body.msl_path)
 
@@ -380,10 +473,14 @@ def _format_addr(family: int, raw: bytes) -> str:
 @router.get("/module-index")
 def list_module_index(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List entries from MODULE_LIST_INDEX blocks (spec §5.3, type 0x0010)."""
-    with _open_msl(msl_path) as reader:
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+            _open_msl(msl_path) as reader:
         tables = reader.collect_module_list_index()
     result = []
     for table in tables:
@@ -400,10 +497,14 @@ def list_module_index(
 @router.get("/processes")
 def list_processes(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List entries from PROCESS_TABLE blocks (spec §6.3, type 0x0051)."""
-    with _open_msl(msl_path) as reader:
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+            _open_msl(msl_path) as reader:
         tables = reader.collect_processes()
     result = []
     for table in tables:
@@ -425,10 +526,14 @@ def list_processes(
 @router.get("/connections")
 def list_connections(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List entries from CONNECTION_TABLE blocks (spec §6.4, type 0x0052)."""
-    with _open_msl(msl_path) as reader:
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+            _open_msl(msl_path) as reader:
         tables = reader.collect_connections()
     result = []
     for table in tables:
@@ -449,10 +554,14 @@ def list_connections(
 @router.get("/handles")
 def list_handles(
     msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """List entries from HANDLE_TABLE blocks (spec §6.5, type 0x0053)."""
-    with _open_msl(msl_path) as reader:
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
+            _open_msl(msl_path) as reader:
         tables = reader.collect_handles()
     result = []
     for table in tables:
@@ -477,10 +586,10 @@ _RESERVED_NOTE = (
 
 def _ext_to_dict(block):
     """Best-effort JSON shape for a speculative ext block or its fallback."""
-    from msl.decoders_ext import (MslEnvironmentBlock, MslFileDescriptor,
+    from memdiver.msl.decoders_ext import (MslEnvironmentBlock, MslFileDescriptor,
                                   MslNetworkConnection, MslSecurityToken,
                                   MslSystemContext, MslThreadContext)
-    from msl.types import MslGenericBlock
+    from memdiver.msl.types import MslGenericBlock
 
     if isinstance(block, MslGenericBlock):
         return {"decoded": False, "payload_hex": block.payload[:256].hex()}
@@ -604,6 +713,9 @@ def detect_format_endpoint(
     dump_path: str,
     offset: int = 0,
     force_format: str | None = None,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Detect binary format and return navigation tree.
@@ -614,12 +726,13 @@ def detect_format_endpoint(
     """
     from pathlib import Path
 
-    from core.binary_formats.kaitai_registry import get_kaitai_registry
-    from core.binary_formats.navigator import build_nav_tree
-    from core.dump_source import open_dump
-    from core.format_detect import detect_format_at_offset, suggest_formats
+    from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
+    from memdiver.core.binary_formats.navigator import build_nav_tree
+    from memdiver.core.dump_source import open_dump
+    from memdiver.core.format_detect import detect_format_at_offset, suggest_formats
 
-    with open_dump(Path(dump_path)) as src:
+    km = decode_key_material(passphrase, key_hex, kem_key_hex)
+    with open_dump(Path(dump_path), **(km or {})) as src:
         # Read first 64KB of the raw container for format detection and
         # navigation.  For MSL sources this is the .msl container bytes,
         # not the flattened VAS projection — so the container's own
@@ -663,7 +776,7 @@ def detect_format_endpoint(
     # Kaitai deep parse for field-level overlays
     overlays = None
     try:
-        from core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
+        from memdiver.core.binary_formats.kaitai_adapter import KaitaiOverlayAdapter
 
         parsed = registry.parse(fmt, data)
         if parsed:

@@ -1,3 +1,10 @@
+// Key material carried on inspect/analysis requests for encrypted dumps.
+export interface KeyMaterial {
+  passphrase?: string;
+  key_hex?: string;
+  kem_key_hex?: string;
+}
+
 // Request types
 export interface ScanRequest {
   root: string;
@@ -72,6 +79,19 @@ export interface AnalysisResult {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * Response from ``POST /api/analysis/run`` and ``/run-file``. Both
+ * endpoints now dispatch the GIL-bound algorithm work onto the
+ * TaskManager's ProcessPool (like the pipeline + batch endpoints) and
+ * return a ``task_id`` immediately. Progress streams over
+ * ``/ws/tasks/{task_id}``; the full ``AnalysisResult`` is fetched from
+ * the ``analysis_result`` artifact once the task succeeds.
+ */
+export interface AnalysisRunResponse {
+  task_id: string;
+  status: string;
+}
+
 export interface HexData {
   hex_lines: string[];
   offset: number;
@@ -134,12 +154,13 @@ export interface SessionSnapshot {
   investigation_offset: number | null;
 }
 
-export interface TaskStatus {
-  task_id: string;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled" | "not_implemented";
-  progress?: number;
-  message?: string;
-}
+// Task lifecycle types live in ./pipeline as the single source of truth. They
+// mirror TaskRecord.to_dict() in api/services/task_manager.py exactly: the
+// status enum is pending | running | succeeded | failed | cancelled (never
+// "completed" or "not_implemented"), and the record carries stages/artifacts.
+// Re-exported here so existing `./types` importers keep working without a
+// second, drifting definition.
+export type { TaskStatus, StageRecord, ArtifactSpec, TaskRecord } from "./pipeline";
 
 export interface PathInfo {
   exists: boolean;
@@ -263,6 +284,52 @@ export interface FormatSuggestion {
 
 // --- AEAD tag status (spec §10) ---
 export type TagStatus = "not_encrypted" | "valid" | "corrupted" | "missing_key";
+
+// --- MSL three-state page model (CAPTURED/FAILED/UNMAPPED) ---
+export type PageState = "CAPTURED" | "FAILED" | "UNMAPPED";
+
+export interface PageStateInterval {
+  va: number;
+  length: number;
+  state: PageState;
+  page_count: number;
+  /** Present only on CAPTURED intervals: offset into the flattened VAS stream. */
+  vas_offset?: number;
+}
+
+export interface PageStateRegion {
+  base_addr: number;
+  region_size: number;
+  page_size: number;
+  intervals: PageStateInterval[];
+}
+
+export interface PageStatesResponse {
+  regions: PageStateRegion[];
+  total_pages: number;
+  captured_pages: number;
+  coverage: number;
+  vas_size: number;
+}
+
+// --- MSL session metadata (GET /api/inspect/session-info) ---
+// Structurally a superset of SessionView's inline SessionData so the response
+// can be handed straight to <SessionView data={...} />.
+export interface SessionInfoResponse {
+  dump_uuid: string;
+  pid: number;
+  os_type: string;
+  arch_type: string;
+  timestamp_iso: string;
+  exe_path?: string;
+  modules: { path: string; base_addr: number; size: number }[];
+  region_count: number;
+  total_region_size: number;
+  captured_page_count: number;
+  key_hint_count: number;
+  total_pages: number;
+  coverage: number;
+}
 
 // --- Auto Export ---
 export interface AutoExportResult {

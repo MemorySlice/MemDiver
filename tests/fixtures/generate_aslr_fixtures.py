@@ -20,8 +20,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from msl.writer import MslWriter
-from msl.enums import OSType, ArchType
+from memdiver.msl.writer import MslWriter
+from memdiver.msl.enums import OSType, ArchType
 
 PAGE_SIZE = 4096
 STRUCT_SIZE = 336

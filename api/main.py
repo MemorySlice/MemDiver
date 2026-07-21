@@ -12,15 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.config import get_settings
-from api.dependencies import get_tool_session
-from api.services.artifact_store import ArtifactStore
-from api.services.oracle_registry import (
+from memdiver.api.config import get_settings
+from memdiver.api.dependencies import get_tool_session
+from memdiver.api.services.artifact_store import ArtifactStore
+from memdiver.api.services.oracle_registry import (
     init_oracle_registry,
     reset_oracle_registry,
 )
-from api.services.progress_bus import ProgressBus
-from api.services.task_manager import (
+from memdiver.api.services.progress_bus import ProgressBus
+from memdiver.api.services.task_manager import (
     init_task_manager,
     reset_task_manager,
 )
@@ -81,7 +81,7 @@ async def _lifespan(app: FastAPI):
     # in use (refcount > 0 on a concurrent request) are left for the
     # holder to close on release — same deferred-close contract used by
     # normal LRU eviction.
-    from api.services.reader_cache import shutdown_default_cache
+    from memdiver.api.services.reader_cache import shutdown_default_cache
 
     shutdown_default_cache()
 
@@ -97,16 +97,37 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
+    # --- Localhost trust model -------------------------------------------
+    # MemDiver is a LOCAL forensic workbench: the API binds to 127.0.0.1 and
+    # the operator deliberately points it at arbitrary local dump files. The
+    # free-form dump/browse path parameters (inspect, analysis, and the
+    # /api/path/browse + /api/path/info filesystem browser) are therefore NOT
+    # sandboxed on purpose — restricting a user's freely chosen dump path would
+    # break a core feature. The only path hardening applied is on filesystem
+    # paths CONSTRUCTED from a client-supplied identifier (session / structure /
+    # artifact names), which must stay inside their intended storage directory
+    # so an identifier like "../../etc/passwd" cannot escape it.
+    #
+    # CORS: pairing a wildcard origin ("*") with allow_credentials=True is
+    # rejected by browsers and unsafe (it would let any site make credentialed
+    # requests), so any literal "*" is stripped from the configured origins and
+    # we fall back to the localhost dev origin. allow_methods / allow_headers
+    # are narrowed to exactly what the SPA sends (GET/POST/DELETE + the OPTIONS
+    # preflight; Content-Type on JSON/upload bodies) instead of "*".
+    cors_origins = [o for o in settings.cors_origins if o != "*"]
+    if not cors_origins:
+        cors_origins = ["http://localhost:5173"]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-    from api.routers import (
+    from memdiver.api.routers import (
         analysis,
         architect,
         consensus,
@@ -136,7 +157,7 @@ def create_app() -> FastAPI:
     app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
     app.include_router(experiment.router, prefix="/api/experiment", tags=["experiment"])
 
-    from api.ws.progress import router as ws_router
+    from memdiver.api.ws.progress import router as ws_router
 
     app.include_router(ws_router)
 

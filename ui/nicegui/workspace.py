@@ -5,9 +5,9 @@ from pathlib import Path
 
 from nicegui import ui
 
-from engine.session_store import SessionStore, snapshot_from_state
-from ui.components.header import load_logo_b64
-from ui.locales import _
+from memdiver.engine.session_store import SessionStore, snapshot_from_state
+from memdiver.ui.components.header import load_logo_b64
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.nicegui.workspace")
 
@@ -39,7 +39,7 @@ def _render_toolbar(state, mode_mgr):
         ui.space()
         ui.button(_('Save'), icon='save', on_click=lambda: _save_session(state)).props('flat dense')
         ui.button(_('New'), icon='add', on_click=lambda: ui.navigate.to('/wizard')).props('flat dense')
-        from ui.nicegui.theme import create_theme_toggle
+        from memdiver.ui.nicegui.theme import create_theme_toggle
         create_theme_toggle()
 
 
@@ -55,7 +55,7 @@ def _probe_tag_status(path: str):
     if not path or not path.endswith(".msl"):
         return None
     try:
-        from core.dump_source import open_dump
+        from memdiver.core.dump_source import open_dump
         with open_dump(Path(path)) as src:
             status = getattr(src, "tag_status", None)
             return status.value if status is not None else None

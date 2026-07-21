@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ui.components.hex_renderer import render_hex_line, render_offset_column
+from memdiver.ui.components.hex_renderer import render_hex_line, render_offset_column
 
 
 def _strip_tags(html: str) -> str:

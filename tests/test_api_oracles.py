@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from api.services.oracle_registry import (
+from memdiver.api.services.oracle_registry import (
     OracleDisabled,
     OracleNotFound,
     OracleRegistry,
@@ -210,13 +210,13 @@ def test_router_returns_503_when_disabled(tmp_path, monkeypatch):
     """The upload endpoint must 503 when MEMDIVER_ORACLE_DIR is unset."""
     from fastapi.testclient import TestClient
 
-    from api.services.oracle_registry import init_oracle_registry
+    from memdiver.api.services.oracle_registry import init_oracle_registry
 
     examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
     init_oracle_registry(oracle_dir=None, examples_dir=examples_dir)
     try:
         from fastapi import FastAPI
-        from api.routers.oracles import router
+        from memdiver.api.routers.oracles import router
 
         app = FastAPI()
         app.include_router(router, prefix="/api/oracles")
@@ -239,8 +239,8 @@ def test_router_full_round_trip(tmp_path):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from api.routers.oracles import router
-    from api.services.oracle_registry import init_oracle_registry
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
 
     examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
     init_oracle_registry(

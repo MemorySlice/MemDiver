@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ui.components.hex_pager import compute_page, offset_to_page, total_pages
+from memdiver.ui.components.hex_pager import compute_page, offset_to_page, total_pages
 
 
 def test_compute_page_first():

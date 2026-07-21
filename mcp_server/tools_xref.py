@@ -6,7 +6,7 @@ get_cross_references, identify_structure.
 import logging
 from pathlib import Path
 
-from api.services.reader_cache import cached_dump_source, cached_msl_reader
+from memdiver.api.services.reader_cache import cached_dump_source, cached_msl_reader
 
 from .session import ToolSession
 
@@ -17,7 +17,7 @@ def get_cross_references(session: ToolSession, msl_path: str) -> dict:
     """Resolve cross-references for an MSL file."""
     path = Path(msl_path)
 
-    from msl.xref_resolver import XrefResolver
+    from memdiver.msl.xref_resolver import XrefResolver
 
     try:
         with cached_msl_reader(path) as reader:
@@ -52,8 +52,8 @@ def identify_structure(
     protocol: str = "",
 ) -> dict:
     """Try to identify a data structure at the given offset."""
-    from core.structure_library import get_structure_library
-    from core.structure_overlay import (
+    from memdiver.core.structure_library import get_structure_library
+    from memdiver.core.structure_overlay import (
         best_match_structure,
         compute_max_size,
         serialize_overlay_result,
@@ -67,6 +67,15 @@ def identify_structure(
 
     try:
         with cached_dump_source(Path(dump_path)) as source:
+            file_size = source.size_for()
+            # Reject an out-of-range offset with a clean error instead of
+            # overlaying structures onto an empty/short read.
+            if offset < 0 or offset >= file_size:
+                return {
+                    "error": "offset out of range",
+                    "offset": offset,
+                    "file_size": file_size,
+                }
             data = source.read_range(0, offset + max_struct_size)
     except FileNotFoundError:
         return {"error": f"File not found: {dump_path}"}

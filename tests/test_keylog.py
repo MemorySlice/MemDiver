@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.keylog import KeylogParser
+from memdiver.core.keylog import KeylogParser
 
 
 def _write_csv(lines):

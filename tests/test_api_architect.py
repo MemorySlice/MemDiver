@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from api.config import get_settings
-from api.main import create_app
+from memdiver.api.config import get_settings
+from memdiver.api.main import create_app
 
 
 # ---------------------------------------------------------------------------

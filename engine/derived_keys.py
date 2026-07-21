@@ -3,8 +3,8 @@
 import logging
 from typing import List
 
-from core.kdf_registry import get_kdf_registry
-from core.models import CryptoSecret
+from memdiver.core.kdf_registry import get_kdf_registry
+from memdiver.core.models import CryptoSecret
 
 logger = logging.getLogger("memdiver.engine.derived_keys")
 

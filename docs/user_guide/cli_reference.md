@@ -1,6 +1,6 @@
 # CLI reference
 
-MemDiver exposes a single `memdiver` console script with 20 subcommands. This page is auto-generated from the argparse parser — every flag listed here matches the installed version.
+MemDiver exposes a single `memdiver` console script with 22 subcommands. This page is auto-generated from the argparse parser — every flag listed here matches the installed version.
 
 ```{admonition} Common flags
 :class: tip

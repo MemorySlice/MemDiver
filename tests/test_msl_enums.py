@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from msl.enums import (
+from memdiver.msl.enums import (
     BLOCK_HEADER_SIZE,
     BLOCK_MAGIC,
     FILE_HEADER_SIZE,

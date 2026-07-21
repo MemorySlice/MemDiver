@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.models import CryptoSecret
+from memdiver.core.models import CryptoSecret
 
 from .enums import MslKeyType, MslProtocol, PageState
 from .page_map import get_region_page_data

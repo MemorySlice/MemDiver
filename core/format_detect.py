@@ -1,82 +1,58 @@
-"""Binary format detection from magic bytes."""
+"""Binary format detection from magic bytes.
+
+Detection logic now lives in the shared :class:`FormatRegistry`
+(``core.binary_formats.format_descriptor``), the single source of truth for
+every format.  This module keeps its historical public API -- ``detect_format``,
+``suggest_formats``, ``MAGIC_SIGNATURES`` and the ``_classify_*`` helpers -- but
+derives/delegates to the registry so results stay identical.
+"""
 
 from __future__ import annotations
 import struct
 from typing import Optional
 
-# Magic byte signatures: (offset, expected_bytes)
-MAGIC_SIGNATURES: dict[str, tuple[int, bytes]] = {
-    "elf": (0, b"\x7fELF"),
-    "macho64_le": (0, b"\xcf\xfa\xed\xfe"),
-    "macho32_le": (0, b"\xce\xfa\xed\xfe"),
-    "macho64_be": (0, b"\xfe\xed\xfa\xcf"),
-    "macho32_be": (0, b"\xfe\xed\xfa\xce"),
-    "msl": (0, b"MEMSLICE"),
-    "sqlite3": (0, b"SQLite format 3\x00"),
-    "gzip": (0, b"\x1f\x8b"),
-    "zip": (0, b"PK\x03\x04"),
-    "png": (0, b"\x89PNG\r\n\x1a\n"),
-    "pdf": (0, b"%PDF"),
-}
+from memdiver.core.binary_formats.format_descriptor import (
+    classify_elf as _classify_elf_impl,
+    classify_pe as _classify_pe_impl,
+    get_default_registry,
+)
+
+
+def _build_magic_signatures() -> dict[str, tuple[int, bytes]]:
+    """Reconstruct the legacy ``{name: (offset, magic)}`` table from the registry.
+
+    Only fixed magic signatures are included (in registration order), matching
+    the original ``MAGIC_SIGNATURES`` content exactly.  Custom detectors (PE,
+    the CAFEBABE fat/java split, ASN.1 DER) are intentionally excluded, just as
+    before.
+    """
+    signatures: dict[str, tuple[int, bytes]] = {}
+    for descriptor in get_default_registry().all():
+        for result_name, offset, magic in descriptor.magics:
+            signatures[result_name] = (offset, magic)
+    return signatures
+
+
+# Magic byte signatures: (offset, expected_bytes).  Kept as a module-level
+# shim (derived from the registry) for backward compatibility; used by
+# ``suggest_formats``.
+MAGIC_SIGNATURES: dict[str, tuple[int, bytes]] = _build_magic_signatures()
 
 
 def detect_format(data: bytes) -> Optional[str]:
     """Detect binary format from magic bytes at offset 0."""
     if len(data) < 4:
         return None
-
-    # Check simple magic signatures
-    for name, (off, magic) in MAGIC_SIGNATURES.items():
-        end = off + len(magic)
-        if len(data) >= end and data[off:end] == magic:
-            if name == "elf":
-                return _classify_elf(data)
-            return name
-
-    # PE: check for MZ + PE\0\0 at e_lfanew
-    if data[:2] == b"MZ" and len(data) >= 64:
-        try:
-            e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
-            if len(data) >= e_lfanew + 4 and data[e_lfanew:e_lfanew + 4] == b"PE\x00\x00":
-                return _classify_pe(data, e_lfanew)
-        except struct.error:
-            pass
-
-    # Java class file vs Mach-O fat binary (both use 0xCAFEBABE)
-    if len(data) >= 8 and data[:4] == b"\xca\xfe\xba\xbe":
-        nfat = struct.unpack_from(">I", data, 4)[0]
-        if nfat <= 30:
-            return "macho_fat"
-        return "java_class"
-
-    # ASN.1 DER sequence (common in PKCS, X.509 certificates)
-    if len(data) >= 4 and data[0] == 0x30 and data[1] == 0x82:
-        seq_len = struct.unpack_from(">H", data, 2)[0]
-        if seq_len >= 64:
-            return "asn1_der"
-
-    return None
+    return get_default_registry().detect(data)
 
 
 def _classify_elf(data: bytes) -> str:
-    if len(data) >= 5:
-        ei_class = data[4]
-        if ei_class == 2:
-            return "elf64"
-        elif ei_class == 1:
-            return "elf32"
-    return "elf"
+    return _classify_elf_impl(data)
 
 
 def _classify_pe(data: bytes, pe_offset: int) -> str:
     """Classify PE as pe32 or pe64 based on optional header magic."""
-    coff_start = pe_offset + 4
-    opt_start = coff_start + 20
-    if len(data) >= opt_start + 2:
-        magic = struct.unpack_from("<H", data, opt_start)[0]
-        if magic == 0x020B:
-            return "pe64"
-    return "pe32"
+    return _classify_pe_impl(data, pe_offset)
 
 
 def detect_format_at_offset(data: bytes, offset: int) -> Optional[str]:
@@ -86,8 +62,39 @@ def detect_format_at_offset(data: bytes, offset: int) -> Optional[str]:
     return detect_format(data[offset:])
 
 
+def _detector_suggestion_reason(descriptor, data: bytes) -> Optional[str]:
+    """Historical ``suggest_formats`` reason text for a detector-matched format.
+
+    The detection *logic* is single-sourced in each descriptor's ``detector``
+    callable; this only supplies the human-readable ``reason`` string, which is
+    data-dependent and cannot be recovered from a detector's return value.
+
+    Returns ``None`` for detector-only formats that ``suggest_formats`` never
+    surfaced historically (e.g. ``asn1_der``), so the output contract for
+    built-in inputs is preserved exactly.
+    """
+    if descriptor.name == "pe":
+        # PE's historical reason exposes the PE-header offset (``e_lfanew``); it
+        # is display-only and not recoverable from the detector's return value.
+        try:
+            e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+        except struct.error:
+            return None
+        return f"PE signature at 0x{e_lfanew:X}"
+    if descriptor.name == "macho":
+        # Shared 0xCAFEBABE fat/java magic is matched at offset 0.
+        return "magic at 0x0"
+    return None
+
+
 def suggest_formats(data: bytes) -> list[dict]:
     """Ranked parser suggestions. Magic-matched entries first (magic_ok=True).
+
+    Derived live from :func:`get_default_registry` (the descriptors' magic
+    signatures, classifiers and detectors) rather than a frozen snapshot, so
+    formats registered at runtime -- e.g. via the ``memdiver.formats``
+    entry-point group -- are suggested too, and the PE / CAFEBABE detection
+    logic is single-sourced in the descriptors instead of duplicated here.
 
     TODO: future work should include deep embedded-scan secondary suggestions
     (e.g. ELF embedded in a larger binary container).
@@ -96,41 +103,46 @@ def suggest_formats(data: bytes) -> list[dict]:
     if not data:
         return suggestions
 
-    for name, (off, magic) in MAGIC_SIGNATURES.items():
-        end = off + len(magic)
-        if len(data) >= end and data[off:end] == magic:
-            classified = _classify_elf(data) if name == "elf" else name
-            suggestions.append({
-                "format": classified,
-                "reason": f"magic at 0x{off:X}",
-                "magic_ok": True,
-            })
+    registry = get_default_registry()
 
-    if data[:2] == b"MZ" and len(data) >= 64:
-        try:
-            e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
-            if (
-                len(data) >= e_lfanew + 4
-                and data[e_lfanew:e_lfanew + 4] == b"PE\x00\x00"
-            ):
+    # Fixed magic signatures (registration order), refined by any classifier.
+    for descriptor in registry.all():
+        for result_name, off, magic in descriptor.magics:
+            end = off + len(magic)
+            if len(data) >= end and data[off:end] == magic:
+                classified = (
+                    descriptor.classifier(data)
+                    if descriptor.classifier is not None
+                    else result_name
+                )
                 suggestions.append({
-                    "format": _classify_pe(data, e_lfanew),
-                    "reason": f"PE signature at 0x{e_lfanew:X}",
+                    "format": classified,
+                    "reason": f"magic at 0x{off:X}",
                     "magic_ok": True,
                 })
-        except struct.error:
-            pass
 
-    if len(data) >= 8 and data[:4] == b"\xca\xfe\xba\xbe":
+    # Detector-based formats. The byte-level detection logic lives on the
+    # descriptors (no more hand-duplicated MZ/PE or CAFEBABE compares here); we
+    # only attach the historical, data-dependent ``reason`` string per format.
+    for descriptor in registry.all():
+        if descriptor.detector is None:
+            continue
         try:
-            nfat = struct.unpack_from(">I", data, 4)[0]
-            fat_format = "macho_fat" if nfat <= 30 else "java_class"
-            suggestions.append({
-                "format": fat_format,
-                "reason": "magic at 0x0",
-                "magic_ok": True,
-            })
-        except struct.error:
-            pass
+            result = descriptor.detector(data)
+        except Exception:  # noqa: BLE001 - a faulty detector must not break suggestions
+            continue
+        if result is None:
+            continue
+        reason = _detector_suggestion_reason(descriptor, data)
+        if reason is None:
+            # Detector-only formats that suggest_formats never surfaced
+            # historically (e.g. asn1_der) are intentionally omitted to preserve
+            # the exact output contract for built-in inputs.
+            continue
+        suggestions.append({
+            "format": result,
+            "reason": reason,
+            "magic_ok": True,
+        })
 
     return suggestions

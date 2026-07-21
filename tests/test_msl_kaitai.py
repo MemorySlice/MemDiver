@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from core.binary_formats.kaitai_registry import (
+from memdiver.core.binary_formats.kaitai_registry import (
     get_kaitai_registry,
     kaitai_available,
 )

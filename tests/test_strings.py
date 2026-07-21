@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.strings import StringMatch, extract_strings
+from memdiver.core.strings import StringMatch, extract_strings
 
 
 def test_extract_empty_data():

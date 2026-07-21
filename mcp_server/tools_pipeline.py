@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from .key_material import key_material_kwargs
+
 logger = logging.getLogger("memdiver.mcp_server.tools_pipeline")
 
 
@@ -60,10 +62,15 @@ def search_reduce(
     min_region: int = 16,
 ) -> Dict[str, Any]:
     """Reduce consensus variance to a region list via the Phase 25 filter chain."""
-    from engine.candidate_pipeline import reduce_search_space
+    from memdiver.engine.candidate_pipeline import reduce_search_space
 
-    variance = np.load(variance_path)
-    reference = Path(reference_path).read_bytes()
+    try:
+        variance = np.load(variance_path)
+        reference = Path(reference_path).read_bytes()
+    except FileNotFoundError as exc:
+        return {"error": f"File not found: {exc.filename or exc}"}
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
     result = reduce_search_space(
         variance, reference, num_dumps=num_dumps,
         alignment=alignment, block_size=block_size,
@@ -104,21 +111,26 @@ def brute_force(
     top_k: int = 10,
 ) -> Dict[str, Any]:
     """Iterate surviving candidates through a BYO oracle and persist hits.json."""
-    from engine.brute_force import run_brute_force
+    from memdiver.engine.brute_force import run_brute_force
 
-    reference = Path(reference_path).read_bytes()
-    result = run_brute_force(
-        Path(candidates_path),
-        reference,
-        Path(oracle_path),
-        oracle_config_path=Path(oracle_config_path) if oracle_config_path else None,
-        key_sizes=tuple(key_sizes),
-        stride=stride,
-        jobs=jobs,
-        exhaustive=exhaustive,
-        state_path=Path(state_path) if state_path else None,
-        top_k=top_k,
-    )
+    try:
+        reference = Path(reference_path).read_bytes()
+        result = run_brute_force(
+            Path(candidates_path),
+            reference,
+            Path(oracle_path),
+            oracle_config_path=Path(oracle_config_path) if oracle_config_path else None,
+            key_sizes=tuple(key_sizes),
+            stride=stride,
+            jobs=jobs,
+            exhaustive=exhaustive,
+            state_path=Path(state_path) if state_path else None,
+            top_k=top_k,
+        )
+    except FileNotFoundError as exc:
+        return {"error": f"File not found: {exc.filename or exc}"}
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
     out = _ensure_dir(Path(output_dir))
     hits_path = out / "hits.json"
     _dump_json(result.to_dict(), hits_path)
@@ -147,16 +159,23 @@ def n_sweep(
     stride: int = 8,
     exhaustive: bool = True,
     oracle_config_path: Optional[str] = None,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the N-scaling harness and emit report.{json,md,html}."""
-    from core.dump_source import open_dump
-    from engine.nsweep import run_nsweep, write_nsweep_artifacts
-    from engine.oracle import load_oracle, load_oracle_config
+    """Run the N-scaling harness and emit report.{json,md,html}.
 
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+    """
+    from memdiver.core.dump_source import open_dump
+    from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
+    from memdiver.engine.oracle import load_oracle, load_oracle_config
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
     sources = []
     try:
         for path in source_paths:
-            src = open_dump(Path(path))
+            src = open_dump(Path(path), **km)
             src.open()
             sources.append(src)
         config = load_oracle_config(Path(oracle_config_path) if oracle_config_path else None)
@@ -170,6 +189,10 @@ def n_sweep(
             stride=stride,
             exhaustive=exhaustive,
         )
+    except FileNotFoundError as exc:
+        return {"error": f"File not found: {exc.filename or exc}"}
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
     finally:
         for src in sources:
             try:
@@ -203,24 +226,237 @@ def emit_plugin(
     output_dir: str,
     description: Optional[str] = None,
     hit_index: int = 0,
-    min_static_ratio: float = 0.3,
+    variance_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Emit a Volatility 3 plugin from a hit's neighborhood variance."""
-    from engine.vol3_emit import emit_plugin_from_hits_file
+    from memdiver.engine.vol3_emit import emit_plugin_from_hits_file
 
-    reference = Path(reference_path).read_bytes()
-    out = _ensure_dir(Path(output_dir))
-    output_path = out / f"{name}.py"
-    emit_plugin_from_hits_file(
-        Path(hits_path),
-        reference,
-        name=name,
-        output_path=output_path,
-        hit_index=hit_index,
-        description=description,
-    )
+    try:
+        reference = Path(reference_path).read_bytes()
+        out = _ensure_dir(Path(output_dir))
+        output_path = out / f"{name}.py"
+        emit_plugin_from_hits_file(
+            Path(hits_path),
+            reference,
+            name=name,
+            output_path=output_path,
+            hit_index=hit_index,
+            description=description,
+            variance_threshold=variance_threshold,
+        )
+    except FileNotFoundError as exc:
+        return {"error": f"File not found: {exc.filename or exc}"}
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
     return {
         "plugin_path": str(output_path),
         "size": output_path.stat().st_size,
         "name": name,
     }
+
+
+# ----------------------------------------------------------------------
+# consensus  (originates the pipeline: writes variance.npy for search_reduce)
+# ----------------------------------------------------------------------
+
+
+def consensus(
+    *,
+    dump_paths: List[str],
+    output_dir: str,
+    normalize: bool = False,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a per-byte consensus variance vector across N dumps.
+
+    This is the pipeline's origin stage: it writes ``variance.npy`` (the
+    float32 per-byte variance) and ``reference.bin`` (the parallel
+    reference bytes, same offset space as the variance) into
+    ``output_dir``. The returned ``variance_path`` + ``num_dumps`` feed
+    straight into ``search_reduce``, and ``reference_path`` is the
+    reference that stage consumes — so an agent driving purely via MCP can
+    originate the whole chain (consensus → search_reduce → brute_force →
+    emit_plugin) without the web-UI orchestrator.
+
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+    """
+    from memdiver.engine.consensus_service import build_consensus
+
+    paths = [Path(p) for p in dump_paths]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        return {"error": f"File not found: {', '.join(missing)}"}
+    if len(paths) < 2:
+        return {"error": f"Need at least 2 dumps, got {len(paths)}"}
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        cm = build_consensus(paths, normalize=normalize, key_material=km)
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
+
+    if cm.size == 0:
+        return {"error": "Consensus produced an empty variance vector "
+                         "(empty or mismatched dumps)"}
+
+    out = _ensure_dir(Path(output_dir))
+    variance_path = out / "variance.npy"
+    np.save(variance_path, np.asarray(cm.variance, dtype=np.float32))
+    reference_path = out / "reference.bin"
+    reference_path.write_bytes(cm.reference_bytes)
+
+    meta = {
+        "num_dumps": cm.num_dumps,
+        "size": cm.size,
+        "variance_path": str(variance_path),
+        "reference_path": str(reference_path),
+        "classification_counts": cm.classification_counts(),
+        "normalize": normalize,
+    }
+    _dump_json(meta, out / "consensus.json")
+    return meta
+
+
+# ----------------------------------------------------------------------
+# auto-floor  (ground-truth-free variance-floor verdict)
+# ----------------------------------------------------------------------
+
+
+def auto_floor(
+    *,
+    variance_path: str,
+    reference_path: str,
+    oracle_path: str,
+    output_dir: str,
+    num_dumps: int,
+    oracle_config_path: Optional[str] = None,
+    key_sizes: Sequence[int] = (32,),
+    stride: int = 8,
+    reduce_kwargs: Optional[Dict[str, Any]] = None,
+    coverage: Optional[float] = None,
+    correspondence: Optional[float] = None,
+    filter_recall: Optional[float] = None,
+    min_coverage: float = 0.80,
+    positive_control_hex: Optional[str] = None,
+    phi0_method: str = "pmin",
+    p_min: float = 0.35,
+    self_test_trials: int = 8,
+    oracle_budget: Optional[int] = None,
+    alignment_quality: Optional[float] = None,
+    min_alignment: float = 0.5,
+    managed_region: bool = False,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Automated oracle-arbitrated variance-floor selection → single verdict.
+
+    Mirrors ``cli._cmd_auto_floor`` but takes paths/params: a ``variance.npy``
+    (as produced by ``consensus``), a reference dump/bytes file (opened via
+    ``open_dump``, truncated to the variance length), a BYO oracle, and
+    ``num_dumps``. Writes ``verdict.json`` + ``report.md`` into ``output_dir``
+    and returns the verdict dict.
+
+    Encrypted ``.msl`` references are decrypted when key material is supplied.
+    """
+    from memdiver.core.dump_source import open_dump
+    from memdiver.engine.auto_floor import run_auto_floor, write_auto_floor_artifacts
+    from memdiver.engine.oracle import load_oracle, load_oracle_config
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        variance = np.load(variance_path)
+        with open_dump(Path(reference_path), **km) as source:
+            source.open()
+            reference_data = source.read_all()[: len(variance)]
+        oracle = load_oracle(
+            Path(oracle_path),
+            load_oracle_config(Path(oracle_config_path) if oracle_config_path else None),
+        )
+    except FileNotFoundError as exc:
+        return {"error": f"File not found: {exc.filename or exc}"}
+    except (OSError, ValueError) as exc:
+        return {"error": f"Invalid input: {exc}"}
+
+    positive_control = bytes.fromhex(positive_control_hex) if positive_control_hex else None
+    result = run_auto_floor(
+        variance, reference_data, num_dumps, oracle,
+        reduce_kwargs=dict(reduce_kwargs or {}), key_sizes=tuple(key_sizes),
+        stride=stride, coverage=coverage, correspondence=correspondence,
+        filter_recall=filter_recall, min_coverage=min_coverage,
+        positive_control=positive_control, phi0_method=phi0_method,
+        p_min=p_min, self_test_trials=self_test_trials,
+        oracle_budget=oracle_budget, alignment_quality=alignment_quality,
+        min_alignment=min_alignment, managed_region=managed_region,
+    )
+    out = _ensure_dir(Path(output_dir))
+    paths = write_auto_floor_artifacts(result, out)
+    verdict = result.to_dict()
+    verdict["artifacts"] = {k: str(v) for k, v in paths.items()}
+    return verdict
+
+
+# ----------------------------------------------------------------------
+# export-pattern  (YARA / JSON / Volatility3 from a consensus auto-region)
+# ----------------------------------------------------------------------
+
+
+def export_pattern(
+    *,
+    dump_paths: List[str],
+    output_dir: Optional[str] = None,
+    fmt: str = "volatility3",
+    name: str = "memdiver_pattern",
+    align: bool = True,
+    context: int = 32,
+    min_static_ratio: float = 0.3,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Auto-detect a volatile region across N dumps and export a pattern.
+
+    Thin wrapper over ``api.services.analysis_service.auto_export_pattern``,
+    covering ``yara`` / ``json`` / ``volatility3`` formats — the same
+    pipeline the CLI ``export --auto`` and the HTTP ``/auto-export`` route
+    use. When ``output_dir`` is given the rendered pattern is written to a
+    file there; the content is always returned inline too.
+
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+    """
+    from memdiver.api.services.analysis_service import (
+        AnalysisServiceError,
+        auto_export_pattern,
+    )
+
+    paths = [Path(p) for p in dump_paths]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        return {"error": f"File not found: {', '.join(missing)}"}
+    if len(paths) < 2:
+        return {"error": f"Need at least 2 dumps, got {len(paths)}"}
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        result = auto_export_pattern(
+            paths, fmt=fmt, name=name, align=align, context=context,
+            min_static_ratio=min_static_ratio, key_material=km,
+        )
+    except AnalysisServiceError as exc:
+        return {"error": str(exc)}
+
+    payload: Dict[str, Any] = {
+        "format": result["format"],
+        "content": result["content"],
+        "region": result["region"],
+    }
+    if output_dir:
+        ext = {"yara": "yar", "json": "json", "volatility3": "py"}.get(
+            result["format"], "txt")
+        out = _ensure_dir(Path(output_dir))
+        pattern_path = out / f"{name}.{ext}"
+        pattern_path.write_text(result["content"])
+        payload["pattern_path"] = str(pattern_path)
+    return payload

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from api.services.artifact_store import (
+from memdiver.api.services.artifact_store import (
     ArtifactNotFound,
     ArtifactStore,
     InvalidArtifactName,

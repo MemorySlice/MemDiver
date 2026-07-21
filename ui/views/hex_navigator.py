@@ -3,12 +3,12 @@
 import logging
 from typing import Any, List, Optional
 
-from ui.components.hex_pager import compute_page, total_pages, offset_to_page
-from ui.components.hex_renderer import render_hex_dump
-from ui.components.bookmark_store import BookmarkStore
-from ui.components import color_scheme as cs
-from ui.locales import _
-from core.region_analysis import find_pattern, parse_hex_pattern
+from memdiver.ui.components.hex_pager import compute_page, total_pages, offset_to_page
+from memdiver.ui.components.hex_renderer import render_hex_dump
+from memdiver.ui.components.bookmark_store import BookmarkStore
+from memdiver.ui.components import color_scheme as cs
+from memdiver.ui.locales import _
+from memdiver.core.region_analysis import find_pattern, parse_hex_pattern
 
 logger = logging.getLogger("memdiver.ui.views.hex_navigator")
 

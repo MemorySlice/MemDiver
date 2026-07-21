@@ -33,7 +33,7 @@ def check_deps() -> Dict[str, bool]:
 
 def default_db_path() -> Path:
     """Return default DB path (~/.memdiver/project.duckdb)."""
-    from core.constants import memdiver_home
+    from memdiver.core.constants import memdiver_home
     return memdiver_home() / "project.duckdb"
 
 def install_hint() -> str:

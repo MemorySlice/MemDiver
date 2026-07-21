@@ -27,14 +27,27 @@ class AnalyzeRequestAPI(BaseModel):
     algorithms: list[str] | None = None
 
 
-class ConsensusRequest(BaseModel):
+class KeyMaterialFields(BaseModel):
+    """Mixin of optional decryption fields for encrypted ``.msl`` inputs.
+
+    Same shape as ``POST /api/inspect/tag-status``: ``passphrase`` (utf-8),
+    ``key_hex`` (raw symmetric key, hex), ``kem_key_hex`` (KEM private key,
+    hex). All optional — omit for plaintext dumps (spec §10).
+    """
+
+    passphrase: str | None = None
+    key_hex: str | None = None
+    kem_key_hex: str | None = None
+
+
+class ConsensusRequest(KeyMaterialFields):
     """Request body for consensus matrix computation."""
 
     dump_paths: list[str]
     normalize: bool = False
 
 
-class AnalyzeFileRequest(BaseModel):
+class AnalyzeFileRequest(KeyMaterialFields):
     """Request body for single-file analysis."""
 
     dump_path: str
@@ -52,7 +65,7 @@ class ConvergenceRequest(BaseModel):
     max_fp: int = 0
 
 
-class VerifyKeyRequest(BaseModel):
+class VerifyKeyRequest(KeyMaterialFields):
     """Request body for candidate key decryption verification."""
 
     dump_path: str
@@ -63,7 +76,7 @@ class VerifyKeyRequest(BaseModel):
     cipher: str = "AES-256-CBC"
 
 
-class AutoExportRequest(BaseModel):
+class AutoExportRequest(KeyMaterialFields):
     """Request body for auto-detect key region and export."""
 
     dump_paths: list[str]
@@ -106,6 +119,21 @@ class BatchRunRequest(BaseModel):
 
 class BatchRunResponse(BaseModel):
     """Response for a freshly-submitted batch task."""
+
+    task_id: str
+    status: str
+
+
+class AnalysisRunResponse(BaseModel):
+    """Response for a freshly-submitted ``run`` / ``run-file`` analysis task.
+
+    Both endpoints now dispatch the GIL-bound algorithm work onto the
+    TaskManager's ProcessPool (mirroring ``POST /api/analysis/batch`` and
+    the pipeline endpoint) instead of blocking the request thread. The
+    caller subscribes to ``/ws/tasks/{task_id}`` for progress and fetches
+    the full ``AnalysisResult`` from the ``analysis_result`` artifact on
+    completion.
+    """
 
     task_id: str
     status: str

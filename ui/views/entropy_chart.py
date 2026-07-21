@@ -3,7 +3,7 @@
 import logging
 from typing import Any, List, Optional, Tuple
 
-from ui.locales import _
+from memdiver.ui.locales import _
 
 logger = logging.getLogger("memdiver.ui.views.entropy_chart")
 

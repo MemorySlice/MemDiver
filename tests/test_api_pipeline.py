@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from api.config import get_settings
-from api.main import create_app
+from memdiver.api.config import get_settings
+from memdiver.api.main import create_app
 
 ORACLE_SOURCE = (
     "KEY = bytes(range(32))\n"
@@ -241,8 +241,8 @@ def test_download_fallback_rejects_in_tree_symlink(tmp_path, monkeypatch):
 
     from fastapi import HTTPException
 
-    from api.routers import pipeline as pipeline_mod
-    from api.services.artifact_store import ArtifactSpec, ArtifactStore
+    from memdiver.api.routers import pipeline as pipeline_mod
+    from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
 
     # Secret file living OUTSIDE the store root.
     secret = tmp_path / "secret.txt"
@@ -271,8 +271,8 @@ def test_download_fallback_rejects_in_tree_symlink(tmp_path, monkeypatch):
 
 def test_download_fallback_serves_regular_in_tree_file(tmp_path, monkeypatch):
     """Sanity: the hardened fallback still serves a genuine regular file."""
-    from api.routers import pipeline as pipeline_mod
-    from api.services.artifact_store import ArtifactSpec, ArtifactStore
+    from memdiver.api.routers import pipeline as pipeline_mod
+    from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
 
     store_root = tmp_path / "tasks"
     store = ArtifactStore(store_root, max_total_bytes=0)
@@ -301,8 +301,8 @@ def test_refine_neighborhood_variance_uses_post_fold_state(tmp_path, monkeypatch
 
     import numpy as np
 
-    from core.variance import WelfordVariance
-    from api.routers import pipeline as pipeline_mod
+    from memdiver.core.variance import WelfordVariance
+    from memdiver.api.routers import pipeline as pipeline_mod
 
     size = 256
 
@@ -372,3 +372,157 @@ def test_refine_neighborhood_variance_uses_post_fold_state(tmp_path, monkeypatch
     # And confirm it is NOT the buggy stale-m2 / new_n value.
     stale = (m2[start:end].astype(np.float32) / 4.0)
     assert not np.allclose(got, stale, rtol=1e-5, atol=1e-3)
+
+
+# ------------------------------------------------------------------
+# refine / neighborhood locate state.json from a real TaskRecord
+# (regression for the phantom ``artifact_dir`` 400)
+# ------------------------------------------------------------------
+
+
+def _seed_consensus_on_disk(store_root: Path, task_id: str, size: int = 256):
+    """Materialise a real consensus/state.json (+ mean/m2 + hits) under the
+    artifact store's task dir, exactly where the pipeline worker writes it.
+
+    Returns ``(TaskRecord, m2_array)``. The TaskRecord carries the genuine
+    ``consensus_state`` artifact spec and — like the production record — has
+    NO ``artifact_dir`` attribute, so the handlers must resolve the path via
+    ``artifact_store.root / task_id``.
+    """
+    from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
+    from memdiver.api.services.task_manager import TaskRecord, TaskStatus
+    from memdiver.core.variance import WelfordVariance
+
+    store = ArtifactStore(store_root, max_total_bytes=0)
+    task_dir = store.task_dir(task_id)
+    consensus_dir = task_dir / "consensus"
+    consensus_dir.mkdir(parents=True, exist_ok=True)
+
+    welford = WelfordVariance(size)
+    for seed in (1, 2, 3):
+        rng = np.random.default_rng(seed)
+        welford.add_dump(rng.integers(0, 256, size, dtype=np.uint8).tobytes())
+    mean, m2, n = welford.state_arrays()
+
+    mean_path = consensus_dir / "mean.npy"
+    m2_path = consensus_dir / "m2.npy"
+    np.save(mean_path, mean)
+    np.save(m2_path, m2)
+    (consensus_dir / "state.json").write_text(json.dumps({
+        "size": int(size),
+        "num_dumps": int(n),
+        "mean_path": str(mean_path),
+        "m2_path": str(m2_path),
+    }))
+
+    bf_dir = task_dir / "brute_force"
+    bf_dir.mkdir(parents=True, exist_ok=True)
+    (bf_dir / "hits.json").write_text(
+        json.dumps({"hits": [{"offset": 96, "length": 16}]})
+    )
+
+    record = TaskRecord(
+        task_id=task_id,
+        kind="pipeline",
+        status=TaskStatus.SUCCEEDED,
+        artifacts=[
+            ArtifactSpec(
+                name="consensus_state",
+                relpath="consensus/state.json",
+                media_type="application/json",
+            ),
+        ],
+    )
+    return store, record, m2
+
+
+def test_refine_locates_state_from_taskrecord(tmp_path, monkeypatch):
+    """POST /runs/{id}/refine must find consensus/state.json via the artifact
+    store (root/task_id), NOT the phantom ``artifact_dir`` — which always
+    made a genuine TaskRecord 400 'consensus state not found'."""
+    import asyncio
+
+    from memdiver.api.routers import pipeline as pipeline_mod
+
+    task_id = "task-refine-regression"
+    store, record, _ = _seed_consensus_on_disk(tmp_path / "tasks", task_id)
+
+    # Sanity: the production record genuinely has no artifact_dir field.
+    assert not hasattr(record, "artifact_dir")
+
+    manager = _FakeManager(record, store)
+    monkeypatch.setattr(pipeline_mod, "_task_manager_or_503", lambda: manager)
+
+    # An additional dump to fold (same size as the consensus state).
+    extra = tmp_path / "extra.bin"
+    extra.write_bytes(
+        np.random.default_rng(99).integers(0, 256, 256, dtype=np.uint8).tobytes()
+    )
+
+    body = pipeline_mod.RefineRequest(additional_paths=[str(extra)])
+    resp = asyncio.run(pipeline_mod.refine_consensus(task_id, body))
+
+    # Was 3 dumps on disk; folding one more -> 4. Reaching here at all means
+    # we did NOT raise the 400.
+    assert resp.num_dumps == 4
+    assert len(resp.hit_neighborhoods) == 1
+
+
+def test_neighborhood_locates_state_from_taskrecord(tmp_path, monkeypatch):
+    """GET /runs/{id}/neighborhood must likewise resolve state.json from the
+    artifact store rather than raising 400."""
+    import asyncio
+
+    from memdiver.api.routers import pipeline as pipeline_mod
+
+    task_id = "task-neighborhood-regression"
+    store, record, m2 = _seed_consensus_on_disk(tmp_path / "tasks", task_id)
+
+    manager = _FakeManager(record, store)
+    monkeypatch.setattr(pipeline_mod, "_task_manager_or_503", lambda: manager)
+
+    result = asyncio.run(
+        pipeline_mod.get_neighborhood(task_id, offset=96, length=16)
+    )
+
+    assert result["num_dumps"] == 3
+    assert len(result["variance"]) > 0
+
+
+def test_refine_and_neighborhood_end_to_end(client, synthetic_dumps):
+    """Full round trip: run the real pipeline, then hit refine + neighborhood
+    over HTTP and assert 200 (they were dead-on-arrival returning 400)."""
+    oracle_id, _ = _upload_and_arm(client)
+    r = client.post("/api/pipeline/run", json={
+        "source_paths": synthetic_dumps,
+        "oracle_id": oracle_id,
+        "reduce": {
+            "min_variance": 100.0,
+            "entropy_window": 16,
+            "entropy_threshold": 3.5,
+            "min_region": 8,
+            "alignment": 8,
+            "block_size": 16,
+        },
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1},
+    })
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task_id"]
+    record = _wait_terminal(client, task_id)
+    assert record["status"] == "succeeded", record
+
+    # neighborhood
+    r = client.get(
+        f"/api/pipeline/runs/{task_id}/neighborhood",
+        params={"offset": 256, "length": 32},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["num_dumps"] >= 1
+
+    # refine: fold the same dumps back in (they exist + are the right size).
+    r = client.post(
+        f"/api/pipeline/runs/{task_id}/refine",
+        json={"additional_paths": synthetic_dumps},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["num_dumps"] >= len(synthetic_dumps)

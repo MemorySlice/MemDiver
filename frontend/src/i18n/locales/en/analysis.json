@@ -4,7 +4,9 @@
     "loadingDump": "Loading dump data...",
     "runningAlgorithms": "Running algorithms...",
     "scanningPatterns": "Scanning for patterns...",
-    "processingResults": "Processing results..."
+    "processingResults": "Processing results...",
+    "submitting": "Submitting analysis task...",
+    "fetchingResult": "Fetching results..."
   },
   "algoLabels": {
     "entropy_scan": "Entropy Scan",

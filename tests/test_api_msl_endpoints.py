@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import create_app
+from memdiver.api.main import create_app
 from tests.fixtures.generate_msl_fixtures import generate_msl_file
 
 
@@ -174,7 +174,7 @@ def test_tag_status_plaintext(client, msl_path):
 
 def test_tag_status_encrypted_missing_key(client, tmp_path):
     import os
-    from msl.writer import MslEncryptionConfig, MslWriter
+    from memdiver.msl.writer import MslEncryptionConfig, MslWriter
     out = tmp_path / "enc.msl"
     w = MslWriter(out, pid=7,
                   encryption=MslEncryptionConfig(raw_key=os.urandom(32)))
@@ -194,8 +194,8 @@ def test_tag_status_rejects_non_msl(client, tmp_path):
 
 
 def _write_passphrase_msl(path):
-    from msl.enums import KdfType, KeyEncap
-    from msl.writer import MslEncryptionConfig, MslWriter
+    from memdiver.msl.enums import KdfType, KeyEncap
+    from memdiver.msl.writer import MslEncryptionConfig, MslWriter
     cfg = MslEncryptionConfig(kdf_type=KdfType.ARGON2ID, key_encap=KeyEncap.NONE,
                               passphrase=b"correct horse")
     w = MslWriter(path, pid=7, encryption=cfg)
@@ -206,8 +206,8 @@ def _write_passphrase_msl(path):
 
 def test_tag_status_keyed_valid(client, tmp_path):
     import pytest as _pytest
-    from msl import crypto
-    from msl.enums import KdfType
+    from memdiver.msl import crypto
+    from memdiver.msl.enums import KdfType
     if not crypto.kdf_is_available(KdfType.ARGON2ID):
         _pytest.skip("argon2-cffi not installed")
     out = tmp_path / "pass.msl"
@@ -220,8 +220,8 @@ def test_tag_status_keyed_valid(client, tmp_path):
 
 def test_tag_status_keyed_wrong_passphrase_corrupted(client, tmp_path):
     import pytest as _pytest
-    from msl import crypto
-    from msl.enums import KdfType
+    from memdiver.msl import crypto
+    from memdiver.msl.enums import KdfType
     if not crypto.kdf_is_available(KdfType.ARGON2ID):
         _pytest.skip("argon2-cffi not installed")
     out = tmp_path / "pass2.msl"
@@ -235,7 +235,7 @@ def test_tag_status_keyed_wrong_passphrase_corrupted(client, tmp_path):
 def test_tag_status_keyed_bad_hex_400(client, tmp_path):
     out = tmp_path / "enc2.msl"
     import os
-    from msl.writer import MslEncryptionConfig, MslWriter
+    from memdiver.msl.writer import MslEncryptionConfig, MslWriter
     w = MslWriter(out, pid=7,
                   encryption=MslEncryptionConfig(raw_key=os.urandom(32)))
     w.add_memory_region(0x1000, b"\xAB" * 4096)

@@ -18,13 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from msl.block_tree import _block_type_name, list_blocks
-from msl.decoders import (decode_connection_table, decode_connectivity_table,
+from memdiver.msl.block_tree import _block_type_name, list_blocks
+from memdiver.msl.decoders import (decode_connection_table, decode_connectivity_table,
                           decode_handle_table, decode_module_list_index,
                           decode_process_table)
-from msl.enums import BlockType, ConnRowType
-from msl.reader import MslReader
-from msl.types import (MslBlockHeader, MslConnArpEntry, MslConnectionTable,
+from memdiver.msl.enums import BlockType, ConnRowType
+from memdiver.msl.reader import MslReader
+from memdiver.msl.types import (MslBlockHeader, MslConnArpEntry, MslConnectionTable,
                        MslConnectivityTable, MslConnIfaceStats,
                        MslConnIPv4Route, MslConnIPv6Route, MslConnMibCounter,
                        MslConnPacketSocket, MslConnSocketFamilyAgg,
@@ -296,7 +296,7 @@ def test_handle_table_roundtrip(msl_path):
     HandleType is a uint16 enum; default fixture exercises File, Socket
     (empty-path edge case), and Other handle types.
     """
-    from msl.enums import HandleType
+    from memdiver.msl.enums import HandleType
     with MslReader(msl_path) as reader:
         tables = reader.collect_handles()
         assert len(tables) == 1
@@ -506,3 +506,24 @@ def test_golden_real_sample_no_exceptions():
             for entry in table.entries:
                 assert entry.path  # non-empty
                 assert entry.module_uuid is not None
+
+
+@pytest.mark.skipif(not _GOLDEN.exists(), reason="Golden sample not vendored")
+def test_golden_real_sample_malformed_region_skipped(caplog):
+    """The vendored Chrome sample contains a MEMORY_REGION with an
+    out-of-spec PageSizeLog2 (0). collect_regions() must not raise — the
+    reader skips the non-conformant block (with a warning) so unrelated
+    consumers (session info, page-states, module list) keep working.
+    Regression for the whole-file decode failure that one bad block caused.
+    """
+    with MslReader(_GOLDEN) as reader:
+        with caplog.at_level("WARNING"):
+            regions = reader.collect_regions()
+        # The single malformed region is dropped, not surfaced.
+        assert regions == []
+        assert any(
+            "Skipping malformed MEMORY_REGION" in rec.message
+            for rec in caplog.records
+        )
+        # Modules in the same file remain fully decodable.
+        assert sum(t.entry_count for t in reader.collect_module_list_index()) > 0

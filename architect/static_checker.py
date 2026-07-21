@@ -46,6 +46,32 @@ class StaticChecker:
                 continue
             regions.append(data[offset:end])
 
+        static_mask, reference = StaticChecker.check_regions(regions)
+        logger.info(
+            "Static check: %d/%d bytes static across %d dumps (offset 0x%x)",
+            sum(static_mask), len(reference), len(regions), offset,
+        )
+        return static_mask, reference
+
+    @staticmethod
+    def check_regions(regions: List[bytes]) -> Tuple[List[bool], bytes]:
+        """Compute (static_mask, reference) from already-sliced region bytes.
+
+        The byte-comparison core of :meth:`check`, factored out so callers
+        that already hold the region bytes in memory — e.g. after reading
+        through a DumpSource memory projection for an encrypted ``.msl`` — can
+        reuse the exact same staticness logic without going back to raw file
+        reads at (possibly memory-relative) offsets.
+
+        Args:
+            regions: One byte string per dump, each already sliced to the
+                region of interest. Regions may differ in length.
+
+        Returns:
+            Tuple of (static_mask, reference_bytes) where reference_bytes is
+            the first region and static_mask[i] is True iff every region has
+            the same byte at position i.
+        """
         if not regions:
             return [], b""
 
@@ -62,11 +88,6 @@ class StaticChecker:
             for i in range(len(region), actual_len):
                 static_mask[i] = False
 
-        static_count = sum(static_mask)
-        logger.info(
-            "Static check: %d/%d bytes static across %d dumps (offset 0x%x)",
-            static_count, actual_len, len(regions), offset,
-        )
         return static_mask, reference
 
     @staticmethod

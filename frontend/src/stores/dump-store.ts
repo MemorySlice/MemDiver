@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getTagStatus, probeTagStatusWithKey } from "@/api/client";
-import type { TagStatus } from "@/api/types";
+import type { TagStatus, KeyMaterial } from "@/api/types";
 
 export interface DumpEntry {
   id: string;
@@ -10,6 +10,7 @@ export interface DumpEntry {
   format: "raw" | "msl";
   sameProcess: boolean;
   tagStatus?: TagStatus;
+  keyMaterial?: KeyMaterial;
 }
 
 interface DumpState {
@@ -31,12 +32,14 @@ interface DumpState {
   fetchTagStatus: (id: string) => Promise<void>;
   unlockTagStatus: (
     id: string,
-    secret: { passphrase?: string; key_hex?: string; kem_key_hex?: string },
+    secret: KeyMaterial,
   ) => Promise<TagStatus>;
   setSelectedDumps: (ids: string[]) => void;
   toggleDumpVisibility: (id: string) => void;
   clearAll: () => void;
   getDumpPaths: () => string[];
+  getKeyMaterial: (id: string) => KeyMaterial | undefined;
+  getKeyMaterialByPath: (path: string) => KeyMaterial | undefined;
 }
 
 export const useDumpStore = create<DumpState>((set, get) => ({
@@ -113,7 +116,14 @@ export const useDumpStore = create<DumpState>((set, get) => ({
     const { tag_status } = await probeTagStatusWithKey(dump.path, secret);
     set((state) => ({
       dumps: state.dumps.map((d) =>
-        d.id === id ? { ...d, tagStatus: tag_status } : d,
+        d.id === id
+          ? {
+              ...d,
+              tagStatus: tag_status,
+              // Remember the unlocking key only when it actually worked.
+              keyMaterial: tag_status === "valid" ? secret : d.keyMaterial,
+            }
+          : d,
       ),
     }));
     return tag_status;
@@ -142,4 +152,9 @@ export const useDumpStore = create<DumpState>((set, get) => ({
     }),
 
   getDumpPaths: () => get().dumps.map((d) => d.path),
+
+  getKeyMaterial: (id) => get().dumps.find((d) => d.id === id)?.keyMaterial,
+
+  getKeyMaterialByPath: (path) =>
+    get().dumps.find((d) => d.path === path)?.keyMaterial,
 }));

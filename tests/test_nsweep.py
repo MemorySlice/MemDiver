@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from engine.nsweep import (
+from memdiver.engine.nsweep import (
     NSweepResult,
     run_nsweep,
     write_nsweep_artifacts,

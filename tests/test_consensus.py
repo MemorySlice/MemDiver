@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.variance import ByteClass
-from engine.consensus import ConsensusVector, INVARIANT_MAX, STRUCTURAL_MAX, POINTER_MAX
+from memdiver.core.variance import ByteClass
+from memdiver.engine.consensus import ConsensusVector, INVARIANT_MAX, STRUCTURAL_MAX, POINTER_MAX
 
 
 def _make_dumps(data_list):

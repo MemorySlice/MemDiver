@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
 import { verifyKey } from "@/api/client";
 import { useHexStore } from "@/stores/hex-store";
+import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { useVerificationStore } from "@/stores/verification-store";
 
@@ -97,6 +98,7 @@ export function KeyVerificationPanel() {
         ciphertext_hex: cleanCiphertext,
         iv_hex: cleanIv.length > 0 ? cleanIv : undefined,
         cipher,
+        ...useDumpStore.getState().getKeyMaterialByPath(dumpPath),
       });
       setResult(res);
     } catch (e) {
