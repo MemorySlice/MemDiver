@@ -17,6 +17,11 @@ from typing import List
 import numpy as np
 import pytest
 
+from memdiver.core.service_errors import (
+    CapabilityError,
+    ErrorCategory,
+    FileNotFoundServiceError,
+)
 from memdiver.mcp_server import tools_pipeline
 
 
@@ -212,3 +217,83 @@ def test_emit_plugin_writes_valid_python(tmp_path):
     source = plugin_path.read_text()
     compile(source, str(plugin_path), "exec")
     assert "mcp_test_plugin" in source
+
+
+# ----------------------------------------------------------------------
+# error funnel: stages raise a structured CapabilityError, not an
+# ``{"error": ...}`` magic dict (Phase 5a). The MCP tool bodies are
+# wrapped by ``mcp_error_funnel``, which renders the raised error as the
+# structured ``{"error", "code", "category"}`` JSON payload.
+# ----------------------------------------------------------------------
+
+
+def test_search_reduce_missing_variance_raises(tmp_path):
+    with pytest.raises(FileNotFoundServiceError) as excinfo:
+        tools_pipeline.search_reduce(
+            variance_path=str(tmp_path / "nope.npy"),
+            reference_path=str(tmp_path / "nope.bin"),
+            num_dumps=4,
+            output_dir=str(tmp_path / "out"),
+        )
+    assert excinfo.value.category is ErrorCategory.NOT_FOUND
+    assert excinfo.value.message.startswith("File not found:")
+
+
+def test_brute_force_missing_reference_raises(tmp_path):
+    with pytest.raises(FileNotFoundServiceError) as excinfo:
+        tools_pipeline.brute_force(
+            candidates_path=str(tmp_path / "nope.json"),
+            reference_path=str(tmp_path / "nope.bin"),
+            oracle_path=str(tmp_path / "nope.py"),
+            output_dir=str(tmp_path / "out"),
+        )
+    assert excinfo.value.category is ErrorCategory.NOT_FOUND
+
+
+def test_emit_plugin_missing_reference_raises(tmp_path):
+    with pytest.raises(FileNotFoundServiceError) as excinfo:
+        tools_pipeline.emit_plugin(
+            hits_path=str(tmp_path / "nope.json"),
+            reference_path=str(tmp_path / "nope.bin"),
+            name="x",
+            output_dir=str(tmp_path / "out"),
+        )
+    assert excinfo.value.category is ErrorCategory.NOT_FOUND
+
+
+def test_mcp_error_funnel_renders_structured_payload(tmp_path):
+    """The funnel that wraps the MCP pipeline tools renders a raised
+    CapabilityError as the ``{"error", "code", "category"}`` JSON shape."""
+    from memdiver.mcp_server.presenters import mcp_error_funnel
+
+    @mcp_error_funnel
+    def tool() -> str:
+        return json.dumps(
+            tools_pipeline.search_reduce(
+                variance_path=str(tmp_path / "nope.npy"),
+                reference_path=str(tmp_path / "nope.bin"),
+                num_dumps=4,
+                output_dir=str(tmp_path / "out"),
+            )
+        )
+
+    payload = json.loads(tool())
+    assert set(payload) == {"error", "code", "category"}
+    assert payload["error"].startswith("File not found:")
+    assert payload["category"] == "NOT_FOUND"
+
+
+def test_capability_error_is_used_for_invalid_input(tmp_path):
+    """A corrupt (non-npy) variance file surfaces as an INVALID_INPUT
+    CapabilityError rather than a magic error dict."""
+    bad = tmp_path / "bad.npy"
+    bad.write_bytes(b"not a numpy array")
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.search_reduce(
+            variance_path=str(bad),
+            reference_path=str(bad),
+            num_dumps=4,
+            output_dir=str(tmp_path / "out"),
+        )
+    assert excinfo.value.category is ErrorCategory.INVALID_INPUT
+    assert excinfo.value.message.startswith("Invalid input:")

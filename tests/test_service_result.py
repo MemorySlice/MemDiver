@@ -1,6 +1,6 @@
 """Tests for the neutral result envelope in ``memdiver.core.service_result``."""
 
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 
 import pytest
 
@@ -131,6 +131,22 @@ def test_key_status_to_dict_shape_and_order():
         "decrypted": False,
         "hint": "dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
     }
+
+
+@pytest.mark.parametrize(
+    "instance",
+    [
+        Diagnostic(code="c", message="m"),
+        KeyStatus(),
+        StatusBlock(),
+        ServiceResult(payload={}),
+    ],
+)
+def test_all_envelope_types_are_frozen(instance):
+    """Every value type must be immutable to stay safely shareable/picklable."""
+    field_name = next(iter(instance.__dataclass_fields__))
+    with pytest.raises(FrozenInstanceError):
+        setattr(instance, field_name, object())
 
 
 def test_status_block_to_dict_shape_and_order():

@@ -11,7 +11,10 @@ import pickle
 from memdiver.core.service_errors import (
     CapabilityError,
     ErrorCategory,
+    FileNotFoundServiceError,
+    OffsetOutOfRangeError,
     UnknownAlgorithmError,
+    UnsupportedFormatError,
 )
 from memdiver.core.service_result import (
     Diagnostic,
@@ -96,6 +99,48 @@ def test_subclass_error_pickle_round_trip():
     assert restored.category is ErrorCategory.INVALID_INPUT
     assert restored.code == "algo.unknown"
     assert restored.message == "no such algo"
+
+
+def test_file_not_found_service_error_defaults_and_pickle():
+    err = FileNotFoundServiceError("File not found: /nope.msl")
+    assert err.category is ErrorCategory.NOT_FOUND
+    assert err.status == 404
+    assert err.code is None
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, FileNotFoundServiceError)
+    assert restored.category is ErrorCategory.NOT_FOUND
+    assert restored.message == "File not found: /nope.msl"
+
+
+def test_offset_out_of_range_error_defaults_and_pickle():
+    err = OffsetOutOfRangeError("offset out of range", details={"offset": 99})
+    assert err.category is ErrorCategory.INVALID_INPUT
+    assert err.status == 400
+    assert err.details == {"offset": 99}
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, OffsetOutOfRangeError)
+    assert restored.category is ErrorCategory.INVALID_INPUT
+    assert restored.details == {"offset": 99}
+
+
+def test_unsupported_format_error_defaults_and_pickle():
+    err = UnsupportedFormatError("format not supported")
+    assert err.category is ErrorCategory.UNSUPPORTED
+    assert err.status == 400
+    restored = pickle.loads(pickle.dumps(err))
+    assert isinstance(restored, UnsupportedFormatError)
+    assert restored.category is ErrorCategory.UNSUPPORTED
+    assert restored.message == "format not supported"
+
+
+def test_subclasses_forward_explicit_overrides_to_base():
+    """Subclasses only *default* category/code — explicit kwargs must win."""
+    err = UnknownAlgorithmError(
+        "custom", category=ErrorCategory.PRECONDITION, code="custom.code", status=418
+    )
+    assert err.category is ErrorCategory.PRECONDITION
+    assert err.code == "custom.code"
+    assert err.status == 418
 
 
 def test_serialized_envelope_is_json_serializable():

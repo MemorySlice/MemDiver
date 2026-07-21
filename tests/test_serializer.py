@@ -14,6 +14,7 @@ from memdiver.engine.serializer import (
     serialize_report,
     serialize_result,
     serialize_static_region,
+    summarize_result,
 )
 
 
@@ -84,6 +85,81 @@ def test_serialize_dataset_info():
     assert d["root"] == "/tmp/data"
     assert d["protocol_versions"] == ["12", "13"]
     assert d["total_runs"] == 5
+
+
+def _representative_result() -> AnalysisResult:
+    """An AnalysisResult with two libraries and a mix of hits/metadata."""
+    result = AnalysisResult(metadata={"source": "unit-test"})
+    result.libraries.append(
+        LibraryReport(
+            library="openssl",
+            protocol_version="13",
+            phase="pre_abort",
+            num_runs=3,
+            hits=[
+                SecretHit(
+                    secret_type="CLIENT_RANDOM",
+                    offset=100,
+                    length=32,
+                    dump_path=Path("/tmp/a.dump"),
+                    library="openssl",
+                    phase="pre_abort",
+                    run_id=1,
+                ),
+                SecretHit(
+                    secret_type="SERVER_RANDOM",
+                    offset=200,
+                    length=32,
+                    dump_path=Path("/tmp/a.dump"),
+                    library="openssl",
+                    phase="pre_abort",
+                    run_id=2,
+                ),
+            ],
+        )
+    )
+    result.libraries.append(
+        LibraryReport(
+            library="gnutls",
+            protocol_version="12",
+            phase="post_handshake",
+            num_runs=1,
+        )
+    )
+    return result
+
+
+def test_summarize_result_equivalence_lock():
+    """summarize_result must be byte-identical to the runner's legacy
+    _result_summary for the serialized-dict inputs the runner passes."""
+    from memdiver.engine.analysis_task_runner import _result_summary
+
+    result = _representative_result()
+    serialized = serialize_result(result)
+
+    canonical = summarize_result(serialized)
+    legacy = _result_summary(serialized)
+    assert canonical == legacy
+    # Delegation means the wrapper now IS summarize_result; also confirm the
+    # dataclass path matches the serialized-dict path.
+    assert summarize_result(result) == canonical
+
+    # Lock the exact shape and values.
+    assert canonical == {
+        "library_count": 2,
+        "total_hits": 2,
+        "libraries": [
+            {"library": "openssl", "phase": "pre_abort", "num_runs": 3, "hit_count": 2},
+            {"library": "gnutls", "phase": "post_handshake", "num_runs": 1, "hit_count": 0},
+        ],
+    }
+
+
+def test_summarize_result_json_safe():
+    """The summary must survive json.dumps for the ProcessPool boundary."""
+    summary = summarize_result(_representative_result())
+    text = json.dumps(summary)
+    assert json.loads(text) == summary
 
 
 def test_json_roundtrip():

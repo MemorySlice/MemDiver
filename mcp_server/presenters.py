@@ -15,7 +15,32 @@ the lock signal inlined, so a locked/undecrypted dump is rendered as the same
 
 from __future__ import annotations
 
+import functools
+import json
+
 from memdiver.core.service_errors import CapabilityError
+
+
+def mcp_error_funnel(fn):
+    """Backstop decorator translating a propagating ``CapabilityError`` to JSON.
+
+    Wraps an MCP tool body that does NOT already funnel via
+    ``present_inspect_mcp_call``. A ``CapabilityError`` escaping the tool is
+    rendered as ``json.dumps(err.to_dict())`` — the same structured
+    ``{"error", "code", "category"}`` payload the other transports emit — so an
+    agent receives a machine-readable error instead of an MCP stack trace. The
+    success path is untouched: ``fn``'s own ``json.dumps(...)`` return value
+    passes straight through.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        try:
+            return fn(*a, **k)
+        except CapabilityError as e:
+            return json.dumps(e.to_dict())
+
+    return wrapper
 
 
 def present_inspect_mcp(result) -> dict:

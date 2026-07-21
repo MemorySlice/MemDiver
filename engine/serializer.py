@@ -1,7 +1,12 @@
 """JSON serialization for MemDiver result types."""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Union
+
+if TYPE_CHECKING:
+    from .results import AnalysisResult
 
 
 def _convert_value(value: Any) -> Any:
@@ -65,6 +70,35 @@ def serialize_result(result) -> Dict[str, Any]:
         "libraries": [serialize_report(lib) for lib in result.libraries],
         "total_hits": result.total_hits,
         "metadata": _convert_value(result.metadata),
+    }
+
+
+def summarize_result(result: Union["AnalysisResult", Dict[str, Any]]) -> Dict[str, Any]:
+    """Project an analysis result into a compact terminal/API summary.
+
+    This is the single source of truth for the ``{library_count, total_hits,
+    libraries: [{library, phase, num_runs, hit_count}]}`` shape consumed by
+    the analysis task runner. It accepts either an :class:`AnalysisResult`
+    dataclass or its already-serialized dict; a dataclass is first routed
+    through :func:`serialize_result` so both inputs produce identical,
+    JSON-safe output.
+    """
+    if not isinstance(result, dict):
+        result = serialize_result(result)
+    libraries = result.get("libraries", []) or []
+    total_hits = sum(len(lib.get("hits", []) or []) for lib in libraries)
+    return {
+        "library_count": len(libraries),
+        "total_hits": total_hits,
+        "libraries": [
+            {
+                "library": lib.get("library"),
+                "phase": lib.get("phase"),
+                "num_runs": lib.get("num_runs", 0),
+                "hit_count": len(lib.get("hits", []) or []),
+            }
+            for lib in libraries
+        ],
     }
 
 

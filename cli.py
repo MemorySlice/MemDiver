@@ -8,7 +8,36 @@ import subprocess
 import sys
 from pathlib import Path
 
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
+
 logger = logging.getLogger("memdiver.cli")
+
+
+# Per-category process exit codes for the CLI backstop: NOT_FOUND is its own
+# code (3) so scripts can distinguish "missing input" from a bad argument (2);
+# caller-correctable input/precondition/unsupported errors share 2; anything
+# INTERNAL is 1 (and additionally logs a traceback for the operator).
+_CLI_EXIT = {
+    ErrorCategory.NOT_FOUND: 3,
+    ErrorCategory.INVALID_INPUT: 2,
+    ErrorCategory.PRECONDITION: 2,
+    ErrorCategory.UNSUPPORTED: 2,
+    ErrorCategory.INTERNAL: 1,
+}
+
+
+def to_cli_exit(err: CapabilityError, *, stream=sys.stderr) -> int:
+    """Translate a propagating ``CapabilityError`` into a CLI message + exit code.
+
+    Prints a single ``memdiver: ERROR — <message>`` line to ``stream`` and maps
+    the error's category to a process exit code via ``_CLI_EXIT``. Internal
+    errors additionally log a full traceback under ``memdiver.cli`` so an
+    operator can diagnose an unexpected failure.
+    """
+    print(f"memdiver: ERROR — {err.message}", file=stream)
+    if err.category is ErrorCategory.INTERNAL:
+        logging.getLogger("memdiver.cli").exception("internal error")
+    return _CLI_EXIT[err.category]
 
 
 def _decrypt_parent_parser() -> argparse.ArgumentParser:
@@ -1817,7 +1846,15 @@ def main():
     if handler is None:
         parser.print_help()
         sys.exit(1)
-    sys.exit(handler(args))
+    # BACKSTOP: a CapabilityError propagating out of ANY handler is translated
+    # here into a single stderr line + category exit code, so it never escapes
+    # as a traceback. Handlers that already present their own errors and return
+    # an exit code (e.g. the inspect handlers, which catch CapabilityError in
+    # _present_inspect_cli_call) never reach this except clause.
+    try:
+        sys.exit(handler(args))
+    except CapabilityError as e:
+        sys.exit(to_cli_exit(e))
 
 
 if __name__ == "__main__":

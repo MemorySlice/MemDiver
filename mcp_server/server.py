@@ -13,7 +13,7 @@ def create_server():
     from mcp.server.fastmcp import FastMCP
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
-    from .presenters import present_inspect_mcp_call
+    from .presenters import mcp_error_funnel, present_inspect_mcp_call
     from .session import ToolSession
 
     mcp = FastMCP(
@@ -23,6 +23,7 @@ def create_server():
     _session = ToolSession()
 
     @mcp.tool()
+    @mcp_error_funnel
     def scan_dataset(
         dataset_root: str,
         keylog_filename: str = "keylog.csv",
@@ -32,16 +33,19 @@ def create_server():
         return json.dumps(tools.scan_dataset(_session, dataset_root, keylog_filename, protocols))
 
     @mcp.tool()
+    @mcp_error_funnel
     def list_phases(library_dir: str) -> str:
         """List available lifecycle phases for a library directory."""
         return json.dumps(tools.list_phases(_session, library_dir))
 
     @mcp.tool()
+    @mcp_error_funnel
     def list_protocols() -> str:
         """List all registered protocol descriptors with versions and secret types."""
         return json.dumps(tools.list_protocols(_session))
 
     @mcp.tool()
+    @mcp_error_funnel
     def analyze_library(
         library_dirs: List[str],
         phase: str,
@@ -78,6 +82,7 @@ def create_server():
         )))
 
     @mcp.tool()
+    @mcp_error_funnel
     def get_entropy(
         dump_path: str, offset: int = 0, length: int = 0,
         window: int = 32, step: int = 16, threshold: float = 7.5,
@@ -91,6 +96,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def extract_strings(
         dump_path: str, offset: int = 0, length: int = 0,
         min_length: int = 4, encoding: str = "ascii", max_results: int = 500,
@@ -145,6 +151,7 @@ def create_server():
         )))
 
     @mcp.tool()
+    @mcp_error_funnel
     def detect_format(
         dump_path: str, offset: int = 0,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -156,11 +163,13 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def get_cross_references(msl_path: str) -> str:
         """Resolve cross-references for an MSL file in its directory."""
         return json.dumps(tools_xref.get_cross_references(_session, msl_path))
 
     @mcp.tool()
+    @mcp_error_funnel
     def identify_structure(
         dump_path: str, offset: int = 0, protocol: str = "",
     ) -> str:
@@ -168,6 +177,7 @@ def create_server():
         return json.dumps(tools_xref.identify_structure(_session, dump_path, offset, protocol))
 
     @mcp.tool()
+    @mcp_error_funnel
     def import_raw_dump(
         raw_path: str, output_path: str, pid: int = 0,
     ) -> str:
@@ -179,6 +189,7 @@ def create_server():
     # ------------------------------------------------------------------
 
     @mcp.tool()
+    @mcp_error_funnel
     def search_reduce(
         variance_path: str, reference_path: str, num_dumps: int,
         output_dir: str,
@@ -203,6 +214,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def brute_force(
         candidates_path: str, reference_path: str, oracle_path: str,
         output_dir: str, oracle_config_path: Optional[str] = None,
@@ -226,6 +238,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def n_sweep(
         source_paths: List[str], oracle_path: str, output_dir: str,
         n_values: List[int],
@@ -248,6 +261,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def emit_plugin(
         hits_path: str, reference_path: str, name: str, output_dir: str,
         description: Optional[str] = None, hit_index: int = 0,
@@ -318,6 +332,7 @@ def create_server():
     # ------------------------------------------------------------------
 
     @mcp.tool()
+    @mcp_error_funnel
     def consensus(
         dump_paths: List[str], output_dir: str, normalize: bool = False,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -334,6 +349,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def auto_floor(
         variance_path: str, reference_path: str, oracle_path: str,
         output_dir: str, num_dumps: int,
@@ -367,6 +383,7 @@ def create_server():
         ))
 
     @mcp.tool()
+    @mcp_error_funnel
     def export_pattern(
         dump_paths: List[str], output_dir: Optional[str] = None,
         fmt: str = "volatility3", name: str = "memdiver_pattern",

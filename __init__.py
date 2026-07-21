@@ -68,6 +68,15 @@ from memdiver.core.structure_library import get_structure_library
 # --- Structured error model -------------------------------------------------
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
+# --- Structured service results ---------------------------------------------
+from memdiver.core.service_result import (
+    Diagnostic,
+    KeyStatus,
+    Resolution,
+    ServiceResult,
+    StatusBlock,
+)
+
 __all__ = [
     "__version__",
     # dump access
@@ -97,4 +106,10 @@ __all__ = [
     # structured error model
     "CapabilityError",
     "ErrorCategory",
+    # structured service results
+    "ServiceResult",
+    "StatusBlock",
+    "KeyStatus",
+    "Diagnostic",
+    "Resolution",
 ]

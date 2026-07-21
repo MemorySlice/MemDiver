@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from memdiver.api.adapters import analyze_run_params, batch_run_params
 from memdiver.api.dependencies import (
     task_manager_or_503 as _task_manager_or_503,
 )
@@ -53,18 +54,13 @@ def run_analysis(request: AnalyzeRequestAPI):
     MCP server continues to use synchronously), so no behavior is lost.
     """
     manager = _task_manager_or_503()
-    worker_params: dict = {
-        "task_root": str(manager.artifact_store.root),
-        "library_dirs": list(request.library_dirs),
-        "phase": request.phase,
-        "protocol_version": request.protocol_version,
-        "keylog_filename": request.keylog_filename,
-        "template_name": request.template_name,
-        "max_runs": request.max_runs,
-        "normalize": request.normalize,
-        "expand_keys": request.expand_keys,
-        "algorithms": request.algorithms,
-    }
+    # Field mapping lives in the single conversion seam (api.adapters) so the
+    # wire model and core AnalyzeRequest can't drift. This stays a dict (not a
+    # core dataclass) so the ProcessPool payload is unchanged and library_dir
+    # validation stays deferred to the worker.
+    worker_params: dict = analyze_run_params(
+        request, task_root=str(manager.artifact_store.root)
+    )
     record = manager.submit(
         kind="analysis",
         params=worker_params,
@@ -237,12 +233,12 @@ def run_batch(request: BatchRunRequest):
     pipeline endpoint uses.
     """
     manager = _task_manager_or_503()
-    worker_params: dict = {
-        "task_root": str(manager.artifact_store.root),
-        "jobs": [job.model_dump() for job in request.jobs],
-        "output_format": request.output_format,
-        "workers": request.workers,
-    }
+    # Same single conversion seam as /run. Kept dict-based so each job's
+    # AnalyzeRequest __post_init__ validation stays deferred to the worker's
+    # per-job re-hydration (unchanged pool payload).
+    worker_params: dict = batch_run_params(
+        request, task_root=str(manager.artifact_store.root)
+    )
     record = manager.submit(
         kind="batch",
         params=worker_params,

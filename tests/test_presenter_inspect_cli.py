@@ -11,15 +11,25 @@ mapping the CLI inspect handlers rely on, independently of any dump/reader:
 * ``_present_inspect_cli_call`` turns a producer's raised ``CapabilityError``
   (e.g. ``FileNotFoundServiceError``) back into the SAME error tuple the legacy
   ``{"error": …}`` dict path produced.
+
+Also covers ``cli.to_cli_exit`` — the Phase 3 backstop that maps a
+propagating ``CapabilityError`` to a CLI stderr line + process exit code
+(``main()``'s ``except CapabilityError`` clause).
 """
 
+import io
+import logging
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from memdiver.cli import _present_inspect_cli_call, present_inspect_cli
+from memdiver.cli import _present_inspect_cli_call, present_inspect_cli, to_cli_exit
 from memdiver.core.service_errors import (
+    CapabilityError,
+    ErrorCategory,
     FileNotFoundServiceError,
     OffsetOutOfRangeError,
 )
@@ -150,3 +160,48 @@ def test_call_passes_through_ok_producer():
     assert payload == {"handles": []}
     assert exit_code == 0
     assert stderr_msg is None
+
+
+# ---------------------------------------------------------------------------
+# to_cli_exit — Phase 3 backstop: category -> exit code + stderr message.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "category, expected_exit_code",
+    [
+        (ErrorCategory.NOT_FOUND, 3),
+        (ErrorCategory.INVALID_INPUT, 2),
+        (ErrorCategory.PRECONDITION, 2),
+        (ErrorCategory.UNSUPPORTED, 2),
+        (ErrorCategory.INTERNAL, 1),
+    ],
+)
+def test_to_cli_exit_maps_category_to_exit_code(category, expected_exit_code):
+    err = CapabilityError("something went wrong", category=category)
+    stream = io.StringIO()
+
+    exit_code = to_cli_exit(err, stream=stream)
+
+    assert exit_code == expected_exit_code
+    assert stream.getvalue() == "memdiver: ERROR — something went wrong\n"
+
+
+def test_to_cli_exit_logs_traceback_for_internal(caplog):
+    err = CapabilityError("boom", category=ErrorCategory.INTERNAL)
+    stream = io.StringIO()
+
+    with caplog.at_level(logging.ERROR, logger="memdiver.cli"):
+        to_cli_exit(err, stream=stream)
+
+    assert any("internal error" in rec.message for rec in caplog.records)
+
+
+def test_to_cli_exit_does_not_log_for_non_internal(caplog):
+    err = CapabilityError("bad input", category=ErrorCategory.INVALID_INPUT)
+    stream = io.StringIO()
+
+    with caplog.at_level(logging.ERROR, logger="memdiver.cli"):
+        to_cli_exit(err, stream=stream)
+
+    assert caplog.records == []

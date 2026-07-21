@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from fastapi import HTTPException
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 
 def decode_key_material(
@@ -35,8 +35,9 @@ def decode_key_material(
         key = bytes.fromhex(key_hex) if key_hex else None
         kem_private = bytes.fromhex(kem_key_hex) if kem_key_hex else None
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail="Invalid key material encoding"
+        raise CapabilityError(
+            "Invalid key material encoding",
+            category=ErrorCategory.INVALID_INPUT,
         ) from exc
     return {
         "key": key,

@@ -154,6 +154,7 @@ packages = [
     "memdiver.core.binary_formats.kaitai_compiled",
     "memdiver.core.dump_sources",
     "memdiver.msl",
+    "memdiver.app",
     "memdiver.mcp_server",
     "memdiver.api",
     "memdiver.api.routers",

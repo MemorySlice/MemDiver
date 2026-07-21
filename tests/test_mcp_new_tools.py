@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
 
 from generate_aes_fixtures import generate_dataset  # noqa: E402
 
+from memdiver.core.service_errors import (  # noqa: E402
+    CapabilityError,
+    ErrorCategory,
+    FileNotFoundServiceError,
+)
 from memdiver.mcp_server import tools_inspect, tools_pipeline  # noqa: E402
 from memdiver.mcp_server.key_material import key_material_kwargs  # noqa: E402
 from memdiver.mcp_server.session import ToolSession  # noqa: E402
@@ -89,9 +94,11 @@ def test_consensus_writes_variance_and_reference(aes_dumps, tmp_path):
 
 
 def test_consensus_too_few_dumps(aes_dumps, tmp_path):
-    res = tools_pipeline.consensus(
-        dump_paths=aes_dumps[:1], output_dir=str(tmp_path / "c"))
-    assert "error" in res
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.consensus(
+            dump_paths=aes_dumps[:1], output_dir=str(tmp_path / "c"))
+    assert excinfo.value.category is ErrorCategory.PRECONDITION
+    assert excinfo.value.message == "Need at least 2 dumps, got 1"
 
 
 def test_consensus_variance_feeds_search_reduce(aes_dumps, tmp_path):
@@ -150,9 +157,11 @@ def test_export_pattern_vol3(aes_dumps, tmp_path):
 
 
 def test_export_pattern_too_few_dumps(aes_dumps, tmp_path):
-    res = tools_pipeline.export_pattern(
-        dump_paths=aes_dumps[:1], output_dir=str(tmp_path))
-    assert "error" in res
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.export_pattern(
+            dump_paths=aes_dumps[:1], output_dir=str(tmp_path))
+    assert excinfo.value.category is ErrorCategory.PRECONDITION
+    assert excinfo.value.message == "Need at least 2 dumps, got 1"
 
 
 # ── B3: auto_floor verdict ───────────────────────────────────────────
@@ -194,14 +203,16 @@ def test_auto_floor_recovers_planted_key(tmp_path):
 
 
 def test_auto_floor_missing_variance(tmp_path):
-    res = tools_pipeline.auto_floor(
-        variance_path=str(tmp_path / "nope.npy"),
-        reference_path=str(tmp_path / "nope.bin"),
-        oracle_path=str(tmp_path / "nope.py"),
-        output_dir=str(tmp_path / "out"),
-        num_dumps=5,
-    )
-    assert "error" in res
+    with pytest.raises(FileNotFoundServiceError) as excinfo:
+        tools_pipeline.auto_floor(
+            variance_path=str(tmp_path / "nope.npy"),
+            reference_path=str(tmp_path / "nope.bin"),
+            oracle_path=str(tmp_path / "nope.py"),
+            output_dir=str(tmp_path / "out"),
+            num_dumps=5,
+        )
+    assert excinfo.value.category is ErrorCategory.NOT_FOUND
+    assert excinfo.value.message.startswith("File not found:")
 
 
 # ── B2: decryption params let an encrypted-.msl inspect succeed ──────

@@ -88,22 +88,17 @@ def _write_result_artifact(
 
 
 def _result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Build a compact terminal summary from a full AnalysisResult dict."""
-    libraries = result.get("libraries", []) or []
-    total_hits = sum(len(lib.get("hits", []) or []) for lib in libraries)
-    return {
-        "library_count": len(libraries),
-        "total_hits": total_hits,
-        "libraries": [
-            {
-                "library": lib.get("library"),
-                "phase": lib.get("phase"),
-                "num_runs": lib.get("num_runs", 0),
-                "hit_count": len(lib.get("hits", []) or []),
-            }
-            for lib in libraries
-        ],
-    }
+    """Build a compact terminal summary from a full AnalysisResult dict.
+
+    Thin wrapper that delegates to
+    :func:`engine.serializer.summarize_result`, the single source of truth
+    for this projection. Kept as a named module function so its existing
+    callers (``run_file`` / ``run_analysis``) are unaffected. The import is
+    lazy to match this module's spawn-worker import discipline.
+    """
+    from memdiver.engine.serializer import summarize_result
+
+    return summarize_result(result)
 
 
 def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:

@@ -7,12 +7,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from memdiver.api.config import get_settings
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.services.artifact_store import ArtifactStore
 from memdiver.api.services.oracle_registry import (
@@ -26,6 +28,20 @@ from memdiver.api.services.task_manager import (
 )
 
 logger = logging.getLogger("memdiver.api.main")
+_logger = logging.getLogger("memdiver.api")
+
+
+def _capability_error_handler(request: Request, exc: CapabilityError) -> JSONResponse:
+    """Translate a propagating :class:`CapabilityError` into an HTTP response.
+
+    This is the API adapter's single global translation point: any core/app/
+    service layer that raises the transport-agnostic ``CapabilityError`` gets a
+    structured HTTP response here, so those layers never import ``fastapi``.
+    Internal-category errors are logged with a traceback for diagnostics.
+    """
+    if exc.category is ErrorCategory.INTERNAL:
+        _logger.exception("unhandled internal capability error: %s", exc.message)
+    return JSONResponse(status_code=exc.status, content=exc.to_dict())
 
 
 @asynccontextmanager
@@ -88,6 +104,12 @@ async def _lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Build and return the configured FastAPI application."""
+    # Logging is configured by ENTRYPOINTS, not as an import side-effect of
+    # core. setup_logging() is idempotent (it never adds a duplicate handler),
+    # so building the app more than once — as the test suite does — is safe.
+    from memdiver.core.log import setup_logging
+
+    setup_logging()
     settings = get_settings()
 
     app = FastAPI(
@@ -96,6 +118,11 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=_lifespan,
     )
+
+    # Single global translation point for the transport-agnostic
+    # CapabilityError: any propagating core/service error becomes a structured
+    # HTTP response here, so those layers never raise fastapi.HTTPException.
+    app.add_exception_handler(CapabilityError, _capability_error_handler)
 
     # --- Localhost trust model -------------------------------------------
     # MemDiver is a LOCAL forensic workbench: the API binds to 127.0.0.1 and

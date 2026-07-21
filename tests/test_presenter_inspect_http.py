@@ -21,8 +21,10 @@ import pytest
 
 from memdiver.api.routers.inspect import _http_inspect, present_inspect_http
 from memdiver.core.service_errors import (
+    CapabilityError,
     FileNotFoundServiceError,
     OffsetOutOfRangeError,
+    UnsupportedFormatError,
 )
 from memdiver.core.service_result import (
     KeyStatus,
@@ -118,4 +120,30 @@ def test_http_inspect_offset_out_of_range_merges_details():
         "file_size": 128,
         "view": "raw",
         "format": "msl",
+    }
+
+
+def test_http_inspect_empty_byte_pattern_matches_legacy_dict():
+    """Reproduces search_bytes_result's bare CapabilityError (no details)."""
+    def produce():
+        raise CapabilityError("Empty byte pattern")
+
+    assert _http_inspect(produce) == {"error": "Empty byte pattern"}
+
+
+def test_http_inspect_invalid_hex_pattern_matches_legacy_dict():
+    """Reproduces search_bytes_result's invalid-hex CapabilityError."""
+    def produce():
+        raise CapabilityError("Invalid hex byte pattern: 'zz'")
+
+    assert _http_inspect(produce) == {"error": "Invalid hex byte pattern: 'zz'"}
+
+
+def test_http_inspect_unsupported_format_matches_legacy_dict():
+    """Reproduces resolve_va_result's UnsupportedFormatError (no details)."""
+    def produce():
+        raise UnsupportedFormatError("VA translation requires an MSL dump")
+
+    assert _http_inspect(produce) == {
+        "error": "VA translation requires an MSL dump",
     }

@@ -78,12 +78,9 @@ def _assert_safe_path(path: Path) -> None:
 
 
 def _log_module_fingerprint(path: Path) -> str:
-    """Print the sha256 of the loaded file so the user can audit what ran."""
+    """Log the sha256 of the loaded file so the user can audit what ran."""
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    print(
-        f"memdiver: loaded oracle {path} sha256={digest}",
-        file=sys.stderr,
-    )
+    logger.info("memdiver: loaded oracle %s sha256=%s", path, digest)
     return digest
 
 

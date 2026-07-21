@@ -1,0 +1,1 @@
+"""MemDiver application layer — surface-agnostic services shared by the library, CLI, HTTP API, MCP server, and future agent surfaces. Relocated from mcp_server/ in the presentation-separation refactor."""
