@@ -141,25 +141,28 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     # analyze_library takes a ToolSession purely for API symmetry; the
     # library-analysis path does not read session state, so a fresh
     # instance is sufficient here.
-    result = analyze_library(
-        ToolSession(),
-        library_dirs,
-        params["phase"],
-        params["protocol_version"],
-        keylog_filename=params.get("keylog_filename", "keylog.csv"),
-        template_name=params.get("template_name", "Auto-detect"),
-        max_runs=int(params.get("max_runs", 10)),
-        normalize=bool(params.get("normalize", False)),
-        expand_keys=bool(params.get("expand_keys", True)),
-        algorithms=params.get("algorithms"),
-    )
+    # analyze_library RAISES a CapabilityError for user-correctable input
+    # problems (e.g. a missing directory). Surface it as a task failure so the
+    # SPA renders the message instead of a silent empty result. The worker/task
+    # contract reports such input failures as a ValueError.
+    from memdiver.core.service_errors import CapabilityError
 
-    # analyze_library returns {"error": ...} for user-correctable input
-    # problems (e.g. a missing directory). Surface it as a task failure so
-    # the SPA renders the message instead of a silent empty result.
-    if isinstance(result, dict) and "error" in result and "libraries" not in result:
-        ctx.emit("error", error=result["error"])
-        raise ValueError(result["error"])
+    try:
+        result = analyze_library(
+            ToolSession(),
+            library_dirs,
+            params["phase"],
+            params["protocol_version"],
+            keylog_filename=params.get("keylog_filename", "keylog.csv"),
+            template_name=params.get("template_name", "Auto-detect"),
+            max_runs=int(params.get("max_runs", 10)),
+            normalize=bool(params.get("normalize", False)),
+            expand_keys=bool(params.get("expand_keys", True)),
+            algorithms=params.get("algorithms"),
+        )
+    except CapabilityError as exc:
+        ctx.emit("error", error=exc.message)
+        raise ValueError(exc.message) from exc
 
     artifacts = _write_result_artifact(result, artifact_dir)
     summary = _result_summary(result)

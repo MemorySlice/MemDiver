@@ -44,8 +44,9 @@ import numpy as np
 if TYPE_CHECKING:
     from memdiver.engine.subsample_stability import SubsampleStabilityResult
 
+from memdiver.engine import floor_policy
 from memdiver.engine.auto_floor import (
-    SIGMA_K2, DEFAULT_FLOOR, _maximal_candidates, _sigma_k2_interior,
+    SIGMA_K2, _sigma_k2_interior,
 )
 
 logger = logging.getLogger("memdiver.engine.candidate_stats")
@@ -490,8 +491,10 @@ def run_phase_a(
     complementary-half variance arrays are supplied, the experimental
     subsample-stability instrument (A3) is also computed."""
     reduce_kwargs = dict(reduce_kwargs or {})
-    offsets, sizes, wvar, _default = _maximal_candidates(
-        variance, reference, num_dumps, reduce_kwargs, (key_size,), stride
+    # Phase-A only needs the maximal set (floor disabled); no default_set.
+    offsets, sizes, wvar = floor_policy.enumerate_maximal(
+        variance, reference, num_dumps, reduce_kwargs, (key_size,), stride,
+        min_variance=0.0,
     )
     if offsets.size == 0:
         raise ValueError("maximal candidate set is empty (check reduce_kwargs/data)")

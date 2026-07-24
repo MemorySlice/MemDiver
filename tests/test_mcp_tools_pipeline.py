@@ -111,6 +111,9 @@ def test_search_reduce_writes_candidates_json(tmp_path, consensus_artifacts):
     assert result["num_regions"] >= 1
     payload = json.loads(cand_path.read_text())
     assert "regions" in payload and payload["regions"]
+    # Advisory recommended floor is surfaced (return dict + persisted artifact).
+    assert "recommended_floor" in result and result["recommended_floor"] >= 0.0
+    assert payload["recommended_floor"] == result["recommended_floor"]
 
 
 # ----------------------------------------------------------------------

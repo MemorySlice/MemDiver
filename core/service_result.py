@@ -81,9 +81,12 @@ class KeyStatus:
     """Decryption / key state for the dump behind a result.
 
     Built from any reader or dump source exposing a ``tag_status`` attribute.
-    The two hint strings are copied verbatim from
-    ``mcp_server/tools_inspect.py::_tag_status_error`` to keep the user-facing
-    guidance identical across transports.
+    The two hint strings are deliberately NEUTRAL and surface-agnostic — they
+    name no transport-specific remedy (no CLI flag names, no MCP parameter
+    names). Each surface presenter appends its own actionable guidance (the CLI
+    its decryption flags, the MCP server its tool parameters) so the wording can
+    be tailored/i18n'd per transport without CLI presentation text ever leaking
+    back into core.
     """
 
     tag_status: TagStatus = TagStatus.NOT_ENCRYPTED
@@ -97,7 +100,7 @@ class KeyStatus:
             return cls(
                 status,
                 decrypted=False,
-                hint="dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
+                hint="dump is encrypted; no valid decryption key was supplied",
             )
         if status == TagStatus.CORRUPTED:
             return cls(

@@ -115,9 +115,9 @@ def get_entropy(
 ):
     """Compute entropy profile for a dump file region."""
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
-        return tools_inspect.get_entropy(
+        return _http_inspect(lambda: tools_inspect.entropy_result(
             session, dump_path, offset, length, window, step, threshold,
-        )
+        ))
 
 
 @router.get("/strings")
@@ -142,10 +142,10 @@ def extract_strings(
     larger chunks reduce overhead but raise peak RSS.
     """
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
-        return tools_inspect._extract_strings(
+        return _http_inspect(lambda: tools_inspect.strings_result(
             session, dump_path, offset, length, min_length, encoding, max_results,
             cursor=cursor, chunk_size=chunk_size,
-        )
+        ))
 
 
 @router.get("/byte-search")
@@ -183,7 +183,8 @@ def identify_structure(
     session: ToolSession = Depends(get_tool_session),
 ):
     """Identify a data structure at the given offset."""
-    return tools_xref.identify_structure(session, dump_path, offset, protocol)
+    return _http_inspect(lambda: tools_xref.identify_structure_result(
+        session, dump_path, offset, protocol))
 
 
 @router.get("/structure-apply")
@@ -196,38 +197,21 @@ def apply_structure(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Apply a named structure definition at the given offset."""
-    from pathlib import Path
+    """Apply a named structure definition at the given offset.
 
-    from memdiver.core.dump_source import open_dump
-    from memdiver.core.structure_library import get_structure_library
-    from memdiver.core.structure_overlay import (
-        compute_max_size,
-        overlay_structure,
-        serialize_overlay_result,
-    )
-
-    lib = get_structure_library()
-    struct_def = lib.get(structure_name)
-    if struct_def is None:
-        raise HTTPException(status_code=404, detail=f"Structure '{structure_name}' not found")
-
-    km = decode_key_material(passphrase, key_hex, kem_key_hex)
+    Routes through the shared ``apply_structure_result`` producer (single
+    source of truth); the producer's transport-agnostic ``CapabilityError`` is
+    mapped back onto the historical HTTP status codes (unknown structure /
+    missing file → 404, structure past EOF → 400) so the wire contract is
+    unchanged.
+    """
     try:
-        src_ctx = open_dump(Path(dump_path), **(km or {}))
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"File not found: {dump_path}")
-
-    with src_ctx as src:
-        max_size = compute_max_size(struct_def)
-        if offset + max_size > src.size:
-            raise HTTPException(status_code=400, detail="Structure extends beyond file boundary")
-        data = src.read_range(offset, max_size)
-
-    overlays, total_size = overlay_structure(data, offset, struct_def)
-    payload = serialize_overlay_result(struct_def, overlays, total_size)
-    payload["offset"] = offset
-    return {"structure": payload}
+        with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+            result = tools_xref.apply_structure_result(
+                session, dump_path, offset, structure_name)
+    except CapabilityError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    return result.payload
 
 
 @router.get("/xref")
@@ -236,7 +220,7 @@ def get_cross_references(
     session: ToolSession = Depends(get_tool_session),
 ):
     """Resolve cross-references for an MSL file."""
-    return tools_xref.get_cross_references(session, msl_path)
+    return _http_inspect(lambda: tools_xref.get_cross_references_result(session, msl_path))
 
 
 @router.get("/session-info")
@@ -278,41 +262,16 @@ def list_blocks(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List all blocks in an MSL file grouped by type."""
-    from pathlib import Path
+    """List all blocks in an MSL file grouped by type.
 
-    from memdiver.api.services.reader_cache import cached_msl_reader
-    from memdiver.msl.block_tree import group_blocks
-    from memdiver.msl.block_tree import list_blocks as msl_list_blocks
-
-    path = Path(msl_path)
-    if path.suffix != ".msl":
-        raise HTTPException(status_code=400, detail="Not a valid MSL file")
-
-    try:
-        with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-                cached_msl_reader(path) as reader:
-            blocks = msl_list_blocks(reader)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
-
-    groups = group_blocks(blocks)
-    result = []
-    for category, nodes in groups.items():
-        result.append({
-            "category": category,
-            "blocks": [
-                {
-                    "label": n.type_name,
-                    "block_type": n.type_code,
-                    "offset": n.file_offset,
-                    "size": n.payload_size,
-                    "detail": n.block_uuid,
-                }
-                for n in nodes
-            ],
-        })
-    return result
+    Routes through the shared ``blocks_result`` producer (single source of
+    truth) and returns the bare grouped array the frontend consumes; the
+    suffix/existence guards keep the historical 400/404 error contract.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.blocks_result(session, msl_path)
+    return result.payload["blocks"]
 
 
 @router.get("/modules")
@@ -323,43 +282,23 @@ def list_modules(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List loaded modules from MSL metadata."""
-    from pathlib import Path
+    """List loaded modules from MSL metadata.
 
-    from memdiver.api.services.reader_cache import cached_msl_reader
-
-    path = Path(msl_path)
-    if path.suffix != ".msl":
-        raise HTTPException(status_code=400, detail="Not a valid MSL file")
-
-    try:
-        with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-                cached_msl_reader(path) as reader:
-            modules = reader.collect_modules()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
-
-    return [
-        {
-            "path": m.path,
-            "base_addr": m.base_addr,
-            "size": m.module_size,
-            "version": m.version,
-        }
-        for m in modules
-    ]
+    Routes through the shared ``modules_result`` producer and returns the bare
+    module array the frontend consumes.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.modules_result(session, msl_path)
+    return result.payload["modules"]
 
 
 # -- MSL table-block endpoints (Phase MSL-Decoders-02) ------------------
-
-def _handle_type_name(value: int) -> str:
-    """Map a raw HANDLE_TABLE handle_type int to its spec Table 24 name."""
-    from memdiver.msl.enums import HandleType
-    try:
-        return HandleType(value).name.capitalize()
-    except ValueError:
-        return "Unknown"
-
+#
+# The handle-type-name mapping and the CONNECTION_TABLE address renderer that
+# used to live here have moved into the shared ``tools_inspect`` producers
+# (``handles_result`` / ``connections_result``) — the single source of truth
+# these endpoints now route through.
 
 from contextlib import contextmanager
 
@@ -453,20 +392,6 @@ def probe_tag_status_with_key(
         return {"tag_status": TagStatus.CORRUPTED.value}
 
 
-def _format_addr(family: int, raw: bytes) -> str:
-    """Render a CONNECTION_TABLE address blob as a human string."""
-    import ipaddress
-
-    try:
-        if family == 0x02:  # AF_INET
-            return str(ipaddress.IPv4Address(bytes(raw[:4])))
-        if family == 0x0A:  # AF_INET6
-            return str(ipaddress.IPv6Address(bytes(raw[:16])))
-    except (ValueError, ipaddress.AddressValueError):
-        pass
-    return raw[:16].hex()
-
-
 @router.get("/module-index")
 def list_module_index(
     msl_path: str,
@@ -475,20 +400,15 @@ def list_module_index(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List entries from MODULE_LIST_INDEX blocks (spec §5.3, type 0x0010)."""
-    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-            _open_msl(msl_path) as reader:
-        tables = reader.collect_module_list_index()
-    result = []
-    for table in tables:
-        for e in table.entries:
-            result.append({
-                "module_uuid": str(e.module_uuid),
-                "base_addr": e.base_addr,
-                "size": e.module_size,
-                "path": e.path,
-            })
-    return result
+    """List entries from MODULE_LIST_INDEX blocks (spec §5.3, type 0x0010).
+
+    Routes through the shared ``module_index_result`` producer and returns the
+    bare entry array the frontend consumes.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.module_index_result(session, msl_path)
+    return result.payload["module_index"]
 
 
 @router.get("/processes")
@@ -499,25 +419,15 @@ def list_processes(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List entries from PROCESS_TABLE blocks (spec §6.3, type 0x0051)."""
-    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-            _open_msl(msl_path) as reader:
-        tables = reader.collect_processes()
-    result = []
-    for table in tables:
-        for e in table.entries:
-            result.append({
-                "pid": e.pid,
-                "ppid": e.ppid,
-                "uid": e.uid,
-                "is_target": e.is_target,
-                "start_time_ns": e.start_time_ns,
-                "rss": e.rss,
-                "exe_name": e.exe_name,
-                "cmd_line": e.cmd_line,
-                "user": e.user,
-            })
-    return result
+    """List entries from PROCESS_TABLE blocks (spec §6.3, type 0x0051).
+
+    Routes through the shared ``processes_result`` producer and returns the
+    bare process array the frontend consumes.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.processes_result(session, msl_path)
+    return result.payload["processes"]
 
 
 @router.get("/connections")
@@ -528,24 +438,15 @@ def list_connections(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List entries from CONNECTION_TABLE blocks (spec §6.4, type 0x0052)."""
-    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-            _open_msl(msl_path) as reader:
-        tables = reader.collect_connections()
-    result = []
-    for table in tables:
-        for e in table.entries:
-            result.append({
-                "pid": e.pid,
-                "family": e.family,
-                "protocol": e.protocol,
-                "state": e.state,
-                "local_addr": _format_addr(e.family, e.local_addr),
-                "local_port": e.local_port,
-                "remote_addr": _format_addr(e.family, e.remote_addr),
-                "remote_port": e.remote_port,
-            })
-    return result
+    """List entries from CONNECTION_TABLE blocks (spec §6.4, type 0x0052).
+
+    Routes through the shared ``connections_result`` producer and returns the
+    bare connection array the frontend consumes.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.connections_result(session, msl_path)
+    return result.payload["connections"]
 
 
 @router.get("/handles")
@@ -556,21 +457,16 @@ def list_handles(
     kem_key_hex: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """List entries from HANDLE_TABLE blocks (spec §6.5, type 0x0053)."""
-    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)), \
-            _open_msl(msl_path) as reader:
-        tables = reader.collect_handles()
-    result = []
-    for table in tables:
-        for e in table.entries:
-            result.append({
-                "pid": e.pid,
-                "fd": e.fd,
-                "handle_type": e.handle_type,
-                "handle_type_name": _handle_type_name(e.handle_type),
-                "path": e.path,
-            })
-    return result
+    """List entries from HANDLE_TABLE blocks (spec §6.5, type 0x0053).
+
+    Routes through the shared ``handles_result`` producer (which owns the
+    handle-type-name mapping) and returns the bare handle array the frontend
+    consumes.
+    """
+    _validate_msl_path(msl_path)
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.handles_result(session, msl_path)
+    return result.payload["handles"]
 
 
 # -- Ext decoders (speculative layouts; spec §4.3 reserved types) --
@@ -726,24 +622,34 @@ def detect_format_endpoint(
     from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
     from memdiver.core.binary_formats.navigator import build_nav_tree
     from memdiver.core.dump_source import open_dump
-    from memdiver.core.format_detect import detect_format_at_offset, suggest_formats
+    from memdiver.core.service_errors import OffsetOutOfRangeError
 
     km = decode_key_material(passphrase, key_hex, kem_key_hex)
+
+    # Magic-byte detection is delegated to the shared ``detect_format_result``
+    # producer (single source of truth). Its raw-container view is keyless by
+    # design, so no key scope is required. A pathological offset past the raw
+    # container degrades to "no detection", matching the old empty-read path.
+    try:
+        detection = tools_inspect.detect_format_result(session, dump_path, offset)
+        detected = detection.payload["detected_format"]
+        suggested = detection.payload["suggested_formats"]
+    except OffsetOutOfRangeError:
+        detected, suggested = None, []
+
     with open_dump(Path(dump_path), **(km or {})) as src:
-        # Read first 64KB of the raw container for format detection and
-        # navigation.  For MSL sources this is the .msl container bytes,
-        # not the flattened VAS projection — so the container's own
-        # magic ("MEMSLICE") is recognised instead of whatever happens
-        # to live at VAS offset 0 (commonly an ELF header).
+        # Read first 64KB of the raw container for the navigation tree and
+        # field overlays. For MSL sources this is the .msl container bytes,
+        # not the flattened VAS projection — so the container's own magic
+        # ("MEMSLICE") is recognised instead of whatever happens to live at
+        # VAS offset 0 (commonly an ELF header). Detection above ran against
+        # the same raw window.
         raw_size = src.size_for("raw") if hasattr(src, "size_for") else src.size
         length = min(65536, max(0, raw_size - offset))
         data = src.read_range(offset, length, view="raw")
 
     registry = get_kaitai_registry()
     available = registry.available_formats()
-
-    detected = detect_format_at_offset(data, 0)
-    suggested = suggest_formats(data)
 
     if force_format is not None:
         if force_format not in available:

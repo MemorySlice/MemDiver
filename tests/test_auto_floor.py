@@ -128,6 +128,67 @@ def test_run_auto_floor_pmin_is_default():
     assert r.phi0 is not None and r.phi0 > 0.0
 
 
+# ── hit_tier mapping (used by the pipeline / n-sweep escalation) ─────
+def test_hit_tier_maps_phi_star_to_band():
+    from memdiver.engine.auto_floor import hit_tier
+
+    # >= default floor 3000 → "default" (RECOVERED, in the default_set)
+    var, ref, _, oracle = _fixture(5200.0)
+    r = run_auto_floor(var, ref, 20, oracle, reduce_kwargs=REDUCE_KWARGS, coverage=1.0)
+    assert r.verdict == VERDICT_RECOVERED
+    assert hit_tier(r) == "default"
+
+    # diluted band [phi0~1911, 3000) → "phi0"
+    var, ref, _, oracle = _fixture(2300.0)
+    r = run_auto_floor(var, ref, 20, oracle, reduce_kwargs=REDUCE_KWARGS, coverage=1.0)
+    assert r.verdict == VERDICT_FLOOR_TOO_HIGH
+    assert hit_tier(r) == "phi0"
+
+    # below phi0 → "below_phi0"
+    var, ref, _, oracle = _fixture(800.0)
+    r = run_auto_floor(var, ref, 20, oracle, reduce_kwargs=REDUCE_KWARGS, coverage=1.0)
+    assert r.verdict == VERDICT_FLOOR_TOO_HIGH
+    assert r.phi_star is not None and r.phi0 is not None and r.phi_star < r.phi0
+    assert hit_tier(r) == "below_phi0"
+
+
+def test_hit_tier_none_on_negative_verdict():
+    from memdiver.engine.auto_floor import hit_tier
+
+    var, ref, _, _ = _fixture(2300.0)
+    r = run_auto_floor(var, ref, 20, lambda c: False, reduce_kwargs=REDUCE_KWARGS,
+                       coverage=1.0, filter_recall=0.9)
+    assert r.verdict in (VERDICT_ABSENT, VERDICT_INCONCLUSIVE)
+    assert hit_tier(r) is None
+
+
+# ── Phase 4: enumerate_maximal is bit-identical to the pre-refactor path ──
+def test_enumerate_maximal_matches_legacy():
+    from memdiver.engine import floor_policy
+    from memdiver.engine.candidate_grid import iter_region_grid
+    from memdiver.engine.candidate_pipeline import reduce_search_space
+
+    var, ref, _ = _block_fixture()  # 512-byte block → many stride-8 candidates
+
+    # Pre-refactor path: single reduce at floor 0 + iter_region_grid + cumsum.
+    red = reduce_search_space(var, ref, 20, **{**REDUCE_KWARGS, "min_variance": 0.0})
+    pairs = []
+    for reg in red.regions:
+        pairs.extend(iter_region_grid(reg.offset, reg.offset + reg.length, (32,), 8, len(ref)))
+    offs = np.asarray([o for o, _ in pairs], dtype=np.int64)
+    szs = np.asarray([s for _, s in pairs], dtype=np.int64)
+    cumvar = np.concatenate([[0.0], np.cumsum(np.asarray(var, dtype=np.float64))])
+    wvar_legacy = (cumvar[offs + szs] - cumvar[offs]) / szs
+
+    offsets, sizes, wvar = floor_policy.enumerate_maximal(
+        var, ref, 20, dict(REDUCE_KWARGS), (32,), 8, min_variance=0.0)
+
+    assert offsets.size > 1
+    np.testing.assert_array_equal(offsets, offs)
+    np.testing.assert_array_equal(sizes, szs)
+    np.testing.assert_allclose(wvar, wvar_legacy)
+
+
 # ── C3: recall lower bound keeps ABSENT confidence conservative ──────
 def test_recall_lower_bound_is_below_point_estimate():
     assert recall_lower_bound(0, 0) == 0.0

@@ -72,6 +72,9 @@ class NSweepResult:
     first_hit_offset: Optional[int] = None
     first_hit_time_ms: Optional[float] = None
     total_dumps: int = 0
+    # Opt-in floor-free escalation verdict (auto_floor.to_dict + hit_tier),
+    # populated only when escalate=True and no checkpoint found a hit.
+    escalation: Optional[dict] = None
 
     def headline(self) -> str:
         # Text logic lives in the presentation layer; lazy import avoids a
@@ -81,13 +84,18 @@ class NSweepResult:
         return nsweep_headline(self)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "total_dumps": self.total_dumps,
             "first_hit_n": self.first_hit_n,
             "first_hit_offset": self.first_hit_offset,
             "headline": self.headline(),
             "points": [p.to_dict() for p in self.points],
         }
+        # Additive: absent when escalation was not requested / not reached, so
+        # the default report stays byte-identical.
+        if self.escalation is not None:
+            d["escalation"] = self.escalation
+        return d
 
 
 def _fold_until(
@@ -132,6 +140,8 @@ def run_nsweep(
     key_sizes=(32,),
     stride: int = 8,
     exhaustive: bool = True,
+    escalate: bool = False,
+    escalate_oracle_budget: Optional[int] = None,
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
 ) -> NSweepResult:
@@ -140,6 +150,11 @@ def run_nsweep(
     One Welford accumulator grows across checkpoints, so total I/O is
     O(N_max) not O(sum(N)). The oracle is loaded once and invoked for
     every candidate at every checkpoint.
+
+    When ``escalate`` is set and NO checkpoint found a hit, a floor-free
+    descending-variance sweep runs once at the terminal (max-N) checkpoint,
+    reusing that checkpoint's IN-MEMORY variance (no re-fold). The verdict +
+    ``hit_tier`` land on ``NSweepResult.escalation``.
     """
     from memdiver.engine.brute_force import brute_force_with_oracle
     from memdiver.engine.candidate_pipeline import reduce_search_space
@@ -236,6 +251,32 @@ def run_nsweep(
             result.first_hit_n = n
             result.first_hit_offset = hit_offset
             result.first_hit_time_ms = timing.brute_force_ms
+
+    # Opt-in floor-free fall-through: only when no checkpoint found a hit. The
+    # terminal checkpoint's ``variance`` is still in memory here, so the Welford
+    # fold never re-runs. Delegates to the same run_auto_floor as the CLI
+    # auto-floor / pipeline escalation (single source of truth).
+    if escalate and result.first_hit_n is None and result.points:
+        from memdiver.engine.auto_floor import escalation_verdict, run_auto_floor
+
+        safe_emit(
+            progress_callback,
+            ProgressEvent(
+                stage="nsweep:escalate",
+                pct=1.0,
+                msg=f"floor-free descending-variance sweep at terminal N={n}",
+                extra={"n": n},
+            ),
+        )
+        af = run_auto_floor(
+            variance, reference, n, oracle,
+            reduce_kwargs=dict(reduce_kwargs),
+            key_sizes=key_sizes,
+            stride=stride,
+            oracle_budget=escalate_oracle_budget,
+            progress_callback=progress_callback,
+        )
+        result.escalation = escalation_verdict(af)
     return result
 
 

@@ -52,7 +52,14 @@ async def _lifespan(app: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     if settings.dataset_root:
         session = get_tool_session()
-        session.set_dataset(settings.dataset_root)
+        # set_dataset now RAISES a CapabilityError for a missing root (it used to
+        # return an ignored error dict). Keep startup resilient: a misconfigured
+        # root must not abort the whole app — log and continue unset, exactly as
+        # the old ignored-error-dict path did.
+        try:
+            session.set_dataset(settings.dataset_root)
+        except CapabilityError as exc:
+            logger.warning("Configured dataset_root not usable: %s", exc)
 
     # Phase 25 pipeline substrate: artifact store, progress bus, task
     # manager. The manager owns a spawn ProcessPoolExecutor and a single

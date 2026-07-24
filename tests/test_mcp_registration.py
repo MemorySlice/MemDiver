@@ -30,6 +30,12 @@ EXPECTED_TOOLS = {
     "search_reduce", "brute_force", "n_sweep", "emit_plugin",
     "read_hex_raw", "resolve_va", "search_bytes", "get_page_states",
     "consensus", "auto_floor", "export_pattern",
+    # Phase 4 (G3): capabilities that were previously web-only are now
+    # reachable from MCP too.
+    "get_connections", "get_module_index", "get_blocks",
+    # Phase 5 (G4): verify + experiment lifted into shared producers and
+    # exposed on MCP alongside the CLI/API surfaces.
+    "verify", "experiment",
 }
 
 

@@ -9,7 +9,6 @@ flowchart TB
         CLI[memdiver CLI<br/>20 subcommands]
         MCP[MCP server<br/>15 tools]
         Marimo[Marimo sandbox<br/>+5 research views]
-        Nice[NiceGUI shell<br/>legacy]
     end
     subgraph API[FastAPI · 12 routers + WS]
         Routers[dataset · analysis · inspect ·<br/>sessions · tasks · dumps · path ·<br/>structures · architect · consensus ·<br/>oracles · pipeline]
@@ -46,6 +45,7 @@ flowchart TB
 :hidden:
 
 core
+app
 engine
 harvester
 msl

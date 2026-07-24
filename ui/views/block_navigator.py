@@ -154,6 +154,12 @@ def _add_decoded_sections(mo, reader, sections: dict) -> None:
         pass
 
     # -- MSL-Decoders-02: new spec-defined table decoders --
+    # TODO(single-source): the grouped/serialized forms of these tables now
+    # live in the shared producers memdiver.app.tools_inspect.module_index_result
+    # and .connections_result. This view still reads the collectors directly
+    # because it receives an already-open MslReader (not a path + ToolSession),
+    # so routing through the producers would require re-opening the container.
+    # Wire it to the producers when this view is refactored to take a session.
     try:
         mli_tables = reader.collect_module_list_index()
         mli_entries = [e for t in mli_tables for e in t.entries]

@@ -86,7 +86,7 @@ function Toolbar() {
         </span>
       </div>
       <div className="flex items-center gap-2">
-        {mode === "exploration" && notebookAvailable && (
+        {notebookAvailable && (
           <a
             href="/notebook"
             target="_blank"

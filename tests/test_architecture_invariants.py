@@ -314,15 +314,28 @@ def test_end_to_end_missing_key_four_surface_behaviors(encrypted_msl):
     for leaked_key in ("tag_status", "error", "_status", "status", "decrypted", "hint"):
         assert leaked_key not in http_payload
 
-    # (b) CLI surface: inline diagnostic, exit 1.
-    cli_payload, exit_code, stderr_msg = present_inspect_cli(result)
-    assert exit_code == 1
-    assert cli_payload == {"error": hint, "tag_status": "missing_key"}
-    assert stderr_msg == hint
+    # core hint is neutral — no surface-specific remedy leaks in.
+    assert "--" not in hint
+    assert "key_file" not in hint
 
-    # (c) MCP surface: the same inline diagnostic shape.
+    # (b) CLI surface: inline diagnostic, exit 1, augmented with the CLI flags.
+    from memdiver.cli import _KEY_FLAGS_HINT
+    from memdiver.mcp_server.presenters import _KEY_PARAMS_HINT
+
+    cli_payload, exit_code, stderr_msg = present_inspect_cli(result)
+    cli_expected = f"{hint}; {_KEY_FLAGS_HINT}"
+    assert exit_code == 1
+    assert cli_payload == {"error": cli_expected, "tag_status": "missing_key"}
+    assert stderr_msg == cli_expected
+    assert "--key-file" in cli_payload["error"]  # CLI flags sourced from cli.py
+
+    # (c) MCP surface: same shape, but augmented with the MCP PARAMETER names.
     mcp_payload = present_inspect_mcp(result)
-    assert mcp_payload == {"error": hint, "tag_status": "missing_key"}
+    mcp_expected = f"{hint}; {_KEY_PARAMS_HINT}"
+    assert mcp_payload == {"error": mcp_expected, "tag_status": "missing_key"}
+    # The CLI dash-flags never appear on the MCP surface, and vice versa.
+    assert "--key-file" not in mcp_payload["error"]
+    assert "key_file" in mcp_payload["error"]
 
 
 def test_end_to_end_valid_key_four_surface_behaviors(encrypted_msl):
@@ -351,3 +364,440 @@ def test_end_to_end_valid_key_four_surface_behaviors(encrypted_msl):
     assert exit_code == 0
     assert stderr_msg is None
     assert present_inspect_mcp(result) is result.payload
+
+
+# ===========================================================================
+# STRUCTURAL invariants (added by the presentation-separation follow-up).
+#
+# The guards above are a denylist pinned to today's known offenders. The guards
+# below are structural: they discover offenders instead of hardcoding them, so a
+# NEW leak (a new surface, a new error-dict function, an aliased HTTPException)
+# fails immediately. Where the codebase still has known residue, it is tracked
+# in an explicit *ratchet baseline* that may only SHRINK — a fixed offender left
+# in the baseline is flagged stale, so the list cannot rot.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Invariant 6 (ratchet) — no NEW presentation-shaped ``return {"error": ...}``
+# from a non-deprecated function anywhere in app/. Remaining offenders are the
+# G2 residue; each is removed from the baseline as its phase migrates it to a
+# ServiceResult/CapabilityError.
+# ---------------------------------------------------------------------------
+
+_ERROR_DICT_FIRST_KEYS = {"error"}
+
+
+def _app_error_dict_returns():
+    """Discover ``(relpath, funcname)`` for every ``return {"error": ...}``
+    inside a *non-deprecated* function under ``app/``. Innermost enclosing
+    function wins; deprecated functions (docstring says so) are the sanctioned
+    backward-compat carve-out and are excluded."""
+    found = set()
+    for path in sorted((ROOT / "app").rglob("*.py")):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        func_of = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                deprecated = "deprecated" in (ast.get_docstring(node) or "").lower()
+                for child in ast.walk(node):
+                    if hasattr(child, "lineno"):
+                        func_of[child.lineno] = (node.name, deprecated)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Return)
+                and isinstance(node.value, ast.Dict)
+                and node.value.keys
+            ):
+                first = node.value.keys[0]
+                if isinstance(first, ast.Constant) and first.value in _ERROR_DICT_FIRST_KEYS:
+                    fn, deprecated = func_of.get(node.lineno, ("<module>", False))
+                    if not deprecated:
+                        found.add((path.relative_to(ROOT).as_posix(), fn))
+    return found
+
+
+# The G2 residue as of the follow-up audit. Phase 1 migrated every entry to a
+# ServiceResult/CapabilityError, so the baseline is now empty and the guard is
+# fully structural: any NEW presentation ``{"error": ...}`` return in app/ fails
+# ``test_no_new_error_dict_leaks_in_app_layer`` immediately.
+_KNOWN_APP_ERROR_DICT_LEAKS = frozenset()
+
+
+def test_no_new_error_dict_leaks_in_app_layer():
+    """No presentation-shaped ``{"error": ...}`` return outside the tracked
+    baseline. New leaks must instead raise ``CapabilityError`` / return a
+    ``ServiceResult``."""
+    new = _app_error_dict_returns() - _KNOWN_APP_ERROR_DICT_LEAKS
+    assert not new, (
+        'NEW presentation {"error": ...} return(s) in app/ — route through a '
+        "ServiceResult/CapabilityError instead:\n"
+        + "\n".join(f"  {p}::{fn}" for p, fn in sorted(new))
+    )
+
+
+def test_known_error_dict_leak_baseline_is_not_stale():
+    """The ratchet only tightens: once a baseline function stops leaking, it
+    must be removed from ``_KNOWN_APP_ERROR_DICT_LEAKS``."""
+    stale = _KNOWN_APP_ERROR_DICT_LEAKS - _app_error_dict_returns()
+    assert not stale, (
+        "These baseline entries no longer leak (good!) — delete them from "
+        "_KNOWN_APP_ERROR_DICT_LEAKS so the ratchet keeps tightening:\n"
+        + "\n".join(f"  {p}::{fn}" for p, fn in sorted(stale))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 7 — legacy dict functions unreachable from production, INCLUDING
+# bare-import call sites (the old ``tools_inspect.<name>(`` regex gave zero
+# coverage of cli.py, which imports the names bare).
+# ---------------------------------------------------------------------------
+
+_LEGACY_DICT_FUNCS = {
+    "read_hex", "_read_hex_raw", "_resolve_va", "search_bytes",
+    "get_session_info", "get_page_states", "get_processes",
+    "get_modules", "get_handles",
+}
+
+
+def _production_surface_files():
+    return [
+        ROOT / "cli.py",
+        ROOT / "mcp_server" / "server.py",
+        ROOT / "mcp_server" / "presenters.py",
+        ROOT / "api" / "main.py",
+        *sorted((ROOT / "api" / "routers").rglob("*.py")),
+    ]
+
+
+def test_legacy_error_dict_functions_unreachable_including_bare_imports():
+    """Stronger sibling of ``test_legacy_error_dict_functions_unreachable_from_production``:
+    catches both ``tools_inspect.<name>(`` attribute calls AND bare-name calls of
+    a name imported ``from ...tools_inspect import <name>`` (with or without an
+    alias) — the form the CLI actually uses."""
+    offenders = []
+    for path in _production_surface_files():
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        # bare-name aliases: from <...tools_inspect> import <legacy> [as alias]
+        aliases = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.endswith(
+                "tools_inspect"
+            ):
+                for a in node.names:
+                    if a.name in _LEGACY_DICT_FUNCS:
+                        aliases[a.asname or a.name] = a.name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if (
+                isinstance(f, ast.Attribute)
+                and f.attr in _LEGACY_DICT_FUNCS
+                and isinstance(f.value, ast.Name)
+                and f.value.id.endswith("tools_inspect")
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} tools_inspect.{f.attr}(")
+            elif isinstance(f, ast.Name) and f.id in aliases:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} {aliases[f.id]}( [bare]")
+    assert offenders == [], "legacy dict function reachable from production:\n" + "\n".join(
+        offenders
+    )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 8 — HTTPException never in a service layer, ALIAS-aware
+# (``from fastapi import HTTPException as HExc``).
+# ---------------------------------------------------------------------------
+
+_SERVICE_DIRS = ["core", "engine", "app", str(Path("api") / "services")]
+
+
+def test_no_aliased_httpexception_in_service_layers():
+    """Complements ``test_no_httpexception_in_service_layers``: an aliased import
+    (``from fastapi import HTTPException as X``) would evade the name/attr check,
+    so flag any local alias of ``HTTPException`` used in a service layer."""
+    offenders = []
+    for path in _py_files(*_SERVICE_DIRS):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        alias_names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and "fastapi" in node.module:
+                for a in node.names:
+                    if a.name == "HTTPException" and a.asname:
+                        alias_names.add(a.asname)
+        if not alias_names:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in alias_names:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} (alias {node.id})")
+    assert offenders == [], "aliased HTTPException in a service layer:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# Invariant 9 — no direct user-facing stream writes in service layers
+# (``sys.stdout/stderr.write``, ``click.echo``) — the attribute-form output the
+# bare-``print`` guard misses.
+# ---------------------------------------------------------------------------
+
+
+def test_no_stream_writes_in_service_layers():
+    offenders = []
+    for path in _py_files("core", "engine", "app"):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            func = node.func
+            if (
+                func.attr == "write"
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr in {"stdout", "stderr"}
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} <stream>.write(")
+            elif (
+                func.attr == "echo"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "click"
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} click.echo(")
+    assert offenders == [], "direct stream write in a service layer:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# Invariant 10 — report_key_status not referenced BY NAME in production (catches
+# keyword args and dict-unpack that the ``report_key_status =`` textual guard
+# misses). Docstring prose is a single large Constant, so mentions there do not
+# trip this exact-value match.
+# ---------------------------------------------------------------------------
+
+
+def test_report_key_status_not_referenced_by_name_in_production():
+    offenders = []
+    for path in _production_surface_files():
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == "report_key_status":
+                lineno = getattr(node.value, "lineno", "?")
+                offenders.append(f"{path.relative_to(ROOT)}:{lineno} keyword report_key_status=")
+            elif isinstance(node, ast.Constant) and node.value == "report_key_status":
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} literal 'report_key_status'")
+    assert offenders == [], "report_key_status referenced by name in production:\n" + "\n".join(
+        offenders
+    )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 11 — the one-producer -> multi-surface presenter split, WITHOUT the
+# crypto backend. The flagship E2E tests skip when AES-256-GCM is absent; this
+# builds a MISSING_KEY ServiceResult by hand so the presenter split is proven on
+# every CI image.
+# ---------------------------------------------------------------------------
+
+
+def test_presenter_split_runs_without_crypto():
+    from memdiver.api.routers.inspect import present_inspect_http
+    from memdiver.cli import present_inspect_cli
+    from memdiver.core.service_result import KeyStatus, ServiceResult
+    from memdiver.mcp_server.presenters import present_inspect_mcp
+
+    key = KeyStatus.from_source(_StubSource(TagStatus.MISSING_KEY))
+    payload = {"region_count": 0}
+    result = ServiceResult.ok(payload).with_key(key)
+
+    # API drops the diagnostic — payload passes straight through, no status leak.
+    http_payload = present_inspect_http(result)
+    assert http_payload is payload
+    for leaked in ("tag_status", "error", "status", "decrypted", "hint"):
+        assert leaked not in http_payload
+
+    # CLI + MCP inline the lock signal, each augmenting the neutral core hint
+    # with its own surface-specific remedy (flags vs. parameters).
+    from memdiver.cli import _KEY_FLAGS_HINT
+    from memdiver.mcp_server.presenters import _KEY_PARAMS_HINT
+
+    cli_payload, exit_code, stderr_msg = present_inspect_cli(result)
+    cli_expected = f"{key.hint}; {_KEY_FLAGS_HINT}"
+    assert exit_code == 1
+    assert cli_payload == {"error": cli_expected, "tag_status": "missing_key"}
+    assert stderr_msg == cli_expected
+    assert present_inspect_mcp(result) == {
+        "error": f"{key.hint}; {_KEY_PARAMS_HINT}",
+        "tag_status": "missing_key",
+    }
+    # Flag text lives in the surfaces, not core.
+    assert "--" not in key.hint
+
+
+# ---------------------------------------------------------------------------
+# Invariant 11b (G1) — no CLI flag / presentation text in core. The status
+# envelope carries only neutral, surface-agnostic hints; each surface presenter
+# renders its own remedy (CLI flags, MCP parameters). This scans every string
+# literal under core/ for a CLI-flag token so presentation wording can never
+# re-enter core.
+# ---------------------------------------------------------------------------
+
+_CLI_FLAG_RE = re.compile(r"--[a-z][a-z-]*")
+_EXPLICIT_FLAG_TOKENS = ("--key-file", "--passphrase", "--kem-key-file")
+
+
+def test_no_cli_flag_strings_in_core():
+    offenders = []
+    for path in sorted((ROOT / "core").rglob("*.py")):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            text = node.value
+            if any(tok in text for tok in _EXPLICIT_FLAG_TOKENS) or _CLI_FLAG_RE.search(text):
+                rel = path.relative_to(ROOT).as_posix()
+                offenders.append(f"{rel}:{node.lineno} {text!r}")
+    assert offenders == [], (
+        "CLI flag / presentation text found in core/ — move surface wording into "
+        "the CLI/MCP presenters:\n" + "\n".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 12 (parity) — every capability is reachable on every in-scope
+# surface, all routed to the same producer. Consumes the capability registry
+# introduced in Phase 5; skipped until it lands so the intent is tracked.
+# ---------------------------------------------------------------------------
+
+
+def _import_producer(dotted: str):
+    """Import ``pkg.mod.func`` and return the ``func`` object."""
+    import importlib
+
+    module_path, _, attr = dotted.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+
+
+def test_capability_registry_producers_import_and_are_callable():
+    """Every ``Capability.producer`` dotted path must resolve to a callable.
+
+    A registry entry pointing at a renamed/removed producer is a silent lie
+    about the wiring; this catches it at test time."""
+    from memdiver.app.capabilities import CAPABILITIES
+
+    broken = []
+    for cap in CAPABILITIES:
+        try:
+            producer = _import_producer(cap.producer)
+        except (ImportError, AttributeError) as exc:
+            broken.append(f"{cap.name} -> {cap.producer}: {exc}")
+            continue
+        if not callable(producer):
+            broken.append(f"{cap.name} -> {cap.producer}: not callable")
+    assert broken == [], "capability producer(s) do not import/are not callable:\n" + "\n".join(
+        broken
+    )
+
+
+def test_cross_surface_capability_parity():
+    """RATCHET: every capability is wired on every in-scope surface, except a
+    documented, non-stale set of gaps.
+
+    Mirrors ``_KNOWN_APP_ERROR_DICT_LEAKS``: the raw gap set (in-scope surfaces
+    a capability is NOT yet wired on) must equal ``KNOWN_PARITY_GAPS`` exactly.
+    A NEW gap (an unwired capability/surface not in the baseline) fails the
+    forward check; a STALE gap (a documented gap that has since been wired)
+    fails the reverse check, so the baseline can only shrink."""
+    from memdiver.app.capabilities import (
+        IN_SCOPE_SURFACES,
+        KNOWN_PARITY_GAPS,
+        missing_wirings,
+    )
+
+    missing = missing_wirings()
+
+    new_gaps = missing - KNOWN_PARITY_GAPS
+    assert not new_gaps, (
+        "NEW cross-surface parity gap(s) — wire the capability on the surface, "
+        "or add it to KNOWN_PARITY_GAPS with justification:\n"
+        + "\n".join(f"  {name} missing on {surface}" for name, surface in sorted(new_gaps))
+    )
+
+    stale_gaps = KNOWN_PARITY_GAPS - missing
+    assert not stale_gaps, (
+        "STALE parity gap(s) — these are now wired; delete them from "
+        "KNOWN_PARITY_GAPS so the ratchet keeps tightening:\n"
+        + "\n".join(f"  {name} on {surface}" for name, surface in sorted(stale_gaps))
+    )
+
+    # Guard the baseline against typos: every documented gap names a real
+    # capability and an in-scope surface.
+    cap_names = {c.name for c in __import__(
+        "memdiver.app.capabilities", fromlist=["CAPABILITIES"]).CAPABILITIES}
+    for name, surface in KNOWN_PARITY_GAPS:
+        assert name in cap_names, f"KNOWN_PARITY_GAPS names unknown capability {name!r}"
+        assert surface in IN_SCOPE_SURFACES, (
+            f"KNOWN_PARITY_GAPS names out-of-scope surface {surface!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Invariant 13 (G9) — the four pipeline producers that open a keyed container
+# must SURFACE a locked (missing/wrong-key) dump rather than silently losing
+# the key state and misreporting it as a genuine empty/negative result. Each
+# is expected to raise EncryptedDumpLockedError. Crypto-fixture-gated like the
+# flagship E2E tests (skips when AES-256-GCM is absent).
+# ---------------------------------------------------------------------------
+
+
+def test_g9_four_producers_surface_locked_dump(encrypted_msl, tmp_path):
+    import numpy as np
+
+    from memdiver.app import tools_pipeline
+    from memdiver.core.service_errors import EncryptedDumpLockedError
+
+    # A second encrypted .msl so the >=2-dump producers have a valid pair; both
+    # are opened WITHOUT a key below, so both read back empty (locked).
+    msl_path, _keyfile = encrypted_msl
+    second = tmp_path / "second.msl"
+    _write_encrypted_msl(second, os.urandom(32))
+    pair = [msl_path, str(second)]
+
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.consensus(dump_paths=pair, output_dir=str(tmp_path / "c"))
+
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.export_pattern(dump_paths=pair, output_dir=str(tmp_path / "e"))
+
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.n_sweep(
+            source_paths=pair,
+            oracle_path=str(tmp_path / "unused_oracle.py"),
+            output_dir=str(tmp_path / "n"),
+            n_values=[2],
+        )
+
+    variance_path = tmp_path / "variance.npy"
+    np.save(variance_path, np.zeros(64, dtype=np.float32))
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.auto_floor(
+            variance_path=str(variance_path),
+            reference_path=msl_path,
+            oracle_path=str(tmp_path / "unused_oracle.py"),
+            output_dir=str(tmp_path / "a"),
+            num_dumps=2,
+        )

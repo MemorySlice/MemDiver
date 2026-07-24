@@ -594,3 +594,50 @@ def test_consensus_add_all_zero_dump_warns(tmp_path, caplog):
         rc = _cmd_consensus_add(add_args)
     assert rc == 0
     assert any("entirely zero bytes" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# search-reduce — output carries the advisory recommended_floor (Phase 3).
+# ---------------------------------------------------------------------------
+
+
+def test_search_reduce_emits_recommended_floor(tmp_path):
+    import json
+
+    import numpy as np
+
+    from memdiver.cli import (
+        _cmd_consensus_add,
+        _cmd_consensus_begin,
+        _cmd_search_reduce,
+    )
+
+    size = 512
+    state_path = tmp_path / "session.json"
+    assert _cmd_consensus_begin(argparse.Namespace(state=str(state_path), size=size)) == 0
+
+    rng = np.random.default_rng(5)
+    base = rng.integers(0, 4, size, dtype=np.uint8)  # low-entropy shared background
+    ref_dump = tmp_path / "d0.bin"
+    for i in range(4):
+        d = base.copy()
+        d[256:288] = rng.integers(0, 256, 32, dtype=np.uint8)  # high-variance window
+        p = tmp_path / f"d{i}.bin"
+        p.write_bytes(d.tobytes())
+        if i == 0:
+            ref_dump = p
+        assert _cmd_consensus_add(argparse.Namespace(
+            state=str(state_path), dump=str(p),
+            key_file=None, passphrase=None, kem_key_file=None)) == 0
+
+    out_path = tmp_path / "candidates.json"
+    rc = _cmd_search_reduce(argparse.Namespace(
+        state=str(state_path), reference_dump=str(ref_dump),
+        alignment=8, block_size=16, density_threshold=0.5,
+        min_variance=100.0, entropy_window=16, entropy_threshold=3.5,
+        min_region=8, output=str(out_path),
+        key_file=None, passphrase=None, kem_key_file=None))
+    assert rc == 0
+    payload = json.loads(out_path.read_text())
+    assert "recommended_floor" in payload
+    assert payload["recommended_floor"] >= 0.0

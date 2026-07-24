@@ -32,8 +32,8 @@ classifiers = [
 ]
 # Base deps = the importable library core (`import memdiver`, `open_dump`,
 # `MslReader`/`MslWriter`, `import_dump`, `run_auto_floor`, `detect_format`) plus
-# the core analysis/CLI stack. The HTTP API, MCP server, and the NiceGUI/Marimo
-# UIs live behind extras (see below) so a library-only install stays lean — every
+# the core analysis/CLI stack. The HTTP API, MCP server, and the Marimo
+# UI live behind extras (see below) so a library-only install stays lean — every
 # consumer of those deps imports them lazily and degrades with a clear hint.
 dependencies = [
     "plotly>=5.18.0",
@@ -67,13 +67,11 @@ api = [
 ]
 # Model Context Protocol server (`memdiver mcp`) for AI-agent integration.
 mcp = ["mcp>=1.0.0"]
-# Legacy NiceGUI web application (`memdiver app`).
-nicegui = ["nicegui>=3.0.0"]
 # Marimo interactive notebook UI (`memdiver ui`).
 marimo = ["marimo>=0.8.0"]
 # Convenience group: every interface at once — reproduces the pre-0.6 base
 # install (`pip install memdiver[all]`).
-all = ["memdiver[api,mcp,nicegui,marimo]"]
+all = ["memdiver[api,mcp,marimo]"]
 experiment = [
     "frida-tools>=12.0",
     "memslicer",
@@ -147,7 +145,6 @@ packages = [
     "memdiver.harvester",
     "memdiver.architect",
     "memdiver.ui",
-    "memdiver.ui.nicegui",
     "memdiver.ui.controls",
     "memdiver.ui.views",
     "memdiver.ui.components",

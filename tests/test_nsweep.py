@@ -118,6 +118,61 @@ def test_write_artifacts_creates_all_three(tmp_path):
     assert "Survivors vs N" in html
 
 
+def _diluted_dumps(num: int = 4, size: int = 1024, seed: int = 7):
+    """Dumps whose key window sits in the diluted band (< default floor 3000).
+
+    Dump 0 carries the target; dumps 1..N-1 share a constant ``target - 113``
+    key window, so per-byte population variance there is 3*113**2/16 ~= 2394
+    at N=4 (below 3000). Everything else is identical across dumps (variance 0),
+    so a reduce at min_variance=3000 yields no candidates and no hit.
+    """
+    rng = np.random.default_rng(seed)
+    base = rng.integers(0, 256, size, dtype=np.uint8)
+    p0 = np.arange(150, 182, dtype=np.uint8)              # distinct -> high entropy
+    p1 = (p0.astype(np.int16) - 113).astype(np.uint8)     # constant delta, no wrap
+    sources = []
+    for i in range(num):
+        d = base.copy()
+        d[256:288] = p0 if i == 0 else p1
+        sources.append(_FakeSource(d.tobytes()))
+    return sources
+
+
+_DILUTED_REDUCE = dict(
+    alignment=8, density_threshold=0.5, entropy_window=32,
+    entropy_threshold=4.0, min_variance=3000.0, min_region=16,
+)
+
+
+def test_escalate_false_leaves_result_unchanged():
+    sources = _diluted_dumps()
+    result = run_nsweep(
+        sources, n_values=[3, 4], reduce_kwargs=dict(_DILUTED_REDUCE),
+        oracle=lambda c: c == sources[0].read_all()[256:288], key_sizes=(32,), stride=8,
+    )
+    # No checkpoint hit and escalation not requested -> no escalation field.
+    assert result.first_hit_n is None
+    assert result.escalation is None
+    assert "escalation" not in result.to_dict()
+
+
+def test_escalate_recovers_diluted_key_at_terminal_n():
+    sources = _diluted_dumps()
+    target = sources[0].read_all()[256:288]
+    result = run_nsweep(
+        sources, n_values=[3, 4], reduce_kwargs=dict(_DILUTED_REDUCE),
+        oracle=lambda c: c == target, key_sizes=(32,), stride=8,
+        escalate=True,
+    )
+    # Default floor found nothing at any checkpoint; escalation recovered it.
+    assert result.first_hit_n is None
+    assert result.escalation is not None
+    assert result.escalation["verdict"] == "FLOOR_WAS_TOO_HIGH"
+    assert result.escalation["hit_tier"] == "phi0"
+    assert result.escalation["offset"] == 256
+    assert result.to_dict()["escalation"]["hit_tier"] == "phi0"
+
+
 def test_timing_fields_populated():
     sources = _synth_dumps(num=5)
     target = _target_from(sources)

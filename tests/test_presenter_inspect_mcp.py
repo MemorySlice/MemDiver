@@ -37,6 +37,7 @@ from memdiver.core.service_result import (  # noqa: E402
     StatusBlock,
 )
 from memdiver.mcp_server.presenters import (  # noqa: E402
+    _KEY_PARAMS_HINT,
     mcp_error_funnel,
     present_inspect_mcp,
     present_inspect_mcp_call,
@@ -54,31 +55,32 @@ def _result(payload, key: KeyStatus, resolution: Resolution) -> ServiceResult:
 
 
 def test_missing_key_inlines_error_and_tag_status():
-    key = KeyStatus(
-        TagStatus.MISSING_KEY,
-        decrypted=False,
-        hint="dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
-    )
+    # The core hint is neutral; the MCP presenter appends its PARAMETER remedy.
+    core_hint = "dump is encrypted; no valid decryption key was supplied"
+    key = KeyStatus(TagStatus.MISSING_KEY, decrypted=False, hint=core_hint)
     result = _result({"hex_lines": []}, key, Resolution.UNRESOLVED)
 
-    assert present_inspect_mcp(result) == {
-        "error": "dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
+    out = present_inspect_mcp(result)
+    assert out == {
+        "error": f"{core_hint}; {_KEY_PARAMS_HINT}",
         "tag_status": "missing_key",
     }
+    # MCP guidance names the tool parameters, never the CLI dash-flags.
+    assert "key_file" in out["error"]
+    assert "--key-file" not in out["error"]
 
 
 def test_corrupted_inlines_error_and_tag_status():
-    key = KeyStatus(
-        TagStatus.CORRUPTED,
-        decrypted=False,
-        hint="AEAD verification failed (wrong key or tampered file)",
-    )
+    core_hint = "AEAD verification failed (wrong key or tampered file)"
+    key = KeyStatus(TagStatus.CORRUPTED, decrypted=False, hint=core_hint)
     result = _result({"modules": []}, key, Resolution.UNRESOLVED)
 
-    assert present_inspect_mcp(result) == {
-        "error": "AEAD verification failed (wrong key or tampered file)",
+    out = present_inspect_mcp(result)
+    assert out == {
+        "error": f"{core_hint}; {_KEY_PARAMS_HINT}",
         "tag_status": "corrupted",
     }
+    assert "--" not in out["error"]
 
 
 # ---------------------------------------------------------------------------

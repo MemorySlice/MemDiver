@@ -31,8 +31,10 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from memdiver.engine.candidate_grid import iter_region_grid
-from memdiver.engine.candidate_pipeline import reduce_search_space
+from memdiver.engine import floor_policy
+# Re-exported so callers/tests keep importing ``_enumerate_candidates`` from
+# here after the region->pairs helper moved into floor_policy (Phase 4).
+from memdiver.engine.floor_policy import enumerate_candidates as _enumerate_candidates
 from memdiver.engine.oracle import OracleFn
 from memdiver.engine.progress import ProgressEvent, ProgressFn, noop_progress, safe_emit
 
@@ -159,6 +161,39 @@ class AutoFloorResult:
             "assumptions": list(self.assumptions),
             "exit_code": self.exit_code,
         }
+
+
+def hit_tier(result: "AutoFloorResult") -> Optional[str]:
+    """Map an escalation verdict to the floor tier its hit came from.
+
+    ``None`` for any negative verdict (ABSENT / INCONCLUSIVE) so a
+    conditional-absence claim never carries a fabricated tier. Keyed on
+    ``phi_star`` thresholds (robust to the density-gate edge case where a
+    ``phi_star >= DEFAULT_FLOOR`` window is excluded from the default_set):
+
+        phi_star >= DEFAULT_FLOOR   -> "default"    (the shipped floor's band)
+        phi0 <= phi_star < default  -> "phi0"       (data-driven floor band)
+        phi_star < phi0             -> "below_phi0"
+    """
+    if result.verdict not in (VERDICT_RECOVERED, VERDICT_FLOOR_TOO_HIGH):
+        return None
+    phi = result.phi_star
+    if phi is None:
+        return None
+    if phi >= DEFAULT_FLOOR:
+        return "default"
+    if result.phi0 is not None and phi >= result.phi0:
+        return "phi0"
+    return "below_phi0"
+
+
+def escalation_verdict(result: "AutoFloorResult") -> dict:
+    """The canonical escalation payload: the verdict dict plus its hit tier.
+
+    Single source of truth for the ``escalation`` envelope shape emitted by both
+    the pipeline escalation stage and the n-sweep terminal-N fall-through.
+    """
+    return {**result.to_dict(), "hit_tier": hit_tier(result)}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -410,22 +445,6 @@ def absence_confidence(
 # ─────────────────────────────────────────────────────────────────────
 # Core: maximal candidate set + best-first oracle sweep
 # ─────────────────────────────────────────────────────────────────────
-def _enumerate_candidates(regions, dump_len: int,
-                          key_sizes: Sequence[int], stride: int
-                          ) -> List[Tuple[int, int]]:
-    """(offset, size) grid a search-reduce region set would feed the oracle.
-
-    Shares the stride-snap grid math with engine.brute_force.iter_candidate_slices
-    via engine.candidate_grid.iter_region_grid: snap the first offset up to a
-    multiple of ``stride`` >= the region start, then step by ``stride``.
-    """
-    out: List[Tuple[int, int]] = []
-    for r in regions:
-        r_start, r_end = r.offset, r.offset + r.length
-        out.extend(iter_region_grid(r_start, r_end, key_sizes, stride, dump_len))
-    return out
-
-
 def _maximal_candidates(
     variance: np.ndarray,
     reference_data: bytes,
@@ -433,35 +452,27 @@ def _maximal_candidates(
     reduce_kwargs: dict,
     key_sizes: Sequence[int],
     stride: int,
-) -> Tuple[np.ndarray, np.ndarray, set]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, set]:
     """Return (offsets, sizes, window_variance, default_set).
 
-    The maximal set is entropy+alignment only (variance floor disabled), i.e.
-    every candidate the oracle could ever be asked about. window_variance is
-    the mean per-byte variance over each candidate window (used only to RANK).
-    ``default_set`` is the (offset,size) set the SHIPPED default floor
-    (search-reduce at DEFAULT_FLOOR, incl. its density gate) would test — used
-    to decide RECOVERED vs FLOOR_WAS_TOO_HIGH.
+    A thin composition over :func:`floor_policy.enumerate_maximal` (the single
+    shared enumeration core). The maximal set is entropy+alignment only
+    (variance floor disabled), i.e. every candidate the oracle could ever be
+    asked about; window_variance is the mean per-byte variance over each window
+    (used only to RANK). ``default_set`` is the (offset,size) set the SHIPPED
+    default floor (search-reduce at DEFAULT_FLOOR, incl. its density gate) would
+    test — used to decide RECOVERED vs FLOOR_WAS_TOO_HIGH. Kept as a SECOND
+    enumeration at DEFAULT_FLOOR for bit-exact parity with the default's
+    nonlinear density gate (a wvar>=DEFAULT_FLOOR threshold would drift the
+    verdict label at density-gated region edges).
     """
-    dump_len = len(reference_data)
-    rk = dict(reduce_kwargs)
-    rk["min_variance"] = 0.0
-    red = reduce_search_space(variance, reference_data, num_dumps, **rk)
-    max_pairs = _enumerate_candidates(red.regions, dump_len, key_sizes, stride)
-
-    rk_def = dict(reduce_kwargs)
-    rk_def["min_variance"] = DEFAULT_FLOOR
-    red_def = reduce_search_space(variance, reference_data, num_dumps, **rk_def)
-    default_set = set(_enumerate_candidates(red_def.regions, dump_len, key_sizes, stride))
-
-    if not max_pairs:
-        return (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64),
-                np.empty(0, dtype=np.float64), default_set)
-    offsets = np.asarray([o for o, _ in max_pairs], dtype=np.int64)
-    sizes = np.asarray([s for _, s in max_pairs], dtype=np.int64)
-    var = np.asarray(variance, dtype=np.float64)
-    cumvar = np.concatenate([[0.0], np.cumsum(var)])
-    wvar = (cumvar[offsets + sizes] - cumvar[offsets]) / sizes
+    offsets, sizes, wvar = floor_policy.enumerate_maximal(
+        variance, reference_data, num_dumps, reduce_kwargs, key_sizes, stride,
+        min_variance=0.0)
+    d_off, d_sz, _ = floor_policy.enumerate_maximal(
+        variance, reference_data, num_dumps, reduce_kwargs, key_sizes, stride,
+        min_variance=DEFAULT_FLOOR, compute_wvar=False)
+    default_set = set(zip(d_off.tolist(), d_sz.tolist()))
     return offsets, sizes, wvar, default_set
 
 

@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from memdiver.core.service_errors import FileNotFoundServiceError
+
 logger = logging.getLogger("memdiver.app.session")
 
 
@@ -21,10 +23,15 @@ class ToolSession:
         self.protocol_version: str = ""
 
     def set_dataset(self, root: str) -> dict:
-        """Set dataset root, clear caches, return confirmation."""
+        """Set dataset root, clear caches, return confirmation.
+
+        Raises :class:`FileNotFoundServiceError` when ``root`` is not an
+        existing directory; each surface funnels that into its own idiom (HTTP
+        404, MCP error JSON, CLI exit) rather than receiving a raw error dict.
+        """
         path = Path(root).resolve()
         if not path.is_dir():
-            return {"error": f"Directory not found: {root}"}
+            raise FileNotFoundServiceError(f"Directory not found: {root}")
         self.dataset_root = path
         self.scan_cache = None
         logger.info("Dataset root set to %s", path)

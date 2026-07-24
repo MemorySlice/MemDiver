@@ -133,3 +133,24 @@ class UnsupportedFormatError(CapabilityError):
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.setdefault("category", ErrorCategory.UNSUPPORTED)
         super().__init__(message, **kwargs)
+
+
+class EncryptedDumpLockedError(CapabilityError):
+    """An encrypted dump was opened without a usable key, so it read empty.
+
+    An encrypted ``.msl`` opened with a missing/wrong key does not raise on
+    read — it reads back empty (size 0). Without this distinct error the
+    pipeline producers would misattribute that empty read as a genuine
+    negative ("empty/mismatched dumps", "no regions found", or a silent
+    ``first_hit_n=None``). Raised only for a genuinely LOCKED source
+    (``tag_status`` MISSING_KEY / CORRUPTED); a decrypted-but-empty dump keeps
+    the existing empty-result error. The default ``message`` is the
+    ``KeyStatus.hint`` so the guidance matches the inspect surface verbatim,
+    and the stable ``code`` makes it machine-distinguishable from the
+    empty/mismatched case.
+    """
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        kwargs.setdefault("category", ErrorCategory.PRECONDITION)
+        kwargs.setdefault("code", "encrypted_dump_locked")
+        super().__init__(message, **kwargs)

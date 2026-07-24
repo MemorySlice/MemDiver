@@ -302,3 +302,114 @@ def test_build_consensus_reads_each_raw_source_once(artifact_dir):
         assert src.read_calls == 1, (
             f"source {idx} read {src.read_calls} times, expected 1"
         )
+
+
+# ------------------------------------------------------------------
+# Phase 2: opt-in escalation fall-through
+# ------------------------------------------------------------------
+
+
+# Per-byte population variance of the key window across [KEY_BYTES, D, D, D] is
+# 3*DELTA**2 / 16. DELTA=113 -> ~2394, in the diluted band [phi0~1911, 3000):
+# below the shipped default floor (brute-force misses) but recoverable by the
+# floor-free escalation, which then labels it FLOOR_WAS_TOO_HIGH / tier "phi0".
+DILUTED_DELTA = 113
+
+
+def _diluted_reduce_kwargs() -> Dict[str, Any]:
+    """Reduce at the shipped default floor so the diluted key is excluded."""
+    return {
+        "min_variance": 3000.0,
+        "entropy_window": 16,
+        "entropy_threshold": 3.5,
+        "min_region": 8,
+        "alignment": 8,
+        "block_size": 16,
+    }
+
+
+@pytest.fixture
+def diluted_dumps_dir(tmp_path: Path) -> List[str]:
+    """Dumps whose key window sits in the diluted band (< default floor).
+
+    Dump 0 carries the oracle sentinel; dumps 1..3 share a constant
+    ``KEY_BYTES + DILUTED_DELTA`` key window, so the per-byte variance there is
+    a controlled ~2394 (below 3000). The per-seed high-entropy blocks stay
+    full-variance (>3000), so a reduce at min_variance=3000 finds only
+    oracle-rejected candidates and the diluted key is missed.
+    """
+    other = bytes((b + DILUTED_DELTA) & 0xFF for b in KEY_BYTES)
+    paths: List[str] = []
+    p0 = tmp_path / "dump_0.bin"
+    p0.write_bytes(_make_raw_dump(seed=0, key_bytes=KEY_BYTES))
+    paths.append(str(p0))
+    for i in range(1, 4):
+        p = tmp_path / f"dump_{i}.bin"
+        p.write_bytes(_make_raw_dump(seed=1000 + i, key_bytes=other))
+        paths.append(str(p))
+    return paths
+
+
+def test_run_pipeline_escalate_false_is_no_op(dumps_dir, oracle_path, artifact_dir):
+    """escalate=False must leave the default path untouched (byte-identical)."""
+    ctx = _FakeCtx()
+    params = {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": dumps_dir,
+        "reduce_kwargs": {
+            "min_variance": 100.0, "entropy_window": 16, "entropy_threshold": 3.5,
+            "min_region": 8, "alignment": 8, "block_size": 16,
+        },
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1, "exhaustive": True},
+        "escalate": False,
+    }
+    result = run_pipeline(params, ctx)
+
+    # No escalation traces anywhere.
+    assert "escalation" not in result["summary"]
+    assert not any(a["name"].startswith("escalate") for a in result["artifacts"])
+    assert not (artifact_dir / "escalate").exists()
+    assert not any(
+        e.get("stage") == "escalate" for e in ctx.events
+        if e["type"] in ("stage_start", "stage_end")
+    )
+    # The default brute-force hit is unchanged.
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] >= 1
+
+
+def test_run_pipeline_escalate_recovers_diluted_key_reports_phi0(
+    diluted_dumps_dir, oracle_path, artifact_dir
+):
+    """The core cascade: default floor misses, escalation recovers, one fold."""
+    ctx = _FakeCtx()
+    params = {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": diluted_dumps_dir,
+        "reduce_kwargs": _diluted_reduce_kwargs(),
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1, "exhaustive": True},
+        "escalate": True,
+    }
+    result = run_pipeline(params, ctx)
+
+    # The default floor missed (brute-force found no verified hit).
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] == 0
+
+    # Escalation recovered the diluted key and labeled the tier.
+    esc = result["summary"]["escalation"]
+    assert esc["verdict"] == "FLOOR_WAS_TOO_HIGH"
+    assert esc["hit_tier"] == "phi0"
+    assert esc["offset"] == KEY_OFFSET
+    assert (artifact_dir / "escalate" / "verdict.json").is_file()
+    assert any(a["name"] == "escalate_verdict" for a in result["artifacts"])
+
+    # The Theta(N*d) consensus fold ran exactly once (escalation reused the
+    # cached variance.npy; it never re-folded).
+    consensus_starts = [
+        e for e in ctx.events
+        if e["type"] == "stage_start" and e.get("stage") == "consensus"
+    ]
+    assert len(consensus_starts) == 1

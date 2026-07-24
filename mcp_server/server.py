@@ -90,10 +90,10 @@ def create_server():
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Compute sliding-window entropy profile for a dump file region."""
-        return json.dumps(tools_inspect.get_entropy(
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.entropy_result(
             _session, dump_path, offset, length, window, step, threshold,
             key_file, passphrase, kem_key_file,
-        ))
+        )))
 
     @mcp.tool()
     @mcp_error_funnel
@@ -105,10 +105,10 @@ def create_server():
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Extract printable strings from a dump file."""
-        return json.dumps(tools_inspect._extract_strings(
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.strings_result(
             _session, dump_path, offset, length, min_length, encoding, max_results,
             cursor, chunk_size, key_file, passphrase, kem_key_file,
-        ))
+        )))
 
     @mcp.tool()
     def get_session_info(
@@ -151,6 +151,36 @@ def create_server():
         )))
 
     @mcp.tool()
+    def get_connections(
+        msl_path: str, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """List network connections in an MSL file (pid/family/protocol/addrs)."""
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.connections_result(
+            _session, msl_path, key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
+    def get_module_index(
+        msl_path: str, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """List MODULE_LIST_INDEX entries in an MSL file (uuid/base/size/path)."""
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.module_index_result(
+            _session, msl_path, key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
+    def get_blocks(
+        msl_path: str, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """List all blocks in an MSL file grouped by category."""
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.blocks_result(
+            _session, msl_path, key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
     @mcp_error_funnel
     def detect_format(
         dump_path: str, offset: int = 0,
@@ -158,23 +188,23 @@ def create_server():
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Detect the binary format at an offset in a dump's raw container."""
-        return json.dumps(tools_inspect.detect_format(
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.detect_format_result(
             _session, dump_path, offset, key_file, passphrase, kem_key_file,
-        ))
+        )))
 
     @mcp.tool()
-    @mcp_error_funnel
     def get_cross_references(msl_path: str) -> str:
         """Resolve cross-references for an MSL file in its directory."""
-        return json.dumps(tools_xref.get_cross_references(_session, msl_path))
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_xref.get_cross_references_result(_session, msl_path)))
 
     @mcp.tool()
-    @mcp_error_funnel
     def identify_structure(
         dump_path: str, offset: int = 0, protocol: str = "",
     ) -> str:
         """Identify data structure at offset in a dump file."""
-        return json.dumps(tools_xref.identify_structure(_session, dump_path, offset, protocol))
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_xref.identify_structure_result(_session, dump_path, offset, protocol)))
 
     @mcp.tool()
     @mcp_error_funnel
@@ -246,8 +276,14 @@ def create_server():
         key_sizes: Optional[List[int]] = None,
         stride: int = 8, exhaustive: bool = True,
         oracle_config_path: Optional[str] = None,
+        escalate: bool = False,
+        escalate_oracle_budget: Optional[int] = None,
     ) -> str:
-        """Run the N-scaling harness and emit the Plotly survivor report."""
+        """Run the N-scaling harness and emit the Plotly survivor report.
+
+        Set ``escalate`` to run a floor-free sweep at the terminal N when no
+        checkpoint found a hit; its verdict surfaces under ``escalation``.
+        """
         return json.dumps(tools_pipeline.n_sweep(
             source_paths=source_paths,
             oracle_path=oracle_path,
@@ -258,6 +294,8 @@ def create_server():
             stride=stride,
             exhaustive=exhaustive,
             oracle_config_path=oracle_config_path,
+            escalate=escalate,
+            escalate_oracle_budget=escalate_oracle_budget,
         ))
 
     @mcp.tool()
@@ -396,6 +434,53 @@ def create_server():
             dump_paths=dump_paths, output_dir=output_dir, fmt=fmt, name=name,
             align=align, context=context, min_static_ratio=min_static_ratio,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        ))
+
+    # ------------------------------------------------------------------
+    # verify + experiment — the two capabilities lifted into shared
+    # producers in Phase 5 (previously CLI/API-only), now reachable here too.
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def verify(
+        dump_path: str, offset: int, ciphertext_hex: str, length: int = 32,
+        cipher: str = "AES-256-CBC", iv_hex: Optional[str] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Verify a candidate key read at an offset decrypts a known ciphertext.
+
+        The offset is read through the dump's memory projection (VAS for
+        ``.msl``); encrypted containers are decrypted with the key material.
+        """
+        from memdiver.app.key_material import key_material_kwargs
+        return json.dumps(tools_pipeline.verify_key_result(
+            dump_path=dump_path, offset=offset, length=length,
+            ciphertext_hex=ciphertext_hex, cipher=cipher, iv_hex=iv_hex,
+            key_material=key_material_kwargs(key_file, passphrase, kem_key_file),
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def experiment(
+        target: str, output_dir: str, num_runs: int = 10,
+        tools: Optional[List[str]] = None, export_format: str = "volatility3",
+        convergence: bool = False, max_fp: int = 0,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Run the full spawn→dump→consensus→verify→emit experiment.
+
+        Requires local dump tools (frida-tools / memslicer / lldb); returns a
+        ``missing_backend`` CapabilityError when none are available.
+        """
+        from memdiver.app.key_material import key_material_kwargs
+        return json.dumps(tools_pipeline.experiment_result(
+            target=target, output_dir=output_dir, num_runs=num_runs,
+            tools=tools, export_format=export_format,
+            convergence=convergence, max_fp=max_fp,
+            key_material=key_material_kwargs(key_file, passphrase, kem_key_file),
         ))
 
     return mcp

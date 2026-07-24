@@ -47,14 +47,14 @@ It combines known-key search, entropy scanning, change-point detection, structur
 pip install memdiver                 # lean core: CLI + Python library (import memdiver)
 pip install "memdiver[api]"          # + FastAPI/uvicorn web UI & REST API (memdiver web)
 pip install "memdiver[mcp]"          # + MCP server for AI agents (memdiver mcp)
-pip install "memdiver[all]"          # every interface (api + mcp + nicegui + marimo)
+pip install "memdiver[all]"          # every interface (api + mcp + marimo)
 pip install "memdiver[experiment]"   # + frida-tools, memslicer for dump collection
 pip install "memdiver[docs]"         # + Sphinx toolchain for building the docs site
 pip install "memdiver[dev]"          # + pytest and contributor tooling
 ```
 
 The base install stays lean for library/CLI users; the web UI, MCP server, and the
-legacy NiceGUI (`memdiver[nicegui]`) / Marimo (`memdiver[marimo]`) UIs are opt-in extras.
+Marimo (`memdiver[marimo]`) UI are opt-in extras.
 Each CLI command that needs an extra prints the exact `pip install memdiver[...]` hint if it is missing.
 
 LLDB is installed via your operating system — Xcode Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu. `memdiver experiment` exits gracefully with an install hint when no backend is present.
@@ -154,7 +154,7 @@ harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
 mcp_server/     MCP server — 15 tools exposed to AI assistants
-ui/             Marimo research sandbox (houses the 5 deeper views) + legacy NiceGUI shell
+ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```
 

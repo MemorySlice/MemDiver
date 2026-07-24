@@ -26,7 +26,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from memdiver.cli import _present_inspect_cli_call, present_inspect_cli, to_cli_exit
+from memdiver.cli import (
+    _KEY_FLAGS_HINT,
+    _present_inspect_cli_call,
+    present_inspect_cli,
+    to_cli_exit,
+)
 from memdiver.core.service_errors import (
     CapabilityError,
     ErrorCategory,
@@ -67,25 +72,27 @@ def _ok_result(payload, tag_status=TagStatus.VALID):
 
 def test_present_missing_key_locked():
     result = _locked_result(TagStatus.MISSING_KEY)
-    hint = result.status.key.hint
+    # The CLI augments the neutral core hint with its own flag guidance.
+    expected = f"{result.status.key.hint}; {_KEY_FLAGS_HINT}"
 
     payload, exit_code, stderr_msg = present_inspect_cli(result)
 
-    assert payload == {"error": hint, "tag_status": "missing_key"}
+    assert payload == {"error": expected, "tag_status": "missing_key"}
     assert exit_code == 1
-    assert stderr_msg == hint
+    assert stderr_msg == expected
     assert "encrypted" in stderr_msg
+    assert "--key-file" in stderr_msg  # CLI flag guidance sourced from cli.py
 
 
 def test_present_corrupted_locked():
     result = _locked_result(TagStatus.CORRUPTED)
-    hint = result.status.key.hint
+    expected = f"{result.status.key.hint}; {_KEY_FLAGS_HINT}"
 
     payload, exit_code, stderr_msg = present_inspect_cli(result)
 
-    assert payload == {"error": hint, "tag_status": "corrupted"}
+    assert payload == {"error": expected, "tag_status": "corrupted"}
     assert exit_code == 1
-    assert stderr_msg == hint
+    assert stderr_msg == expected
 
 
 def test_present_valid_ok_passes_payload_through():

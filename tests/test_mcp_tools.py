@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+from memdiver.core.service_errors import FileNotFoundServiceError
 from memdiver.mcp_server.session import ToolSession
 from memdiver.mcp_server import tools
 from memdiver.mcp_server import tools_inspect
@@ -35,8 +36,10 @@ class TestToolSession:
         assert session.dataset_root == FIXTURE_ROOT.resolve()
 
     def test_set_dataset_invalid(self, session):
-        result = session.set_dataset("/nonexistent/path")
-        assert "error" in result
+        # Migrated (Phase 1, G2): set_dataset now RAISES a CapabilityError for a
+        # missing root instead of returning a presentation ``{"error": ...}`` dict.
+        with pytest.raises(FileNotFoundServiceError):
+            session.set_dataset("/nonexistent/path")
 
     def test_require_dataset_raises(self, session):
         with pytest.raises(ValueError, match="No dataset root"):
@@ -67,11 +70,13 @@ class TestScanDataset:
         r2 = session.get_or_scan()
         assert r1 == r2
 
-    def test_scan_invalid_root_returns_structured_error(self, session):
-        """A bad root must return set_dataset's structured {'error': ...}
-        rather than raising an unstructured ValueError via get_or_scan."""
-        result = tools.scan_dataset(session, "/nonexistent/dataset/root")
-        assert "error" in result
+    def test_scan_invalid_root_raises_capability_error(self, session):
+        """A bad root must raise set_dataset's structured CapabilityError
+        (Phase 1, G2) — the surface funnels it — rather than raising an
+        unstructured ValueError via get_or_scan or returning an error dict. The
+        raise happens before any state is mutated, so dataset_root stays None."""
+        with pytest.raises(FileNotFoundServiceError):
+            tools.scan_dataset(session, "/nonexistent/dataset/root")
         assert session.dataset_root is None
 
 
@@ -86,8 +91,9 @@ class TestListPhases:
         assert result["runs"] > 0
 
     def test_list_phases_invalid_dir(self, session):
-        result = tools.list_phases(session, "/nonexistent")
-        assert "error" in result
+        # Migrated (Phase 1, G2): raises instead of returning an error dict.
+        with pytest.raises(FileNotFoundServiceError):
+            tools.list_phases(session, "/nonexistent")
 
 
 # --- list_protocols ---
@@ -119,11 +125,12 @@ class TestAnalyzeLibrary:
         assert len(result["libraries"]) > 0
 
     def test_analyze_invalid_dir(self, session):
-        result = tools.analyze_library(
-            session, ["/nonexistent"], phase="pre_handshake",
-            protocol_version="12",
-        )
-        assert "error" in result
+        # Migrated (Phase 1, G2): raises instead of returning an error dict.
+        with pytest.raises(FileNotFoundServiceError):
+            tools.analyze_library(
+                session, ["/nonexistent"], phase="pre_handshake",
+                protocol_version="12",
+            )
 
 
 # --- read_hex ---

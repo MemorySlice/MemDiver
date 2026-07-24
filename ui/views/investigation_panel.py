@@ -45,6 +45,13 @@ def render_investigation(
     Returns:
         mo.Html with the rendered investigation panel.
     """
+    # TODO(single-source): this view operates on an in-memory `dump_data`
+    # slice plus in-memory `variance` / `hits` (cross-run analysis artefacts
+    # with no on-disk representation). The shared producer
+    # ``app.tools_inspect.analyze_region_result`` is path-based and cannot
+    # accept those, so calling ``analyze_region`` directly here IS the single
+    # source of compute — the producer wraps the very same primitive for
+    # path-based surfaces (API/library) without a behavior change.
     from memdiver.core.region_analysis import RegionReport, analyze_region
     from memdiver.ui.components import color_scheme as cs
     from memdiver.ui.components.hex_renderer import render_hex_line

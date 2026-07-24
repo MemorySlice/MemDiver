@@ -77,6 +77,53 @@ from memdiver.core.service_result import (
     StatusBlock,
 )
 
+# --- Structured services (full feature parity) ------------------------------
+# The surface-agnostic ``app`` producers shared by every MemDiver surface (CLI,
+# web, MCP). They return ``ServiceResult`` / raise ``CapabilityError``. The
+# whole set lives on ``memdiver.services``; the most-used producers are lifted
+# to the top level below. See ``docs/quickstart/library.md`` and
+# ``docs/architecture/app.md``.
+from memdiver import services
+from memdiver.services import (
+    ToolSession,
+    # inspect
+    blocks_result,
+    connections_result,
+    detect_format_result,
+    entropy_result,
+    handles_result,
+    modules_result,
+    module_index_result,
+    page_states_result,
+    processes_result,
+    read_hex_raw_result,
+    read_hex_result,
+    resolve_va_result,
+    search_bytes_result,
+    session_info_result,
+    strings_result,
+    # xref / structure
+    apply_structure_result,
+    get_cross_references_result,
+    identify_structure_result,
+    # pipeline
+    auto_floor,
+    brute_force,
+    consensus,
+    emit_plugin,
+    export_pattern,
+    n_sweep,
+    search_reduce,
+    # verify / experiment
+    experiment_result,
+    verify_key_result,
+    # dataset / analysis
+    analyze_library,
+    list_phases,
+    list_protocols,
+    scan_dataset,
+)
+
 __all__ = [
     "__version__",
     # dump access
@@ -112,4 +159,43 @@ __all__ = [
     "KeyStatus",
     "Diagnostic",
     "Resolution",
+    # structured services (full feature parity) — see memdiver.services
+    "services",
+    "ToolSession",
+    # inspect producers
+    "read_hex_result",
+    "read_hex_raw_result",
+    "resolve_va_result",
+    "search_bytes_result",
+    "entropy_result",
+    "strings_result",
+    "detect_format_result",
+    "session_info_result",
+    "page_states_result",
+    "processes_result",
+    "modules_result",
+    "handles_result",
+    "connections_result",
+    "module_index_result",
+    "blocks_result",
+    # xref / structure producers
+    "get_cross_references_result",
+    "identify_structure_result",
+    "apply_structure_result",
+    # pipeline producers
+    "consensus",
+    "search_reduce",
+    "brute_force",
+    "n_sweep",
+    "auto_floor",
+    "emit_plugin",
+    "export_pattern",
+    # verify / experiment producers
+    "verify_key_result",
+    "experiment_result",
+    # dataset / analysis producers
+    "scan_dataset",
+    "list_protocols",
+    "list_phases",
+    "analyze_library",
 ]

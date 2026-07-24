@@ -372,15 +372,19 @@ def run_import_tool(Path, get_wizard_done, import_widgets, logger, mo):
     mo.stop(not get_wizard_done())
     import_result_el = None
     if import_widgets.btn.value > 0 and import_widgets.file_browser.value:
-        from memdiver.msl.importer import import_dump
+        # Single-source: route through the shared app/ producer (same
+        # msl.importer under the hood) instead of importing the core function
+        # directly, so every surface converges on one import path.
+        from memdiver.app.tools import import_dump as _import_to_msl
+        from memdiver.app.session import ToolSession as _ToolSession
         raw = Path(import_widgets.file_browser.value[0].path)
         out = raw.with_suffix(".msl")
         try:
             with mo.status.spinner(title="Importing to MSL..."):
-                res = import_dump(raw, out)
+                res = _import_to_msl(_ToolSession(), str(raw), str(out))
             import_result_el = mo.callout(
                 mo.md(f"Imported **{raw.name}** -> **{out.name}**  \n"
-                       f"Regions: {res.regions_written}, Key hints: {res.key_hints_written}"),
+                       f"Regions: {res['regions_written']}, Key hints: {res['key_hints_written']}"),
                 kind="success",
             )
             logger.info("Imported %s -> %s", raw, out)
@@ -395,6 +399,11 @@ def dataset_scan(Path, get_wizard_done, logger, mo, state):
     mo.stop(not get_wizard_done())
     dataset_info = None
     if state.input_mode == "dataset" and state.dataset_root:
+        # TODO(single-source): app.tools.scan_dataset returns a serialized dict,
+        # but the DatasetInfo OBJECT produced here is stored on state and read as
+        # an object (attributes: .tls_versions/.libraries/.total_runs) by the
+        # selector cells, the sidebar, and dataset_run_analysis. Routing through
+        # the producer would break every object-attribute consumer downstream.
         from memdiver.core.discovery import DatasetScanner
         with mo.status.spinner(title="Scanning dataset..."):
             scanner = DatasetScanner(
@@ -484,6 +493,13 @@ async def dataset_run_analysis(
         state.max_runs = ds_widgets.max_runs.value
         state.algorithm = ds_controls.algo_dd.value
 
+        # TODO(single-source): the app/ pipeline producers (search_reduce /
+        # brute_force / n_sweep) are single-DUMP stages returning serialized
+        # payloads. This cell runs multi-LIBRARY dataset analysis via
+        # AnalysisPipeline.analyze_library and builds an AnalysisResult of
+        # report OBJECTS that dataset_views consumes by attribute
+        # (.hits/.library/.metadata/.num_runs). No producer mirrors that
+        # object-returning multi-library shape, so it stays on the engine.
         from memdiver.core.keylog_templates import get_template
         from memdiver.engine.pipeline import AnalysisPipeline
         from memdiver.engine.results import AnalysisResult
@@ -578,6 +594,14 @@ def dataset_views(
             ])
 
         # Research views
+        # TODO(single-source): (a) the ConsensusVector below is rebuilt from
+        # per-report counts already computed by the pipeline — app.tools_pipeline
+        # .consensus re-runs a full consensus scan over a dump set, a different
+        # operation, and render_consensus_view consumes the ConsensusVector
+        # OBJECT. (b) The entropy chart consumes the FULL (offset, entropy)
+        # profile from core.entropy.compute_entropy_profile, whereas
+        # app.tools_inspect.entropy_result samples to <=200 points and rounds —
+        # feeding that to render_entropy_chart would lower the chart resolution.
         if mode_mgr.is_research:
             from memdiver.ui.views.consensus_view import render_consensus_view
             from memdiver.engine.consensus import ConsensusVector
@@ -615,6 +639,14 @@ def file_load(Path, get_wizard_done, logger, mo, state):
     file_data = None
     file_source = None
     if state.input_mode == "single_file" and state.single_file_path:
+        # TODO(single-source): the single-file workspace loads the dump ONCE into
+        # `file_data` (bytes) + keeps the live `file_source`/reader, then reuses
+        # both across every section built in _build_file_views (hex, entropy,
+        # strings, structure overlays, MSL session/VAS/blocks/xref). Those
+        # renderers consume in-memory bytes and rich core OBJECTS; the app/
+        # producers are path-based and return serialized payloads (and would
+        # re-open the file per section), so migrating here would change behavior
+        # and multiply I/O. See per-section notes in _build_file_views.
         from memdiver.core.dump_source import open_dump
         with mo.status.spinner(title="Loading dump file..."):
             file_source = open_dump(Path(state.single_file_path))
@@ -647,6 +679,23 @@ def file_views(
 def _():
     def _build_file_views(mo, state, file_data, file_source, mode_mgr, file_view_sections, Path):
         """Build view sections for a loaded file."""
+        # TODO(single-source): every section here renders from the already-loaded
+        # in-memory `file_data` bytes and the live `file_source`/reader. The
+        # matching app/ producers are path-based + serialized:
+        #   - hex render  -> read_hex_result (re-opens; returns hex_lines payload)
+        #   - entropy     -> entropy_result (samples <=200 pts + rounds; the chart
+        #                     wants the full (offset, entropy) profile)
+        #   - strings     -> strings_result (re-opens + chunked stream; payload
+        #                     field is `value`, this table uses StringMatch.text)
+        #   - structure   -> identify_structure_result (returns overlay payload;
+        #                     this builds the overlay table from StructureOverlay
+        #                     OBJECTS with .valid/.display/.field_name)
+        #   - MSL session/VAS/blocks/xref -> session_info_result / blocks_result
+        #                     etc. return serialized payloads, but render_session_view /
+        #                     render_vas_map / render_block_navigator consume the live
+        #                     reader + report OBJECTS.
+        # Routing any of these through a producer would change the rendered output
+        # and/or re-read the file per section, so they stay on core for now.
         # Hex viewer
         from memdiver.ui.views.hex_viewer import render_hex_viewer as _render_hex
         _end = min(len(file_data), 4096)
@@ -772,6 +821,10 @@ def dir_views(Path, RunDiscovery, get_wizard_done, mo, state):
                 f"**{len(_runs)} runs** found, **{len(_phases)} phases**: {', '.join(_phases)}"
             )
             # Show hex of first dump
+            # TODO(single-source): reads the first dump's bytes directly and
+            # renders them in-memory via render_hex_viewer. read_hex_result would
+            # re-open the file and return a hex_lines payload the object-based hex
+            # viewer here does not consume; kept on the direct read for parity.
             if _runs[0].dumps:
                 _first_dump = _runs[0].dumps[0]
                 _data = _first_dump.path.read_bytes()

@@ -48,7 +48,7 @@ def test_construct_each_dataclass():
         (
             TagStatus.MISSING_KEY,
             False,
-            "dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
+            "dump is encrypted; no valid decryption key was supplied",
         ),
         (
             TagStatus.CORRUPTED,
@@ -129,7 +129,7 @@ def test_key_status_to_dict_shape_and_order():
     assert d == {
         "tag_status": "missing_key",
         "decrypted": False,
-        "hint": "dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
+        "hint": "dump is encrypted; no valid decryption key was supplied",
     }
 
 

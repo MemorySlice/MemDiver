@@ -8,6 +8,12 @@ from memdiver.ui.components.hex_renderer import render_hex_dump
 from memdiver.ui.components.bookmark_store import BookmarkStore
 from memdiver.ui.components import color_scheme as cs
 from memdiver.ui.locales import _
+# TODO(single-source): _search_dump() below merges an ASCII-literal search with
+# a hex-byte search over the in-memory `dump_data` page. The shared producer
+# app.tools_inspect.search_bytes_result is path-based and hex-only (it re-opens
+# the dump and calls source.find_all on a hex needle), so routing through it
+# would both re-read the file and silently drop the ASCII interpretation —
+# a behavior change. Kept on the core find_pattern/parse_hex_pattern primitives.
 from memdiver.core.region_analysis import find_pattern, parse_hex_pattern
 
 logger = logging.getLogger("memdiver.ui.views.hex_navigator")

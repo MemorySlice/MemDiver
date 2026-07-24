@@ -68,6 +68,17 @@ def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
     return artifact_dir
 
 
+# NOTE(single-source): the three stage helpers below (_capture_dumps,
+# _build_per_tool_consensus, _verify_and_emit) are SUPERSEDED by
+# ``memdiver.app.tools_pipeline.experiment_result`` (+ its ``_experiment_*``
+# helpers), through which ``run_experiment`` now routes. They are retained —
+# not deleted (repo policy) — as the historical reference implementation and
+# are no longer on the production path. In particular ``_verify_and_emit`` /
+# ``_build_per_tool_consensus`` still carry the raw-bytes (``ConsensusVector.build``
+# / ``StaticChecker``) analysis the producer replaced with the memory-relative
+# consensus, so they should NOT be reintroduced; removal is pending approval.
+
+
 def _capture_dumps(
     orch,
     target_path: Path,
@@ -378,89 +389,51 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
 
     Returns ``{"artifacts": [...], "summary": {...}}`` so the
     TaskManager can publish the terminal ``done`` event.
+
+    The orchestration itself now lives in
+    :func:`memdiver.app.tools_pipeline.experiment_result` — the single
+    implementation shared with the CLI ``experiment`` command and the MCP
+    ``experiment`` tool. This runner is the thin streaming adapter: it maps the
+    producer's ``on_progress`` events onto ``ctx.emit`` (so the SPA's
+    capture/consensus/verify stream is byte-for-byte the same), degrades a
+    missing backend into the graceful ``missing_backend`` summary the SPA
+    expects, forwards cancellation, and registers the emitted plugins as
+    downloadable artifacts.
     """
+    from memdiver.app.tools_pipeline import experiment_result
+    from memdiver.core.service_errors import CapabilityError
+
     artifact_dir = _resolve_artifact_dir(params, ctx)
-
-    # Lazy / optional imports — fall back to a graceful summary if any
-    # of the heavyweight backends (memslicer, frida, architect exporters)
-    # are missing on this machine.
     try:
-        from memdiver.core.dump_driver import DumpOrchestrator
-    except ImportError as exc:  # pragma: no cover - environmental
-        return _missing_backend(
-            ctx,
-            f"experiment backend unavailable: {exc}. "
-            "Install with `pip install memdiver[experiment]`.",
+        result = experiment_result(
+            target=params["target"],
+            output_dir=str(artifact_dir),
+            num_runs=int(params.get("num_runs", 10)),
+            tools=params.get("tools"),
+            export_format=str(params.get("export_format", "volatility3")),
+            on_progress=lambda event, **fields: ctx.emit(event, **fields),
+            is_cancelled=ctx.is_cancelled,
         )
+    except CapabilityError as exc:
+        # A missing/unusable backend is a graceful terminal summary (the SPA
+        # renders a friendly notice); cancellation stays the RuntimeError the
+        # TaskManager already treats as an aborted task; everything else is a
+        # genuine failure and propagates.
+        if exc.code == "missing_backend":
+            return _missing_backend(ctx, exc.message)
+        if exc.code == "cancelled":
+            raise RuntimeError("experiment cancelled") from exc
+        raise
 
-    target_path = Path(params["target"]).expanduser()
-    if not target_path.is_file():
-        ctx.emit("error", error=f"target not found: {target_path}")
-        raise FileNotFoundError(f"target not found: {target_path}")
-
-    num_runs = int(params.get("num_runs", 10))
-    tools_param = params.get("tools")
-    tools_list = list(tools_param) if tools_param else None
-    export_format = str(params.get("export_format", "volatility3"))
-
-    try:
-        orch = DumpOrchestrator(tools=tools_list)
-    except Exception as exc:  # pragma: no cover - defensive
-        return _missing_backend(
-            ctx, f"DumpOrchestrator unavailable: {exc}",
-        )
-
-    if not orch.available_tools:
-        return _missing_backend(
-            ctx,
-            "no dump tools available on this machine "
-            "(install frida-tools / memslicer / lldb to enable capture).",
-        )
-
-    # Capture stage.
-    if ctx.is_cancelled():
-        ctx.emit("error", error="cancelled")
-        raise RuntimeError("experiment cancelled")
-    exp = _capture_dumps(
-        orch,
-        target_path,
-        num_runs,
-        artifact_dir,
-        ctx=ctx,
-    )
-
-    # Consensus stage — needs the engine.consensus module.
-    if ctx.is_cancelled():
-        ctx.emit("error", error="cancelled")
-        raise RuntimeError("experiment cancelled")
-    try:
-        per_tool = _build_per_tool_consensus(exp, ctx=ctx)
-    except ImportError as exc:
-        return _missing_backend(ctx, f"consensus backend unavailable: {exc}")
-
-    # Verify + emit stage — needs verification + architect modules.
-    if ctx.is_cancelled():
-        ctx.emit("error", error="cancelled")
-        raise RuntimeError("experiment cancelled")
-    try:
-        tool_results = _verify_and_emit(
-            exp,
-            per_tool,
-            output_dir=artifact_dir,
-            export_format=export_format,
-            ctx=ctx,
-        )
-    except ImportError as exc:
-        return _missing_backend(ctx, f"verify backend unavailable: {exc}")
-
+    tool_results = result["tool_results"]
     artifacts: List[Dict[str, Any]] = []
     _register_plugin_artifacts(artifacts, artifact_dir, artifact_dir, tool_results)
 
     summary = {
         "status": "ok",
-        "target": str(target_path),
-        "num_runs": num_runs,
-        "tools_used": list(per_tool.keys()),
+        "target": result["target"],
+        "num_runs": result["num_runs"],
+        "tools_used": result["tools_used"],
         "tool_results": tool_results,
         "protocol_version": params.get("protocol_version"),
         "phase": params.get("phase"),

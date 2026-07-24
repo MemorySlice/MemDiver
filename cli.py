@@ -75,6 +75,13 @@ def _key_material_from_args(args: argparse.Namespace) -> dict:
     return {"key": key, "passphrase": passphrase, "kem_private_key": kem_private}
 
 
+# CLI-surface remedy for a locked encrypted dump. The neutral core hint
+# (``KeyStatus.hint``) never names a transport-specific remedy; the CLI owns
+# the guidance that points its operator at the decryption FLAGS, so this string
+# lives here in the CLI surface — never in core.
+_KEY_FLAGS_HINT = "supply --key-file / --passphrase / --kem-key-file"
+
+
 def _warn_tag_status(source) -> None:
     """Print a user-facing line about an encrypted dump's AEAD verification.
 
@@ -89,8 +96,8 @@ def _warn_tag_status(source) -> None:
         print("memdiver: ERROR — AEAD verification FAILED (wrong key or tampered file)",
               file=sys.stderr)
     elif status == TagStatus.MISSING_KEY:
-        print("memdiver: ERROR — dump is encrypted; supply --key-file / "
-              "--passphrase / --kem-key-file", file=sys.stderr)
+        print(f"memdiver: ERROR — dump is encrypted; {_KEY_FLAGS_HINT}",
+              file=sys.stderr)
 
 
 def _resolve_dump_paths(raw_paths: list) -> list:
@@ -212,17 +219,6 @@ def _cmd_web(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     return 0
-
-
-def _cmd_app(args: argparse.Namespace) -> int:
-    """Launch the legacy NiceGUI web application (if installed)."""
-    try:
-        import nicegui  # noqa: F401
-    except ImportError:
-        _print_missing_package("NiceGUI", extra="nicegui")
-        return 1
-    app_path = str(Path(__file__).parent / "legacy_app.py")
-    return subprocess.call([sys.executable, app_path])
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -365,7 +361,17 @@ def _cmd_import(args: argparse.Namespace) -> int:
 
 
 def _cmd_consensus(args: argparse.Namespace) -> int:
-    """Build consensus matrix from dump files and output region analysis."""
+    """Build consensus matrix from dump files and output region analysis.
+
+    NOTE(single-source): the CLI ``consensus`` command is a REGION-REPORT
+    surface (volatile/static/aligned regions + optional convergence), distinct
+    from the pipeline-origination ``app.tools_pipeline.consensus`` producer the
+    MCP ``consensus`` tool uses (which writes ``variance.npy`` / ``reference.bin``
+    to feed ``search_reduce``). Both already share the ONE compute leaf,
+    ``engine.consensus_service.build_consensus`` (called below with the same
+    key-material + ``on_source`` contract), so there is no forked orchestration
+    to collapse here — only the per-surface region/artifact shaping differs.
+    """
     from memdiver.engine.consensus_service import build_consensus
 
     dump_paths = _resolve_dump_paths(args.dumps)
@@ -541,75 +547,116 @@ def _cmd_consensus_finalize(args: argparse.Namespace) -> int:
 
 
 def _cmd_search_reduce(args: argparse.Namespace) -> int:
-    """Run variance → alignment → entropy reduction on a finalized session."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.candidate_pipeline import reduce_search_space
+    """Run variance → alignment → entropy reduction on a finalized session.
 
-    state_path = Path(args.state)
-    _state, welford = _load_welford_session(state_path)
+    Routes the compute through ``app.tools_pipeline.search_reduce`` — the same
+    producer the MCP ``search_reduce`` tool uses — so the reduction chain has a
+    single implementation. The CLI's input model differs (a Welford ``--state``
+    session vs. the producer's precomputed ``variance.npy``); the handler
+    materialises that variance into a scratch ``variance.npy`` and hands it to
+    the producer, then relays the persisted ``candidates.json`` payload to the
+    CLI's ``--output`` (the payload the CLI has always emitted, verbatim).
+    """
+    import tempfile
+
+    import numpy as np
+
+    from memdiver.app.tools_pipeline import search_reduce
+
+    _state, welford = _load_welford_session(Path(args.state))
     variance = welford.variance()
 
-    with open_dump(Path(args.reference_dump), **_key_material_from_args(args)) as source:
-        _warn_tag_status(source)
-        reference_data = source.read_all()[: len(variance)]
-
-    result = reduce_search_space(
-        variance, reference_data, num_dumps=welford.num_dumps,
-        alignment=args.alignment,
-        block_size=args.block_size,
-        density_threshold=args.density_threshold,
-        min_variance=args.min_variance,
-        entropy_window=args.entropy_window,
-        entropy_threshold=args.entropy_threshold,
-        min_region=args.min_region,
-    )
-    _write_output(result.to_dict(), args.output)
+    with tempfile.TemporaryDirectory() as scratch:
+        variance_path = Path(scratch) / "variance.npy"
+        np.save(variance_path, variance)
+        search_reduce(
+            variance_path=str(variance_path),
+            reference_path=args.reference_dump,
+            num_dumps=welford.num_dumps,
+            output_dir=scratch,
+            alignment=args.alignment,
+            block_size=args.block_size,
+            density_threshold=args.density_threshold,
+            min_variance=args.min_variance,
+            entropy_window=args.entropy_window,
+            entropy_threshold=args.entropy_threshold,
+            min_region=args.min_region,
+            key_file=args.key_file,
+            passphrase=args.passphrase,
+            kem_key_file=args.kem_key_file,
+            on_source=_warn_tag_status,
+        )
+        payload = json.loads((Path(scratch) / "candidates.json").read_text())
+    _write_output(payload, args.output)
     return 0
 
 
 def _cmd_brute_force(args: argparse.Namespace) -> int:
-    """Iterate candidates through a user oracle and emit hits.json."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.brute_force import run_brute_force, write_result
+    """Iterate candidates through a user oracle and emit hits.json.
 
-    with open_dump(Path(args.dump), **_key_material_from_args(args)) as source:
-        _warn_tag_status(source)
-        reference_data = source.read_all()
+    Routes the compute through ``app.tools_pipeline.brute_force`` (the shared
+    producer the MCP ``brute_force`` tool uses). The producer writes the
+    ``hits.json`` the CLI has always written (identical bytes — both serialise
+    ``BruteForceResult.to_dict()``); the handler relays it to ``--output`` and
+    keeps its own stderr hit/miss summary + exit-code contract.
+    """
+    import shutil
+    import tempfile
+
+    from memdiver.app.tools_pipeline import brute_force
 
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
-    result = run_brute_force(
-        candidates_path=Path(args.candidates),
-        reference_data=reference_data,
-        oracle_path=Path(args.oracle),
-        oracle_config_path=Path(args.oracle_config) if args.oracle_config else None,
-        key_sizes=key_sizes,
-        stride=args.stride,
-        jobs=args.jobs,
-        exhaustive=not args.first_hit,
-        state_path=Path(args.state) if args.state else None,
-        top_k=args.top_k,
-    )
-    write_result(result, Path(args.output))
-    if result.hits:
+    with tempfile.TemporaryDirectory() as scratch:
+        result = brute_force(
+            candidates_path=args.candidates,
+            reference_path=args.dump,
+            oracle_path=args.oracle,
+            output_dir=scratch,
+            oracle_config_path=args.oracle_config,
+            key_sizes=key_sizes,
+            stride=args.stride,
+            jobs=args.jobs,
+            exhaustive=not args.first_hit,
+            state_path=args.state,
+            top_k=args.top_k,
+            key_file=args.key_file,
+            passphrase=args.passphrase,
+            kem_key_file=args.kem_key_file,
+            on_source=_warn_tag_status,
+        )
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(result["hits_path"], output_path)
+
+    hits = result["hits"]
+    if hits:
         print(
-            f"memdiver: verified {len(result.hits)} hit(s); first at offset "
-            f"0x{result.hits[0].offset:x} ({result.hits[0].length} bytes)",
+            f"memdiver: verified {len(hits)} hit(s); first at offset "
+            f"0x{hits[0]['offset']:x} ({hits[0]['length']} bytes)",
             file=sys.stderr,
         )
     else:
+        payload = json.loads(output_path.read_text())
         print(
-            f"memdiver: exhausted {result.total_candidates} candidates, "
-            f"0 verified; top-{len(result.top_k)} written to {args.output}",
+            f"memdiver: exhausted {result['total_candidates']} candidates, "
+            f"0 verified; top-{len(payload.get('top_k', []))} written to {args.output}",
             file=sys.stderr,
         )
-    return result.exit_code
+    return result["exit_code"]
 
 
 def _cmd_n_sweep(args: argparse.Namespace) -> int:
-    """Sweep N ∈ n_values, run consensus → reduce → oracle, emit reports."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
-    from memdiver.engine.oracle import load_oracle, load_oracle_config
+    """Sweep N ∈ n_values, run consensus → reduce → oracle, emit reports.
+
+    Routes the compute through ``app.tools_pipeline.n_sweep`` (the shared
+    producer the MCP ``n_sweep`` tool uses). The CLI keeps its own input model
+    — discovering dumps under ``--runs-dir`` — then hands the resolved paths to
+    the producer, which opens them key-aware, runs the sweep and writes the
+    ``report.{json,md,html}`` artifacts. The AEAD warning is relayed per source
+    through the producer's ``on_source`` hook; stderr headline + exit code are
+    preserved.
+    """
+    from memdiver.app.tools_pipeline import n_sweep
 
     runs_dir = Path(args.runs_dir)
     dump_paths = sorted(runs_dir.glob(f"*/{args.dump_glob}"))
@@ -621,107 +668,133 @@ def _cmd_n_sweep(args: argparse.Namespace) -> int:
 
     n_values = [int(n.strip()) for n in args.n_values.split(",") if n.strip()]
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
-    oracle_config = load_oracle_config(
-        Path(args.oracle_config) if args.oracle_config else None
+    result = n_sweep(
+        source_paths=[str(p) for p in dump_paths],
+        oracle_path=args.oracle,
+        output_dir=args.output_dir,
+        n_values=n_values,
+        reduce_kwargs=dict(
+            alignment=args.alignment,
+            block_size=args.block_size,
+            density_threshold=args.density_threshold,
+            min_variance=args.min_variance,
+            entropy_window=args.entropy_window,
+            entropy_threshold=args.entropy_threshold,
+            min_region=args.min_region,
+        ),
+        key_sizes=key_sizes,
+        stride=args.stride,
+        exhaustive=not args.first_hit,
+        oracle_config_path=args.oracle_config,
+        escalate=args.escalate,
+        escalate_oracle_budget=args.escalate_oracle_budget,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
     )
-    oracle = load_oracle(Path(args.oracle), oracle_config)
-
-    km = _key_material_from_args(args)
-    sources = [open_dump(p, **km).__enter__() for p in dump_paths]
-    if sources:
-        _warn_tag_status(sources[0])
-    try:
-        result = run_nsweep(
-            sources,
-            n_values=n_values,
-            reduce_kwargs=dict(
-                alignment=args.alignment,
-                block_size=args.block_size,
-                density_threshold=args.density_threshold,
-                min_variance=args.min_variance,
-                entropy_window=args.entropy_window,
-                entropy_threshold=args.entropy_threshold,
-                min_region=args.min_region,
-            ),
-            oracle=oracle,
-            key_sizes=key_sizes,
-            stride=args.stride,
-            exhaustive=not args.first_hit,
-        )
-    finally:
-        for src in sources:
-            try:
-                src.__exit__(None, None, None)
-            except Exception:
-                pass
-
-    paths = write_nsweep_artifacts(result, Path(args.output_dir))
-    print(result.headline(), file=sys.stderr)
-    print(f"wrote {paths['json']}, {paths['md']}, {paths['html']}", file=sys.stderr)
-    return 0 if result.first_hit_n is not None else 2
+    print(result["headline"], file=sys.stderr)
+    print(
+        f"wrote {result['report_json']}, {result['report_md']}, "
+        f"{result['report_html']}",
+        file=sys.stderr,
+    )
+    return 0 if result["first_hit_n"] is not None else 2
 
 
 def _cmd_auto_floor(args: argparse.Namespace) -> int:
-    """Automated ground-truth-free variance-floor selection → single verdict."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.auto_floor import run_auto_floor, write_auto_floor_artifacts
-    from memdiver.engine.oracle import load_oracle, load_oracle_config
+    """Automated ground-truth-free variance-floor selection → single verdict.
+
+    Routes the compute through ``app.tools_pipeline.auto_floor`` (the shared
+    producer the MCP ``auto_floor`` tool uses). The CLI's Welford ``--state``
+    variance is materialised into a scratch ``variance.npy`` for the producer,
+    which opens the reference key-aware, runs the verdict and writes
+    ``verdict.json`` + ``report.md`` into ``--output-dir``. The stderr verdict
+    line and category exit code are rebuilt from the returned verdict dict.
+    """
+    import tempfile
+
+    import numpy as np
+
+    from memdiver.app.tools_pipeline import auto_floor
 
     _state, welford = _load_welford_session(Path(args.state))
     variance = welford.variance()
-    with open_dump(Path(args.reference_dump), **_key_material_from_args(args)) as source:
-        _warn_tag_status(source)
-        reference_data = source.read_all()[: len(variance)]
-
-    oracle = load_oracle(
-        Path(args.oracle),
-        load_oracle_config(Path(args.oracle_config) if args.oracle_config else None),
-    )
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
-    positive_control = (
-        bytes.fromhex(args.positive_control) if args.positive_control else None
-    )
     reduce_kwargs = dict(
         alignment=args.alignment, block_size=args.block_size,
         density_threshold=args.density_threshold, entropy_window=args.entropy_window,
         entropy_threshold=args.entropy_threshold, min_region=args.min_region,
     )
-    result = run_auto_floor(
-        variance, reference_data, welford.num_dumps, oracle,
-        reduce_kwargs=reduce_kwargs, key_sizes=key_sizes, stride=args.stride,
-        coverage=args.coverage, correspondence=args.correspondence,
-        filter_recall=args.filter_recall, min_coverage=args.min_coverage,
-        positive_control=positive_control, phi0_method=args.phi0_method,
-        p_min=args.p_min, self_test_trials=args.self_test_trials,
-        oracle_budget=args.oracle_budget, alignment_quality=args.alignment_quality,
-        min_alignment=args.min_alignment, managed_region=args.managed_region,
-    )
-    write_auto_floor_artifacts(result, Path(args.output_dir))
-    tail = (f" key=0x{result.offset:x} phi*={result.phi_star:.1f} phi0={result.phi0:.1f}"
-            if result.offset is not None else
-            (f" ({result.inconclusive_reason})" if result.inconclusive_reason else ""))
-    print(f"memdiver auto-floor: {result.verdict}{tail}", file=sys.stderr)
-    return result.exit_code
+    with tempfile.TemporaryDirectory() as scratch:
+        variance_path = Path(scratch) / "variance.npy"
+        np.save(variance_path, variance)
+        verdict = auto_floor(
+            variance_path=str(variance_path),
+            reference_path=args.reference_dump,
+            oracle_path=args.oracle,
+            output_dir=args.output_dir,
+            num_dumps=welford.num_dumps,
+            oracle_config_path=args.oracle_config,
+            key_sizes=key_sizes,
+            stride=args.stride,
+            reduce_kwargs=reduce_kwargs,
+            coverage=args.coverage,
+            correspondence=args.correspondence,
+            filter_recall=args.filter_recall,
+            min_coverage=args.min_coverage,
+            positive_control_hex=args.positive_control,
+            phi0_method=args.phi0_method,
+            p_min=args.p_min,
+            self_test_trials=args.self_test_trials,
+            oracle_budget=args.oracle_budget,
+            alignment_quality=args.alignment_quality,
+            min_alignment=args.min_alignment,
+            managed_region=args.managed_region,
+            key_file=args.key_file,
+            passphrase=args.passphrase,
+            kem_key_file=args.kem_key_file,
+            on_source=_warn_tag_status,
+        )
+    offset = verdict["offset"]
+    tail = (f" key=0x{offset:x} phi*={verdict['phi_star']:.1f} phi0={verdict['phi0']:.1f}"
+            if offset is not None else
+            (f" ({verdict['inconclusive_reason']})" if verdict["inconclusive_reason"] else ""))
+    print(f"memdiver auto-floor: {verdict['verdict']}{tail}", file=sys.stderr)
+    return verdict["exit_code"]
 
 
 def _cmd_emit_plugin(args: argparse.Namespace) -> int:
-    """Emit a Volatility3 plugin from a hits.json neighborhood variance."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.vol3_emit import emit_plugin_from_hits_file
+    """Emit a Volatility3 plugin from a hits.json neighborhood variance.
 
-    with open_dump(Path(args.reference), **_key_material_from_args(args)) as source:
-        _warn_tag_status(source)
-        reference_data = source.read_all()
+    Routes the compute through ``app.tools_pipeline.emit_plugin`` (the shared
+    producer the MCP ``emit_plugin`` tool uses). The producer names its output
+    ``<name>.py`` inside a directory; the CLI keeps its arbitrary ``--output``
+    filepath by having the producer emit into a scratch dir and copying the
+    plugin to ``--output``.
+    """
+    import shutil
+    import tempfile
 
-    out = emit_plugin_from_hits_file(
-        hits_path=Path(args.hit),
-        reference_data=reference_data,
-        name=args.name,
-        output_path=Path(args.output),
-        hit_index=args.hit_index,
-        description=args.description,
-        variance_threshold=args.variance_threshold,
-    )
+    from memdiver.app.tools_pipeline import emit_plugin
+
+    with tempfile.TemporaryDirectory() as scratch:
+        result = emit_plugin(
+            hits_path=args.hit,
+            reference_path=args.reference,
+            name=args.name,
+            output_dir=scratch,
+            description=args.description,
+            hit_index=args.hit_index,
+            variance_threshold=args.variance_threshold,
+            key_file=args.key_file,
+            passphrase=args.passphrase,
+            kem_key_file=args.kem_key_file,
+            on_source=_warn_tag_status,
+        )
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(result["plugin_path"], out)
     print(f"wrote vol3 plugin {out}", file=sys.stderr)
     return 0
 
@@ -890,224 +963,89 @@ def _cmd_import_dir(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    """Verify a candidate key at a given offset against known ciphertext."""
-    from memdiver.core.dump_source import open_dump
-    from memdiver.engine.verification import VERIFIER_REGISTRY, VERIFICATION_IV
+    """Verify a candidate key at a given offset against known ciphertext.
 
-    dump_path = Path(args.dump)
-    if not dump_path.is_file():
-        print(f"Dump file not found: {dump_path}", file=sys.stderr)
+    Routes the compute through ``app.tools_pipeline.verify_key_result`` — the
+    same producer the HTTP ``/api/analysis/verify-key`` route and the MCP
+    ``verify`` tool use — so the candidate-read + decryption check has ONE
+    implementation. The producer reads through the DumpSource memory projection
+    (VAS for ``.msl``, so a memory-relative offset lands in the space it was
+    derived in) and decrypts encrypted containers with the supplied key
+    material. Any hard error surfaces as a ``CapabilityError`` which the CLI
+    renders to stderr + exit 1, preserving this command's exit contract.
+    """
+    from memdiver.app.tools_pipeline import verify_key_result
+
+    try:
+        result = verify_key_result(
+            dump_path=args.dump,
+            offset=args.offset,
+            length=args.length,
+            ciphertext_hex=args.ciphertext_hex,
+            cipher=args.cipher,
+            iv_hex=args.iv_hex,
+            key_material=_key_material_from_args(args),
+            on_source=_warn_tag_status,
+        )
+    except CapabilityError as exc:
+        print(f"memdiver: ERROR — {exc.message}", file=sys.stderr)
         return 1
 
-    cipher = args.cipher
-    if cipher not in VERIFIER_REGISTRY:
-        print(f"Unknown cipher: {cipher}. Available: {list(VERIFIER_REGISTRY)}",
-              file=sys.stderr)
-        return 1
-
-    verifier = VERIFIER_REGISTRY[cipher]
-    offset = args.offset
-    length = args.length
-
-    # Read the candidate through the DumpSource memory projection instead of
-    # raw container bytes. For .msl inputs the offset is MEMORY-relative (it
-    # comes from consensus/analysis on the flattened VAS view), so slicing raw
-    # file bytes would return the wrong region — the same class of bug closed
-    # for `memdiver export`. open_dump() serves the VAS projection for .msl and
-    # raw bytes for .dump, so the offset is interpreted in the space it was
-    # derived in. Key material lets encrypted .msl containers be decrypted.
-    key_material = _key_material_from_args(args)
-    with open_dump(dump_path, **key_material) as source:
-        _warn_tag_status(source)
-        dump_size = source.size
-        if offset + length > dump_size:
-            print(f"Offset 0x{offset:x} + length {length} exceeds dump size {dump_size}",
-                  file=sys.stderr)
-            return 1
-        candidate = source.read_range(offset, length)
-
-    ciphertext = bytes.fromhex(args.ciphertext_hex)
-    iv = bytes.fromhex(args.iv_hex) if args.iv_hex else VERIFICATION_IV
-
-    from memdiver.engine.verification import VERIFICATION_PLAINTEXT
-    result_val = verifier.verify(candidate, ciphertext, iv, VERIFICATION_PLAINTEXT)
-
-    result = {
-        "offset": f"0x{offset:x}",
-        "length": length,
-        "cipher": cipher,
-        "verified": result_val,
-        "key_hex": candidate.hex() if result_val else None,
+    payload = {
+        "offset": f"0x{args.offset:x}",
+        "length": args.length,
+        "cipher": args.cipher,
+        "verified": result["verified"],
+        "key_hex": result["key_hex"],
     }
-    _write_output(result, getattr(args, 'output', None))
+    _write_output(payload, getattr(args, "output", None))
     return 0
 
 
-def _cmd_experiment(args: argparse.Namespace) -> int:
-    """Orchestrate: spawn target, dump, build consensus, verify, export."""
-    try:
-        from memdiver.core.dump_driver import DumpOrchestrator
-        from memdiver.engine.consensus_service import build_consensus
-        from memdiver.engine.verification import (
-            AesCbcVerifier, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
-        )
-        from memdiver.architect.pattern_generator import PatternGenerator
-    except ImportError:
-        _print_missing_package("The experiment flow", extra="experiment")
-        return 1
+def _experiment_cli_progress(event: str, **fields) -> None:
+    """Relay a producer progress event to stderr for the CLI experiment run."""
+    msg = fields.get("msg")
+    if event in ("stage_start", "progress", "stage_end") and msg:
+        print(f"memdiver experiment: {msg}", file=sys.stderr)
+    elif event == "error" and fields.get("error"):
+        print(f"memdiver experiment: {fields['error']}", file=sys.stderr)
 
-    target_path = Path(args.target)
-    if not target_path.is_file():
-        print(f"Target script not found: {target_path}", file=sys.stderr)
-        return 1
+
+def _cmd_experiment(args: argparse.Namespace) -> int:
+    """Orchestrate: spawn target, dump, build consensus, verify, export.
+
+    Routes the whole flow through ``app.tools_pipeline.experiment_result`` —
+    the single implementation now shared with the API experiment task runner
+    and the MCP ``experiment`` tool (previously the CLI and the API each
+    re-implemented the spawn→dump→consensus→verify→emit orchestration, with the
+    API copy still carrying the A5 raw-offset bug the CLI had fixed). The
+    handler keeps its own presentation: streamed stderr progress, the
+    side-by-side comparison table, and the JSON ``--output`` file.
+    """
+    from memdiver.app.tools_pipeline import experiment_result
 
     tools = args.tools.split(",") if args.tools else None
-    orch = DumpOrchestrator(tools=tools)
-
-    if not orch.available_tools:
-        _print_missing_package("No dump tools available", extra="experiment")
-        print(
-            "This installs frida-tools and memslicer. The lldb backend is "
-            "optional and must be installed via your OS (Xcode on macOS, "
-            "'apt install lldb' on Debian/Ubuntu, etc.).",
-            file=sys.stderr,
+    try:
+        result = experiment_result(
+            target=args.target,
+            output_dir=str(args.output_dir),
+            num_runs=args.num_runs,
+            tools=tools,
+            export_format=args.export_format,
+            convergence=args.convergence,
+            max_fp=args.max_fp,
+            key_material=_key_material_from_args(args),
+            on_source=_warn_tag_status,
+            on_progress=_experiment_cli_progress,
         )
+    except CapabilityError as exc:
+        print(f"memdiver: ERROR — {exc.message}", file=sys.stderr)
         return 1
 
-    print(f"Available tools: {[t.name for t in orch.available_tools]}", file=sys.stderr)
-    print(f"Running {args.num_runs} iterations per tool...", file=sys.stderr)
-
-    # Step 1: Run experiment
-    exp = orch.run_experiment(
-        target_path, args.num_runs, args.output_dir,
-    )
-
-    # Step 2: Per-tool analysis
-    verifier = AesCbcVerifier()
-    all_tool_results = {}
-
-    for tool_name, tool_dir in exp.tool_dirs.items():
-        dump_paths = sorted(
-            list(tool_dir.glob("*/*.dump")) + list(tool_dir.glob("*/*.msl"))
-        )
-        if len(dump_paths) < 2:
-            print(f"  [{tool_name}] Not enough dumps ({len(dump_paths)}), skipping",
-                  file=sys.stderr)
-            continue
-
-        print(f"  [{tool_name}] Analyzing {len(dump_paths)} dumps...", file=sys.stderr)
-
-        # Build consensus from opened DumpSources so consensus offsets are
-        # memory-relative (ASLR-invariant for native .msl). Reading raw file
-        # bytes here — as the old cm.build(dump_paths) did — makes every
-        # downstream offset point into the .msl container layout instead of
-        # memory (the A5 bug, already closed for `memdiver export`).
-        key_material = _key_material_from_args(args)
-        cm = build_consensus(
-            dump_paths,
-            key_material=key_material,
-            on_source=_warn_tag_status,
-        )
-        # Sources are closed once consensus is built; cm.reference_bytes and
-        # cm.variance are retained copies in the consensus coordinate space.
-        aligned = cm.get_aligned_candidates()
-        volatile = cm.get_volatile_regions()
-
-        # Decryption verification — scan the FIRST dump's bytes in the same
-        # (memory-relative) coordinate space the aligned offsets live in.
-        # cm.reference_bytes IS dump[0]'s aligned slab, so region.start indexes
-        # it correctly; re-reading raw container bytes would slice the wrong
-        # region for .msl inputs.
-        first_data = cm.reference_bytes
-        first_key = exp.metadata["runs"][0]["key_hex"]
-        key_bytes = bytes.fromhex(first_key)
-        ct = verifier.create_ciphertext(key_bytes, VERIFICATION_PLAINTEXT, VERIFICATION_IV)
-
-        dec_verified = False
-        for region in aligned:
-            for off in range(region.start, region.end - 31):
-                candidate = first_data[off:off + 32]
-                if verifier.verify(candidate, ct, VERIFICATION_IV, VERIFICATION_PLAINTEXT):
-                    dec_verified = True
-                    break
-            if dec_verified:
-                break
-
-        # Auto-export pattern
-        plugin_content = None
-        if volatile:
-            best = max(volatile, key=lambda r: r.end - r.start)
-            ctx = 32
-            exp_offset = max(0, best.start - ctx)
-            exp_end = min(cm.size, best.end + ctx)
-
-            # Derive the reference bytes and static mask from the consensus
-            # vector (memory-relative), mirroring auto_export_pattern. The old
-            # StaticChecker.check(dump_paths, exp_offset, exp_length) re-read
-            # RAW file bytes at these memory-relative offsets, returning
-            # arbitrary container content for .msl inputs (the A5 bug). A byte
-            # is static across all inputs iff its consensus variance is zero.
-            import numpy as np
-
-            reference = cm.reference_bytes[exp_offset:exp_end]
-            var_slice = cm.variance[exp_offset:exp_end]
-            if isinstance(var_slice, np.ndarray):
-                static_mask = (var_slice == 0.0).tolist()
-            else:
-                static_mask = [v == 0.0 for v in var_slice]
-            if reference:
-                pattern = PatternGenerator.generate(reference, static_mask, f"{tool_name}_aes256_key")
-                if pattern:
-                    fmt = args.export_format
-                    if fmt in ("volatility3", "vol3"):
-                        from memdiver.architect.volatility3_exporter import Volatility3Exporter
-                        from memdiver.architect.yara_exporter import YaraExporter
-                        yara_rule = YaraExporter.export(pattern)
-                        plugin_content = Volatility3Exporter.export(pattern, yara_rule=yara_rule)
-                    elif fmt == "yara":
-                        from memdiver.architect.yara_exporter import YaraExporter
-                        plugin_content = YaraExporter.export(pattern)
-
-        # Save plugin
-        plugin_path = None
-        if plugin_content:
-            plugins_dir = args.output_dir / "plugins"
-            plugins_dir.mkdir(parents=True, exist_ok=True)
-            ext = ".py" if args.export_format in ("volatility3", "vol3") else ".yar"
-            plugin_path = plugins_dir / f"{tool_name}_aes256_key{ext}"
-            plugin_path.write_text(plugin_content)
-
-        tool_result = {
-            "tool": tool_name,
-            "format": "MSL (.msl)" if tool_name == "memslicer" else "Raw (.dump)",
-            "num_dumps": len(dump_paths),
-            "volatile_regions": len(volatile),
-            "aligned_regions": len(aligned),
-            "decryption_verified": dec_verified,
-            "plugin_saved": str(plugin_path) if plugin_path else None,
-        }
-
-        # Convergence sweep
-        if args.convergence:
-            from memdiver.engine.convergence import run_convergence_sweep
-            from memdiver.engine.serializer import serialize_convergence_result
-
-            # Build ground truth from first run's key position
-            # (we don't know the exact offset in real dumps, so skip precision/recall)
-            sweep = run_convergence_sweep(
-                dump_paths, max_fp=args.max_fp,
-            )
-            tool_result["convergence"] = serialize_convergence_result(sweep)
-
-        all_tool_results[tool_name] = tool_result
-
-    # Print comparison table
+    all_tool_results = result["tool_results"]
     _print_experiment_table(all_tool_results)
-
-    # Write JSON output
     if args.output:
         _write_output(all_tool_results, args.output)
-
     return 0
 
 
@@ -1233,21 +1171,22 @@ def present_inspect_cli(result) -> tuple[dict, int, str | None]:
     Returns ``(machine_payload, exit_code, stderr_msg)``:
 
     * **Locked** (``not result.status.key.decrypted``) — an encrypted container
-      opened with a missing / wrong key. The machine payload reproduces exactly
-      the legacy error dict the tool layer used to return under the
-      ``report_key_status`` default (``{"error": <hint>, "tag_status": …}``),
-      the exit code is ``1`` and the stderr message is the key hint.
+      opened with a missing / wrong key. The neutral core hint is augmented HERE
+      with the CLI-specific remedy (:data:`_KEY_FLAGS_HINT`), so the machine
+      payload is ``{"error": <core hint>; <flags>, "tag_status": …}``, the exit
+      code is ``1`` and the stderr message is that same augmented string.
     * **OK** — the producer's payload passes through untouched, exit code ``0``,
       no stderr message.
 
     This is the explicit CLI presenter that lets the handlers drop the
     ``report_key_status`` default: the producer always carries the key state in
-    ``result.status`` and this function turns it into the same bytes the old
-    error-dict path emitted.
+    ``result.status`` and this function renders the CLI-flavoured guidance
+    (the ``--key-file`` flags) that core deliberately no longer carries.
     """
     key = result.status.key
     if not key.decrypted:
-        return key.locked_error_dict(), 1, key.hint
+        message = f"{key.hint}; {_KEY_FLAGS_HINT}"
+        return {"error": message, "tag_status": key.tag_status.value}, 1, message
     return result.payload, 0, None
 
 
@@ -1279,20 +1218,22 @@ def _cmd_inspect_hex(args: argparse.Namespace) -> int:
 
 def _cmd_inspect_entropy(args: argparse.Namespace) -> int:
     """Shannon entropy profile of a region."""
-    from memdiver.mcp_server.tools_inspect import get_entropy
-    result = get_entropy(_new_tool_session(), args.dump_path, args.offset,
-                         args.length, args.window, args.step, args.threshold,
-                         **_inspect_key_kwargs(args))
-    return _emit_inspect(result, args.output)
+    from memdiver.mcp_server.tools_inspect import entropy_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: entropy_result(_new_tool_session(), args.dump_path, args.offset,
+                               args.length, args.window, args.step, args.threshold,
+                               **_inspect_key_kwargs(args)))
+    return _emit_inspect(machine_payload, args.output)
 
 
 def _cmd_inspect_strings(args: argparse.Namespace) -> int:
     """Extract printable strings from a dump region."""
-    from memdiver.mcp_server.tools_inspect import _extract_strings
-    result = _extract_strings(_new_tool_session(), args.dump_path, args.offset,
-                              args.length, args.min_length, args.encoding,
-                              args.max_results, **_inspect_key_kwargs(args))
-    return _emit_inspect(result, args.output)
+    from memdiver.mcp_server.tools_inspect import strings_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: strings_result(_new_tool_session(), args.dump_path, args.offset,
+                               args.length, args.min_length, args.encoding,
+                               args.max_results, **_inspect_key_kwargs(args)))
+    return _emit_inspect(machine_payload, args.output)
 
 
 def _cmd_inspect_byte_search(args: argparse.Namespace) -> int:
@@ -1353,17 +1294,19 @@ def _cmd_inspect_handles(args: argparse.Namespace) -> int:
 
 def _cmd_inspect_xref(args: argparse.Namespace) -> int:
     """Resolve cross-references for an MSL file (MSL only)."""
-    from memdiver.mcp_server.tools_xref import get_cross_references
-    result = get_cross_references(_new_tool_session(), args.msl_path)
-    return _emit_inspect(result, args.output)
+    from memdiver.mcp_server.tools_xref import get_cross_references_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: get_cross_references_result(_new_tool_session(), args.msl_path))
+    return _emit_inspect(machine_payload, args.output)
 
 
 def _cmd_inspect_structure(args: argparse.Namespace) -> int:
     """Identify a data structure at the given offset."""
-    from memdiver.mcp_server.tools_xref import identify_structure
-    result = identify_structure(_new_tool_session(), args.dump_path,
-                                args.offset, args.protocol)
-    return _emit_inspect(result, args.output)
+    from memdiver.mcp_server.tools_xref import identify_structure_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: identify_structure_result(_new_tool_session(), args.dump_path,
+                                          args.offset, args.protocol))
+    return _emit_inspect(machine_payload, args.output)
 
 
 _INSPECT_HANDLERS = {
@@ -1431,8 +1374,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # web (FastAPI + React — also the default when no command given)
     wp = sub.add_parser("web", help="Launch FastAPI + React web application (needs memdiver[api])")
     wp.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
-    # app (legacy NiceGUI — install with `pip install memdiver[nicegui]`)
-    sub.add_parser("app", help="Launch legacy NiceGUI application (needs memdiver[nicegui])")
     # consensus
     cs = sub.add_parser("consensus", help="Build consensus matrix from dumps",
                         parents=[_decrypt_parent_parser()])
@@ -1490,7 +1431,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--alignment", type=int, default=8)
     sr.add_argument("--block-size", type=int, default=32)
     sr.add_argument("--density-threshold", type=float, default=0.5)
-    sr.add_argument("--min-variance", type=float, default=3000.0)
+    sr.add_argument("--min-variance", type=float, default=3000.0,
+                    help="Variance floor for candidate regions (default 3000). "
+                         "The output's 'recommended_floor' is a data-driven "
+                         "suggestion to consider here (0.0 = too few dumps / no "
+                         "crypto component: keep everything).")
     sr.add_argument("--entropy-window", type=int, default=32)
     sr.add_argument("--entropy-threshold", type=float, default=4.5)
     sr.add_argument("--min-region", type=int, default=16)
@@ -1536,6 +1481,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--key-sizes", default="32")
     ns.add_argument("--stride", type=int, default=8)
     ns.add_argument("--first-hit", action="store_true")
+    ns.add_argument("--escalate", action="store_true",
+                    help="If no checkpoint finds a hit, run a floor-free "
+                         "descending-variance sweep once at the terminal N "
+                         "(reuses the in-memory variance; no re-fold)")
+    ns.add_argument("--escalate-oracle-budget", type=int, default=None,
+                    help="Optional cap on oracle calls during escalation "
+                         "(default: exhaustive)")
     ns.add_argument("--output-dir", required=True, help="Directory for report.{json,md,html}")
     ns.add_argument("-v", "--verbose", action="store_true")
     # auto-floor
@@ -1817,8 +1769,6 @@ def main():
     args = parser.parse_args()
     if args.command is None or args.command == "web":
         sys.exit(_cmd_web(args))
-    if args.command == "app":
-        sys.exit(_cmd_app(args))
     if args.command == "ui":
         sys.exit(_cmd_ui(args))
     _setup_logging(getattr(args, "verbose", False))

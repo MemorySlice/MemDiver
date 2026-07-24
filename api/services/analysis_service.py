@@ -44,7 +44,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from memdiver.core.dump_source import open_dump
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import (
+    CapabilityError,
+    EncryptedDumpLockedError,
+    ErrorCategory,
+)
+from memdiver.core.service_result import KeyStatus
 from memdiver.engine.consensus import ConsensusVector
 
 logger = logging.getLogger("memdiver.api.services.analysis_service")
@@ -203,6 +208,15 @@ def auto_export_pattern(
     with ExitStack() as stack:
         sources = [stack.enter_context(open_dump(p, **(key_material or {})))
                    for p in paths]
+
+        # A locked (missing/wrong-key) encrypted .msl reads back empty, which
+        # the consensus below would misattribute as "no KEY_CANDIDATE regions".
+        # Surface the lock explicitly before that empty-region handling; a
+        # decrypted-but-empty dump still falls through to NoVolatileRegionsError.
+        for source in sources:
+            key = KeyStatus.from_source(source)
+            if not key.decrypted:
+                raise EncryptedDumpLockedError(key.hint)
 
         cm = ConsensusVector()
         cm.build_from_sources(sources)

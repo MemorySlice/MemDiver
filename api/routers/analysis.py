@@ -29,7 +29,7 @@ from memdiver.api.services.consensus_session import (
     get_consensus_manager,
 )
 from memdiver.api.services.key_material import decode_key_material
-from memdiver.core.dump_source import open_dump
+from memdiver.core.service_errors import CapabilityError
 from memdiver.engine.consensus_service import build_consensus
 
 logger = logging.getLogger("memdiver.api.routers.analysis")
@@ -274,49 +274,37 @@ def run_convergence(req: ConvergenceRequest):
 
 @router.post("/verify-key")
 def verify_key(req: VerifyKeyRequest):
-    """Attempt decryption verification of a candidate key."""
-    from memdiver.engine.verification import (
-        VERIFIER_REGISTRY,
-        VERIFICATION_IV,
-        VERIFICATION_PLAINTEXT,
-    )
+    """Attempt decryption verification of a candidate key.
 
-    if req.cipher not in VERIFIER_REGISTRY:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown cipher: {req.cipher}. Available: {list(VERIFIER_REGISTRY)}",
-        )
-
-    verifier = VERIFIER_REGISTRY[req.cipher]
+    Thin HTTP adapter over ``app.tools_pipeline.verify_key_result`` — the same
+    producer the CLI ``verify`` command and the MCP ``verify`` tool use, so the
+    candidate-read + decryption check cannot drift across surfaces. The
+    producer's transport-agnostic ``CapabilityError`` is translated to an
+    ``HTTPException`` here (preserving this route's ``{"detail": ...}`` shape +
+    per-category status), rather than through the global handler, because the
+    404/400 contract predates that handler.
+    """
+    from memdiver.app.tools_pipeline import verify_key_result
 
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
     try:
-        with open_dump(Path(req.dump_path), **km) as source:
-            candidate = source.read_range(req.offset, req.length)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Dump not found: {req.dump_path}")
-
-    if len(candidate) < req.length:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Offset+length exceeds dump size",
+        result = verify_key_result(
+            dump_path=req.dump_path,
+            offset=req.offset,
+            length=req.length,
+            ciphertext_hex=req.ciphertext_hex,
+            cipher=req.cipher,
+            iv_hex=req.iv_hex,
+            key_material=km,
         )
-
-    try:
-        ciphertext = bytes.fromhex(req.ciphertext_hex)
-        iv = bytes.fromhex(req.iv_hex) if req.iv_hex else VERIFICATION_IV
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid hex input: {exc}"
-        ) from exc
-
-    verified = verifier.verify(candidate, ciphertext, iv, VERIFICATION_PLAINTEXT)
+    except CapabilityError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
 
     return {
-        "verified": verified,
-        "offset": req.offset,
-        "cipher": req.cipher,
-        "key_hex": candidate.hex() if verified else None,
+        "verified": result["verified"],
+        "offset": result["offset"],
+        "cipher": result["cipher"],
+        "key_hex": result["key_hex"],
     }
 
 

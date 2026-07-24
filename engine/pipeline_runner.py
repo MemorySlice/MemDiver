@@ -504,6 +504,7 @@ def run_auto_floor_stage(
     min_coverage: float = 0.80,
     phi0_method: str = "pmin",
     p_min: float = 0.35,
+    oracle_budget: Optional[int] = None,
     positive_control: Optional[bytes] = None,
     key_material: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
@@ -553,6 +554,7 @@ def run_auto_floor_stage(
         positive_control=positive_control,
         phi0_method=phi0_method,
         p_min=p_min,
+        oracle_budget=oracle_budget,
         **extra,
     )
 
@@ -596,6 +598,9 @@ class PipelineState:
     emit_params: Optional[Dict[str, Any]]
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
+    # Opt-in escalation (floor-free fall-through when brute-force finds no hit).
+    escalate: bool = False
+    escalate_oracle_budget: Optional[int] = None
     # Upstream results shared between stages.
     consensus: Optional[Dict[str, Any]] = None
     candidates_path: Optional[Path] = None
@@ -694,12 +699,87 @@ def _stage_emit_plugin(state: "PipelineState") -> None:
     state.summary["plugin_path"] = str(plugin_path) if plugin_path else None
 
 
+def _escalate_enabled(state: "PipelineState") -> bool:
+    """Fire only when opted-in AND brute-force produced zero verified hits.
+
+    Short-circuits on ``state.escalate`` before any file I/O so the default
+    (``escalate=False``) path is a pure no-op and stays byte-identical. Requires
+    an oracle (always present in the pipeline) and a consensus result so the
+    already-cached ``variance.npy`` can be reused without re-folding.
+    """
+    if not state.escalate:
+        return False
+    if state.oracle_path is None or state.consensus is None or state.hits_path is None:
+        return False
+    try:
+        payload = json.loads(Path(state.hits_path).read_text())
+    except (OSError, ValueError):
+        return False
+    return int(payload.get("verified_count", 0)) == 0
+
+
+def _stage_escalate(state: "PipelineState") -> None:
+    """Floor-free descending-variance fall-through when brute-force misses.
+
+    Delegates to :func:`run_auto_floor_stage`, which ``np.load``s the cached
+    ``consensus/variance.npy`` (the Theta(N*d) fold NEVER re-runs) and reuses
+    the same oracle. It re-tests the >=3000 windows brute-force already rejected
+    (a small, deterministic, de-duplicated set) rather than forking
+    ``run_auto_floor`` with a skip-set, keeping a single source of truth with
+    the CLI ``auto-floor`` / ``POST /auto-floor``.
+    """
+    consensus = state.consensus
+    bf = state.bf_kwargs
+    state.ctx.emit(
+        "stage_start", stage="escalate", pct=0.0,
+        msg="floor-free descending-variance sweep (brute-force found no hit)",
+    )
+    result = run_auto_floor_stage(
+        variance_path=consensus["variance_path"],
+        reference_path=consensus["reference_path"],
+        num_dumps=consensus["num_dumps"],
+        oracle_path=str(state.oracle_path),
+        reduce_kwargs=state.reduce_kwargs,
+        key_sizes=tuple(bf.get("key_sizes", (32,))),
+        stride=int(bf.get("stride", 8)),
+        oracle_budget=state.escalate_oracle_budget,
+        progress_callback=_bridge(state.ctx, "escalate"),
+    )
+    from memdiver.engine.auto_floor import (
+        escalation_verdict,
+        hit_tier,
+        write_auto_floor_artifacts,
+    )
+
+    tier = hit_tier(result)
+    out_dir = state.artifact_dir / "escalate"
+    write_auto_floor_artifacts(result, out_dir)
+    _register_artifact(
+        state.artifacts, state.artifact_dir,
+        name="escalate_verdict", relpath="escalate/verdict.json",
+        media_type="application/json",
+    )
+    _register_artifact(
+        state.artifacts, state.artifact_dir,
+        name="escalate_report", relpath="escalate/report.md",
+        media_type="text/markdown",
+    )
+    state.summary["escalation"] = escalation_verdict(result)
+    state.ctx.emit(
+        "stage_end", stage="escalate", pct=1.0,
+        msg=f"{result.verdict} tier={tier}",
+        extra={"verdict": result.verdict, "hit_tier": tier,
+               "phi_star": result.phi_star, "phi0": result.phi0},
+    )
+
+
 def _default_stages() -> List[Stage]:
     """Build a fresh list of the default stages in canonical order."""
     return [
         Stage("consensus", _stage_consensus, check_cancel_before=False),
         Stage("search_reduce", _stage_reduce),
         Stage("brute_force", _stage_brute_force),
+        Stage("escalate", _stage_escalate, enabled=_escalate_enabled),
         Stage("nsweep", _stage_nsweep, enabled=_nsweep_enabled),
         Stage("emit_plugin", _stage_emit_plugin, enabled=_emit_enabled),
     ]
@@ -862,6 +942,8 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     bf_kwargs.pop("state_path", None)
     nsweep_params = params.get("nsweep")
     emit_params = params.get("emit")
+    escalate = bool(params.get("escalate", False))
+    escalate_oracle_budget = params.get("escalate_oracle_budget")
 
     sources = _load_sources(source_paths)
     state = PipelineState(
@@ -873,6 +955,8 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         bf_kwargs=bf_kwargs,
         nsweep_params=nsweep_params,
         emit_params=emit_params,
+        escalate=escalate,
+        escalate_oracle_budget=escalate_oracle_budget,
     )
     try:
         # Compose the registered stages (default order below) instead of an

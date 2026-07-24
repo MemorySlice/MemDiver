@@ -99,7 +99,6 @@ autodoc_mock_imports = [
     "lz4",
     "pyahocorasick",
     "kaitaistruct",
-    "nicegui",
     "marimo",
     "uvicorn",
     "fastapi",

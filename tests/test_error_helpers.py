@@ -44,10 +44,12 @@ def test_to_error_body_is_distinct_from_to_dict():
 def test_locked_error_dict_missing_key():
     key = KeyStatus.from_source(_Stub(TagStatus.MISSING_KEY))
     assert key.decrypted is False
+    # locked_error_dict is the NEUTRAL core convenience: no CLI flag names.
     assert key.locked_error_dict() == {
-        "error": "dump is encrypted; supply --key-file / --passphrase / --kem-key-file",
+        "error": "dump is encrypted; no valid decryption key was supplied",
         "tag_status": "missing_key",
     }
+    assert "--" not in key.locked_error_dict()["error"]
 
 
 def test_locked_error_dict_corrupted():

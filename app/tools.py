@@ -11,6 +11,7 @@ from typing import List, Optional
 from memdiver.core.discovery import RunDiscovery
 from memdiver.core.input_schemas import AnalyzeRequest
 from memdiver.core.protocols import REGISTRY
+from memdiver.core.service_errors import CapabilityError, FileNotFoundServiceError
 from memdiver.engine.batch import run_analysis_request
 from memdiver.engine.serializer import serialize_result
 
@@ -25,10 +26,12 @@ def scan_dataset(
     keylog_filename: str = "keylog.csv",
     protocols: Optional[List[str]] = None,
 ) -> dict:
-    """Scan a dataset directory for available protocols, libraries, and phases."""
-    result = session.set_dataset(root)
-    if "error" in result:
-        return result
+    """Scan a dataset directory for available protocols, libraries, and phases.
+
+    ``session.set_dataset`` raises :class:`FileNotFoundServiceError` for a
+    missing root; that propagates to the caller's transport funnel.
+    """
+    session.set_dataset(root)
     return session.get_or_scan(keylog_filename, protocols)
 
 
@@ -36,7 +39,7 @@ def list_phases(session: ToolSession, library_dir: str) -> dict:
     """List available lifecycle phases for a library directory."""
     path = Path(library_dir)
     if not path.is_dir():
-        return {"error": f"Directory not found: {library_dir}"}
+        raise FileNotFoundServiceError(f"Directory not found: {library_dir}")
 
     runs = RunDiscovery.discover_library_runs(path)
     if not runs:
@@ -83,7 +86,7 @@ def analyze_library(
     lib_paths = [Path(d) for d in library_dirs]
     for p in lib_paths:
         if not p.is_dir():
-            return {"error": f"Directory not found: {p}"}
+            raise FileNotFoundServiceError(f"Directory not found: {p}")
 
     try:
         request = AnalyzeRequest(
@@ -98,7 +101,7 @@ def analyze_library(
             algorithms=algorithms,
         )
     except ValueError as exc:
-        return {"error": str(exc)}
+        raise CapabilityError(str(exc))
 
     result = run_analysis_request(request)
     return serialize_result(result)
@@ -118,7 +121,7 @@ def import_dump(
     """
     src = Path(raw_path)
     if not src.is_file():
-        return {"error": f"File not found: {raw_path}"}
+        raise FileNotFoundServiceError(f"File not found: {raw_path}")
 
     from memdiver.msl.importer import import_dump as _import
 

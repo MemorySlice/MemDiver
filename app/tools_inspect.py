@@ -160,56 +160,18 @@ def get_entropy(
 ) -> dict:
     """Compute entropy profile for a dump file region.
 
-    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+    .. deprecated:: Prefer :func:`entropy_result`, which always carries key/tag status in a ServiceResult; this shim returns the bare payload for backward compatibility.
+
+    Thin adapter over :func:`entropy_result`; see it for the behavioral contract.
     """
-    path = Path(dump_path)
-    if not path.is_file():
-        return {"error": f"File not found: {dump_path}"}
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_dump_source(dump_path, km) as source:
-        file_size = source.size_for()
-        # Reject an out-of-range offset with a clean error instead of letting
-        # read_range silently return an empty/tail slice that yields odd stats.
-        if offset < 0 or offset > file_size:
-            return {
-                "error": "offset out of range",
-                "offset": offset,
-                "file_size": file_size,
-            }
-        data = source.read_all() if length == 0 else source.read_range(offset, length)
-
-    overall = shannon_entropy(data)
-    profile = compute_entropy_profile(data, window=window, step=step)
-    regions = find_high_entropy_regions(profile, threshold=threshold)
-
-    # Sample profile to keep response size reasonable. Use index-based even
-    # sampling that spans the whole profile (always including the last entry)
-    # so the plotted sample matches the full-profile stats/high_entropy_regions.
-    sample = profile
-    if len(profile) > MAX_ENTROPY_SAMPLES:
-        n = len(profile)
-        sample = [
-            profile[(i * (n - 1)) // (MAX_ENTROPY_SAMPLES - 1)]
-            for i in range(MAX_ENTROPY_SAMPLES)
-        ]
-
-    entropies = [e for _, e in profile] if profile else [0.0]
-    return {
-        "overall_entropy": round(overall, 4),
-        "high_entropy_regions": [
-            {"start": s, "end": e, "mean_entropy": round(m, 4)}
-            for s, e, m in regions
-        ],
-        "profile_sample": [
-            {"offset": o, "entropy": round(e, 4)} for o, e in sample
-        ],
-        "stats": {
-            "min": round(min(entropies), 4),
-            "max": round(max(entropies), 4),
-            "mean": round(sum(entropies) / len(entropies), 4),
-        },
-    }
+    try:
+        result = entropy_result(
+            session, dump_path, offset, length, window, step, threshold,
+            key_file, passphrase, kem_key_file,
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    return result.payload
 
 
 def _extract_strings(
@@ -243,30 +205,19 @@ def _extract_strings(
     The response is a strict superset of the old shape; ``next_cursor`` is
     ``None`` once the window is fully scanned and ``window_end`` exposes the
     resolved end-of-window for UI paging math.
+
+    .. deprecated:: Prefer :func:`strings_result`, which always carries key/tag status in a ServiceResult; this shim returns the bare payload for backward compatibility.
+
+    Thin adapter over :func:`strings_result`; see it for the behavioral contract.
     """
-    path = Path(dump_path)
-    if not path.is_file():
-        return {"error": f"File not found: {dump_path}"}
-
-    max_results = min(max_results, MAX_STRING_RESULTS)
-    chunk_size = max(chunk_size, TAIL_OVERLAP + 1)
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    with open_dump_source(dump_path, km) as source:
-        window_end = (offset + length) if length else source.size
-        window_start = max(offset, cursor)
-        results, next_cursor, truncated = _scan_window_for_strings(
-            source, window_start, window_end,
-            min_length, encoding, max_results, chunk_size,
+    try:
+        result = strings_result(
+            session, dump_path, offset, length, min_length, encoding,
+            max_results, cursor, chunk_size, key_file, passphrase, kem_key_file,
         )
-
-    return {
-        "strings": results,
-        "total_count": len(results) if not truncated else f">{max_results}",
-        "truncated": truncated,
-        "next_cursor": next_cursor,
-        "window_end": window_end,
-    }
+    except CapabilityError as e:
+        return e.to_error_body()
+    return result.payload
 
 
 def _scan_window_for_strings(
@@ -497,33 +448,18 @@ def detect_format(
     ``MEMSLICE`` container, not the flattened VAS projection) and returns
     the detected format plus ranked format suggestions. Encrypted ``.msl``
     inputs are decrypted when key material is supplied.
+
+    .. deprecated:: Prefer :func:`detect_format_result`, which always carries key/tag status in a ServiceResult; this shim returns the bare payload for backward compatibility.
+
+    Thin adapter over :func:`detect_format_result`; see it for the behavioral contract.
     """
-    from memdiver.core.format_detect import detect_format_at_offset, suggest_formats
-
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
-        with open_dump_source(dump_path, km) as source:
-            raw_size = source.size_for("raw") if hasattr(source, "size_for") else source.size
-            if offset < 0 or offset > raw_size:
-                return {
-                    "error": "offset out of range",
-                    "offset": offset,
-                    "file_size": raw_size,
-                }
-            length = min(65536, max(0, raw_size - offset))
-            data = source.read_range(offset, length, view="raw")
-    except FileNotFoundError:
-        return {"error": f"File not found: {dump_path}"}
-
-    detected = detect_format_at_offset(data, 0)
-    suggested = suggest_formats(data)
-    return {
-        "format": detected,
-        "detected_format": detected,
-        "suggested_formats": suggested,
-        "offset": offset,
-        "file_size": raw_size,
-    }
+        result = detect_format_result(
+            session, dump_path, offset, key_file, passphrase, kem_key_file,
+        )
+    except CapabilityError as e:
+        return e.to_error_body()
+    return result.payload
 
 
 def _format_hex_lines(data: bytes, base_offset: int = 0) -> List[str]:
@@ -989,3 +925,329 @@ def handles_result(
                     "path": e.path,
                 })
         return _finalize_inspect({"handles": handles}, reader, view=None)
+
+
+def connections_result(
+    session: ToolSession,
+    msl_path: str,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer listing CONNECTION_TABLE entries (spec §6.4, 0x0052)."""
+    _require_msl_path(msl_path)
+
+    import ipaddress
+
+    def format_addr(family: int, raw: bytes) -> str:
+        """Render a CONNECTION_TABLE address blob as a human string."""
+        try:
+            if family == 0x02:  # AF_INET
+                return str(ipaddress.IPv4Address(bytes(raw[:4])))
+            if family == 0x0A:  # AF_INET6
+                return str(ipaddress.IPv6Address(bytes(raw[:16])))
+        except (ValueError, ipaddress.AddressValueError):
+            pass
+        return raw[:16].hex()
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    with open_msl_reader(msl_path, km) as reader:
+        tables = reader.collect_connections()
+        connections: List[dict] = []
+        for table in tables:
+            for e in table.entries:
+                connections.append({
+                    "pid": e.pid,
+                    "family": e.family,
+                    "protocol": e.protocol,
+                    "state": e.state,
+                    "local_addr": format_addr(e.family, e.local_addr),
+                    "local_port": e.local_port,
+                    "remote_addr": format_addr(e.family, e.remote_addr),
+                    "remote_port": e.remote_port,
+                })
+        return _finalize_inspect({"connections": connections}, reader, view=None)
+
+
+def module_index_result(
+    session: ToolSession,
+    msl_path: str,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer listing MODULE_LIST_INDEX entries (spec §5.3, 0x0010)."""
+    _require_msl_path(msl_path)
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    with open_msl_reader(msl_path, km) as reader:
+        tables = reader.collect_module_list_index()
+        entries: List[dict] = []
+        for table in tables:
+            for e in table.entries:
+                entries.append({
+                    "module_uuid": str(e.module_uuid),
+                    "base_addr": e.base_addr,
+                    "size": e.module_size,
+                    "path": e.path,
+                })
+        return _finalize_inspect({"module_index": entries}, reader, view=None)
+
+
+def blocks_result(
+    session: ToolSession,
+    msl_path: str,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for the grouped MSL block tree.
+
+    Groups every block by its :mod:`block_tree` category, preserving order, so
+    each group is ``{"category", "blocks": [{label, block_type, offset, size,
+    detail}]}`` — the same shape the block navigator surfaces consume.
+    """
+    _require_msl_path(msl_path)
+
+    from memdiver.msl.block_tree import group_blocks, list_blocks
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    with open_msl_reader(msl_path, km) as reader:
+        groups = group_blocks(list_blocks(reader))
+        block_groups: List[dict] = []
+        for category, nodes in groups.items():
+            block_groups.append({
+                "category": category,
+                "blocks": [
+                    {
+                        "label": n.type_name,
+                        "block_type": n.type_code,
+                        "offset": n.file_offset,
+                        "size": n.payload_size,
+                        "detail": n.block_uuid,
+                    }
+                    for n in nodes
+                ],
+            })
+        return _finalize_inspect({"blocks": block_groups}, reader, view=None)
+
+
+def entropy_result(
+    session: ToolSession,
+    dump_path: str,
+    offset: int = 0,
+    length: int = 0,
+    window: int = 32,
+    step: int = 16,
+    threshold: float = 7.5,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for :func:`get_entropy` (entropy profile).
+
+    Opens a keyed dump source (``view=None``): the read is ALWAYS performed and
+    the key/tag state is carried in ``status``. Missing file / out-of-range
+    offset are RAISED as ``CapabilityError`` subclasses.
+    """
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        with open_dump_source(dump_path, km) as source:
+            file_size = source.size_for()
+            # Reject an out-of-range offset with a clean error instead of letting
+            # read_range silently return an empty/tail slice that yields odd stats.
+            if offset < 0 or offset > file_size:
+                raise OffsetOutOfRangeError(
+                    "offset out of range",
+                    details={"offset": offset, "file_size": file_size},
+                )
+            data = (
+                source.read_all() if length == 0
+                else source.read_range(offset, length)
+            )
+
+            overall = shannon_entropy(data)
+            profile = compute_entropy_profile(data, window=window, step=step)
+            regions = find_high_entropy_regions(profile, threshold=threshold)
+
+            # Sample profile to keep response size reasonable. Use index-based
+            # even sampling that spans the whole profile (always including the
+            # last entry) so the plotted sample matches the full-profile stats.
+            sample = profile
+            if len(profile) > MAX_ENTROPY_SAMPLES:
+                n = len(profile)
+                sample = [
+                    profile[(i * (n - 1)) // (MAX_ENTROPY_SAMPLES - 1)]
+                    for i in range(MAX_ENTROPY_SAMPLES)
+                ]
+
+            entropies = [e for _, e in profile] if profile else [0.0]
+            payload = {
+                "overall_entropy": round(overall, 4),
+                "high_entropy_regions": [
+                    {"start": s, "end": e, "mean_entropy": round(m, 4)}
+                    for s, e, m in regions
+                ],
+                "profile_sample": [
+                    {"offset": o, "entropy": round(e, 4)} for o, e in sample
+                ],
+                "stats": {
+                    "min": round(min(entropies), 4),
+                    "max": round(max(entropies), 4),
+                    "mean": round(sum(entropies) / len(entropies), 4),
+                },
+            }
+            return _finalize_inspect(payload, source, view=None)
+    except FileNotFoundError:
+        raise FileNotFoundServiceError(f"File not found: {dump_path}")
+
+
+def strings_result(
+    session: ToolSession,
+    dump_path: str,
+    offset: int = 0,
+    length: int = 0,
+    min_length: int = 4,
+    encoding: str = "ascii",
+    max_results: int = 500,
+    cursor: int = 0,
+    chunk_size: int = 8 * 1024 * 1024,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for :func:`_extract_strings` (chunked streaming).
+
+    Opens a keyed dump source (``view=None``): the scan is ALWAYS performed and
+    the key/tag state is carried in ``status``. A missing file is RAISED as a
+    ``FileNotFoundServiceError``.
+    """
+    max_results = min(max_results, MAX_STRING_RESULTS)
+    chunk_size = max(chunk_size, TAIL_OVERLAP + 1)
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        with open_dump_source(dump_path, km) as source:
+            window_end = (offset + length) if length else source.size
+            window_start = max(offset, cursor)
+            results, next_cursor, truncated = _scan_window_for_strings(
+                source, window_start, window_end,
+                min_length, encoding, max_results, chunk_size,
+            )
+            payload = {
+                "strings": results,
+                "total_count": len(results) if not truncated else f">{max_results}",
+                "truncated": truncated,
+                "next_cursor": next_cursor,
+                "window_end": window_end,
+            }
+            return _finalize_inspect(payload, source, view=None)
+    except FileNotFoundError:
+        raise FileNotFoundServiceError(f"File not found: {dump_path}")
+
+
+def detect_format_result(
+    session: ToolSession,
+    dump_path: str,
+    offset: int = 0,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for :func:`detect_format` (raw-container detection).
+
+    Reads the RAW container (``view="raw"``): this view is keyless by design, so
+    the result reports a clean/decrypted status. Missing file / out-of-range
+    offset are RAISED as ``CapabilityError`` subclasses.
+    """
+    from memdiver.core.format_detect import detect_format_at_offset, suggest_formats
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        with open_dump_source(dump_path, km) as source:
+            raw_size = (
+                source.size_for("raw") if hasattr(source, "size_for")
+                else source.size
+            )
+            if offset < 0 or offset > raw_size:
+                raise OffsetOutOfRangeError(
+                    "offset out of range",
+                    details={"offset": offset, "file_size": raw_size},
+                )
+            length = min(65536, max(0, raw_size - offset))
+            data = source.read_range(offset, length, view="raw")
+
+            detected = detect_format_at_offset(data, 0)
+            suggested = suggest_formats(data)
+            payload = {
+                "format": detected,
+                "detected_format": detected,
+                "suggested_formats": suggested,
+                "offset": offset,
+                "file_size": raw_size,
+            }
+            return _finalize_inspect(payload, source, view="raw")
+    except FileNotFoundError:
+        raise FileNotFoundServiceError(f"File not found: {dump_path}")
+
+
+def analyze_region_result(
+    session: ToolSession,
+    dump_path: str,
+    offset: int,
+    window: int = 64,
+    view: ViewMode = "raw",
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for :func:`core.region_analysis.analyze_region`.
+
+    Single source for a per-offset region investigation (byte value, local
+    entropy band, and printable strings in the neighbourhood window). Opens the
+    dump source and runs the SAME ``analyze_region`` primitive the marimo view
+    uses, then serialises the :class:`RegionReport` into a JSON-safe payload and
+    carries key/tag state in ``status``. A missing file, wrong-format container,
+    or out-of-range offset are RAISED as ``CapabilityError`` subclasses rather
+    than returned as an ``{"error": ...}`` dict.
+
+    ``variance`` / ``hits`` are intentionally NOT parameters: they are in-memory
+    cross-run analysis artefacts with no on-disk representation, so a path-based
+    producer leaves ``variance_at_offset`` / ``matching_secrets`` empty.
+    """
+    from memdiver.core.region_analysis import analyze_region
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    try:
+        with open_dump_source(dump_path, km) as source:
+            file_size = source.size_for(view)
+            if offset < 0 or offset >= file_size:
+                raise OffsetOutOfRangeError(
+                    "offset out of range",
+                    details={"offset": offset, "file_size": file_size, "view": view},
+                )
+            data = source.read_range(0, file_size, view=view)
+            report = analyze_region(data, offset, window=window)
+            payload = {
+                "offset": report.offset,
+                "byte_value": report.byte_value,
+                "entropy": round(report.entropy, 4),
+                "entropy_level": report.entropy_level,
+                "variance_at_offset": report.variance_at_offset,
+                "variance_class": report.variance_class,
+                "matching_secrets": [
+                    {"secret_type": h.secret_type, "offset": h.offset, "length": h.length}
+                    for h in report.matching_secrets
+                ],
+                "strings": [
+                    {"offset": st.offset, "value": st.value,
+                     "encoding": st.encoding, "length": st.length}
+                    for st in report.strings
+                ],
+                "neighborhood_hex": report.neighborhood.hex(),
+                "window": window,
+                "view": view,
+            }
+            return _finalize_inspect(payload, source, view=view)
+    except FileNotFoundError:
+        raise FileNotFoundServiceError(f"File not found: {dump_path}")

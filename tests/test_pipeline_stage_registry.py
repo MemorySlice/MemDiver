@@ -17,6 +17,7 @@ _EXPECTED_DEFAULT_ORDER = [
     "consensus",
     "search_reduce",
     "brute_force",
+    "escalate",
     "nsweep",
     "emit_plugin",
 ]
@@ -79,6 +80,8 @@ def test_default_gating_flags_preserved():
     assert stages["search_reduce"].enabled(state) is True
     assert stages["nsweep"].enabled(state) is False
     assert stages["emit_plugin"].enabled(state) is False
+    # escalate is opt-in: disabled by default (escalate=False on the state).
+    assert stages["escalate"].enabled(state) is False
     state.nsweep_params = {"n_values": [1]}
     state.emit_params = {"name": "x"}
     assert stages["nsweep"].enabled(state) is True
@@ -95,6 +98,7 @@ def test_register_stage_appears_in_composed_order():
             "search_reduce",
             "brute_force",
             "dummy",
+            "escalate",
             "nsweep",
             "emit_plugin",
         ]

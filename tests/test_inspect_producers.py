@@ -311,3 +311,64 @@ def test_metadata_producer_payload_matches_legacy(
     result = result_fn(session, plain_msl)
     legacy = legacy_fn(session, plain_msl, report_key_status=False)
     assert result.payload == legacy
+
+
+# ── analyze_region_result (new producer) ───────────────────────────────────
+
+
+@pytest.fixture
+def region_dump(tmp_path):
+    """A raw dump with a printable string embedded near the middle."""
+    data = bytes(range(256)) * 2 + b"PRIVATE_KEY_MARKER" + b"\xff" * 100
+    dump = tmp_path / "region.dump"
+    dump.write_bytes(data)
+    return str(dump), data
+
+
+def test_analyze_region_result_payload_matches_core(session, region_dump):
+    """Single-source parity: the producer payload equals a direct
+    core.region_analysis.analyze_region run over the same bytes."""
+    from memdiver.core.region_analysis import analyze_region
+
+    dump_path, data = region_dump
+    offset = len(data) // 2
+    result = tools_inspect.analyze_region_result(session, dump_path, offset)
+
+    report = analyze_region(data, offset, window=64)
+    assert result.payload["offset"] == report.offset
+    assert result.payload["byte_value"] == report.byte_value
+    assert result.payload["entropy"] == round(report.entropy, 4)
+    assert result.payload["entropy_level"] == report.entropy_level
+    assert result.payload["neighborhood_hex"] == report.neighborhood.hex()
+    assert result.payload["strings"] == [
+        {"offset": st.offset, "value": st.value,
+         "encoding": st.encoding, "length": st.length}
+        for st in report.strings
+    ]
+    # No variance/hits supplied on the path-based producer.
+    assert result.payload["variance_at_offset"] is None
+    assert result.payload["matching_secrets"] == []
+
+
+def test_analyze_region_result_status_is_ok_for_raw(session, region_dump):
+    dump_path, _ = region_dump
+    result = tools_inspect.analyze_region_result(session, dump_path, 0)
+    assert result.status.resolution == Resolution.OK
+    assert result.status.key.decrypted is True
+
+
+def test_analyze_region_result_file_not_found_raises(session):
+    with pytest.raises(FileNotFoundServiceError):
+        tools_inspect.analyze_region_result(session, "/nonexistent/path.dump", 0)
+
+
+def test_analyze_region_result_offset_out_of_range_raises(session, region_dump):
+    dump_path, data = region_dump
+    with pytest.raises(OffsetOutOfRangeError):
+        tools_inspect.analyze_region_result(session, dump_path, len(data))
+
+
+def test_analyze_region_result_negative_offset_raises(session, region_dump):
+    dump_path, _ = region_dump
+    with pytest.raises(OffsetOutOfRangeError):
+        tools_inspect.analyze_region_result(session, dump_path, -1)

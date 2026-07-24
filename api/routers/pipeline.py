@@ -102,6 +102,8 @@ class PipelineRunRequest(BaseModel):
     brute_force: BruteForceParams = Field(default_factory=BruteForceParams)
     nsweep: Optional[NSweepParams] = None
     emit: Optional[EmitParams] = None
+    escalate: bool = False
+    escalate_oracle_budget: Optional[int] = None
 
 
 class AutoFloorRunRequest(BaseModel):
@@ -243,6 +245,8 @@ def _build_worker_params(
         worker["nsweep"] = nsweep_dict
     if request.emit is not None:
         worker["emit"] = request.emit.model_dump()
+    worker["escalate"] = request.escalate
+    worker["escalate_oracle_budget"] = request.escalate_oracle_budget
     return worker
 
 
@@ -282,6 +286,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
     optional_stage_present = {
         "nsweep": request.nsweep is not None,
         "emit_plugin": request.emit is not None,
+        "escalate": request.escalate,
     }
     stage_names = [
         stage.name
