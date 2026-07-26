@@ -232,7 +232,7 @@ export function StageThresholds({ onAdvance }: Props) {
       </div>
 
       {submitError && (
-        <div className="md-panel p-2 text-xs border border-red-700 md-text-error">
+        <div className="md-panel p-2 text-xs border md-border-error md-text-error">
           {submitError}
         </div>
       )}

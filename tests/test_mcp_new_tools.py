@@ -20,7 +20,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
 
-from generate_aes_fixtures import generate_dataset  # noqa: E402
+from generate_aes_fixtures import (  # noqa: E402
+    KEY_LENGTH,
+    KEY_OFFSET,
+    generate_dataset,
+)
 
 from memdiver.core.service_errors import (  # noqa: E402
     CapabilityError,
@@ -162,6 +166,81 @@ def test_export_pattern_too_few_dumps(aes_dumps, tmp_path):
             dump_paths=aes_dumps[:1], output_dir=str(tmp_path))
     assert excinfo.value.category is ErrorCategory.PRECONDITION
     assert excinfo.value.message == "Need at least 2 dumps, got 1"
+
+
+# ── B6: manual_export_pattern producer (user-offset variant) ─────────
+# Region 112..176 spans anchor + planted key + anchor (KEY_OFFSET=128,
+# KEY_LENGTH=32), so it carries both static anchors and volatile key bytes.
+_MANUAL_OFFSET = KEY_OFFSET - 16
+_MANUAL_LENGTH = KEY_LENGTH + 32
+
+_EXPORT_PAYLOAD_KEYS = {"format", "content", "pattern", "region"}
+_REGION_KEYS = {"offset", "length", "key_start", "key_end"}
+
+
+def test_manual_export_pattern_producer_shape(aes_dumps, tmp_path):
+    """The new ``manual_export_pattern`` producer returns the same payload
+    shape as ``export_pattern`` — a plain dict, never an ``{"error": ...}``
+    dict — and writes the rendered pattern when ``output_dir`` is given."""
+    res = tools_pipeline.manual_export_pattern(
+        dump_paths=aes_dumps,
+        offset=_MANUAL_OFFSET,
+        length=_MANUAL_LENGTH,
+        output_dir=str(tmp_path / "manual"),
+        fmt="yara",
+        name="mcp_manual",
+        min_static_ratio=0.1,
+    )
+    assert "error" not in res, res
+    assert _EXPORT_PAYLOAD_KEYS <= set(res), res
+    assert res["format"] == "yara"
+    assert "rule" in res["content"]
+    assert _REGION_KEYS <= set(res["region"])
+    assert res["region"]["offset"] == _MANUAL_OFFSET
+    assert res["region"]["length"] == _MANUAL_LENGTH
+    assert res["region"]["key_start"] == _MANUAL_OFFSET
+    assert res["region"]["key_end"] == _MANUAL_OFFSET + _MANUAL_LENGTH
+    assert Path(res["pattern_path"]).is_file()
+
+
+def test_auto_and_manual_producers_share_payload_shape(aes_dumps):
+    """Auto and manual producers agree on their top-level payload keys and on
+    the region sub-dict keys, so both surfaces present the same structure."""
+    auto = tools_pipeline.export_pattern(
+        dump_paths=aes_dumps, fmt="json", name="a", min_static_ratio=0.1,
+    )
+    manual = tools_pipeline.manual_export_pattern(
+        dump_paths=aes_dumps, offset=_MANUAL_OFFSET, length=_MANUAL_LENGTH,
+        fmt="json", name="m", min_static_ratio=0.1,
+    )
+    assert set(auto) == set(manual) == _EXPORT_PAYLOAD_KEYS
+    assert set(auto["region"]) == set(manual["region"]) == _REGION_KEYS
+
+
+def test_manual_export_pattern_too_few_dumps(aes_dumps):
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.manual_export_pattern(
+            dump_paths=aes_dumps[:1], offset=_MANUAL_OFFSET,
+            length=_MANUAL_LENGTH,
+        )
+    assert excinfo.value.category is ErrorCategory.PRECONDITION
+    assert excinfo.value.message == "Need at least 2 dumps, got 1"
+
+
+def test_analysis_service_shim_reexports_relocated_symbols():
+    """The old ``api.services.analysis_service`` module is a re-export shim:
+    every public symbol is the SAME object now defined in the relocated
+    ``memdiver.app.export_service`` module."""
+    from memdiver.api.services import analysis_service as shim
+    from memdiver.app import export_service as es
+
+    for name in (
+        "auto_export_pattern", "manual_export_pattern", "AnalysisServiceError",
+        "DumpsNotFoundError", "TooFewDumpsError", "NoVolatileRegionsError",
+        "EmptyRegionError", "InsufficientStaticError", "UnknownFormatError",
+        "SUPPORTED_FORMATS", "_render_content",
+    ):
+        assert getattr(shim, name) is getattr(es, name), name
 
 
 # ── B3: auto_floor verdict ───────────────────────────────────────────

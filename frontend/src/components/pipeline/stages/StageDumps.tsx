@@ -89,7 +89,7 @@ export function StageDumps({ onAdvance }: Props) {
             <button
               type="button"
               onClick={clearAll}
-              className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-red-700 hover:text-white"
+              className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-white"
             >
               {t("stages.dumps.clearAll")}
             </button>
@@ -115,7 +115,7 @@ export function StageDumps({ onAdvance }: Props) {
                 <button
                   type="button"
                   onClick={() => removeAt(idx)}
-                  className="md-text-muted hover:text-red-400"
+                  className="md-text-muted hover:text-[var(--md-accent-red)]"
                   aria-label={t("stages.dumps.removePath", { path })}
                 >
                   ×

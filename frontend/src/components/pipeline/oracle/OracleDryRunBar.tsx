@@ -107,13 +107,13 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
       <div className="flex items-center justify-between text-[10px] md-text-muted">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-green-600" /> {t("oracle.dryRun.legendPass")}
+            <span className="inline-block w-2 h-2 rounded-full bg-[var(--md-accent-green)]" /> {t("oracle.dryRun.legendPass")}
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-red-600" /> {t("oracle.dryRun.legendFail")}
+            <span className="inline-block w-2 h-2 rounded-full bg-[var(--md-accent-red)]" /> {t("oracle.dryRun.legendFail")}
           </span>
           <span className="inline-flex items-center gap-1">
-            <span className="inline-block w-2 h-2 rounded-full bg-gray-500" /> {t("oracle.dryRun.legendError")}
+            <span className="inline-block w-2 h-2 rounded-full bg-[var(--md-text-muted)]" /> {t("oracle.dryRun.legendError")}
           </span>
           <span>{t("oracle.dryRun.legendNote")}</span>
         </div>

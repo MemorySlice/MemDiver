@@ -342,3 +342,22 @@ def test_default_max_size_is_32():
 def test_invalid_max_size_rejected():
     with pytest.raises(ValueError):
         MslReaderCache(max_size=0)
+
+
+def test_api_shim_reexports_the_same_app_objects_and_singleton():
+    """The MslReader cache moved DOWN into ``memdiver.app.reader_cache``; the old
+    ``api.services.reader_cache`` module is now a re-export shim. Both module
+    paths must expose the SAME objects AND resolve to the SAME process-wide
+    cache instance — a duplicate identity would break mmap reuse."""
+    from memdiver.api.services import reader_cache as shim
+    from memdiver.app import reader_cache as app_rc
+
+    for name in (
+        "MslReaderCache", "cached_dump_source", "cached_msl_reader",
+        "key_material_scope", "get_default_cache", "set_default_cache",
+        "shutdown_default_cache", "DEFAULT_MAX_SIZE",
+    ):
+        assert getattr(shim, name) is getattr(app_rc, name), name
+
+    # One process-wide instance regardless of which module path reaches it.
+    assert shim.get_default_cache() is app_rc.get_default_cache()

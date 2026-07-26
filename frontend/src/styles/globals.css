@@ -193,6 +193,11 @@ body {
 .md-bg-error-subtle { background-color: color-mix(in srgb, var(--md-accent-red) 18%, transparent); }
 .md-bg-warning-subtle { background-color: color-mix(in srgb, var(--md-accent-orange) 18%, transparent); }
 .md-bg-success-subtle { background-color: color-mix(in srgb, var(--md-accent-green) 18%, transparent); }
+.md-bg-info-subtle { background-color: color-mix(in srgb, var(--md-accent-blue) 18%, transparent); }
+.md-bg-cyan-subtle { background-color: color-mix(in srgb, var(--md-accent-cyan) 18%, transparent); }
+.md-bg-neutral-subtle { background-color: color-mix(in srgb, var(--md-text-muted) 18%, transparent); }
+/* "byte differs across dumps" highlight ring (replaces a hardcoded ring-yellow-500/50). */
+.md-ring-differs { box-shadow: 0 0 0 1px color-mix(in srgb, var(--md-accent-yellow) 50%, transparent); }
 .md-border-error { border-color: var(--md-accent-red); }
 .md-border-warning { border-color: var(--md-accent-orange); }
 .md-border-success { border-color: var(--md-accent-green); }

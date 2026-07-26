@@ -14,17 +14,17 @@ interface NDumpOverlayProps {
 }
 
 const CLASS_COLORS: Record<number, string> = {
-  0: 'text-green-400',    // invariant
-  1: 'text-blue-400',     // structural
-  2: 'text-cyan-400',     // pointer
-  3: 'text-red-400',      // key_candidate
+  0: 'md-text-success',              // invariant
+  1: 'md-text-accent',              // structural
+  2: 'text-[var(--md-accent-cyan)]', // pointer
+  3: 'md-text-error',              // key_candidate
 };
 
 const CLASS_BG: Record<number, string> = {
-  0: 'bg-green-500/10',
-  1: 'bg-blue-500/10',
-  2: 'bg-cyan-500/10',
-  3: 'bg-red-500/20',
+  0: 'md-bg-success-subtle',
+  1: 'md-bg-info-subtle',
+  2: 'md-bg-cyan-subtle',
+  3: 'md-bg-error-subtle',
 };
 
 export function NDumpOverlay({
@@ -83,8 +83,8 @@ export function NDumpOverlay({
   return (
     <div className="flex flex-col h-full">
       {/* Controls */}
-      <div className="flex items-center gap-4 p-2 border-b border-zinc-700 text-xs">
-        <span className="text-zinc-400">{t("ndump.dumpsLabel", { active: activePaths.length, total: dumpPaths.length })}</span>
+      <div className="flex items-center gap-4 p-2 border-b border-[var(--md-border)] text-xs">
+        <span className="md-text-secondary">{t("ndump.dumpsLabel", { active: activePaths.length, total: dumpPaths.length })}</span>
         {dumpPaths.map(p => {
           const name = p.split('/').pop() ?? p;
           return (
@@ -95,14 +95,14 @@ export function NDumpOverlay({
                 onChange={() => toggleDump(p)}
                 className="w-3 h-3"
               />
-              <span className={visibleDumps.has(p) ? 'text-zinc-300' : 'text-zinc-600'}>
+              <span className={visibleDumps.has(p) ? 'text-[var(--md-text-primary)]' : 'md-text-muted'}>
                 {name.length > 20 ? '...' + name.slice(-17) : name}
               </span>
             </label>
           );
         })}
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-zinc-400">{t("ndump.nLabel")}</span>
+          <span className="md-text-secondary">{t("ndump.nLabel")}</span>
           <input
             type="range"
             min={1}
@@ -111,17 +111,17 @@ export function NDumpOverlay({
             onChange={e => setNSlider(Number(e.target.value))}
             className="w-24"
           />
-          <span className="text-zinc-300 w-6">{nSlider}</span>
+          <span className="text-[var(--md-text-primary)] w-6">{nSlider}</span>
         </div>
       </div>
 
       {/* Legend */}
-      <div className="flex gap-3 px-2 py-1 text-xs border-b border-zinc-800">
-        <span className="text-green-400">{t("ndump.legendInvariant")}</span>
-        <span className="text-blue-400">{t("ndump.legendStructural")}</span>
-        <span className="text-cyan-400">{t("ndump.legendPointer")}</span>
-        <span className="text-red-400">{t("ndump.legendKeyCandidate")}</span>
-        <span className="text-yellow-400">{t("ndump.legendDiffers")}</span>
+      <div className="flex gap-3 px-2 py-1 text-xs border-b border-[var(--md-border)]">
+        <span className="md-text-success">{t("ndump.legendInvariant")}</span>
+        <span className="md-text-accent">{t("ndump.legendStructural")}</span>
+        <span className="text-[var(--md-accent-cyan)]">{t("ndump.legendPointer")}</span>
+        <span className="md-text-error">{t("ndump.legendKeyCandidate")}</span>
+        <span className="text-[var(--md-accent-yellow)]">{t("ndump.legendDiffers")}</span>
       </div>
 
       {/* Hex grid */}
@@ -130,7 +130,7 @@ export function NDumpOverlay({
           const rowOffset = offset + row * 16;
           return (
             <div key={row} className="flex items-center gap-2 leading-5">
-              <span className="text-zinc-500 w-16 text-right select-none">
+              <span className="md-text-muted w-16 text-right select-none">
                 {offsetToHex(rowOffset)}
               </span>
               <div className="flex gap-0.5">
@@ -138,13 +138,13 @@ export function NDumpOverlay({
                   const idx = row * 16 + col;
                   if (idx >= pageSize) return null;
                   const { hex, cls, differs } = byteInfo[idx];
-                  const colorCls = cls >= 0 ? CLASS_COLORS[cls] : 'text-zinc-500';
+                  const colorCls = cls >= 0 ? CLASS_COLORS[cls] : 'md-text-muted';
                   const bgCls = cls >= 0 ? CLASS_BG[cls] : '';
                   return (
                     <span
                       key={col}
                       className={`w-5 text-center rounded-sm ${colorCls} ${bgCls} ${
-                        differs ? 'ring-1 ring-yellow-500/50' : ''
+                        differs ? 'md-ring-differs' : ''
                       }`}
                       title={t("ndump.byteTitle", {
                         offset: (rowOffset + col).toString(16),
@@ -162,21 +162,21 @@ export function NDumpOverlay({
       </div>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between p-2 border-t border-zinc-700 text-xs">
+      <div className="flex items-center justify-between p-2 border-t border-[var(--md-border)] text-xs">
         <button
           onClick={() => setPage(p => Math.max(0, p - 1))}
           disabled={page === 0}
-          className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30"
+          className="px-2 py-1 bg-[var(--md-bg-tertiary)] rounded disabled:opacity-30"
         >
           {t("ndump.prev")}
         </button>
-        <span className="text-zinc-400">
+        <span className="md-text-secondary">
           {t("ndump.page", { current: page + 1, total: totalPages, offset: offset.toString(16) })}
         </span>
         <button
           onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
           disabled={page >= totalPages - 1}
-          className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30"
+          className="px-2 py-1 bg-[var(--md-bg-tertiary)] rounded disabled:opacity-30"
         >
           {t("ndump.next")}
         </button>

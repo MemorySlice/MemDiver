@@ -21,7 +21,7 @@ export function MethodComparisonTable({ results }: MethodComparisonTableProps) {
   const { t } = useTranslation("results");
   if (results.length === 0) {
     return (
-      <div className="flex items-center justify-center h-24 text-zinc-500 text-sm">
+      <div className="flex items-center justify-center h-24 md-text-muted text-sm">
         {t("comparison.empty")}
       </div>
     );
@@ -38,15 +38,15 @@ export function MethodComparisonTable({ results }: MethodComparisonTableProps) {
 
   return (
     <div className="p-4">
-      <h3 className="text-sm font-semibold text-zinc-300 mb-3">
+      <h3 className="text-sm font-semibold text-[var(--md-text-primary)] mb-3">
         {t("comparison.title")}
       </h3>
       <table className="w-full text-xs font-mono">
         <thead>
-          <tr className="border-b border-zinc-700">
-            <th className="text-left py-1.5 px-2 text-zinc-400 font-medium">{t("comparison.metric")}</th>
+          <tr className="border-b border-[var(--md-border)]">
+            <th className="text-left py-1.5 px-2 md-text-secondary font-medium">{t("comparison.metric")}</th>
             {results.map(r => (
-              <th key={r.tool} className="text-center py-1.5 px-2 text-zinc-300 font-semibold">
+              <th key={r.tool} className="text-center py-1.5 px-2 text-[var(--md-text-primary)] font-semibold">
                 {r.tool}
               </th>
             ))}
@@ -54,10 +54,10 @@ export function MethodComparisonTable({ results }: MethodComparisonTableProps) {
         </thead>
         <tbody>
           {metrics.map(m => (
-            <tr key={m.key} className="border-b border-zinc-800 hover:bg-zinc-800/50">
-              <td className="py-1.5 px-2 text-zinc-400">{m.label}</td>
+            <tr key={m.key} className="border-b border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">
+              <td className="py-1.5 px-2 md-text-secondary">{m.label}</td>
               {results.map(r => (
-                <td key={r.tool} className="text-center py-1.5 px-2 text-zinc-300">
+                <td key={r.tool} className="text-center py-1.5 px-2 text-[var(--md-text-primary)]">
                   {m.fmt((r as unknown as Record<string, unknown>)[m.key])}
                 </td>
               ))}

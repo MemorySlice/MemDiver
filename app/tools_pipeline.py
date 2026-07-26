@@ -91,6 +91,32 @@ def _read_reference_bytes(
         return source.read_all()
 
 
+def _is_msl_source(source: Any) -> bool:
+    """True for a native MSL source (mirrors ``pipeline_runner._is_msl``)."""
+    return getattr(source, "format_name", "") == "msl"
+
+
+def _select_hit(hits_path: Path, hit_index: int) -> Dict[str, Any]:
+    """Load hits.json and pick one hit, reproducing the validation errors
+    :func:`engine.vol3_emit.emit_plugin_from_hits_file` raises verbatim.
+
+    Lets the ``emit_plugin`` producer forward a ``progress_callback`` to the
+    :func:`emit_plugin_for_hit` leaf (which the file-level wrapper cannot) and
+    reuse the selected hit for the inferred-fields artifact, without changing
+    the errors an unkeyed caller sees for an empty / out-of-range hits file.
+    """
+    payload = json.loads(Path(hits_path).read_text())
+    hits = payload.get("hits", [])
+    if not hits:
+        raise ValueError(f"{hits_path}: no hits to emit plugin from")
+    if hit_index < 0 or hit_index >= len(hits):
+        raise ValueError(
+            f"{hits_path}: requested hit {hit_index} but only "
+            f"{len(hits)} present"
+        )
+    return hits[hit_index]
+
+
 # ----------------------------------------------------------------------
 # search-reduce
 # ----------------------------------------------------------------------
@@ -113,12 +139,20 @@ def search_reduce(
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Reduce consensus variance to a region list via the Phase 25 filter chain.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw (byte-identical to the previous
     ``read_bytes`` path).
+
+    ``on_progress`` / ``is_cancelled`` are the optional surface hooks (the web
+    passes ``ctx.emit`` / ``ctx.is_cancelled``); when unset the stage-bracketing
+    emits are silent no-ops and the leaf keeps its ``noop_progress`` default, so
+    the CLI/MCP result is byte-identical to before. Progress mirrors the web's
+    ``search_reduce`` stage (sub-stages ``variance``/``aligned``/``entropy``).
     """
     from memdiver.engine import floor_policy
     from memdiver.engine.candidate_pipeline import reduce_search_space
@@ -133,6 +167,13 @@ def search_reduce(
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
+    _emit(on_progress, "stage_start", stage="search_reduce", pct=0.0,
+          msg=f"total_bytes={len(reference)}")
+    _experiment_check_cancelled(is_cancelled, on_progress)
+    reduce_extra: Dict[str, Any] = {}
+    pcb = _progress_bridge(on_progress, "search_reduce")
+    if pcb is not None:
+        reduce_extra["progress_callback"] = pcb
     result = reduce_search_space(
         variance, reference, num_dumps=num_dumps,
         alignment=alignment, block_size=block_size,
@@ -141,6 +182,7 @@ def search_reduce(
         entropy_window=entropy_window,
         entropy_threshold=entropy_threshold,
         min_region=min_region,
+        **reduce_extra,
     )
     # Advisory only: a data-driven floor to consider for min_variance
     # (0.0 = too few dumps / no crypto component; keep everything).
@@ -150,6 +192,11 @@ def search_reduce(
     payload = result.to_dict()
     payload["recommended_floor"] = recommended
     _dump_json(payload, candidates_path)
+    _emit(on_progress, "stage_end", stage="search_reduce", pct=1.0,
+          msg=f"{len(result.regions)} regions",
+          extra={"num_regions": len(result.regions),
+                 "stages": result.stages.to_dict(),
+                 "fallback_entropy_only": result.fallback_entropy_only})
     return {
         "candidates_path": str(candidates_path),
         "num_regions": len(result.regions),
@@ -177,22 +224,37 @@ def brute_force(
     exhaustive: bool = True,
     state_path: Optional[str] = None,
     top_k: int = 10,
+    variance_threshold: Optional[float] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Iterate surviving candidates through a BYO oracle and persist hits.json.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw (byte-identical to the previous
     ``read_bytes`` path).
+
+    ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
+    are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
+    ``brute_force`` stage.
     """
     from memdiver.engine.brute_force import run_brute_force
+    from memdiver.engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         reference = _read_reference_bytes(reference_path, km, on_source)
+        _emit(on_progress, "stage_start", stage="brute_force", pct=0.0,
+              msg=f"oracle={Path(oracle_path).name}")
+        _experiment_check_cancelled(is_cancelled, on_progress)
+        bf_extra: Dict[str, Any] = {}
+        pcb = _progress_bridge(on_progress, "brute_force")
+        if pcb is not None:
+            bf_extra["progress_callback"] = pcb
         result = run_brute_force(
             Path(candidates_path),
             reference,
@@ -204,6 +266,7 @@ def brute_force(
             exhaustive=exhaustive,
             state_path=Path(state_path) if state_path else None,
             top_k=top_k,
+            **bf_extra,
         )
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
@@ -214,6 +277,16 @@ def brute_force(
     out = _ensure_dir(Path(output_dir))
     hits_path = out / "hits.json"
     _dump_json(result.to_dict(), hits_path)
+    # Resolve the static/dynamic variance cutoff to a concrete value (never
+    # ``None``) so the web reducer can seed its convergence preview from the
+    # exact threshold the emit stage will use instead of hardcoding the default.
+    resolved_vt = variance_threshold if variance_threshold is not None else PLUGIN_STATIC_THRESHOLD
+    _emit(on_progress, "stage_end", stage="brute_force", pct=1.0,
+          msg=f"{result.verified_count} hits / {result.total_candidates} candidates",
+          extra={"verified_count": result.verified_count,
+                 "total_candidates": result.total_candidates,
+                 "variance_threshold": resolved_vt,
+                 "hits": [h.to_dict() for h in result.hits]})
     return {
         "hits_path": str(hits_path),
         "verified_count": result.verified_count,
@@ -245,6 +318,8 @@ def n_sweep(
     escalate: bool = False,
     escalate_oracle_budget: Optional[int] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Run the N-scaling harness and emit report.{json,md,html}.
 
@@ -252,6 +327,10 @@ def n_sweep(
     When ``escalate`` is set and no checkpoint found a hit, a floor-free
     sweep at the terminal N runs and its verdict surfaces under
     ``escalation``.
+
+    ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
+    are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
+    ``nsweep`` stage.
     """
     from memdiver.core.dump_source import open_dump
     from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
@@ -269,6 +348,13 @@ def n_sweep(
             _raise_if_locked(src)
         config = load_oracle_config(Path(oracle_config_path) if oracle_config_path else None)
         oracle = load_oracle(Path(oracle_path), config=config)
+        _emit(on_progress, "stage_start", stage="nsweep", pct=0.0,
+              msg=f"N values: {n_values}")
+        _experiment_check_cancelled(is_cancelled, on_progress)
+        ns_extra: Dict[str, Any] = {}
+        pcb = _progress_bridge(on_progress, "nsweep")
+        if pcb is not None:
+            ns_extra["progress_callback"] = pcb
         result = run_nsweep(
             sources,
             n_values=list(n_values),
@@ -279,6 +365,7 @@ def n_sweep(
             exhaustive=exhaustive,
             escalate=escalate,
             escalate_oracle_budget=escalate_oracle_budget,
+            **ns_extra,
         )
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
@@ -295,6 +382,11 @@ def n_sweep(
 
     out = _ensure_dir(Path(output_dir))
     paths = write_nsweep_artifacts(result, out)
+    _emit(on_progress, "stage_end", stage="nsweep", pct=1.0,
+          msg=result.headline(),
+          extra={"first_hit_n": result.first_hit_n,
+                 "first_hit_offset": result.first_hit_offset,
+                 "total_dumps": result.total_dumps})
     payload = {
         "report_json": str(paths["json"]),
         "report_md": str(paths["md"]),
@@ -323,44 +415,101 @@ def emit_plugin(
     description: Optional[str] = None,
     hit_index: int = 0,
     variance_threshold: Optional[float] = None,
+    min_static_ratio: float = 0.3,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    write_fields: bool = False,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Emit a Volatility 3 plugin from a hit's neighborhood variance.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw (byte-identical to the previous
     ``read_bytes`` path).
+
+    ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
+    are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
+    ``emit_plugin`` stage. ``min_static_ratio`` (default 0.3, matching
+    :func:`engine.vol3_emit.emit_plugin_for_hit`) is forwarded to the leaf in the
+    hooked/``write_fields`` path so the web ``EmitParams.min_static_ratio``
+    reaches the generator unchanged. Opt-in ``write_fields`` reproduces the web's
+    ``inferred_fields`` artifact: it writes ``<name>_fields.json`` next to the
+    plugin (via :func:`engine.vol3_emit.extract_inferred_fields`) and adds the
+    ``fields`` list to the return dict and the ``stage_end`` extra — so a later
+    web route through this producer keeps the artifact and the ``extra.fields``
+    the frontend reads. The generated plugin file is byte-identical whether or
+    not the hooks/``write_fields`` are active.
     """
-    from memdiver.engine.vol3_emit import emit_plugin_from_hits_file
+    from memdiver.engine.vol3_emit import (
+        emit_plugin_for_hit,
+        emit_plugin_from_hits_file,
+        extract_inferred_fields,
+    )
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    pcb = _progress_bridge(on_progress, "emit_plugin")
+    fields: Optional[List[dict]] = None
     try:
         reference = _read_reference_bytes(reference_path, km, on_source)
         out = _ensure_dir(Path(output_dir))
         output_path = out / f"{name}.py"
-        emit_plugin_from_hits_file(
-            Path(hits_path),
-            reference,
-            name=name,
-            output_path=output_path,
-            hit_index=hit_index,
-            description=description,
-            variance_threshold=variance_threshold,
-        )
+        _emit(on_progress, "stage_start", stage="emit_plugin", pct=0.0,
+              msg=f"plugin={name} hit_index={hit_index}")
+        _experiment_check_cancelled(is_cancelled, on_progress)
+        if pcb is not None or write_fields:
+            # Select the hit ourselves so we can forward the progress_callback
+            # to the leaf (the file-level wrapper does not accept one) and reuse
+            # the hit for the inferred-fields artifact. The generated plugin is
+            # identical to emit_plugin_from_hits_file, which just selects the
+            # same hit and delegates to emit_plugin_for_hit.
+            hit = _select_hit(Path(hits_path), hit_index)
+            emit_extra: Dict[str, Any] = {}
+            if pcb is not None:
+                emit_extra["progress_callback"] = pcb
+            emit_plugin_for_hit(
+                hit, reference, name, output_path,
+                description=description,
+                variance_threshold=variance_threshold,
+                min_static_ratio=min_static_ratio,
+                **emit_extra,
+            )
+            if write_fields:
+                fields = extract_inferred_fields(
+                    hit, variance_threshold=variance_threshold)
+                fields_path = out / f"{name}_fields.json"
+                fields_path.write_text(json.dumps(fields, indent=2))
+        else:
+            emit_plugin_from_hits_file(
+                Path(hits_path),
+                reference,
+                name=name,
+                output_path=output_path,
+                hit_index=hit_index,
+                description=description,
+                variance_threshold=variance_threshold,
+            )
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
     except (OSError, ValueError) as exc:
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
-    return {
+    result: Dict[str, Any] = {
         "plugin_path": str(output_path),
         "size": output_path.stat().st_size,
         "name": name,
     }
+    if write_fields:
+        result["fields_path"] = str(out / f"{name}_fields.json")
+        result["fields"] = fields
+    _emit(on_progress, "stage_end", stage="emit_plugin", pct=1.0,
+          msg=f"wrote {output_path.name}",
+          extra={"plugin_path": str(output_path), "fields": fields,
+                 "variance_threshold": variance_threshold})
+    return result
 
 
 # ----------------------------------------------------------------------
@@ -376,6 +525,9 @@ def consensus(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    persist_welford: bool = False,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Build a per-byte consensus variance vector across N dumps.
 
@@ -389,6 +541,17 @@ def consensus(
     emit_plugin) without the web-UI orchestrator.
 
     Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+
+    Opt-in ``persist_welford`` switches to the web runner's *incremental*
+    estimator (:func:`engine.pipeline_runner._build_consensus`): it folds each
+    source one at a time (raw via :class:`ConsensusVector` Welford, native
+    ``.msl`` via :class:`MslIncrementalBuilder`), emits a per-fold ``progress``
+    event, and additionally persists ``mean.npy`` / ``m2.npy`` / ``state.json``
+    (``{size, num_dumps, mean_path, m2_path}``) — the accumulator state
+    ``/refine``, ``/neighborhood`` and brute-force ``state_path`` read. The
+    default (batch) path is unchanged, so existing CLI/MCP callers are
+    byte-identical. ``on_progress`` / ``is_cancelled`` are the surface hooks
+    (no-ops when unset).
     """
     from memdiver.engine.consensus_service import build_consensus
 
@@ -403,6 +566,12 @@ def consensus(
         )
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    _emit(on_progress, "stage_start", stage="consensus", pct=0.0,
+          msg=f"folding {len(paths)} dumps")
+    _experiment_check_cancelled(is_cancelled, on_progress)
+    if persist_welford:
+        return _consensus_incremental(
+            paths, Path(output_dir), km, normalize, on_progress, is_cancelled)
     try:
         # The on_source hook runs per opened source before the vector is built,
         # so a locked (missing/wrong-key) dump surfaces as EncryptedDumpLockedError
@@ -438,7 +607,121 @@ def consensus(
         "normalize": normalize,
     }
     _dump_json(meta, out / "consensus.json")
+    _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
+          msg=f"variance ready ({cm.size} bytes)",
+          extra={"total_bytes": cm.size, "num_dumps": cm.num_dumps})
     return meta
+
+
+def _consensus_incremental(
+    paths: List[Path],
+    output_dir: Path,
+    key_material: Dict[str, Any],
+    normalize: bool,
+    on_progress: Optional[Callable[..., None]],
+    is_cancelled: Optional[Callable[[], bool]],
+) -> Dict[str, Any]:
+    """Incremental fold that mirrors ``pipeline_runner._build_consensus``.
+
+    NOTE: this deliberately duplicates the web runner's fold + Welford-persist
+    logic (a clean move of ``_build_consensus`` / ``_persist_welford_state``
+    into this module would require editing ``engine/pipeline_runner.py``, which
+    is out of scope for this step). The two must stay in lock-step: the raw
+    branch is validated against a direct :class:`WelfordVariance` computation in
+    the tests, guaranteeing byte-identical ``mean.npy`` / ``m2.npy`` /
+    ``state.json``; the ``.msl`` branch uses the identical
+    :class:`MslIncrementalBuilder` calls the web runner makes.
+    """
+    from memdiver.core.dump_source import open_dump
+    from memdiver.engine.consensus import ConsensusVector
+    from memdiver.engine.consensus_msl import MslIncrementalBuilder
+
+    n = len(paths)
+    sources: List[Any] = []
+    try:
+        for p in paths:
+            src = open_dump(p, **key_material)
+            src.open()
+            sources.append(src)
+            # Surface a locked encrypted source instead of folding empty pages.
+            _raise_if_locked(src)
+
+        if all(_is_msl_source(s) for s in sources):
+            builder = MslIncrementalBuilder.from_sources(sources)
+            for i in range(n):
+                _experiment_check_cancelled(is_cancelled, on_progress)
+                builder.fold_next(i)
+                _emit(on_progress, "progress", stage="consensus",
+                      pct=(i + 1) / n, msg=f"folded {i + 1}/{n}",
+                      extra={"dumps_folded": i + 1, "total_dumps": n})
+            variance = builder.get_live_variance()
+            reference = builder.get_reference()
+            total = builder.total_bytes
+            mean_arr, m2_arr, n_welford = builder.welford_state()
+        else:
+            # Stream the fold: hand each source to add_source one at a time so
+            # only ONE dump is resident at a time (peak ~O(dump size)) instead
+            # of materializing all N up front (~O(N * dump size), which OOM'd on
+            # large multi-dump runs). add_source reads each dump internally,
+            # trims to min_size, folds it, and caches reference_bytes on the
+            # first — matching the incremental MSL and n-sweep paths.
+            min_size = min(s.size for s in sources)
+            matrix = ConsensusVector()
+            matrix.build_incremental(min_size)
+            for i, s in enumerate(sources):
+                _experiment_check_cancelled(is_cancelled, on_progress)
+                matrix.add_source(s)
+                _emit(on_progress, "progress", stage="consensus",
+                      pct=(i + 1) / n, msg=f"folded {i + 1}/{n}",
+                      extra={"dumps_folded": i + 1, "total_dumps": n})
+            # Extract Welford state BEFORE finalize() destroys it.
+            mean_arr, m2_arr, n_welford = matrix.welford_state()
+            matrix.finalize()
+            variance = matrix.variance
+            reference = matrix.reference_bytes
+            total = min_size
+    except (OSError, ValueError) as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
+    finally:
+        for src in sources:
+            try:
+                src.close()
+            except Exception:  # pragma: no cover
+                pass
+
+    out = _ensure_dir(output_dir)
+    variance_path = out / "variance.npy"
+    np.save(variance_path, variance)
+    reference_path = out / "reference.bin"
+    reference_path.write_bytes(reference)
+    mean_path = out / "mean.npy"
+    m2_path = out / "m2.npy"
+    np.save(mean_path, mean_arr)
+    np.save(m2_path, m2_arr)
+    state_path = out / "state.json"
+    state_path.write_text(json.dumps({
+        "size": int(total),
+        "num_dumps": int(n_welford),
+        "mean_path": str(mean_path),
+        "m2_path": str(m2_path),
+    }, indent=2))
+
+    _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
+          msg=f"variance ready ({total} bytes)",
+          extra={"total_bytes": int(total), "num_dumps": n})
+    return {
+        "num_dumps": int(n_welford),
+        "size": int(total),
+        "total_bytes": int(total),
+        "variance_path": str(variance_path),
+        "reference_path": str(reference_path),
+        "state_path": str(state_path),
+        "mean_path": str(mean_path),
+        "m2_path": str(m2_path),
+        "normalize": normalize,
+    }
 
 
 # ----------------------------------------------------------------------
@@ -473,6 +756,8 @@ def auto_floor(
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    on_progress: Optional[Callable[..., None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Automated oracle-arbitrated variance-floor selection → single verdict.
 
@@ -483,9 +768,17 @@ def auto_floor(
     and returns the verdict dict.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied.
+
+    ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
+    are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
+    ``escalate`` stage (the pipeline's floor-free fall-through).
     """
     from memdiver.core.dump_source import open_dump
-    from memdiver.engine.auto_floor import run_auto_floor, write_auto_floor_artifacts
+    from memdiver.engine.auto_floor import (
+        hit_tier,
+        run_auto_floor,
+        write_auto_floor_artifacts,
+    )
     from memdiver.engine.oracle import load_oracle, load_oracle_config
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
@@ -509,6 +802,13 @@ def auto_floor(
         ) from exc
 
     positive_control = bytes.fromhex(positive_control_hex) if positive_control_hex else None
+    _emit(on_progress, "stage_start", stage="escalate", pct=0.0,
+          msg="floor-free descending-variance sweep (brute-force found no hit)")
+    _experiment_check_cancelled(is_cancelled, on_progress)
+    af_extra: Dict[str, Any] = {}
+    pcb = _progress_bridge(on_progress, "escalate")
+    if pcb is not None:
+        af_extra["progress_callback"] = pcb
     result = run_auto_floor(
         variance, reference_data, num_dumps, oracle,
         reduce_kwargs=dict(reduce_kwargs or {}), key_sizes=tuple(key_sizes),
@@ -518,11 +818,20 @@ def auto_floor(
         p_min=p_min, self_test_trials=self_test_trials,
         oracle_budget=oracle_budget, alignment_quality=alignment_quality,
         min_alignment=min_alignment, managed_region=managed_region,
+        **af_extra,
     )
     out = _ensure_dir(Path(output_dir))
     paths = write_auto_floor_artifacts(result, out)
     verdict = result.to_dict()
+    # ``hit_tier`` is additive: it lets a caller reconstruct the canonical
+    # ``escalation_verdict`` envelope ({**to_dict, "hit_tier"}) without holding
+    # the ``AutoFloorResult`` — the web pipeline's escalate stage relies on this.
+    verdict["hit_tier"] = hit_tier(result)
     verdict["artifacts"] = {k: str(v) for k, v in paths.items()}
+    _emit(on_progress, "stage_end", stage="escalate", pct=1.0,
+          msg=f"{result.verdict} tier={hit_tier(result)}",
+          extra={"verdict": result.verdict, "hit_tier": hit_tier(result),
+                 "phi_star": result.phi_star, "phi0": result.phi0})
     return verdict
 
 
@@ -543,16 +852,20 @@ def export_pattern(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Auto-detect a volatile region across N dumps and export a pattern.
 
-    Thin wrapper over ``api.services.analysis_service.auto_export_pattern``,
+    Thin wrapper over :func:`memdiver.app.export_service.auto_export_pattern`,
     covering ``yara`` / ``json`` / ``volatility3`` formats — the same
     pipeline the CLI ``export --auto`` and the HTTP ``/auto-export`` route
     use. When ``output_dir`` is given the rendered pattern is written to a
     file there; the content is always returned inline too.
 
-    Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied —
+    either as ``key_file`` / ``passphrase`` / ``kem_key_file`` (the MCP idiom,
+    read from disk here) or as a pre-decoded ``key_material`` dict of
+    ``open_dump`` kwargs (the web / CLI idiom, already decoded by that surface).
     """
     # AnalysisServiceError (raised by auto_export_pattern) is already a
     # CapabilityError subclass carrying its own accurate category/status
@@ -560,7 +873,7 @@ def export_pattern(
     # INTERNAL/500) -- it is allowed to propagate unmodified so the MCP
     # funnel and any HTTP translator see the real category instead of a
     # blanket INVALID_INPUT.
-    from memdiver.api.services.analysis_service import auto_export_pattern
+    from memdiver.app.export_service import auto_export_pattern
 
     paths = [Path(p) for p in dump_paths]
     missing = [str(p) for p in paths if not p.exists()]
@@ -572,15 +885,98 @@ def export_pattern(
             category=ErrorCategory.PRECONDITION,
         )
 
-    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
     result = auto_export_pattern(
         paths, fmt=fmt, name=name, align=align, context=context,
         min_static_ratio=min_static_ratio, key_material=km,
     )
+    return _export_payload(result, name=name, output_dir=output_dir)
 
+
+def manual_export_pattern(
+    *,
+    dump_paths: List[str],
+    offset: int,
+    length: int,
+    output_dir: Optional[str] = None,
+    fmt: str = "volatility3",
+    name: str = "memdiver_pattern",
+    min_static_ratio: float = 0.3,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Export a pattern from a user-specified ``offset`` + ``length``.
+
+    The manual counterpart to :func:`export_pattern`: the caller already knows
+    where the key lives and supplies the region explicitly. Thin wrapper over
+    :func:`memdiver.app.export_service.manual_export_pattern`; the region is read
+    through each dump's memory projection so ``.msl`` offsets are memory-relative
+    and encrypted containers decrypt with the supplied key material. Mirrors
+    :func:`export_pattern`'s payload shape and CapabilityError contract.
+
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied —
+    either as file params (the MCP idiom) or as a pre-decoded ``key_material``
+    dict of ``open_dump`` kwargs (the CLI idiom).
+    """
+    # AnalysisServiceError (raised by the compute) is already a CapabilityError
+    # subclass with its own accurate category/status; it is allowed to
+    # propagate unmodified for the same reasons documented on export_pattern.
+    from memdiver.app.export_service import (
+        manual_export_pattern as _manual_export,
+    )
+
+    paths = [Path(p) for p in dump_paths]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+    if len(paths) < 2:
+        raise CapabilityError(
+            f"Need at least 2 dumps, got {len(paths)}",
+            category=ErrorCategory.PRECONDITION,
+        )
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    result = _manual_export(
+        paths, offset=offset, length=length, fmt=fmt, name=name,
+        min_static_ratio=min_static_ratio, key_material=km,
+    )
+    return _export_payload(result, name=name, output_dir=output_dir)
+
+
+def _resolve_key_material(
+    key_material: Optional[Dict[str, Any]],
+    key_file: Optional[str],
+    passphrase: Optional[str],
+    kem_key_file: Optional[str],
+) -> Dict[str, Any]:
+    """Return ``open_dump`` key kwargs from either idiom.
+
+    A pre-decoded ``key_material`` dict (web / CLI, already read + decoded by
+    that surface) is used as-is; otherwise the file-path params (MCP) are read
+    from disk via :func:`key_material_kwargs`.
+    """
+    if key_material is not None:
+        return key_material
+    return key_material_kwargs(key_file, passphrase, kem_key_file)
+
+
+def _export_payload(
+    result: Dict[str, Any], *, name: str, output_dir: Optional[str],
+) -> Dict[str, Any]:
+    """Shape an export-compute result into the producer's return payload.
+
+    Shared by the auto (:func:`export_pattern`) and manual
+    (:func:`manual_export_pattern`) producers so their observable output — the
+    inline ``content`` plus the optional written ``pattern_path`` — cannot
+    drift. The full ``pattern`` dict is carried through so the web
+    ``/auto-export`` response body stays identical to the pre-relocation shape.
+    """
     payload: Dict[str, Any] = {
         "format": result["format"],
         "content": result["content"],
+        "pattern": result["pattern"],
         "region": result["region"],
     }
     if output_dir:
@@ -683,6 +1079,38 @@ def _emit(on_progress: Optional[Callable[..., None]], event: str, **fields: Any)
     """
     if on_progress is not None:
         on_progress(event, **fields)
+
+
+def _progress_bridge(
+    on_progress: Optional[Callable[..., None]], stage_prefix: str
+) -> Optional[Callable[[Any], None]]:
+    """Adapt an ``on_progress`` sink into an engine ``progress_callback``.
+
+    Mirrors :func:`engine.pipeline_runner._bridge`: each
+    :class:`engine.progress.ProgressEvent` the leaf emits is translated into an
+    ``on_progress("progress", stage=..., pct=..., msg=..., extra=...)`` call,
+    prefixing the stage with ``stage_prefix:`` only when it has no ``:`` of its
+    own — the exact rule the web runner uses. A later step that routes the web
+    pipeline through these producers therefore streams a byte-identical event
+    sequence. Returns ``None`` when there is no sink so the leaf keeps its
+    ``noop_progress`` default and CLI/MCP behaviour is unchanged.
+    """
+    if on_progress is None:
+        return None
+
+    def _fn(event: Any) -> None:
+        stage = event.stage
+        if ":" not in stage:
+            stage = f"{stage_prefix}:{stage}"
+        _emit(
+            on_progress, "progress",
+            stage=stage,
+            pct=event.pct if event.pct >= 0 else None,
+            msg=event.msg,
+            extra=event.extra or None,
+        )
+
+    return _fn
 
 
 def _experiment_check_cancelled(

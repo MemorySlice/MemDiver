@@ -113,3 +113,31 @@ def test_output_path_handling(tmp_path, raw_dump):
     result = import_raw_dump(raw_dump, out)
     assert out.exists()
     assert result.output_path == out
+
+
+# --- page-map allocation cap (OOM protection on untrusted dumps) ---
+
+def test_check_region_pages_boundary():
+    """The guard fails closed above the cap and passes exactly at it."""
+    from memdiver.msl.importer import MAX_REGION_PAGES, _check_region_pages
+
+    _check_region_pages(MAX_REGION_PAGES, 0x1000, "committed")  # at cap: allowed
+    with pytest.raises(ValueError, match="refusing to allocate"):
+        _check_region_pages(MAX_REGION_PAGES + 1, 0x1000, "committed")
+
+
+def test_committed_region_spec_caps_hostile_region_size():
+    """A crafted minidump MEMORY_INFO.region_size must fail closed, not OOM.
+
+    ~1 PiB / 4 KiB ≈ 2.7e11 pages; the guard raises before the per-page state
+    list is allocated (reader is never touched).
+    """
+    import types
+
+    from memdiver.msl.importer import _committed_region_spec
+
+    mem_info = types.SimpleNamespace(base=0, region_size=1 << 50)
+    with pytest.raises(ValueError, match="refusing to allocate"):
+        _committed_region_spec(
+            reader=None, mem_info=mem_info, spans=[], consumed=[], page=4096,
+        )

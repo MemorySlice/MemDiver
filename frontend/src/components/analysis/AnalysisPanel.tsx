@@ -8,9 +8,11 @@ import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
-import { getAlgorithmAvailability } from "@/utils/algorithm-availability";
+import { getAlgorithmAvailability, type AlgorithmAvailability } from "@/api/algorithms";
 import { applyHitsToStores } from "@/utils/apply-hits";
 import type { SecretHit } from "@/api/types";
+
+const ALGO_AVAILABLE_PENDING: AlgorithmAvailability = { available: true, reason: null };
 
 const PROGRESS_STEP_KEYS = [
   "progress.preparing",
@@ -124,13 +126,29 @@ export function AnalysisPanel() {
     return () => clearInterval(interval);
   }, [isRunning]);
 
-  // Build availability context for algorithm gating
-  const availabilityContext = {
-    inputMode,
-    dumpCount: pathInfo?.dump_count ?? 1,
-    hasKeylog: pathInfo?.has_keylog ?? !!keylogFilename,
-    hasCandidateKeys,
-  };
+  // Algorithm availability is decided server-side (GET
+  // /api/algorithms/availability). We fetch the map whenever the input
+  // context changes and render from the resolved map; while a fetch is in
+  // flight, algorithms are treated as available-but-pending (enabled) so the
+  // checkbox list never flickers to a disabled state on a transient empty map.
+  const algoList = mode === "verification" ? VERIFICATION_ALGORITHMS : ALL_ALGORITHMS;
+  const dumpCount = pathInfo?.dump_count ?? 1;
+  const hasKeylog = pathInfo?.has_keylog ?? !!keylogFilename;
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, AlgorithmAvailability>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    getAlgorithmAvailability({
+      dumpCount,
+      hasKeylog,
+      hasCandidateKeys,
+      mode: inputMode,
+      algorithms: algoList,
+    })
+      .then((res) => { if (!cancelled) setAvailabilityMap(res.availability); })
+      .catch(() => { /* leave the prior map; unknown algos treated as available */ });
+    return () => { cancelled = true; };
+  }, [dumpCount, hasKeylog, hasCandidateKeys, inputMode, mode, algoList]);
 
   // Both run paths now SUBMIT a task and store its id; progress + the
   // final result arrive over ``/ws/tasks/{taskId}`` (see useTaskProgress
@@ -270,8 +288,8 @@ export function AnalysisPanel() {
       {/* Algorithm checkboxes */}
       <div className="space-y-1">
         <p className="font-medium md-text-secondary mb-1">{t("panel.algorithms")}</p>
-        {(mode === "verification" ? VERIFICATION_ALGORITHMS : ALL_ALGORITHMS).map((algo) => {
-          const avail = getAlgorithmAvailability(algo, availabilityContext);
+        {algoList.map((algo) => {
+          const avail = availabilityMap[algo] ?? ALGO_AVAILABLE_PENDING;
           const checked = selectedAlgorithms.includes(algo);
           return (
             <div key={algo}>

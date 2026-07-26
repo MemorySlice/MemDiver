@@ -172,6 +172,7 @@ def _add_segment_region(writer: MslWriter, reader: ElfCoreReader,
 
     filesz = min(seg.filesz, seg.memsz)  # defensive: never store past memsz
     total_pages = ceil(seg.memsz / page_size) if seg.memsz else 0
+    _check_region_pages(total_pages, seg.vaddr, "PT_LOAD")
 
     raw = _read_segment_data(reader, seg)
     actual = len(raw)
@@ -338,6 +339,32 @@ def _align_up(x: int, page: int) -> int:
 # before. 2**16 pages == 256 MiB at a 4 KiB page (a 16 KiB page-state map).
 MAX_UNMAPPED_REGION_PAGES = 1 << 16
 
+# Committed / PT_LOAD page maps are sized from attacker-controlled u64 header
+# fields (ELF ``p_memsz`` / minidump ``MEMORY_INFO.region_size``) that
+# legitimately exceed the stored byte count — so, unlike descriptor spans, they
+# are NOT bounded by the file size. A few-KiB crafted dump can declare a
+# petabyte region and drive a multi-billion-element ``[PageState.*] * n`` list
+# → OOM on the tool's core "import an untrusted dump" action. Cap the derived
+# page count and fail closed before allocating. 1<<24 pages is ~64 GiB at a
+# 4 KiB page (far above any real single region, far below a memory-exhaustion
+# threshold; larger page sizes only widen the headroom).
+MAX_REGION_PAGES = 1 << 24
+
+
+def _check_region_pages(pages: int, base: int, kind: str) -> None:
+    """Fail closed when a region's derived page count is implausibly large.
+
+    Guards the dense per-page ``PageState`` list against attacker-controlled
+    region sizes (see ``MAX_REGION_PAGES``). Called before the list is built,
+    so a hostile size never allocates.
+    """
+    if pages > MAX_REGION_PAGES:
+        raise ValueError(
+            f"{kind} region at {base:#x} declares {pages} pages "
+            f"(> cap {MAX_REGION_PAGES}); refusing to allocate the page map "
+            "— malformed or hostile dump"
+        )
+
 
 @dataclass
 class RegionSpec:
@@ -412,6 +439,7 @@ def _committed_region_spec(reader: MinidumpReader, mem_info, spans,
     base = _align_down(mem_info.base, page)
     end = _align_up(mem_info.base + mem_info.region_size, page)
     n = (end - base) // page
+    _check_region_pages(n, base, "committed")
     states = [PageState.FAILED] * n
     data = bytearray()
 
@@ -638,8 +666,6 @@ def import_raw_dump(
     page_size_log2: int = 12,
 ) -> ImportResult:
     """Convert a raw .dump file to .msl format."""
-    raw_data = raw_path.read_bytes()
-    orig_size = len(raw_data)
     writer = MslWriter(
         output_path, pid=pid, os_type=os_type, arch_type=arch_type
     )
@@ -649,9 +675,20 @@ def import_raw_dump(
     # zero-pad up to the next page boundary. Importer-injected padding is
     # transparent because the original size is recorded in the
     # IMPORT_PROVENANCE block's `orig_file_size` field.
+    #
+    # Read the file directly into a single page-padded buffer (the tail stays
+    # zero) rather than ``read_bytes()`` + concatenation — the latter held two
+    # full copies of the dump in RAM at once (~2x peak on a multi-GiB import).
     page_size = 1 << page_size_log2
+    orig_size = raw_path.stat().st_size
     pad = (-orig_size) % page_size
-    region_data = raw_data + b"\x00" * pad if pad else raw_data
+    region_data = bytearray(orig_size + pad)
+    with open(raw_path, "rb") as fh:
+        got = fh.readinto(memoryview(region_data)[:orig_size])
+    if got < orig_size:  # file shrank between stat and read (rare)
+        orig_size = got
+        del region_data[orig_size:]
+        region_data.extend(b"\x00" * ((-orig_size) % page_size))
 
     region_uuid = writer.add_memory_region(
         0, region_data, page_size_log2=page_size_log2
@@ -660,9 +697,10 @@ def import_raw_dump(
     hints_written = 0
     if secrets:
         for secret in secrets:
-            # Search the original bytes (key offsets reference the original
-            # file; padding is appended past the end and won't shift hits).
-            offset = raw_data.find(secret.secret_value)
+            # Search only the original bytes (key offsets reference the
+            # original file; the page padding is appended past the end and
+            # won't shift hits).
+            offset = region_data.find(secret.secret_value, 0, orig_size)
             if offset >= 0:
                 writer.add_key_hint(
                     region_uuid=region_uuid,

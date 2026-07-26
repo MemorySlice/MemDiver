@@ -5,8 +5,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..", "frontend", "src", "components");
-const BAD = /#[0-9a-fA-F]{3,8}\b/;
+// Negative lookbehind for `&` so HTML numeric entities (e.g. `&#9654;` for ▶)
+// are not mistaken for hex colour literals; real hex has no `&` before `#`.
+const BAD = /(?<!&)#[0-9a-fA-F]{3,8}\b/;
 const ALLOW = /design-token-source/;
+// charts/tokens.ts is the canonical runtime token resolver: its per-theme hex
+// fallbacks (the source of truth for the CSS vars) are legitimate, not literals
+// to migrate. Exempt it wholesale, mirroring the colour-literal linter's
+// charts/ path exemption.
+const ALLOW_PATH = /[/\\]components[/\\]charts[/\\]tokens\.ts$/;
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -19,6 +26,7 @@ function walk(dir, out = []) {
 
 let failed = 0;
 for (const file of walk(ROOT)) {
+  if (ALLOW_PATH.test(file)) continue;
   const lines = readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
     if (BAD.test(line) && !ALLOW.test(line)) {

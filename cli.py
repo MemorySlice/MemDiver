@@ -802,8 +802,10 @@ def _cmd_emit_plugin(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     """Export a byte pattern from dump files as YARA/JSON/Volatility3.
 
-    Thin CLI adapter over ``api.services.analysis_service.auto_export_pattern``.
-    The service function owns the consensus → pattern pipeline, so the
+    Thin CLI adapter over the ``app`` producers
+    :func:`memdiver.app.tools_pipeline.export_pattern` (auto) and
+    :func:`memdiver.app.tools_pipeline.manual_export_pattern` (manual).
+    The producers own the consensus → pattern pipeline, so the
     CLI and the HTTP API cannot drift. Prior to PR 4 this command had
     its own copy of the pipeline that:
 
@@ -822,11 +824,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     Both bugs are closed here by delegation to the service.
     """
-    from memdiver.api.services.analysis_service import (
-        AnalysisServiceError,
-        auto_export_pattern,
-        manual_export_pattern,
-    )
+    from memdiver.app.export_service import AnalysisServiceError
+    from memdiver.app.tools_pipeline import export_pattern, manual_export_pattern
 
     dump_paths = _resolve_dump_paths(args.dumps)
 
@@ -838,8 +837,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     try:
         if args.auto:
-            result = auto_export_pattern(
-                dump_paths,
+            result = export_pattern(
+                dump_paths=dump_paths,
                 fmt=args.format,
                 name=args.name,
                 align=getattr(args, "align", False),
@@ -855,7 +854,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 )
                 return 1
             result = manual_export_pattern(
-                dump_paths,
+                dump_paths=dump_paths,
                 offset=args.offset,
                 length=args.length,
                 fmt=args.format,
@@ -1554,7 +1553,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ep_emit.add_argument("--description")
     ep_emit.add_argument(
         "--variance-threshold", type=float, default=None,
-        help="Max variance for static bytes (default: 3000). Lower values "
+        help="Max variance for static bytes (default: 2000). Lower values "
         "produce more wildcards → more cross-session robust patterns.",
     )
     ep_emit.add_argument("-o", "--output", required=True, help="Output .py file path")

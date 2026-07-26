@@ -86,7 +86,7 @@ export function OracleExamplePicker({ selected, onSelect }: Props) {
                 <span className="md-text-accent font-mono text-xs">
                   {ex.filename}
                 </span>
-                <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-indigo-700">
+                <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-[var(--md-accent-purple)]">
                   {t("oracle.examples.shape", { shape: ex.shape })}
                 </span>
               </div>

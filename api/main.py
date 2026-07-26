@@ -104,7 +104,7 @@ async def _lifespan(app: FastAPI):
     # in use (refcount > 0 on a concurrent request) are left for the
     # holder to close on release — same deferred-close contract used by
     # normal LRU eviction.
-    from memdiver.api.services.reader_cache import shutdown_default_cache
+    from memdiver.app.reader_cache import shutdown_default_cache
 
     shutdown_default_cache()
 
@@ -162,6 +162,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     from memdiver.api.routers import (
+        algorithms,
         analysis,
         architect,
         consensus,
@@ -179,6 +180,7 @@ def create_app() -> FastAPI:
 
     app.include_router(dataset.router, prefix="/api/dataset", tags=["dataset"])
     app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
+    app.include_router(algorithms.router, prefix="/api/algorithms", tags=["algorithms"])
     app.include_router(inspect.router, prefix="/api/inspect", tags=["inspect"])
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
     app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])

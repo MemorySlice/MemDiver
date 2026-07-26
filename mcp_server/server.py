@@ -227,8 +227,14 @@ def create_server():
         density_threshold: float = 0.5, min_variance: float = 3000.0,
         entropy_window: int = 32, entropy_threshold: float = 4.5,
         min_region: int = 16,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
     ) -> str:
-        """Reduce consensus variance to a candidate region list."""
+        """Reduce consensus variance to a candidate region list.
+
+        Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` when the
+        reference is an encrypted ``.msl``.
+        """
         return json.dumps(tools_pipeline.search_reduce(
             variance_path=variance_path,
             reference_path=reference_path,
@@ -241,6 +247,9 @@ def create_server():
             entropy_window=entropy_window,
             entropy_threshold=entropy_threshold,
             min_region=min_region,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
         ))
 
     @mcp.tool()
@@ -251,8 +260,16 @@ def create_server():
         key_sizes: Optional[List[int]] = None, stride: int = 8,
         jobs: int = 1, exhaustive: bool = True,
         state_path: Optional[str] = None, top_k: int = 10,
+        variance_threshold: Optional[float] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
     ) -> str:
-        """Iterate surviving candidates through a BYO oracle."""
+        """Iterate surviving candidates through a BYO oracle.
+
+        Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
+        against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
+        the static-byte cutoff surfaced in the stage's preview.
+        """
         return json.dumps(tools_pipeline.brute_force(
             candidates_path=candidates_path,
             reference_path=reference_path,
@@ -265,6 +282,10 @@ def create_server():
             exhaustive=exhaustive,
             state_path=state_path,
             top_k=top_k,
+            variance_threshold=variance_threshold,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
         ))
 
     @mcp.tool()
@@ -278,11 +299,15 @@ def create_server():
         oracle_config_path: Optional[str] = None,
         escalate: bool = False,
         escalate_oracle_budget: Optional[int] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
     ) -> str:
         """Run the N-scaling harness and emit the Plotly survivor report.
 
         Set ``escalate`` to run a floor-free sweep at the terminal N when no
         checkpoint found a hit; its verdict surfaces under ``escalation``.
+        Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` for encrypted
+        ``.msl`` sources.
         """
         return json.dumps(tools_pipeline.n_sweep(
             source_paths=source_paths,
@@ -296,6 +321,9 @@ def create_server():
             oracle_config_path=oracle_config_path,
             escalate=escalate,
             escalate_oracle_budget=escalate_oracle_budget,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
         ))
 
     @mcp.tool()
@@ -304,8 +332,14 @@ def create_server():
         hits_path: str, reference_path: str, name: str, output_dir: str,
         description: Optional[str] = None, hit_index: int = 0,
         variance_threshold: Optional[float] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
     ) -> str:
-        """Emit a Volatility 3 plugin from a brute-force hit's neighborhood."""
+        """Emit a Volatility 3 plugin from a brute-force hit's neighborhood.
+
+        Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` when the
+        reference is an encrypted ``.msl``.
+        """
         return json.dumps(tools_pipeline.emit_plugin(
             hits_path=hits_path,
             reference_path=reference_path,
@@ -314,6 +348,9 @@ def create_server():
             description=description,
             hit_index=hit_index,
             variance_threshold=variance_threshold,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
         ))
 
     # ------------------------------------------------------------------

@@ -285,6 +285,7 @@ export function reducePipelineEvent(
         const extra = event.extra as {
           verified_count?: number;
           total_candidates?: number;
+          variance_threshold?: number;
           hits?: Array<{
             offset?: number;
             length?: number;
@@ -313,7 +314,10 @@ export function reducePipelineEvent(
           // Seed the initial convergence point from the first hit's neighborhood
           if (mappedHits.length > 0 && mappedHits[0].neighborhood_variance.length > 0) {
             const nbv = mappedHits[0].neighborhood_variance;
-            const sc = nbv.filter((v) => v <= 2000).length;
+            // Prefer the backend-emitted threshold; fall back to the default
+            // (2000) only for pre-upgrade backends that omit the field.
+            const vt = typeof extra.variance_threshold === "number" ? extra.variance_threshold : 2000;
+            const sc = nbv.filter((v) => v <= vt).length;
             const numDumps = state.consensusNumDumps || 0;
             patch.convergenceHistory = [{ n: numDumps, staticCount: sc, dynamicCount: nbv.length - sc }];
           }

@@ -156,8 +156,8 @@ export function ScanResultsPanel() {
                 style={{ background: `var(--md-hl-${secretTypeToHighlight(algo)})` }}
               />
               <span className="font-medium">{algo}</span>
-              <span className="px-1.5 rounded-full text-[10px]"
-                style={{ background: "var(--md-accent-blue)", color: "#fff" }}>
+              <span className="px-1.5 rounded-full text-[10px] text-white"
+                style={{ background: "var(--md-accent-blue)" }}>
                 {entry.hits.length}
               </span>
               {entry.running && (

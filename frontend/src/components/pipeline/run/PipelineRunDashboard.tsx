@@ -4,30 +4,48 @@
  * auto-loads the first consensus source on a cold pipeline tab.
  */
 
-import type { JSX } from "react";
+import { useState, type JSX } from "react";
 import { useTranslation } from "react-i18next";
 
+import { inferFields } from "@/api/pipeline";
 import { useAppStore } from "@/stores/app-store";
 import { useHexStore } from "@/stores/hex-store";
 import { usePipelineStore, type HitRecord } from "@/stores/pipeline-store";
-import { inferNeighborhoodFields } from "@/utils/infer-neighborhood-fields";
+import { notifyError } from "@/utils/errorNotifier";
 
 import { FunnelChart } from "./FunnelChart";
 import { LiveOracleLog } from "./LiveOracleLog";
 import { StageTimingTable } from "./StageTimingTable";
 
-function openHitInHex(
+async function openHitInHex(
   hit: HitRecord,
   fallbackDump: string | null,
 ) {
   const hex = useHexStore.getState();
   useAppStore.getState().setHexFocus({ offset: hit.offset, length: hit.size || 32 });
 
-  // Wire up neighborhood variance overlay when available
+  // Navigate immediately so the jump feels responsive; the overlay (which
+  // needs a network round-trip for the inferred fields) lands afterwards.
+  if (!hex.dumpPath && fallbackDump) {
+    // setDumpPath seeds HexViewer with fileSize=0 and triggers a
+    // metadata refetch; defer the scroll so it lands after HexViewer
+    // remounts with the real size instead of flashing an empty view.
+    hex.setDumpPath(fallbackDump, 0, "raw");
+    queueMicrotask(() => useHexStore.getState().scrollToOffset(hit.offset));
+  } else {
+    hex.scrollToOffset(hit.offset);
+  }
+
+  // Wire up the neighborhood variance overlay when available. Fields are
+  // inferred server-side (POST /api/pipeline/infer-fields); no client compute.
   if (hit.neighborhood_variance.length > 0) {
-    const keyOffsetInWindow = hit.offset - hit.neighborhood_start;
-    const fields = inferNeighborhoodFields(hit.neighborhood_variance, keyOffsetInWindow, hit.size);
-    hex.setActiveNeighborhoodOverlay({
+    const { fields } = await inferFields({
+      neighborhood_variance: hit.neighborhood_variance,
+      neighborhood_start: hit.neighborhood_start,
+      offset: hit.offset,
+      length: hit.size,
+    });
+    useHexStore.getState().setActiveNeighborhoodOverlay({
       hitOffset: hit.offset,
       hitSize: hit.size,
       neighborhoodStart: hit.neighborhood_start,
@@ -35,24 +53,35 @@ function openHitInHex(
       fields,
     });
   }
-
-  if (!hex.dumpPath && fallbackDump) {
-    // setDumpPath seeds HexViewer with fileSize=0 and triggers a
-    // metadata refetch; defer the scroll so it lands after HexViewer
-    // remounts with the real size instead of flashing an empty view.
-    hex.setDumpPath(fallbackDump, 0, "raw");
-    queueMicrotask(() => useHexStore.getState().scrollToOffset(hit.offset));
-    return;
-  }
-  hex.scrollToOffset(hit.offset);
 }
 
 function HitsList(): JSX.Element | null {
   const { t } = useTranslation("pipeline");
   const hits = usePipelineStore((s) => s.hits);
   const sources = usePipelineStore((s) => s.form.sourcePaths);
+  // Index of the hit whose overlay is currently being fetched, so a
+  // double-click can't race two concurrent infer-fields calls.
+  const [pendingHit, setPendingHit] = useState<number | null>(null);
   if (hits.length === 0) return null;
   const fallback = sources.length > 0 ? sources[0] : null;
+
+  const handleOpen = async (hit: HitRecord, index: number) => {
+    if (pendingHit !== null) return;
+    setPendingHit(index);
+    try {
+      await openHitInHex(hit, fallback);
+    } catch (err) {
+      notifyError(
+        t("run.dashboard.openFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+        "pipeline-open-hit",
+      );
+    } finally {
+      setPendingHit(null);
+    }
+  };
+
   return (
     <div
       className="md-panel p-3 space-y-1"
@@ -73,11 +102,12 @@ function HitsList(): JSX.Element | null {
             </span>
             <button
               type="button"
-              onClick={() => openHitInHex(h, fallback)}
-              className="text-xs px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90"
+              onClick={() => handleOpen(h, i)}
+              disabled={pendingHit !== null}
+              className="text-xs px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               title={t("run.dashboard.openInHexTitle")}
             >
-              {t("run.dashboard.openInHex")}
+              {pendingHit === i ? t("run.dashboard.opening") : t("run.dashboard.openInHex")}
             </button>
           </li>
         ))}

@@ -25,10 +25,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install memdiver with dev + all interface extras
-        # `all` = api,mcp,nicegui,marimo — the interfaces that were base deps
+        # `all` = api,mcp,marimo — the interfaces that were base deps
         # before O-4. Installing them keeps the test suite's coverage identical
         # to pre-O-4 (API tests need fastapi; test_mcp_registration needs the mcp
-        # SDK; nicegui/marimo gated tests would otherwise silently start skipping).
+        # SDK; marimo gated tests would otherwise silently start skipping).
         run: python -m pip install -e '.[dev,all]'
       - name: Run pytest
         # The browser e2e files (tests/e2e_*_test.py) need Playwright + a built
@@ -102,7 +102,7 @@ jobs:
           # O-4 guarantee: a library-only install must NOT drag in the web/MCP/UI stack.
           /tmp/wheelenv/bin/python -c "
           import importlib.util as u
-          heavy = [m for m in ('fastapi', 'uvicorn', 'mcp', 'nicegui', 'marimo') if u.find_spec(m) is not None]
+          heavy = [m for m in ('fastapi', 'uvicorn', 'mcp', 'marimo') if u.find_spec(m) is not None]
           assert not heavy, ('base install unexpectedly pulled: ' + repr(heavy))
           print('lean core install ok: web/mcp/ui deps absent')
           "

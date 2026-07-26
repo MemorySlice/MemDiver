@@ -15,6 +15,7 @@ import logging
 import os
 import struct
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -655,6 +656,30 @@ class MslWriter:
         else:
             self._write_plaintext(ordered)
 
+    @contextmanager
+    def _atomic_output(self):
+        """Yield a writable handle backed by a temp file, then ``os.replace`` it
+        onto the destination on clean exit.
+
+        The destination ``.msl`` is the integrity boundary for every produced
+        slice; streaming straight to the final path means a mid-write failure
+        (disk full, ``KeyboardInterrupt``, kill) leaves a truncated/corrupt file
+        that a later reader silently mis-parses. Writing to a sibling temp and
+        renaming makes the swap atomic (same-directory rename) — the same
+        pattern ``task_manager._persist`` uses.
+        """
+        tmp = self._path.with_name(f"{self._path.name}.{uuid4().hex}.tmp")
+        try:
+            with open(tmp, "wb") as f:
+                yield f
+            os.replace(tmp, self._path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
     def _write_plaintext(self, ordered: List[Tuple[int, bytes, UUID, bytes, int]]) -> None:
         """Write an unencrypted file: 64-byte header, BLAKE3-chained blocks,
         optional plaintext POINTER_GRAPH appendix after EoC."""
@@ -679,7 +704,7 @@ class MslWriter:
                 encoded_blocks, file_header, eoc_index, prev_hash, ordered,
             )
 
-        with open(self._path, "wb") as f:
+        with self._atomic_output() as f:
             f.write(file_header)
             for block in encoded_blocks:
                 if block is not None:
@@ -754,7 +779,7 @@ class MslWriter:
         nonce = nonce_for_cipher(cfg.enc_algo, nonce_field)
         ciphertext_and_tag = aead_encrypt(cfg.enc_algo, cek, nonce, aad, block_stream)
 
-        with open(self._path, "wb") as f:
+        with self._atomic_output() as f:
             f.write(file_header)
             f.write(kem_ct)
             f.write(ciphertext_and_tag)

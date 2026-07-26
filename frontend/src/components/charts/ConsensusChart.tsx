@@ -9,10 +9,10 @@ interface ConsensusChartProps {
 }
 
 const CLASS_INFO: { key: string; labelKey: string; color: string; descKey: string }[] = [
-  { key: "invariant", labelKey: "consensus.class.invariant.label", color: "var(--md-accent-green, #4ec9b0)", descKey: "consensus.class.invariant.desc" },
-  { key: "structural", labelKey: "consensus.class.structural.label", color: "var(--md-accent-blue, #569cd6)", descKey: "consensus.class.structural.desc" },
-  { key: "pointer", labelKey: "consensus.class.pointer.label", color: "var(--md-accent-cyan, #4fc1ff)", descKey: "consensus.class.pointer.desc" },
-  { key: "key_candidate", labelKey: "consensus.class.keyCandidate.label", color: "var(--md-accent-red, #f44747)", descKey: "consensus.class.keyCandidate.desc" },
+  { key: "invariant", labelKey: "consensus.class.invariant.label", color: "var(--md-accent-green)", descKey: "consensus.class.invariant.desc" },
+  { key: "structural", labelKey: "consensus.class.structural.label", color: "var(--md-accent-blue)", descKey: "consensus.class.structural.desc" },
+  { key: "pointer", labelKey: "consensus.class.pointer.label", color: "var(--md-accent-cyan)", descKey: "consensus.class.pointer.desc" },
+  { key: "key_candidate", labelKey: "consensus.class.keyCandidate.label", color: "var(--md-accent-red)", descKey: "consensus.class.keyCandidate.desc" },
 ];
 
 export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: ConsensusChartProps = {}) {

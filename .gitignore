@@ -38,3 +38,5 @@ docs/_static/screenshots/.triptych_parts/
 .claude/
 docs/issue-drafts/
 docs/dev/
+
+.coverage

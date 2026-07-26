@@ -184,6 +184,54 @@ def test_no_error_dict_return_in_app_tools_pipeline():
     assert 'return {"error"' not in path.read_text()
 
 
+def test_app_layer_never_imports_up_into_api():
+    """The ``app`` layer owns the shared compute/infra; it must never import UP
+    into the ``api`` layer.
+
+    Every producer and every piece of shared infrastructure lives in ``app`` (or
+    below it: ``core`` / ``engine`` / ``msl`` / ``architect``). The transports in
+    ``api`` are thin presenters that import DOWN into ``app``. An ``app`` module
+    that imports ``memdiver.api.*`` (e.g. the old ``api.services.analysis_service``
+    / ``api.services.reader_cache`` dependencies) is an inverted dependency; this
+    test locks that inversion closed. Only the shims in ``api/services`` remain,
+    and they import DOWN into ``app`` — never the reverse.
+    """
+    offenders = []
+    for path in _py_files("app"):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # Absolute ``from memdiver.api...`` / ``from api...`` (level 0)
+                # and relative ``from ..api...`` (level > 0) both count as upward.
+                mod = node.module or ""
+                if node.level and node.level > 0:
+                    mod = ("." * node.level) + mod
+                targets = [mod]
+            for t in targets:
+                if (
+                    t == "memdiver.api"
+                    or t.startswith("memdiver.api.")
+                    or t == "api"
+                    or t.startswith("api.")
+                    or ".api." in t
+                    or t.endswith(".api")
+                ):
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}: imports {t}"
+                    )
+    assert not offenders, (
+        "app/ must not import UP into api/. Move the shared code DOWN into app/ "
+        "and leave a re-export shim in api/. Offending imports:\n"
+        + "\n".join(offenders)
+    )
+
+
 def test_legacy_error_dict_functions_unreachable_from_production():
     """app/tools_inspect.py keeps un-migrated legacy functions that still
     ``return {"error": ...}`` dicts (``read_hex``, ``get_session_info``, etc.)
@@ -801,3 +849,68 @@ def test_g9_four_producers_surface_locked_dump(encrypted_msl, tmp_path):
             output_dir=str(tmp_path / "a"),
             num_dumps=2,
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface SIGNATURE parity (not just capability presence)
+# ---------------------------------------------------------------------------
+#: MCP pipeline tool -> backing app producer. The presence ratchet
+#: (CAPABILITIES) proves each tool is *wired*; this proves each tool forwards
+#: every *parameter* of its producer, catching the drift class where the MCP
+#: brute_force tool silently lacked variance_threshold / key-material params.
+_MCP_TOOL_PRODUCERS = {
+    "search_reduce": "search_reduce",
+    "brute_force": "brute_force",
+    "n_sweep": "n_sweep",
+    "emit_plugin": "emit_plugin",
+    "consensus": "consensus",
+    "auto_floor": "auto_floor",
+    "export_pattern": "export_pattern",
+    "verify": "verify_key_result",
+    "experiment": "experiment_result",
+}
+#: Producer params that are orchestration internals, never surfaced on any tool.
+#: ``key_material`` is the resolved dict a surface *builds* from the individual
+#: key_file/passphrase/kem_key_file args, so it is never a direct tool param.
+_INTERNAL_PRODUCER_PARAMS = {"on_progress", "on_source", "is_cancelled", "key_material"}
+#: Real MCP-surface gaps the parity guard discovered — a shrink-only baseline
+#: (same philosophy as capabilities.KNOWN_PARITY_GAPS). Each entry is a producer
+#: parameter the MCP tool does not yet forward; close them as encrypted-reference
+#: / feature support is intentionally added to that tool (brute_force already
+#: closed its key-material gap). This dict may only shrink.
+_MCP_ALLOWED_OMISSIONS: dict = {
+    # Feature-design params not (yet) surfaced on MCP — a judgment call about the
+    # tool's surface, not an encrypted-support bug. Close when intentionally added.
+    "emit_plugin": {"min_static_ratio", "write_fields"},
+    "consensus": {"persist_welford"},
+}
+
+
+def test_mcp_pipeline_tools_expose_all_producer_params():
+    """Signature parity: every MCP pipeline tool forwards every parameter of its
+    backing app producer (minus internal orchestration hooks), so a producer
+    gaining a parameter can't silently leave the MCP surface behind."""
+    import inspect
+
+    pytest.importorskip("mcp")
+    from memdiver.app import tools_pipeline
+    from memdiver.mcp_server.server import create_server
+
+    server = create_server()
+    tools = {t.name: t for t in server._tool_manager.list_tools()}
+
+    problems = []
+    for tool_name, producer_attr in _MCP_TOOL_PRODUCERS.items():
+        assert tool_name in tools, f"MCP tool {tool_name!r} is not registered"
+        producer = getattr(tools_pipeline, producer_attr)
+        tool_params = set(inspect.signature(tools[tool_name].fn).parameters)
+        producer_params = {
+            name for name, p in inspect.signature(producer).parameters.items()
+            if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
+        }
+        expected = (producer_params - _INTERNAL_PRODUCER_PARAMS
+                    - _MCP_ALLOWED_OMISSIONS.get(tool_name, set()))
+        missing = expected - tool_params
+        if missing:
+            problems.append(f"  {tool_name}: MCP tool omits producer params {sorted(missing)}")
+    assert not problems, "MCP signature-parity drift:\n" + "\n".join(problems)

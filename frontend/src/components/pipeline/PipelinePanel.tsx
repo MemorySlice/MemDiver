@@ -144,7 +144,7 @@ function HeaderBar() {
             setCancelling(true);
             void cancelPipelineRun(taskId).catch(() => undefined);
           }}
-          className="text-xs px-2 py-1 rounded bg-amber-800 text-amber-100 hover:bg-amber-700 disabled:opacity-50"
+          className="text-xs px-2 py-1 rounded bg-[var(--md-accent-orange)] text-[var(--md-text-bright)] hover:opacity-90 disabled:opacity-50"
           title={t("panel.cancelTitle")}
         >
           {cancelling ? t("panel.cancelling") : t("panel.cancelRun")}

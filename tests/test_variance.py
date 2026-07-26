@@ -16,6 +16,37 @@ from memdiver.core.variance import (
 )
 
 
+def test_add_dump_slabbing_matches_whole_array(monkeypatch):
+    """Slabbed add_dump is bit-identical to the whole-array update even when the
+    slab boundary splits the byte range. (Welford is compared to Welford — the
+    online recurrence differs from a two-pass np.var by float32 rounding, so the
+    invariant is slab-vs-whole, not slab-vs-np.var.)
+    """
+    from memdiver.core import variance as var_mod
+
+    dumps = [
+        bytes([1, 2, 3, 4, 5, 6, 7]),
+        bytes([9, 8, 7, 6, 5, 4, 3]),
+        bytes([0, 255, 128, 64, 32, 16, 8]),
+    ]
+
+    def _fold(chunk):
+        monkeypatch.setattr(var_mod, "CHUNK_BYTES", chunk)
+        w = WelfordVariance(7)
+        for d in dumps:
+            w.add_dump(d)
+        return w
+
+    whole = _fold(1 << 20)   # single slab
+    slabbed = _fold(3)       # slabs: [0,3) [3,6) [6,7)
+
+    assert np.array_equal(whole.variance(), slabbed.variance())
+    w_mean, w_m2, _ = whole.state_arrays()
+    s_mean, s_m2, _ = slabbed.state_arrays()
+    assert np.array_equal(w_mean, s_mean)
+    assert np.array_equal(w_m2, s_m2)
+
+
 def test_compute_variance_identical():
     data = bytes(range(256))
     buffers = [data, data, data]

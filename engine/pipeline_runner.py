@@ -67,6 +67,13 @@ def _bridge(ctx, stage_prefix: str) -> Callable:
     TaskManager worker-side JSON contract (plain dicts on an mp.Queue).
     The ``event.extra`` dict is passed by reference — it gets pickled
     across the queue boundary, so the child never mutates the original.
+
+    NOTE(single-source): the default pipeline stages no longer call this — they
+    delegate to the ``app.tools_pipeline`` producers, which build their own
+    identical ``_progress_bridge`` from the ``on_progress`` sink. This function
+    is retained (repo policy) as the reference adapter and for out-of-tree stages
+    that may still import it; its behaviour is mirrored 1:1 by
+    ``tools_pipeline._progress_bridge``.
     """
     def _fn(event) -> None:
         stage = event.stage
@@ -80,6 +87,49 @@ def _bridge(ctx, stage_prefix: str) -> Callable:
             extra=event.extra or None,
         )
     return _fn
+
+
+def _producer_sink(ctx) -> Callable[..., None]:
+    """An ``on_progress(event, **fields)`` sink handing producer events to ctx.
+
+    The ``app.tools_pipeline`` producers own their own ``stage_start`` /
+    ``progress`` / ``stage_end`` bracketing (byte-identical to the pre-refactor
+    inline emits, same stage names + ``extra`` field names) and stream it through
+    this sink, so the stage wrappers no longer emit those themselves.
+
+    The one event this sink DROPS is the cancel ``error``: a producer that
+    observes ``ctx.is_cancelled()`` emits ``("error", error="cancelled")`` AND
+    raises ``CapabilityError(code="cancelled")``. We swallow that ``error`` here
+    because :func:`run_pipeline` re-emits exactly one ``("error", "cancelled")``
+    when it catches the translated :class:`_CancelledByContext` — preserving the
+    single terminal cancel-error the pre-refactor path produced. The pipeline
+    producers only ever emit ``error`` for cancellation (genuine compute failures
+    raise), so swallowing it here is safe.
+    """
+    def _sink(event: str, **fields: Any) -> None:
+        if event == "error":
+            return
+        ctx.emit(event, **fields)
+    return _sink
+
+
+def _run_producer(fn: Callable, /, **kwargs: Any) -> Any:
+    """Call a ``tools_pipeline`` producer, translating its cancel signal.
+
+    The producers raise :class:`CapabilityError` with ``code="cancelled"`` on
+    cooperative cancellation; the pipeline expresses cancellation as
+    :class:`_CancelledByContext` (which :func:`run_pipeline` catches to emit the
+    single terminal cancel event and raise the ``RuntimeError`` the TaskManager
+    treats as an aborted task). Every other exception propagates unchanged.
+    """
+    from memdiver.core.service_errors import CapabilityError
+
+    try:
+        return fn(**kwargs)
+    except CapabilityError as exc:
+        if getattr(exc, "code", None) == "cancelled":
+            raise _CancelledByContext() from exc
+        raise
 
 
 def _register_artifact(
@@ -106,26 +156,6 @@ def _register_artifact(
     }
     artifacts.append(spec)
     return spec
-
-
-def _load_sources(source_paths: List[str]):
-    """Open each dump path via the DumpSource factory and context-manage them."""
-    from memdiver.core.dump_source import open_dump
-
-    opened = []
-    for path in source_paths:
-        src = open_dump(Path(path))
-        src.open()
-        opened.append(src)
-    return opened
-
-
-def _close_sources(sources: List) -> None:
-    for src in sources:
-        try:
-            src.close()
-        except Exception:  # pragma: no cover
-            pass
 
 
 def _is_msl(source) -> bool:
@@ -180,6 +210,16 @@ def _build_consensus(
     """Fold N sources into a variance matrix + reference slab.
 
     Emits progress per-fold so the UI sees the matrix accumulating.
+
+    NOTE(single-source): the ``consensus`` pipeline stage now delegates to
+    :func:`memdiver.app.tools_pipeline.consensus` (``persist_welford=True``),
+    which mirrors this fold + Welford-persist byte-for-byte (validated for the
+    raw path by ``test_consensus_persist_matches_direct_welford``). This function
+    is retained (repo policy + still directly exercised by
+    ``test_build_consensus_reads_each_raw_source_once``, which asserts the
+    read-each-source-once invariant on already-open sources — a guarantee the
+    path-taking producer cannot express). It is no longer on the production
+    pipeline path.
     """
     from memdiver.engine.consensus_msl import MslIncrementalBuilder, build_msl_consensus
     from memdiver.engine.consensus import ConsensusVector
@@ -212,19 +252,19 @@ def _build_consensus(
         total = builder.total_bytes
         mean_arr, m2_arr, n_welford = builder.welford_state()
     else:
-        # Raw .dump path: use the flat ConsensusVector incremental API.
-        # Read each source exactly once (read_all() re-reads the whole dump
-        # for non-mmap sources), then derive every downstream value from the
-        # cached buffers. We probe the minimum size so later dumps don't
-        # overflow.
-        cached_data = [s.read_all() for s in sources]
-        min_size = min(len(buf) for buf in cached_data)
+        # Raw .dump path: use the flat ConsensusVector incremental API. Stream
+        # the fold — hand each source to add_source one at a time so only ONE
+        # dump is resident at a time (peak ~O(dump size)) rather than
+        # materializing all N up front (~O(N * dump size), which OOM'd on large
+        # multi-dump runs). add_source reads each dump internally, trims to
+        # min_size, folds it, and caches reference_bytes on the first.
+        min_size = min(s.size for s in sources)
         matrix = ConsensusVector()
         matrix.build_incremental(min_size)
-        for i, buf in enumerate(cached_data):
+        for i, s in enumerate(sources):
             if ctx.is_cancelled():
                 raise _CancelledByContext()
-            matrix.add_source(buf[:min_size])
+            matrix.add_source(s)
             ctx.emit(
                 "progress",
                 stage="consensus",
@@ -236,7 +276,7 @@ def _build_consensus(
         mean_arr, m2_arr, n_welford = matrix.welford_state()
         matrix.finalize()
         variance = matrix.variance
-        reference = cached_data[0][:min_size]
+        reference = matrix.reference_bytes
         total = min_size
 
     # Persist consensus artifacts.
@@ -287,39 +327,37 @@ def _run_reduce(
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
 ) -> Path:
-    """Run search-reduce and persist the resulting candidates.json."""
-    import numpy as np
+    """Run search-reduce and persist the resulting candidates.json.
 
-    from memdiver.engine.candidate_pipeline import reduce_search_space
+    Delegates the compute + stage bracketing to
+    :func:`memdiver.app.tools_pipeline.search_reduce` (the single implementation
+    shared with the CLI/MCP). The producer emits the identical ``search_reduce``
+    stage_start/progress/stage_end stream (sub-stages ``variance`` / ``aligned``
+    / ``entropy``) and writes ``candidates.json`` with the same
+    ``ReductionResult.to_dict()`` body PLUS an additive ``recommended_floor`` key
+    (an advisory the frontend ignores as an unknown key; the rest of the file is
+    byte-identical). This wrapper keeps the artifact registration + cancel
+    translation.
+    """
+    from memdiver.app import tools_pipeline
 
-    variance = np.load(variance_path)
-    reference = Path(reference_path).read_bytes()
-    ctx.emit("stage_start", stage="search_reduce", pct=0.0,
-             msg=f"total_bytes={len(reference)}")
-    if ctx.is_cancelled():
-        raise _CancelledByContext()
-    reduction = reduce_search_space(
-        variance, reference, num_dumps=num_dumps,
-        progress_callback=_bridge(ctx, "search_reduce"),
+    out_dir = artifact_dir / "search_reduce"
+    _run_producer(
+        tools_pipeline.search_reduce,
+        variance_path=str(variance_path),
+        reference_path=str(reference_path),
+        num_dumps=num_dumps,
+        output_dir=str(out_dir),
+        on_progress=_producer_sink(ctx),
+        is_cancelled=ctx.is_cancelled,
         **reduce_kwargs,
     )
-    (artifact_dir / "search_reduce").mkdir(parents=True, exist_ok=True)
-    candidates_path = artifact_dir / "search_reduce" / "candidates.json"
-    candidates_path.write_text(json.dumps(reduction.to_dict(), indent=2))
+    candidates_path = out_dir / "candidates.json"
     _register_artifact(
         artifacts, artifact_dir,
         name="candidates",
         relpath="search_reduce/candidates.json",
         media_type="application/json",
-    )
-    ctx.emit(
-        "stage_end", stage="search_reduce", pct=1.0,
-        msg=f"{len(reduction.regions)} regions",
-        extra={
-            "num_regions": len(reduction.regions),
-            "stages": reduction.stages.to_dict(),
-            "fallback_entropy_only": reduction.fallback_entropy_only,
-        },
     )
     return candidates_path
 
@@ -331,47 +369,49 @@ def _run_brute_force(
     bf_kwargs: Dict[str, Any],
     *,
     state_path: Optional[Path] = None,
+    variance_threshold: Optional[float] = None,
     ctx,
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
 ) -> Path:
-    """Run the BYO oracle against surviving candidates and persist hits.json."""
-    from memdiver.engine.brute_force import run_brute_force
+    """Run the BYO oracle against surviving candidates and persist hits.json.
 
-    reference = Path(reference_path).read_bytes()
-    ctx.emit("stage_start", stage="brute_force", pct=0.0,
-             msg=f"oracle={oracle_path.name}")
-    result = run_brute_force(
-        candidates_path,
-        reference,
-        oracle_path,
-        state_path=state_path,
-        progress_callback=_bridge(ctx, "brute_force"),
+    Delegates to :func:`memdiver.app.tools_pipeline.brute_force`; the producer
+    emits the identical ``brute_force`` stage stream + stage_end extra
+    (``verified_count`` / ``total_candidates`` / ``hits[]`` with each hit's
+    ``offset`` / ``size`` / ``region_index`` / ``key_hex`` /
+    ``neighborhood_start`` / ``neighborhood_variance``) and writes the same
+    ``hits.json`` (``BruteForceResult.to_dict()``). This wrapper wires the
+    ``state_path`` (so the Welford ``neighborhood_variance`` slice is attached to
+    each hit), registers the artifact, and translates cancellation.
+    """
+    from memdiver.app import tools_pipeline
+
+    out_dir = artifact_dir / "brute_force"
+    _run_producer(
+        tools_pipeline.brute_force,
+        candidates_path=str(candidates_path),
+        reference_path=str(reference_path),
+        oracle_path=str(oracle_path),
+        output_dir=str(out_dir),
+        state_path=str(state_path) if state_path else None,
+        variance_threshold=variance_threshold,
+        on_progress=_producer_sink(ctx),
+        is_cancelled=ctx.is_cancelled,
         **bf_kwargs,
     )
-    (artifact_dir / "brute_force").mkdir(parents=True, exist_ok=True)
-    hits_path = artifact_dir / "brute_force" / "hits.json"
-    hits_path.write_text(json.dumps(result.to_dict(), indent=2))
+    hits_path = out_dir / "hits.json"
     _register_artifact(
         artifacts, artifact_dir,
         name="hits",
         relpath="brute_force/hits.json",
         media_type="application/json",
     )
-    ctx.emit(
-        "stage_end", stage="brute_force", pct=1.0,
-        msg=f"{result.verified_count} hits / {result.total_candidates} candidates",
-        extra={
-            "verified_count": result.verified_count,
-            "total_candidates": result.total_candidates,
-            "hits": [h.to_dict() for h in result.hits],
-        },
-    )
     return hits_path
 
 
 def _run_nsweep(
-    sources: List,
+    source_paths: List[str],
     oracle_path: Path,
     nsweep_params: Dict[str, Any],
     *,
@@ -379,42 +419,49 @@ def _run_nsweep(
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Run the N-sweep harness and persist report.{json,md,html}."""
-    from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
-    from memdiver.engine.oracle import load_oracle
+    """Run the N-sweep harness and persist report.{json,md,html}.
 
-    ctx.emit("stage_start", stage="nsweep", pct=0.0,
-             msg=f"N values: {nsweep_params['n_values']}")
-    oracle = load_oracle(oracle_path, config=nsweep_params.get("oracle_config", {}))
-    result = run_nsweep(
-        sources,
-        n_values=nsweep_params["n_values"],
-        reduce_kwargs=nsweep_params.get("reduce_kwargs", {}),
-        oracle=oracle,
-        key_sizes=nsweep_params.get("key_sizes", (32,)),
+    Delegates to :func:`memdiver.app.tools_pipeline.n_sweep`, which opens the
+    sources itself from ``source_paths`` — the harness re-folds a fresh
+    consensus at each N, so it cannot reuse the single already-open source set
+    the other stages share. The producer emits the identical ``nsweep`` stage
+    stream + stage_end extra (``first_hit_n`` / ``first_hit_offset`` /
+    ``total_dumps``) and writes the same ``report.{json,md,html}`` via
+    ``engine.nsweep.write_nsweep_artifacts``.
+
+    The per-stage summary is read back from ``report.json`` (which
+    ``write_nsweep_artifacts`` fills with ``NSweepResult.to_dict()``) so it stays
+    equal to the pre-refactor ``result.to_dict()`` the frontend consumes — the
+    producer's own trimmed return payload does not carry the full dict.
+    """
+    from memdiver.app import tools_pipeline
+
+    out_dir = artifact_dir / "nsweep"
+    _run_producer(
+        tools_pipeline.n_sweep,
+        source_paths=list(source_paths),
+        oracle_path=str(oracle_path),
+        output_dir=str(out_dir),
+        n_values=list(nsweep_params["n_values"]),
+        reduce_kwargs=dict(nsweep_params.get("reduce_kwargs") or {}),
+        key_sizes=tuple(nsweep_params.get("key_sizes", (32,))),
         stride=nsweep_params.get("stride", 8),
         exhaustive=nsweep_params.get("exhaustive", True),
-        progress_callback=_bridge(ctx, "nsweep"),
+        on_progress=_producer_sink(ctx),
+        is_cancelled=ctx.is_cancelled,
     )
-    out_dir = artifact_dir / "nsweep"
-    paths = write_nsweep_artifacts(result, out_dir)
-    for name, path in paths.items():
+    # Register in the same order the pre-refactor write_nsweep_artifacts dict
+    # yielded (json, html, md); the filenames are fixed by the writer.
+    for name, media_type in (("json", "application/json"),
+                             ("html", "text/html"),
+                             ("md", "text/markdown")):
         _register_artifact(
             artifacts, artifact_dir,
             name=f"nsweep_{name}",
-            relpath=f"nsweep/{Path(path).name}",
-            media_type={"json": "application/json",
-                        "html": "text/html",
-                        "md": "text/markdown"}.get(name, "application/octet-stream"),
+            relpath=f"nsweep/report.{name}",
+            media_type=media_type,
         )
-    ctx.emit(
-        "stage_end", stage="nsweep", pct=1.0,
-        msg=result.headline(),
-        extra={"first_hit_n": result.first_hit_n,
-               "first_hit_offset": result.first_hit_offset,
-               "total_dumps": result.total_dumps},
-    )
-    return result.to_dict()
+    return json.loads((out_dir / "report.json").read_text())
 
 
 def _run_emit_plugin(
@@ -426,8 +473,21 @@ def _run_emit_plugin(
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
 ) -> Optional[Path]:
-    """Emit a Vol3 plugin from the first hit, or return None if hits empty."""
-    from memdiver.engine.vol3_emit import emit_plugin_for_hit
+    """Emit a Vol3 plugin from the first hit, or return None if hits empty.
+
+    The empty-hits graceful skip (emit a ``skipped`` stage_end and return
+    ``None`` WITHOUT running the generator) and the ``hit_index`` clamp stay in
+    this wrapper — the path-taking producer would instead RAISE on an empty /
+    out-of-range hits file, which would fail the whole run. For a non-empty hits
+    file the compute + stage bracketing + the ``inferred_fields`` artifact are
+    delegated to :func:`memdiver.app.tools_pipeline.emit_plugin`
+    (``write_fields=True``): it emits the identical ``emit_plugin`` stage stream
+    + stage_end extra (``plugin_path`` / ``fields`` / ``variance_threshold``),
+    writes ``<name>.py`` + ``<name>_fields.json``, and the generated plugin is
+    byte-identical to the previous inline path. This wrapper keeps the artifact
+    registration + cancel translation.
+    """
+    from memdiver.app import tools_pipeline
 
     payload = json.loads(Path(hits_path).read_text())
     hits = payload.get("hits", [])
@@ -442,48 +502,35 @@ def _run_emit_plugin(
     hit_index = max(0, min(hit_index, len(hits) - 1))
     name = emit_params.get("name", "memdiver_plugin")
     description = emit_params.get("description")
-
-    ctx.emit("stage_start", stage="emit_plugin", pct=0.0,
-             msg=f"plugin={name} hit_index={hit_index}")
-    reference = Path(reference_path).read_bytes()
-    output_dir = artifact_dir / "emit_plugin"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{name}.py"
     v_thresh = emit_params.get("variance_threshold")
-    emit_plugin_for_hit(
-        hits[hit_index], reference, name, output_path,
+
+    output_dir = artifact_dir / "emit_plugin"
+    _run_producer(
+        tools_pipeline.emit_plugin,
+        hits_path=str(hits_path),
+        reference_path=str(reference_path),
+        name=name,
+        output_dir=str(output_dir),
         description=description,
-        min_static_ratio=float(emit_params.get("min_static_ratio", 0.3)),
+        hit_index=hit_index,
         variance_threshold=float(v_thresh) if v_thresh is not None else None,
-        progress_callback=_bridge(ctx, "emit_plugin"),
+        min_static_ratio=float(emit_params.get("min_static_ratio", 0.3)),
+        write_fields=True,
+        on_progress=_producer_sink(ctx),
+        is_cancelled=ctx.is_cancelled,
     )
+    output_path = output_dir / f"{name}.py"
     _register_artifact(
         artifacts, artifact_dir,
         name="vol3_plugin",
         relpath=f"emit_plugin/{output_path.name}",
         media_type="text/x-python",
     )
-    from memdiver.engine.vol3_emit import extract_inferred_fields
-
-    hit = hits[hit_index]
-    thresh = float(v_thresh) if v_thresh is not None else None
-    fields = extract_inferred_fields(hit, variance_threshold=thresh)
-    fields_path = output_dir / f"{name}_fields.json"
-    fields_path.write_text(json.dumps(fields, indent=2))
     _register_artifact(
         artifacts, artifact_dir,
         name="inferred_fields",
         relpath=f"emit_plugin/{name}_fields.json",
         media_type="application/json",
-    )
-    ctx.emit(
-        "stage_end", stage="emit_plugin", pct=1.0,
-        msg=f"wrote {output_path.name}",
-        extra={
-            "plugin_path": str(output_path),
-            "fields": fields,
-            "variance_threshold": thresh,
-        },
     )
     return output_path
 
@@ -590,12 +637,18 @@ class PipelineState:
 
     ctx: Any
     artifact_dir: Path
-    sources: List[Any]
     reduce_kwargs: Dict[str, Any]
     oracle_path: Path
     bf_kwargs: Dict[str, Any]
     nsweep_params: Optional[Dict[str, Any]]
     emit_params: Optional[Dict[str, Any]]
+    # Static/dynamic variance cutoff (from the emit request) forwarded to the
+    # brute_force stage so its stage_end preview matches the emit stage. ``None``
+    # resolves to the producer default (``PLUGIN_STATIC_THRESHOLD``).
+    variance_threshold: Optional[float] = None
+    # Dump paths the path-taking producers (consensus / n_sweep) open + close
+    # themselves; stages consume ``source_paths``, never a shared open handle.
+    source_paths: List[str] = field(default_factory=list)
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
     # Opt-in escalation (floor-free fall-through when brute-force finds no hit).
@@ -638,13 +691,50 @@ class Stage:
 
 
 def _stage_consensus(state: "PipelineState") -> None:
-    state.consensus = _build_consensus(
-        state.sources,
-        ctx=state.ctx,
-        artifact_dir=state.artifact_dir,
-        artifacts=state.artifacts,
+    """Fold the sources into variance.npy + reference.bin (+ Welford state).
+
+    Delegates to :func:`memdiver.app.tools_pipeline.consensus`
+    (``persist_welford=True``), the incremental fold that mirrors the retained
+    :func:`_build_consensus`: it emits the identical ``consensus`` stage +
+    per-fold ``progress`` stream (``dumps_folded`` / ``total_dumps``) and writes
+    the same ``variance.npy`` / ``reference.bin`` / ``mean.npy`` / ``m2.npy`` /
+    ``state.json`` (``{size, num_dumps, mean_path, m2_path}``) that ``/refine``
+    and ``/neighborhood`` read and that brute-force consumes via ``state_path``.
+    This wrapper registers the three downloadable artifacts (variance / reference
+    / state — mean.npy & m2.npy stay unregistered, referenced only by
+    state.json, exactly as before) and translates cancellation.
+
+    The producer opens its own sources from the given paths (it validates
+    >= 2 dumps) and closes them when done.
+    """
+    from memdiver.app import tools_pipeline
+
+    out_dir = state.artifact_dir / "consensus"
+    consensus = _run_producer(
+        tools_pipeline.consensus,
+        dump_paths=list(state.source_paths),
+        output_dir=str(out_dir),
+        persist_welford=True,
+        on_progress=_producer_sink(state.ctx),
+        is_cancelled=state.ctx.is_cancelled,
     )
-    state.summary["consensus"] = state.consensus
+    _register_artifact(
+        state.artifacts, state.artifact_dir,
+        name="consensus_variance", relpath="consensus/variance.npy",
+        media_type="application/octet-stream",
+    )
+    _register_artifact(
+        state.artifacts, state.artifact_dir,
+        name="consensus_reference", relpath="consensus/reference.bin",
+        media_type="application/octet-stream",
+    )
+    _register_artifact(
+        state.artifacts, state.artifact_dir,
+        name="consensus_state", relpath="consensus/state.json",
+        media_type="application/json",
+    )
+    state.consensus = consensus
+    state.summary["consensus"] = consensus
 
 
 def _stage_reduce(state: "PipelineState") -> None:
@@ -669,6 +759,7 @@ def _stage_brute_force(state: "PipelineState") -> None:
         state.oracle_path,
         state.bf_kwargs,
         state_path=Path(consensus["state_path"]),
+        variance_threshold=state.variance_threshold,
         ctx=state.ctx,
         artifact_dir=state.artifact_dir,
         artifacts=state.artifacts,
@@ -678,7 +769,7 @@ def _stage_brute_force(state: "PipelineState") -> None:
 
 def _stage_nsweep(state: "PipelineState") -> None:
     state.summary["nsweep"] = _run_nsweep(
-        state.sources,
+        state.source_paths,
         state.oracle_path,
         state.nsweep_params,
         ctx=state.ctx,
@@ -721,39 +812,36 @@ def _escalate_enabled(state: "PipelineState") -> bool:
 def _stage_escalate(state: "PipelineState") -> None:
     """Floor-free descending-variance fall-through when brute-force misses.
 
-    Delegates to :func:`run_auto_floor_stage`, which ``np.load``s the cached
-    ``consensus/variance.npy`` (the Theta(N*d) fold NEVER re-runs) and reuses
-    the same oracle. It re-tests the >=3000 windows brute-force already rejected
-    (a small, deterministic, de-duplicated set) rather than forking
-    ``run_auto_floor`` with a skip-set, keeping a single source of truth with
-    the CLI ``auto-floor`` / ``POST /auto-floor``.
+    Delegates to :func:`memdiver.app.tools_pipeline.auto_floor`, which
+    ``np.load``s the cached ``consensus/variance.npy`` (the Theta(N*d) fold NEVER
+    re-runs) and reuses the same oracle. It emits the identical ``escalate``
+    stage stream + stage_end extra (``verdict`` / ``hit_tier`` / ``phi_star`` /
+    ``phi0``) and writes ``verdict.json`` + ``report.md`` via
+    ``engine.auto_floor.write_auto_floor_artifacts`` — the same
+    ``engine.auto_floor.run_auto_floor`` compute the CLI ``auto-floor`` and
+    ``POST /auto-floor`` (through :func:`run_auto_floor_stage`) use. This wrapper
+    registers the two artifacts, translates cancellation, and reconstructs the
+    canonical ``escalation`` summary envelope from the producer's return.
     """
+    from memdiver.app import tools_pipeline
+
     consensus = state.consensus
     bf = state.bf_kwargs
-    state.ctx.emit(
-        "stage_start", stage="escalate", pct=0.0,
-        msg="floor-free descending-variance sweep (brute-force found no hit)",
-    )
-    result = run_auto_floor_stage(
+    out_dir = state.artifact_dir / "escalate"
+    verdict = _run_producer(
+        tools_pipeline.auto_floor,
         variance_path=consensus["variance_path"],
         reference_path=consensus["reference_path"],
-        num_dumps=consensus["num_dumps"],
         oracle_path=str(state.oracle_path),
-        reduce_kwargs=state.reduce_kwargs,
+        output_dir=str(out_dir),
+        num_dumps=int(consensus["num_dumps"]),
+        reduce_kwargs=dict(state.reduce_kwargs),
         key_sizes=tuple(bf.get("key_sizes", (32,))),
         stride=int(bf.get("stride", 8)),
         oracle_budget=state.escalate_oracle_budget,
-        progress_callback=_bridge(state.ctx, "escalate"),
+        on_progress=_producer_sink(state.ctx),
+        is_cancelled=state.ctx.is_cancelled,
     )
-    from memdiver.engine.auto_floor import (
-        escalation_verdict,
-        hit_tier,
-        write_auto_floor_artifacts,
-    )
-
-    tier = hit_tier(result)
-    out_dir = state.artifact_dir / "escalate"
-    write_auto_floor_artifacts(result, out_dir)
     _register_artifact(
         state.artifacts, state.artifact_dir,
         name="escalate_verdict", relpath="escalate/verdict.json",
@@ -764,13 +852,12 @@ def _stage_escalate(state: "PipelineState") -> None:
         name="escalate_report", relpath="escalate/report.md",
         media_type="text/markdown",
     )
-    state.summary["escalation"] = escalation_verdict(result)
-    state.ctx.emit(
-        "stage_end", stage="escalate", pct=1.0,
-        msg=f"{result.verdict} tier={tier}",
-        extra={"verdict": result.verdict, "hit_tier": tier,
-               "phi_star": result.phi_star, "phi0": result.phi0},
-    )
+    # summary["escalation"] must remain the canonical escalation_verdict envelope
+    # ({**AutoFloorResult.to_dict(), "hit_tier"}). The producer's return is that
+    # plus an "artifacts" path map; drop it to recover the exact envelope.
+    state.summary["escalation"] = {
+        k: v for k, v in verdict.items() if k != "artifacts"
+    }
 
 
 def _default_stages() -> List[Stage]:
@@ -940,21 +1027,29 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     bf_kwargs.pop("progress_callback", None)
     bf_kwargs.pop("cancel_event", None)
     bf_kwargs.pop("state_path", None)
+    # variance_threshold is threaded explicitly (from the emit params) into the
+    # brute_force stage_end preview, so drop any stray copy here to avoid a
+    # duplicate-keyword clash on the explicit pass.
+    bf_kwargs.pop("variance_threshold", None)
     nsweep_params = params.get("nsweep")
     emit_params = params.get("emit")
+    # Surface the emit stage's variance_threshold override (if any) so the
+    # brute_force stage can emit the same resolved cutoff on its stage_end.
+    _vt = (emit_params or {}).get("variance_threshold")
+    variance_threshold = float(_vt) if _vt is not None else None
     escalate = bool(params.get("escalate", False))
     escalate_oracle_budget = params.get("escalate_oracle_budget")
 
-    sources = _load_sources(source_paths)
     state = PipelineState(
         ctx=ctx,
         artifact_dir=artifact_dir,
-        sources=sources,
+        source_paths=source_paths,
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,
         bf_kwargs=bf_kwargs,
         nsweep_params=nsweep_params,
         emit_params=emit_params,
+        variance_threshold=variance_threshold,
         escalate=escalate,
         escalate_oracle_budget=escalate_oracle_budget,
     )
@@ -968,7 +1063,5 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     except _CancelledByContext:
         ctx.emit("error", error="cancelled")
         raise RuntimeError("pipeline cancelled")
-    finally:
-        _close_sources(sources)
 
     return {"artifacts": state.artifacts, "summary": state.summary}

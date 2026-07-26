@@ -8,10 +8,12 @@ const REPO = resolve(__dirname, "..");
 const ROOT = resolve(REPO, "frontend", "src", "components");
 const BASELINE_PATH = resolve(__dirname, "colour-literal-baseline.txt");
 
-// text-red-400, bg-green-500, border-blue-600, fill-cyan-400, stroke-purple-700.
-// Also catches greyscale (zinc/slate/gray/neutral/stone) and pseudo-class variants
-// like hover:text-red-400 because word-boundary still holds at ':'.
-const BAD = /\b(text|bg|border|fill|stroke)-(red|yellow|green|blue|orange|purple|cyan|pink|rose|amber|lime|emerald|teal|sky|indigo|violet|fuchsia|zinc|slate|gray|neutral|stone)-\d+\b/;
+// text-red-400, bg-green-500, border-blue-600, fill-cyan-400, stroke-purple-700,
+// ring-yellow-500, placeholder-zinc-600. Also catches greyscale
+// (zinc/slate/gray/neutral/stone) and pseudo-class variants like
+// hover:text-red-400 because word-boundary still holds at ':'. ``ring-offset``
+// is listed before ``ring`` so the longer prefix wins.
+const BAD = /\b(text|bg|border|fill|stroke|ring-offset|ring|placeholder)-(red|yellow|green|blue|orange|purple|cyan|pink|rose|amber|lime|emerald|teal|sky|indigo|violet|fuchsia|zinc|slate|gray|neutral|stone)-\d+\b/;
 
 // Chart files render runtime-string colours (Plotly + hand-rolled SVG). Phase C
 // migrates these; until then they are exempt.

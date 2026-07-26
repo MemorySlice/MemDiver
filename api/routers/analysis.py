@@ -312,27 +312,28 @@ def verify_key(req: VerifyKeyRequest):
 def auto_export(req: AutoExportRequest):
     """Auto-detect key region and export as YARA/JSON/Volatility3.
 
-    Thin HTTP adapter over ``api.services.analysis_service.auto_export_pattern``.
-    The service function owns the consensus → pattern pipeline so the
-    CLI and API cannot drift again. Prior to PR 4 this route had its own
-    copy of the pipeline that called ``cm.build(paths)`` (flat-bytes),
-    producing file-relative offsets for native MSL inputs that users
-    could not map back to memory.
+    Thin HTTP adapter over the ``app`` producer
+    :func:`memdiver.app.tools_pipeline.export_pattern`, which owns the
+    consensus → pattern pipeline so the CLI, API and MCP surfaces cannot
+    drift again. Prior to PR 4 this route had its own copy of the pipeline
+    that called ``cm.build(paths)`` (flat-bytes), producing file-relative
+    offsets for native MSL inputs that users could not map back to memory.
+
+    The producer returns the same ``{format, content, pattern, region}``
+    payload the pre-relocation service returned, so the response body is
+    unchanged.
     """
-    from memdiver.api.services.analysis_service import (
-        AnalysisServiceError,
-        auto_export_pattern,
-    )
+    from memdiver.app.tools_pipeline import export_pattern
 
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex)
     try:
-        return auto_export_pattern(
-            req.dump_paths,
+        return export_pattern(
+            dump_paths=list(req.dump_paths),
             fmt=req.format,
             name=req.name,
             align=req.align,
             context=req.context,
             key_material=km,
         )
-    except AnalysisServiceError as exc:
+    except CapabilityError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc

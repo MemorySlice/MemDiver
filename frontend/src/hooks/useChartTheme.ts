@@ -57,6 +57,7 @@ export function useChartTheme() {
       accentGreen: read("--md-accent-green"),
       accentCyan: read("--md-accent-cyan"),
       accentPurple: read("--md-accent-purple"),
+      neutral: read("--md-text-secondary"),
       invariant: read("--md-variance-invariant"),
       structural: read("--md-variance-structural"),
       pointer: read("--md-variance-pointer"),

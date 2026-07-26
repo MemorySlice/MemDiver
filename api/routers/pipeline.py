@@ -92,7 +92,20 @@ class RefineResponse(BaseModel):
     num_dumps: int
     static_count: int
     dynamic_count: int
+    #: The variance threshold used to classify static vs dynamic bytes
+    #: (``PLUGIN_STATIC_THRESHOLD``), surfaced so callers stop hardcoding it.
+    variance_threshold: float
+    #: Each entry also carries a ``fields`` list (inferred field structure) so
+    #: the frontend consumes it instead of recomputing ``infer_fields``.
     hit_neighborhoods: List[Dict[str, Any]]
+
+
+class InferFieldsRequest(BaseModel):
+    neighborhood_variance: List[float]
+    neighborhood_start: int
+    offset: int
+    length: int
+    variance_threshold: Optional[float] = None
 
 
 class PipelineRunRequest(BaseModel):
@@ -470,6 +483,7 @@ async def refine_consensus(task_id: str, body: RefineRequest):
 
     import numpy as np
 
+    from memdiver.app.tools_fields import infer_fields_result
     from memdiver.core.dump_source import open_dump
     from memdiver.core.variance import WelfordVariance
     from memdiver.engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
@@ -540,6 +554,14 @@ async def refine_consensus(task_id: str, body: RefineRequest):
             nb_static = sum(
                 1 for v in nb_var if v <= PLUGIN_STATIC_THRESHOLD
             )
+            # Attach inferred field structure via the shared app producer so
+            # the frontend consumes ``fields`` instead of recomputing it.
+            fields = infer_fields_result(
+                neighborhood_variance=nb_var,
+                neighborhood_start=start,
+                offset=offset,
+                length=length,
+            )
             hit_neighborhoods.append(
                 {
                     "offset": offset,
@@ -547,6 +569,7 @@ async def refine_consensus(task_id: str, body: RefineRequest):
                     "neighborhood_variance": nb_var,
                     "static_count": nb_static,
                     "dynamic_count": len(nb_var) - nb_static,
+                    "fields": fields,
                 }
             )
 
@@ -554,8 +577,38 @@ async def refine_consensus(task_id: str, body: RefineRequest):
         num_dumps=new_n,
         static_count=static_count,
         dynamic_count=dynamic_count,
+        variance_threshold=PLUGIN_STATIC_THRESHOLD,
         hit_neighborhoods=hit_neighborhoods,
     )
+
+
+@router.post("/infer-fields")
+def infer_fields_endpoint(body: InferFieldsRequest):
+    """Segment an arbitrary hit's neighborhood variance into inferred fields.
+
+    Stateless companion to the ``fields`` now embedded in ``/refine``: lets a
+    caller (e.g. the hex-viewer neighborhood overlay) compute the field
+    structure for any hit without a persisted run. Delegates to the shared
+    ``app`` producer so the segmentation cannot fork. Also echoes the resolved
+    ``variance_threshold`` so the frontend stops hardcoding
+    ``PLUGIN_STATIC_THRESHOLD``.
+    """
+    from memdiver.app.tools_fields import infer_fields_result
+    from memdiver.engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
+
+    fields = infer_fields_result(
+        neighborhood_variance=body.neighborhood_variance,
+        neighborhood_start=body.neighborhood_start,
+        offset=body.offset,
+        length=body.length,
+        variance_threshold=body.variance_threshold,
+    )
+    threshold = (
+        body.variance_threshold
+        if body.variance_threshold is not None
+        else PLUGIN_STATIC_THRESHOLD
+    )
+    return {"fields": fields, "variance_threshold": threshold}
 
 
 @router.get("/runs/{task_id}/neighborhood")

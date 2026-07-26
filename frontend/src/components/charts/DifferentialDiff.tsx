@@ -12,8 +12,8 @@ interface Props {
 }
 
 function byteColor(a: number, b: number, isDumpB: boolean): string {
-  if (a !== b) return isDumpB ? "var(--md-accent-green, #4ec9b0)" : "var(--md-accent-red, #f44747)";
-  if (a === 0) return "var(--md-text-muted, #666)";
+  if (a !== b) return isDumpB ? "var(--md-accent-green)" : "var(--md-accent-red)";
+  if (a === 0) return "var(--md-text-muted)";
   return "inherit";
 }
 

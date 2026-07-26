@@ -15,6 +15,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { usePipelineStore } from "@/stores/pipeline-store";
+import { getChartColor } from "@/components/charts/tokens";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 import {
@@ -87,6 +88,14 @@ export function SurvivorCurve() {
     );
   }
 
+  const purple = getChartColor("--md-accent-purple");
+  // Resolve each trace colour once per render (getChartColor reads
+  // getComputedStyle); indexing this map avoids a computed-style read per trace
+  // per point on every hover-driven re-render.
+  const traceColor: Record<string, string> = Object.fromEntries(
+    SURVIVOR_TRACES.map((tr) => [tr.token, getChartColor(tr.token)]),
+  );
+
   const traceValues = (key: SurvivorTraceKey, p: (typeof points)[number]): number => {
     if (key === "candidates") return p.candidates ?? 0;
     return p.stages[key] ?? 0;
@@ -154,7 +163,7 @@ export function SurvivorCurve() {
               <path
                 d={path}
                 fill="none"
-                stroke={trace.color}
+                stroke={traceColor[trace.token]}
                 strokeWidth={2}
                 strokeDasharray={dasharray}
                 strokeLinejoin="round"
@@ -165,7 +174,7 @@ export function SurvivorCurve() {
                   cx={xScale(p.n)}
                   cy={yScale(Math.max(1, traceValues(trace.key, p)))}
                   r={3}
-                  fill={trace.color}
+                  fill={traceColor[trace.token]}
                 />
               ))}
             </g>
@@ -177,8 +186,8 @@ export function SurvivorCurve() {
           <g>
             <polygon
               points={starPath(xScale(firstHit.n), yScale(1), 8)}
-              fill="#a855f7"
-              stroke="#a855f7"
+              fill={purple}
+              stroke={purple}
               strokeWidth={1}
             />
             <text
@@ -186,7 +195,7 @@ export function SurvivorCurve() {
               y={yScale(1) - 14}
               textAnchor="middle"
               fontSize={11}
-              fill="#a855f7"
+              fill={purple}
               fontWeight={600}
             >
               {t("results.survivor.hit")}
@@ -292,7 +301,7 @@ export function SurvivorCurve() {
                 x2={x + 14}
                 y1={legendY}
                 y2={legendY}
-                stroke={trace.color}
+                stroke={traceColor[trace.token]}
                 strokeWidth={2}
                 strokeDasharray={dasharray}
               />
@@ -327,12 +336,12 @@ export function SurvivorCurve() {
         >
           <div style={{ fontWeight: 600, marginBottom: 3 }}>{t("results.survivor.tooltipN", { n: hoverPoint.n })}</div>
           {SURVIVOR_TRACES.map((t) => (
-            <div key={t.key} style={{ color: t.color }}>
+            <div key={t.key} style={{ color: traceColor[t.token] }}>
               {t.label}: {formatNumber(traceValues(t.key, hoverPoint))}
             </div>
           ))}
           {hoverPoint.hit_offset !== null && (
-            <div style={{ color: "#a855f7", marginTop: 2 }}>
+            <div style={{ color: purple, marginTop: 2 }}>
               {t("results.survivor.oracleHit", { offset: hoverPoint.hit_offset.toString(16) })}
             </div>
           )}

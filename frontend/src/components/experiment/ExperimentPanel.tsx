@@ -219,16 +219,16 @@ export function ExperimentPanel() {
       className="flex flex-col gap-4 p-4 h-full overflow-auto"
       data-testid="experiment-panel"
     >
-      <h2 className="text-sm font-semibold text-zinc-200">{t('experiment.heading')}</h2>
+      <h2 className="text-sm font-semibold text-[var(--md-text-primary)]">{t('experiment.heading')}</h2>
 
       {/* Target script */}
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-400">{t('experiment.targetScript')}</label>
+        <label className="text-xs md-text-secondary">{t('experiment.targetScript')}</label>
         <input
           type="text"
           value={targetScript}
           onChange={e => setTargetScript(e.target.value)}
-          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200"
+          className="bg-[var(--md-bg-tertiary)] border border-[var(--md-border)] rounded px-2 py-1 text-xs text-[var(--md-text-primary)]"
           placeholder={t('experiment.targetScriptPlaceholder')}
           data-testid="experiment-target"
         />
@@ -236,7 +236,7 @@ export function ExperimentPanel() {
 
       {/* Num runs */}
       <div className="flex items-center gap-3">
-        <label className="text-xs text-zinc-400 w-24">{t('experiment.runsPerTool')}</label>
+        <label className="text-xs md-text-secondary w-24">{t('experiment.runsPerTool')}</label>
         <input
           type="range"
           min={2}
@@ -246,12 +246,12 @@ export function ExperimentPanel() {
           className="flex-1"
           data-testid="experiment-num-runs"
         />
-        <span className="text-xs text-zinc-300 w-8">{numRuns}</span>
+        <span className="text-xs text-[var(--md-text-primary)] w-8">{numRuns}</span>
       </div>
 
       {/* Tool selection */}
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-400">{t('experiment.dumpTools')}</label>
+        <label className="text-xs md-text-secondary">{t('experiment.dumpTools')}</label>
         <div className="flex gap-3">
           {['memslicer', 'lldb', 'fridump'].map(tool => (
             <label key={tool} className="flex items-center gap-1 text-xs cursor-pointer">
@@ -261,7 +261,7 @@ export function ExperimentPanel() {
                 onChange={() => toggleTool(tool)}
                 className="w-3 h-3"
               />
-              <span className={tools.includes(tool) ? 'text-zinc-300' : 'text-zinc-500'}>
+              <span className={tools.includes(tool) ? 'text-[var(--md-text-primary)]' : 'md-text-muted'}>
                 {tool}
               </span>
             </label>
@@ -278,22 +278,22 @@ export function ExperimentPanel() {
             onChange={e => setConvergence(e.target.checked)}
             className="w-3 h-3"
           />
-          <span className="text-zinc-400">{t('experiment.convergenceSweep')}</span>
+          <span className="md-text-secondary">{t('experiment.convergenceSweep')}</span>
         </label>
         <div className="flex items-center gap-1">
-          <span className="text-xs text-zinc-400">{t('experiment.maxFp')}</span>
+          <span className="text-xs md-text-secondary">{t('experiment.maxFp')}</span>
           <input
             type="number"
             value={maxFp}
             onChange={e => setMaxFp(Number(e.target.value))}
-            className="w-12 bg-zinc-800 border border-zinc-700 rounded px-1 text-xs text-zinc-200"
+            className="w-12 bg-[var(--md-bg-tertiary)] border border-[var(--md-border)] rounded px-1 text-xs text-[var(--md-text-primary)]"
             min={0}
           />
         </div>
         <select
           value={exportFormat}
           onChange={e => setExportFormat(e.target.value)}
-          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-0.5 text-xs text-zinc-200"
+          className="bg-[var(--md-bg-tertiary)] border border-[var(--md-border)] rounded px-2 py-0.5 text-xs text-[var(--md-text-primary)]"
         >
           <option value="volatility3">{t('experiment.formatVol3')}</option>
           <option value="yara">{t('experiment.formatYara')}</option>
@@ -305,15 +305,15 @@ export function ExperimentPanel() {
       <button
         onClick={handleRun}
         disabled={running || tools.length === 0}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700
-                   disabled:text-zinc-500 rounded text-xs font-medium text-white"
+        className="px-4 py-2 bg-[var(--md-accent-blue)] hover:opacity-90 disabled:bg-[var(--md-bg-hover)]
+                   disabled:text-[var(--md-text-muted)] rounded text-xs font-medium text-white"
         data-testid="experiment-run"
       >
         {running ? status || t('experiment.running') : t('experiment.runExperiment')}
       </button>
 
       {taskId && (
-        <p className="text-xs text-zinc-500" data-testid="experiment-task-id">
+        <p className="text-xs md-text-muted" data-testid="experiment-task-id">
           {t('experiment.taskId', { taskId })}
         </p>
       )}

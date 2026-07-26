@@ -6,7 +6,7 @@ get_cross_references, identify_structure.
 import logging
 from pathlib import Path
 
-from memdiver.api.services.reader_cache import cached_dump_source, cached_msl_reader
+from memdiver.app.reader_cache import cached_dump_source, cached_msl_reader
 from memdiver.core.service_errors import (
     CapabilityError,
     ErrorCategory,

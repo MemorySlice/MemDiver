@@ -195,7 +195,9 @@
       "hitsTitle": "Verified hits ({{count}})",
       "hitSize": "({{size}} B)",
       "openInHex": "Open in hex",
-      "openInHexTitle": "Jump to this offset in the hex viewer"
+      "opening": "Opening…",
+      "openInHexTitle": "Jump to this offset in the hex viewer",
+      "openFailed": "Failed to open hit in hex viewer: {{error}}"
     }
   },
   "results": {

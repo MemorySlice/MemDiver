@@ -34,8 +34,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Interface deps moved to extras (breaking):** `pip install memdiver` now
   installs only the library + CLI core. The FastAPI web UI + REST API
   (`fastapi`/`uvicorn`/`pydantic-settings`) live behind `[api]`, the MCP server
-  behind `[mcp]`, and the legacy NiceGUI / Marimo UIs behind `[nicegui]` /
-  `[marimo]`. `[all]` (= `memdiver[api,mcp,nicegui,marimo]`) reproduces the
+  behind `[mcp]`, and the legacy Marimo UI behind `[marimo]`. `[all]`
+  (= `memdiver[api,mcp,marimo]`) reproduces the
   previous all-in-one install. `kaitaistruct` and the crypto stack remain base
   deps; `[experiment]` and `[dev]` are unchanged.
 - `memdiver experiment` now surfaces an actionable install hint
@@ -45,7 +45,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previously MIT). The `pyproject.toml` classifier was updated to
   `License :: OSI Approved :: Apache Software License` to match.
 - Install-hint messages in `memdiver web` / `app` / `mcp` / `ui` now point at
-  the specific extra (`memdiver[api]` / `[nicegui]` / `[mcp]` / `[marimo]`) when
+  the specific extra (`memdiver[api]` / `[mcp]` / `[marimo]`) when
   the corresponding dependency is not installed.
 
 ### Added

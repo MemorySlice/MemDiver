@@ -106,22 +106,25 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("structure.apply", "memdiver.app.tools_xref.apply_structure_result",
          ("library", "web")),
     # -- pipeline stages (Phase 25) -----------------------------------------
-    # web runs its own engine-leaf pipeline (engine.pipeline_runner streamed via
-    # the task manager), NOT these app producers — hence the web gaps below.
+    # The web pipeline (engine.pipeline_runner, streamed via the task manager)
+    # now delegates each stage's compute to these app producers, so web is wired
+    # for all of them. ``pipeline.consensus`` on CLI is still a gap — the CLI
+    # `consensus` command is a separate region-report implementation, not the
+    # origination producer.
     _cap("pipeline.consensus", "memdiver.app.tools_pipeline.consensus",
-         ("library", "mcp")),
+         ("library", "web", "mcp")),
     _cap("pipeline.search_reduce", "memdiver.app.tools_pipeline.search_reduce",
-         ("library", "cli", "mcp")),
+         ("library", "cli", "web", "mcp")),
     _cap("pipeline.brute_force", "memdiver.app.tools_pipeline.brute_force",
-         ("library", "cli", "mcp")),
+         ("library", "cli", "web", "mcp")),
     _cap("pipeline.n_sweep", "memdiver.app.tools_pipeline.n_sweep",
-         ("library", "cli", "mcp")),
+         ("library", "cli", "web", "mcp")),
     _cap("pipeline.auto_floor", "memdiver.app.tools_pipeline.auto_floor",
-         ("library", "cli", "mcp")),
+         ("library", "cli", "web", "mcp")),
     _cap("pipeline.emit_plugin", "memdiver.app.tools_pipeline.emit_plugin",
-         ("library", "cli", "mcp")),
+         ("library", "cli", "web", "mcp")),
     _cap("pipeline.export_pattern", "memdiver.app.tools_pipeline.export_pattern",
-         ("library", "mcp")),
+         ("library", "cli", "web", "mcp")),
     # -- verify + experiment (Phase 5, G4) ----------------------------------
     _cap("verify", "memdiver.app.tools_pipeline.verify_key_result",
          ("library", "cli", "web", "mcp")),
@@ -138,6 +141,17 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "web", "mcp")),
     _cap("analysis.analyze_library", "memdiver.app.tools.analyze_library",
          ("library", "web", "mcp")),
+    # -- frontend-serving producers (Phase 9) -------------------------------
+    # Field inference + algorithm-availability gating were duplicated in the
+    # React frontend; they now originate here. Both are wired on the library
+    # (re-exported via ``memdiver.services``) and web (FastAPI) surfaces. They
+    # carry no CLI subcommand or MCP tool — they exist to feed the web UI — so
+    # cli / mcp are documented gaps below.
+    _cap("analysis.infer_fields", "memdiver.app.tools_fields.infer_fields_result",
+         ("library", "web")),
+    _cap("analysis.algorithm_availability",
+         "memdiver.app.tools_algorithms.algorithm_availability",
+         ("library", "web")),
 )
 
 
@@ -149,10 +163,16 @@ CAPABILITIES: Tuple[Capability, ...] = (
 #:   * inspect read_hex_raw / resolve_va / detect_format / connections /
 #:     module_index / blocks and structure.apply lack CLI subcommands.
 #:   * structure.apply is web-only (no MCP tool).
-#:   * the pipeline producers are not wired on web (web uses the engine-leaf
-#:     pipeline_runner), and consensus/export_pattern additionally differ on CLI
-#:     (the CLI `consensus`/`export` commands are separate region-report /
-#:     analysis-service implementations, not these origination producers).
+#:   * the web pipeline now routes every stage through the app producers
+#:     (engine.pipeline_runner delegates consensus / search_reduce / brute_force /
+#:     n_sweep / auto_floor / emit_plugin to ``app.tools_pipeline``), so those are
+#:     wired on web. ``pipeline.consensus`` still differs on CLI: the CLI
+#:     `consensus` command is a separate region-report implementation, not the
+#:     origination producer. (The synchronous ``POST /consensus`` analysis route
+#:     is a distinct stateful region/range feature over
+#:     ``consensus_session`` — not the origination producer — so it is unaffected.)
+#:     ``export_pattern`` is likewise wired everywhere: its CLI `export` command
+#:     and the `/auto-export` route both route through the producer.
 #:   * dataset scan / list_* / analyze have CLI implementations that do not
 #:     route through the app producer.
 KNOWN_PARITY_GAPS: FrozenSet[Tuple[str, str]] = frozenset({
@@ -165,18 +185,17 @@ KNOWN_PARITY_GAPS: FrozenSet[Tuple[str, str]] = frozenset({
     ("structure.apply", "cli"),
     ("structure.apply", "mcp"),
     ("pipeline.consensus", "cli"),
-    ("pipeline.consensus", "web"),
-    ("pipeline.search_reduce", "web"),
-    ("pipeline.brute_force", "web"),
-    ("pipeline.n_sweep", "web"),
-    ("pipeline.auto_floor", "web"),
-    ("pipeline.emit_plugin", "web"),
-    ("pipeline.export_pattern", "cli"),
-    ("pipeline.export_pattern", "web"),
     ("dataset.scan", "cli"),
     ("dataset.list_protocols", "cli"),
     ("dataset.list_phases", "cli"),
     ("analysis.analyze_library", "cli"),
+    # Phase-9 frontend-serving producers: web + library only. No CLI subcommand
+    # or MCP tool — they feed the React UI (hex neighborhood overlay / wizard
+    # availability), not the terminal/agent surfaces.
+    ("analysis.infer_fields", "cli"),
+    ("analysis.infer_fields", "mcp"),
+    ("analysis.algorithm_availability", "cli"),
+    ("analysis.algorithm_availability", "mcp"),
 })
 
 

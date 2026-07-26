@@ -28,12 +28,12 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
   const plotlyColors = usePlotlyColors();
 
   const typeColors = useMemo(() => ({
-    0x00: "#808080",
+    0x00: plotlyColors.neutral,
     0x01: plotlyColors.accentGreen,
     0x02: plotlyColors.accentRed,    // stack uses warm color
     0x03: plotlyColors.accentBlue,
     0x04: plotlyColors.accentCyan,
-    0x05: "#808080",
+    0x05: plotlyColors.neutral,
     0x06: plotlyColors.accentPurple,
   } as Record<number, string>), [plotlyColors]);
 
@@ -41,7 +41,7 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
 
   const labels = entries.map((e) => `0x${e.base_addr.toString(16)}`);
   const sizes = entries.map((e) => e.region_size);
-  const colors = entries.map((e) => typeColors[e.region_type] || "#808080");
+  const colors = entries.map((e) => typeColors[e.region_type] || plotlyColors.neutral);
   const hoverText = entries.map((e) => {
     const typeName = t(TYPE_NAME_KEYS[e.region_type] ?? "vas.type.unknown");
     return `${typeName} | ${protStr(e.protection)} | ${(e.region_size / 1024).toFixed(0)} KB${e.mapped_path ? ` | ${e.mapped_path}` : ""}`;

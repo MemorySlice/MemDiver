@@ -55,7 +55,6 @@ def _make_state(cancelled: bool = False) -> pr.PipelineState:
     return pr.PipelineState(
         ctx=_FakeCtx(cancelled=cancelled),
         artifact_dir=__import__("pathlib").Path("."),
-        sources=[],
         reduce_kwargs={},
         oracle_path=__import__("pathlib").Path("oracle"),
         bf_kwargs={},

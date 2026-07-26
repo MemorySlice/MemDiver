@@ -32,7 +32,7 @@ export function VerificationBadge({ verified }: VerificationBadgeProps) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-zinc-500/20 text-zinc-400"
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium md-bg-neutral-subtle md-text-secondary"
           title={t("verification.notVerifiedTitle")}>
       ?
     </span>

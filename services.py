@@ -93,6 +93,10 @@ from memdiver.app.tools import (
     scan_dataset,
 )
 
+# --- frontend-serving producers (field inference / algorithm availability) --
+from memdiver.app.tools_algorithms import algorithm_availability
+from memdiver.app.tools_fields import infer_fields_result
+
 __all__ = [
     # session
     "ToolSession",
@@ -133,4 +137,7 @@ __all__ = [
     "list_phases",
     "analyze_library",
     "import_dump",
+    # frontend-serving producers
+    "infer_fields_result",
+    "algorithm_availability",
 ]

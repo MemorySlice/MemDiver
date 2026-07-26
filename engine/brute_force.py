@@ -171,9 +171,18 @@ def _load_neighborhood_variance(
     if n == 0:
         return offset, []
     m2 = np.load(state["m2_path"], mmap_mode="r")
-    start = max(0, offset - NEIGHBORHOOD_PAD)
-    end = min(len(m2), offset + length + NEIGHBORHOOD_PAD)
-    slice_variance = (m2[start:end].astype(np.float32) / float(n))
+    try:
+        start = max(0, offset - NEIGHBORHOOD_PAD)
+        end = min(len(m2), offset + length + NEIGHBORHOOD_PAD)
+        # ``.astype`` materializes an independent copy, so the mapping can be
+        # released immediately below.
+        slice_variance = (m2[start:end].astype(np.float32) / float(n))
+    finally:
+        # Release the mmap fd now — this runs once per hit; leaving it to GC
+        # accumulates open mappings across an exhaustive many-hit run.
+        mm = getattr(m2, "_mmap", None)
+        if mm is not None:
+            mm.close()
     return start, slice_variance.tolist()
 
 
@@ -280,10 +289,11 @@ def _run_parallel(
     Futures outstanding: it primes the window, then submits the next
     candidate only as an earlier one completes. Memory therefore stays
     bounded like the serial path. ``total_estimate`` is only used for the
-    progress percentage; completion order (and thus hit ordering) matches
-    the previous ``as_completed`` behavior, and the non-exhaustive
-    early-cancel still drops queued-but-unstarted work without running
-    the oracle on it.
+    progress percentage. Hit *ordering* is normalized by the caller (sorted by
+    offset), so the non-deterministic completion order no longer leaks into the
+    result; on the first non-exhaustive hit this path stops feeding new
+    candidates and drains the current in-flight window (rather than cancelling
+    immediately), so the caller can pick the lowest-offset hit deterministically.
     """
     hits: List[Tuple[int, int, int]] = []
     completed = 0
@@ -299,7 +309,7 @@ def _run_parallel(
         initargs=(str(oracle_path), oracle_config),
     ) as pool:
         in_flight = set()
-        stop = False
+        draining = False  # set on the first non-exhaustive hit
         try:
             # Prime the in-flight window.
             for job in jobs_iter:
@@ -325,9 +335,12 @@ def _run_parallel(
                                        "region_index": int(ridx)},
                             ),
                         )
+                        # Non-exhaustive: stop feeding new candidates but let the
+                        # current in-flight window finish, so the caller can pick
+                        # the lowest-offset hit deterministically instead of
+                        # whichever future happened to complete first.
                         if not exhaustive:
-                            stop = True
-                            break
+                            draining = True
                     if completed % _PROGRESS_EVERY == 0:
                         pct = (completed / total) if total > 0 else -1.0
                         safe_emit(
@@ -340,14 +353,13 @@ def _run_parallel(
                                        "total": total},
                             ),
                         )
-                if stop:
-                    break
-                # Refill the window: submit one new candidate per slot freed
-                # by the just-completed Futures.
-                for job in jobs_iter:
-                    in_flight.add(pool.submit(_worker_verify, job))
-                    if len(in_flight) >= max_in_flight:
-                        break
+                if not draining:
+                    # Refill the window: submit one new candidate per slot freed
+                    # by the just-completed Futures.
+                    for job in jobs_iter:
+                        in_flight.add(pool.submit(_worker_verify, job))
+                        if len(in_flight) >= max_in_flight:
+                            break
         except Cancelled:
             for pending in in_flight:
                 pending.cancel()
@@ -399,6 +411,10 @@ def brute_force_with_oracle(
         progress_callback=progress_callback,
         cancel_event=cancel_event,
     )
+    # Deterministic ordering: the emitted plugin anchors on hits[0], so sort by
+    # (offset, region_index, size) regardless of discovery order — identical
+    # inputs must always yield an identical plugin.
+    raw_hits.sort(key=lambda h: (h[1], h[0], h[2]))
     hits = [
         Hit(
             offset=offset,
@@ -472,6 +488,11 @@ def run_brute_force(
             cancel_event=cancel_event,
         )
 
+    # Deterministic ordering: the emitted plugin anchors on hits[0], so sort by
+    # (offset, region_index, size) regardless of discovery order (serial
+    # iteration vs parallel completion) — identical inputs must always yield an
+    # identical plugin.
+    raw_hits.sort(key=lambda h: (h[1], h[0], h[2]))
     hits: List[Hit] = []
     for ridx, offset, size in raw_hits:
         neighborhood_start = offset

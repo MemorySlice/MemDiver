@@ -2,9 +2,9 @@ import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 
 const TYPE_BADGE: Record<string, string> = {
-  static: "bg-teal-600/20 text-teal-400 border-teal-600/40",
-  key_material: "bg-red-600/20 text-red-400 border-red-600/40",
-  dynamic: "bg-amber-600/20 text-amber-400 border-amber-600/40",
+  static: "md-bg-cyan-subtle text-[var(--md-accent-cyan)] border-[var(--md-accent-cyan)]",
+  key_material: "md-bg-error-subtle md-text-error md-border-error",
+  dynamic: "md-bg-warning-subtle text-[var(--md-accent-orange)] md-border-warning",
 };
 
 export function NeighborhoodOverlayPanel() {

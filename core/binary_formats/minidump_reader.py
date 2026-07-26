@@ -219,17 +219,21 @@ class MinidumpReader:
 
     # -- Reading ------------------------------------------------------------
 
-    def read_at(self, rva: int, size: int) -> memoryview:
-        """Return a zero-copy ``memoryview`` of ``size`` bytes at ``rva``.
+    def read_at(self, rva: int, size: int) -> bytes:
+        """Return ``size`` bytes at ``rva`` (a bounded copy out of the mmap).
 
         The range is bounds-checked against the mapped file; an out-of-range
-        or truncated request raises ``ValueError``.
+        or truncated request raises ``ValueError``. A copy is returned rather
+        than a zero-copy ``memoryview`` on purpose: an exported view of the mmap
+        makes ``close()`` raise ``BufferError`` ("cannot close exported pointers
+        exist") if any caller still holds it. These reads are small structural /
+        region slices, so the copy cost is negligible and every caller already
+        copies the result into its own buffer.
         """
         if self._mmap is None:
             raise RuntimeError("MinidumpReader not opened")
         self._check_range(rva, size, "read")
-        view = memoryview(self._mmap)
-        return view[rva:rva + size]
+        return self._mmap[rva:rva + size]
 
     # -- Parsing ------------------------------------------------------------
 

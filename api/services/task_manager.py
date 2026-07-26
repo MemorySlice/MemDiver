@@ -465,13 +465,26 @@ class TaskManager:
         return self._task_root / task_id / "record.json"
 
     def _persist(self, record: TaskRecord) -> None:
-        """Atomic write via tmp + os.replace."""
+        """Atomic write via a *unique* tmp file + os.replace.
+
+        ``_persist`` runs off the lock from two threads — the event-loop drain
+        (``_handle_worker_event``) and the sync ``cancel`` handler that Starlette
+        dispatches to a worker thread. A shared ``record.json.tmp`` let their
+        writes interleave into torn JSON, or made the second ``os.replace`` raise
+        ``FileNotFoundError`` (the tmp already moved) → a 500 out of ``cancel``.
+        A per-write tmp makes each write self-contained; ``os.replace`` onto the
+        final path is atomic, so concurrent writers are simply last-writer-wins.
+        """
         task_dir = self._task_root / record.task_id
         task_dir.mkdir(parents=True, exist_ok=True)
         final = task_dir / "record.json"
-        tmp = task_dir / "record.json.tmp"
-        tmp.write_text(json.dumps(record.to_dict(), indent=2))
-        os.replace(tmp, final)
+        tmp = task_dir / f"record.json.{uuid.uuid4().hex}.tmp"
+        try:
+            tmp.write_text(json.dumps(record.to_dict(), indent=2))
+            os.replace(tmp, final)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def load_from_disk(self) -> None:
         """Rebuild in-memory records and mark orphan RUNNING as FAILED.
@@ -484,10 +497,11 @@ class TaskManager:
         for task_dir in self._task_root.iterdir():
             if not task_dir.is_dir():
                 continue
-            tmp = task_dir / "record.json.tmp"
-            if tmp.exists():
+            # Matches both the legacy fixed name (record.json.tmp) and the
+            # per-write unique name (record.json.<hex>.tmp).
+            for stray in task_dir.glob("record.json*.tmp"):
                 try:
-                    tmp.unlink()
+                    stray.unlink()
                 except OSError:
                     pass
             record_path = task_dir / "record.json"

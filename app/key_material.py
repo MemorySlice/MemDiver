@@ -2,7 +2,7 @@
 
 Mirrors ``cli._key_material_from_args`` so the MCP surface can read
 encrypted ``.msl`` containers (spec §10). The unkeyed fast path keeps
-using the shared reader cache (``api.services.reader_cache``); the keyed
+using the shared reader cache (``memdiver.app.reader_cache``); the keyed
 path bypasses the cache — which cannot carry key material — and opens the
 container directly with the supplied key/passphrase/KEM private key.
 """
@@ -45,7 +45,7 @@ def open_dump_source(path: str, km: dict) -> Iterator[object]:
     the unkeyed inspect tools. Both branches yield an already-opened
     source and close it on exit.
     """
-    from memdiver.api.services.reader_cache import cached_dump_source
+    from memdiver.app.reader_cache import cached_dump_source
     from memdiver.core.dump_source import open_dump
 
     if has_key_material(km):
@@ -67,7 +67,7 @@ def open_msl_reader(path: str, km: dict) -> Iterator[object]:
     Keyed opens construct a fresh ``MslReader`` with the key material;
     unkeyed opens reuse the shared cache.
     """
-    from memdiver.api.services.reader_cache import cached_msl_reader
+    from memdiver.app.reader_cache import cached_msl_reader
 
     if has_key_material(km):
         from memdiver.msl.reader import MslReader

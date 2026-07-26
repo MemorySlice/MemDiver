@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import type { Data, Layout } from "plotly.js";
 
 import { Plot } from "@/components/charts/plotly/normalize-plot";
+import { getChartColor } from "@/components/charts/tokens";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { SURVIVOR_TRACES } from "../survivor-traces";
 
@@ -32,7 +33,7 @@ export function SurvivorCurve() {
       margin: { l: 60, r: 20, t: 30, b: 50 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { color: "#cbd5e1", size: 11 },
+      font: { color: getChartColor("--md-chart-text"), size: 11 },
       xaxis: {
         title: { text: t("results.survivor.xAxis") },
         gridcolor: "rgba(148,163,184,0.15)",
@@ -47,7 +48,7 @@ export function SurvivorCurve() {
       legend: {
         orientation: "h",
         y: -0.2,
-        font: { color: "#cbd5e1" },
+        font: { color: getChartColor("--md-chart-text") },
       },
     }),
     [t],
@@ -68,7 +69,7 @@ export function SurvivorCurve() {
       type: "scatter",
       mode: "lines+markers",
       name: t.label,
-      line: { color: t.color, width: 2, ...(t.dash ? { dash: t.dash } : {}) },
+      line: { color: getChartColor(t.token), width: 2, ...(t.dash ? { dash: t.dash } : {}) },
       marker: { size: 6 },
     }));
     const firstHit = points.find((p) => p.hit_offset !== null);
@@ -81,10 +82,10 @@ export function SurvivorCurve() {
         // of date in @types/plotly.js — cast to loosen the check.
         mode: "markers+text" as unknown as "markers",
         name: "oracle_hit",
-        marker: { color: "#a855f7", size: 14, symbol: "star" },
+        marker: { color: getChartColor("--md-accent-purple"), size: 14, symbol: "star" },
         text: [t("results.survivor.hit")],
         textposition: "top center",
-        textfont: { color: "#a855f7", size: 11 },
+        textfont: { color: getChartColor("--md-accent-purple"), size: 11 },
       });
     }
     return out;

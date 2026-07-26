@@ -156,7 +156,7 @@ export function OracleUpload() {
                     <span className="md-text-accent font-mono text-xs truncate">
                       {o.filename}
                     </span>
-                    <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-indigo-700">
+                    <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-[var(--md-accent-purple)]">
                       {t("oracle.upload.shape", { shape: o.shape })}
                     </span>
                     {o.armed ? (
@@ -195,7 +195,7 @@ export function OracleUpload() {
                         e.stopPropagation();
                         void handleRemove(o);
                       }}
-                      className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-red-700 hover:text-white"
+                      className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-white"
                     >
                       {t("common:delete")}
                     </button>

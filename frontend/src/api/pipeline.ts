@@ -62,6 +62,22 @@ export interface PipelineRunResponse {
 
 // ---- response models ----
 
+/**
+ * A single inferred structure field over a hit's neighborhood window.
+ *
+ * Produced server-side by ``PatternGenerator.infer_fields()`` (exposed via
+ * ``POST /api/pipeline/infer-fields`` and the ``/refine`` response) so the
+ * frontend consumes it instead of recomputing the segmentation client-side.
+ * Shape matches the ``InferredField`` Pydantic contract byte-for-byte.
+ */
+export interface InferredField {
+  offset: number;
+  length: number;
+  type: "static" | "key_material" | "dynamic";
+  label: string;
+  mean_variance: number;
+}
+
 export type TaskStatus =
   | "pending"
   | "running"
@@ -135,13 +151,45 @@ export interface RefineResponse {
   num_dumps: number;
   static_count: number;
   dynamic_count: number;
+  /** Variance threshold (PLUGIN_STATIC_THRESHOLD) used to classify bytes. */
+  variance_threshold: number;
   hit_neighborhoods: Array<{
     offset: number;
     neighborhood_start: number;
     neighborhood_variance: number[];
     static_count: number;
     dynamic_count: number;
+    /** Server-inferred field structure for this neighborhood window. */
+    fields: InferredField[];
   }>;
+}
+
+/** Request body for ``POST /api/pipeline/infer-fields``. */
+export interface InferFieldsRequest {
+  neighborhood_variance: number[];
+  neighborhood_start: number;
+  offset: number;
+  length: number;
+  variance_threshold?: number | null;
+}
+
+/**
+ * Segment a neighborhood variance array into contiguous static /
+ * key_material / dynamic fields, server-side. Returns the inferred fields
+ * plus the ``variance_threshold`` actually applied (so callers never hardcode
+ * it). Replaces the former client-side ``inferNeighborhoodFields`` port.
+ */
+export async function inferFields(
+  body: InferFieldsRequest,
+): Promise<{ fields: InferredField[]; variance_threshold: number }> {
+  return request<{ fields: InferredField[]; variance_threshold: number }>(
+    "/api/pipeline/infer-fields",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 export async function refinePipeline(

@@ -10,7 +10,6 @@ import { useTranslation } from "react-i18next";
 import { refinePipeline } from "@/api/pipeline";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useHexStore } from "@/stores/hex-store";
-import { inferNeighborhoodFields } from "@/utils/infer-neighborhood-fields";
 import { notifyError } from "@/utils/errorNotifier";
 
 export function RefinePanel() {
@@ -39,22 +38,18 @@ export function RefinePanel() {
         staticCount: resp.static_count,
         dynamicCount: resp.dynamic_count,
       });
-      // Update the hex store neighborhood overlay with fresh variance
+      // Update the hex store neighborhood overlay with fresh variance.
+      // ``fields`` now arrives on the refine response (server-inferred);
+      // no client-side recompute.
       if (resp.hit_neighborhoods.length > 0) {
         const nh = resp.hit_neighborhoods[0];
         const hit = hits[0];
-        const keyOff = hit.offset - nh.neighborhood_start;
-        const fields = inferNeighborhoodFields(
-          nh.neighborhood_variance,
-          keyOff,
-          hit.size,
-        );
         useHexStore.getState().setActiveNeighborhoodOverlay({
           hitOffset: hit.offset,
           hitSize: hit.size,
           neighborhoodStart: nh.neighborhood_start,
           variance: nh.neighborhood_variance,
-          fields,
+          fields: nh.fields,
         });
       }
     } catch (err) {
@@ -78,8 +73,8 @@ export function RefinePanel() {
     lastPoint.staticCount === prevPoint.staticCount;
 
   return (
-    <div className="border border-zinc-700 rounded-lg p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-zinc-300">
+    <div className="border border-[var(--md-border)] rounded-lg p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-[var(--md-text-primary)]">
         {t("results.refine.title")}
       </h3>
 
@@ -88,11 +83,11 @@ export function RefinePanel() {
         <div className="flex flex-wrap gap-2 items-center text-xs">
           {history.map((pt, i) => (
             <span key={i} className="inline-flex items-center gap-1">
-              {i > 0 && <span className="text-zinc-500">&rarr;</span>}
-              <span className="bg-zinc-800 px-2 py-0.5 rounded font-mono">
+              {i > 0 && <span className="md-text-muted">&rarr;</span>}
+              <span className="bg-[var(--md-bg-tertiary)] px-2 py-0.5 rounded font-mono">
                 N={pt.n}:{" "}
                 <span className="md-text-success">{pt.staticCount}</span>/
-                <span className="text-zinc-400">
+                <span className="md-text-secondary">
                   {pt.staticCount + pt.dynamicCount}
                 </span>{" "}
                 {t("results.refine.static")}
@@ -117,7 +112,7 @@ export function RefinePanel() {
       {/* Add dumps */}
       <div className="space-y-2">
         <textarea
-          className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs font-mono text-zinc-300 placeholder-zinc-600"
+          className="w-full bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded px-2 py-1.5 text-xs font-mono text-[var(--md-text-primary)] placeholder-[var(--md-text-muted)]"
           rows={3}
           placeholder={t("results.refine.pathsPlaceholder")}
           value={paths}
@@ -125,7 +120,7 @@ export function RefinePanel() {
           disabled={loading}
         />
         <button
-          className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500 rounded text-white"
+          className="px-3 py-1.5 text-xs font-medium bg-[var(--md-accent-blue)] hover:opacity-90 disabled:bg-[var(--md-bg-hover)] disabled:text-[var(--md-text-muted)] rounded text-white"
           onClick={handleRefine}
           disabled={loading || !paths.trim()}
         >

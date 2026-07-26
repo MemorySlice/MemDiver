@@ -85,7 +85,7 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
       } else {
         hexText = byteToHex(a!);
         asciiText = byteToAscii(a!);
-        style = { color: "#ff6b6b", fontWeight: "bold" };
+        style = { color: "var(--md-accent-red)", fontWeight: "bold" };
       }
 
       hexCells.push(
@@ -117,18 +117,18 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 8px", borderBottom: "1px solid var(--md-border, #333)", fontSize: 12 }}>
-        <span style={{ color: "var(--md-text-secondary, #888)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 8px", borderBottom: "1px solid var(--md-border)", fontSize: 12 }}>
+        <span style={{ color: "var(--md-text-secondary)" }}>
           A: <strong>{nameFromPath(pathA)}</strong> | B: <strong>{nameFromPath(pathB)}</strong>
         </span>
-        <span style={{ color: "var(--md-text-muted, #666)" }}>
+        <span style={{ color: "var(--md-text-muted)" }}>
           {t("overlay.page", { current: currentPage + 1, total: totalPages })}
         </span>
       </div>
       <div style={{ flex: 1, overflow: "auto", opacity: loading ? 0.5 : 1 }}>
         {rows}
       </div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "4px 8px", borderTop: "1px solid var(--md-border, #333)" }}>
+      <div style={{ display: "flex", justifyContent: "center", gap: 8, padding: "4px 8px", borderTop: "1px solid var(--md-border)" }}>
         <button disabled={currentPage === 0} onClick={() => loadPage(offset - PAGE_SIZE)}>
           {t("overlay.prev")}
         </button>

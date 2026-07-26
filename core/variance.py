@@ -91,16 +91,30 @@ class WelfordVariance:
         return self._size
 
     def add_dump(self, buf: bytes) -> None:
-        """Fold one dump into the running accumulators."""
+        """Fold one dump into the running accumulators.
+
+        Processed in position slabs so the transient float32 working set stays
+        O(chunk) rather than O(size). The naive whole-array update allocates ~5
+        full-width temporaries (``x``, ``delta``, ``delta/n``, ``x-mean`` and the
+        product); on a multi-GiB dump that peaks at tens of GiB. Welford's
+        recurrence is per-position independent, so slabbing by byte offset is
+        bit-identical to the whole-array update.
+        """
         if len(buf) < self._size:
             raise ValueError(
                 f"dump shorter than accumulator size ({len(buf)} < {self._size})"
             )
-        x = np.frombuffer(buf, dtype=np.uint8, count=self._size).astype(np.float32)
+        raw = np.frombuffer(buf, dtype=np.uint8, count=self._size)
         self._n += 1
-        delta = x - self._mean
-        self._mean += delta / self._n
-        self._m2 += delta * (x - self._mean)
+        n = self._n
+        for start in range(0, self._size, CHUNK_BYTES):
+            end = min(start + CHUNK_BYTES, self._size)
+            x = raw[start:end].astype(np.float32)
+            mean = self._mean[start:end]  # view — ``+=`` updates in place
+            m2 = self._m2[start:end]
+            delta = x - mean
+            mean += delta / n
+            m2 += delta * (x - mean)
 
     def variance(self) -> np.ndarray:
         """Return current population variance (ddof=0). Zeros if n == 0."""

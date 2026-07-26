@@ -18,27 +18,57 @@ export function getToken(name: string, fallback = ""): string {
   return value || fallback;
 }
 
+// Canonical light-theme hex fallbacks, so a pre-paint / non-DOM (jsdom) render
+// never yields an empty colour string. Single source of truth: both
+// getChartColor() and chartTokens() resolve through this table.
+const TOKEN_FALLBACKS: Record<string, string> = {
+  "--md-accent-blue": "#2a6db5",
+  "--md-accent-green": "#3d7a28",
+  "--md-accent-orange": "#b05a2e",
+  "--md-accent-red": "#cc3333",
+  "--md-accent-purple": "#8b3d85",
+  "--md-accent-cyan": "#1a8a70",
+  "--md-accent-yellow": "#a68a00",
+  "--md-chart-paper": "#f7f7f7",
+  "--md-chart-plot": "#ffffff",
+  "--md-chart-grid": "#e0e0e0",
+  "--md-chart-text": "#333333",
+  "--md-text-primary": "#212121",
+  "--md-text-secondary": "#666666",
+  "--md-text-muted": "#888888",
+  "--md-border": "#d4d4d8",
+  "--md-variance-invariant": "#cccccc",
+  "--md-variance-structural": "#3d7a28",
+  "--md-variance-pointer": "#2a6db5",
+  "--md-variance-key-candidate": "#cc2222",
+};
+
+/** Resolve a design-token colour with its canonical fallback baked in. */
+export function getChartColor(name: string): string {
+  return getToken(name, TOKEN_FALLBACKS[name] ?? "");
+}
+
 /** Token set commonly used by charts. Call at render time; do not cache across renders. */
 export function chartTokens() {
   return {
-    accentBlue: getToken("--md-accent-blue", "#2a6db5"),
-    accentGreen: getToken("--md-accent-green", "#3d7a28"),
-    accentOrange: getToken("--md-accent-orange", "#b05a2e"),
-    accentRed: getToken("--md-accent-red", "#cc3333"),
-    accentPurple: getToken("--md-accent-purple", "#8b3d85"),
-    accentCyan: getToken("--md-accent-cyan", "#1a8a70"),
-    accentYellow: getToken("--md-accent-yellow", "#a68a00"),
-    chartPaper: getToken("--md-chart-paper", "#f7f7f7"),
-    chartPlot: getToken("--md-chart-plot", "#ffffff"),
-    chartGrid: getToken("--md-chart-grid", "#e0e0e0"),
-    chartText: getToken("--md-chart-text", "#333333"),
-    textPrimary: getToken("--md-text-primary", "#212121"),
-    textSecondary: getToken("--md-text-secondary", "#666666"),
-    textMuted: getToken("--md-text-muted", "#888888"),
-    border: getToken("--md-border", "#d4d4d8"),
-    varianceInvariant: getToken("--md-variance-invariant", "#cccccc"),
-    varianceStructural: getToken("--md-variance-structural", "#3d7a28"),
-    variancePointer: getToken("--md-variance-pointer", "#2a6db5"),
-    varianceKeyCandidate: getToken("--md-variance-key-candidate", "#cc2222"),
+    accentBlue: getChartColor("--md-accent-blue"),
+    accentGreen: getChartColor("--md-accent-green"),
+    accentOrange: getChartColor("--md-accent-orange"),
+    accentRed: getChartColor("--md-accent-red"),
+    accentPurple: getChartColor("--md-accent-purple"),
+    accentCyan: getChartColor("--md-accent-cyan"),
+    accentYellow: getChartColor("--md-accent-yellow"),
+    chartPaper: getChartColor("--md-chart-paper"),
+    chartPlot: getChartColor("--md-chart-plot"),
+    chartGrid: getChartColor("--md-chart-grid"),
+    chartText: getChartColor("--md-chart-text"),
+    textPrimary: getChartColor("--md-text-primary"),
+    textSecondary: getChartColor("--md-text-secondary"),
+    textMuted: getChartColor("--md-text-muted"),
+    border: getChartColor("--md-border"),
+    varianceInvariant: getChartColor("--md-variance-invariant"),
+    varianceStructural: getChartColor("--md-variance-structural"),
+    variancePointer: getChartColor("--md-variance-pointer"),
+    varianceKeyCandidate: getChartColor("--md-variance-key-candidate"),
   };
 }

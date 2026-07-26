@@ -716,3 +716,36 @@ def test_pointer_graph_tampered_trailer_detected(tmp_path):
         graph = reader.collect_pointer_graphs()[0]
         raw_payload = reader.read_block_payload(graph.block_header)
         assert verify_pointer_graph_integrity(graph, raw_payload) is False
+
+
+# --- atomic write (temp + os.replace) ---
+
+def test_atomic_output_preserves_existing_file_on_failure(tmp_path):
+    """A mid-write failure must not corrupt/truncate the destination or clobber
+    a previously-good file, and must leave no stray temp behind."""
+    from memdiver.msl.writer import MslWriter
+
+    dest = tmp_path / "out.msl"
+    dest.write_bytes(b"GOOD-EXISTING")
+    w = MslWriter(dest)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with w._atomic_output() as f:
+            f.write(b"PARTIAL")
+            raise RuntimeError("boom")
+
+    assert dest.read_bytes() == b"GOOD-EXISTING"  # untouched
+    assert list(tmp_path.glob("*.tmp")) == []  # temp cleaned up
+
+
+def test_atomic_output_commits_on_success(tmp_path):
+    """A clean write atomically replaces the destination and leaves no temp."""
+    from memdiver.msl.writer import MslWriter
+
+    dest = tmp_path / "out.msl"
+    w = MslWriter(dest)
+    with w._atomic_output() as f:
+        f.write(b"NEW-CONTENT")
+
+    assert dest.read_bytes() == b"NEW-CONTENT"
+    assert list(tmp_path.glob("*.tmp")) == []

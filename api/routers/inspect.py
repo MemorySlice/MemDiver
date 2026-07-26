@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.services.key_material import decode_key_material
-from memdiver.api.services.reader_cache import key_material_scope
+from memdiver.app.reader_cache import key_material_scope
 from memdiver.core.dump_source import ViewMode
 from memdiver.core.service_errors import CapabilityError
 from memdiver.mcp_server import tools_inspect, tools_xref
@@ -324,7 +324,7 @@ def _open_msl(msl_path: str):
     manager's __enter__, we must wrap the whole yield — not just the
     cached_msl_reader() call.
     """
-    from memdiver.api.services.reader_cache import cached_msl_reader
+    from memdiver.app.reader_cache import cached_msl_reader
 
     path = _validate_msl_path(msl_path)
     try:

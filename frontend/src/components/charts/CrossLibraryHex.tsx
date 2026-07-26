@@ -37,9 +37,9 @@ function hexLine(
     const isKey = abs >= keyStart && abs < keyEnd;
     const b = data[i];
     const color = isKey
-      ? "var(--md-accent-green, #4ec9b0)"
+      ? "var(--md-accent-green)"
       : b === 0
-        ? "var(--md-text-muted, #666)"
+        ? "var(--md-text-muted)"
         : "inherit";
     parts.push(`<span style="color:${color};${isKey ? "font-weight:600;" : ""}">${byteToHex(b)}</span> `);
     if ((i - rowStart) === 7) parts.push(" ");

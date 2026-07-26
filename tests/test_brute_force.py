@@ -118,6 +118,45 @@ def test_run_brute_force_parallel_path(tmp_path):
     assert result.hits[0].offset == 256
 
 
+def test_run_brute_force_hits_sorted_and_job_invariant(tmp_path):
+    """Exhaustive hits are offset-sorted and identical across job counts.
+
+    The emitted Vol3 plugin anchors on hits[0], so identical inputs must yield
+    an identical plugin whether run with jobs=1 (serial) or jobs>1 (parallel,
+    which discovers hits in completion order).
+    """
+    np.random.seed(11)
+    ref = bytearray(np.random.randint(0, 256, 2048, dtype=np.uint8).tobytes())
+    target = bytes(range(32))
+    for off in (512, 256, 1024):  # same key planted at several offsets
+        ref[off:off + 32] = target
+    ref = bytes(ref)
+    regions = [
+        {"offset": 256, "length": 512},   # candidates at 256 and 512
+        {"offset": 1024, "length": 64},   # candidate at 1024
+    ]
+    cand_path = tmp_path / "cands.json"
+    cand_path.write_text(json.dumps({"regions": regions}))
+    oracle = _write_oracle(
+        tmp_path,
+        "TARGET = bytes(range(32))\n"
+        "def verify(c): return c == TARGET\n",
+    )
+
+    def _offsets(jobs):
+        r = run_brute_force(
+            candidates_path=cand_path, reference_data=ref,
+            oracle_path=oracle, jobs=jobs, stride=8, exhaustive=True,
+        )
+        return [h.offset for h in r.hits]
+
+    serial = _offsets(1)
+    parallel = _offsets(4)
+    assert serial == [256, 512, 1024]        # offset-sorted, all found
+    assert serial == parallel                # job-count invariant
+    assert parallel == sorted(parallel)      # never completion order
+
+
 def test_run_parallel_streams_with_bounded_window(tmp_path):
     """_run_parallel must not eagerly drain the candidate iterator.
 

@@ -6,7 +6,9 @@ import { getPathInfo } from "@/api/client";
 import { useAppStore, SINGLE_FILE_ALGORITHMS, REFERENCE_ALGORITHMS, MULTI_DUMP_ALGORITHMS, PROTOCOL_ALGORITHMS } from "@/stores/app-store";
 import type { AlgorithmName } from "@/stores/app-store";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { getAlgorithmAvailability } from "@/utils/algorithm-availability";
+import { getAlgorithmAvailability, type AlgorithmAvailability } from "@/api/algorithms";
+
+const ALGO_AVAILABLE_PENDING: AlgorithmAvailability = { available: true, reason: null };
 
 function WizardHeader() {
   return (
@@ -193,27 +195,44 @@ function StepAnalysis() {
 
   const isSingleFile = inputMode === "file";
 
-  const availabilityContext = useMemo(() => ({
-    inputMode: isSingleFile ? "file" : (inputMode ?? null),
-    dumpCount: pathInfo?.dump_count ?? 1,
-    hasKeylog: pathInfo?.has_keylog ?? !!keylogFilename,
-    hasCandidateKeys: false, // always false in wizard — no analysis has run yet
-  }), [isSingleFile, inputMode, pathInfo, keylogFilename]);
+  const dumpCount = pathInfo?.dump_count ?? 1;
+  const hasKeylog = pathInfo?.has_keylog ?? !!keylogFilename;
+  const modeParam = isSingleFile ? "file" : (inputMode ?? undefined);
 
   const allAlgos: AlgorithmName[] = useMemo(
     () => [...SINGLE_FILE_ALGORITHMS, ...REFERENCE_ALGORITHMS, ...MULTI_DUMP_ALGORITHMS, ...PROTOCOL_ALGORITHMS],
     [],
   );
 
-  // Auto-deselect algorithms that become unavailable
+  // Algorithm availability is decided server-side (GET
+  // /api/algorithms/availability). Fetch the map whenever the input context
+  // changes. hasCandidateKeys is always false in the wizard — no analysis has
+  // run yet.
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, AlgorithmAvailability>>({});
+  useEffect(() => {
+    let cancelled = false;
+    getAlgorithmAvailability({
+      dumpCount,
+      hasKeylog,
+      hasCandidateKeys: false,
+      mode: modeParam,
+      algorithms: allAlgos,
+    })
+      .then((res) => { if (!cancelled) setAvailabilityMap(res.availability); })
+      .catch(() => { /* keep prior map; unknown algos treated as available */ });
+    return () => { cancelled = true; };
+  }, [dumpCount, hasKeylog, modeParam, allAlgos]);
+
+  // Auto-deselect algorithms that are unavailable. Depends on the RESOLVED
+  // map (not the raw context) so it never deselects while a fetch is pending.
   useEffect(() => {
     for (const algo of selectedAlgorithms) {
-      const availability = getAlgorithmAvailability(algo, availabilityContext);
-      if (!availability.available) {
+      const availability = availabilityMap[algo];
+      if (availability && !availability.available) {
         toggleAlgorithm(algo);
       }
     }
-  }, [availabilityContext]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [availabilityMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
@@ -239,7 +258,7 @@ function StepAnalysis() {
         {analysisApproach === "auto" && (
           <div className="ml-4 space-y-1.5">
             {allAlgos.map((algo) => {
-              const availability = getAlgorithmAvailability(algo, availabilityContext);
+              const availability = availabilityMap[algo] ?? ALGO_AVAILABLE_PENDING;
               const checked = selectedAlgorithms.includes(algo);
               return (
                 <label

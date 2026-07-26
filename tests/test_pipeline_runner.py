@@ -170,6 +170,46 @@ def test_run_pipeline_consensus_reduce_brute_force(
         assert ev["pct"] == 1.0
 
 
+def test_run_pipeline_persists_consensus_state_contract(
+    dumps_dir, oracle_path, artifact_dir
+):
+    """The rewritten runner routes the consensus stage through the app producer
+    (persist_welford=True). This pins the contract /refine + /neighborhood +
+    brute-force state_path depend on: the ``consensus_state`` artifact, the exact
+    ``state.json`` key set, and the mean/m2 arrays it points at.
+    """
+    ctx = _FakeCtx()
+    params = {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": dumps_dir,
+        "reduce_kwargs": {
+            "min_variance": 100.0, "entropy_window": 16, "entropy_threshold": 3.5,
+            "min_region": 8, "alignment": 8, "block_size": 16,
+        },
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1,
+                        "exhaustive": True},
+    }
+    result = run_pipeline(params, ctx)
+
+    # The consensus_state artifact is registered (alongside the other stages).
+    names = {a["name"] for a in result["artifacts"]}
+    assert {"consensus_variance", "consensus_reference", "consensus_state",
+            "candidates", "hits"} <= names
+
+    # state.json carries exactly the four keys the readers expect, and its
+    # mean/m2 pointers resolve to real arrays sized to the variance vector.
+    state_path = artifact_dir / "consensus" / "state.json"
+    assert state_path.is_file()
+    state = json.loads(state_path.read_text())
+    assert set(state) == {"size", "num_dumps", "mean_path", "m2_path"}
+    assert state["num_dumps"] == len(dumps_dir)
+    variance = np.load(artifact_dir / "consensus" / "variance.npy")
+    mean = np.load(state["mean_path"])
+    m2 = np.load(state["m2_path"])
+    assert mean.shape == m2.shape == (state["size"],) == variance.shape
+
+
 # ------------------------------------------------------------------
 # optional stages
 # ------------------------------------------------------------------
@@ -275,6 +315,15 @@ class _CountingRawSource:
     def __init__(self, data: bytes):
         self._data = data
         self.read_calls = 0
+
+    @property
+    def size(self) -> int:
+        # Length without reading — the streaming fold probes this to size the
+        # accumulator, so it must not count as a read.
+        return len(self._data)
+
+    def size_for(self, view: str = "raw") -> int:
+        return len(self._data)
 
     def read_all(self, *args, **kwargs) -> bytes:
         self.read_calls += 1
@@ -413,3 +462,5 @@ def test_run_pipeline_escalate_recovers_diluted_key_reports_phi0(
         if e["type"] == "stage_start" and e.get("stage") == "consensus"
     ]
     assert len(consensus_starts) == 1
+
+
