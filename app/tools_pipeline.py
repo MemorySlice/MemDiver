@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -34,7 +35,8 @@ from memdiver.core.service_errors import (
 )
 from memdiver.core.service_result import KeyStatus
 
-from .key_material import key_material_kwargs
+from .artifact_cache import cache_reference_bytes, mmapped_variance
+from .key_material import has_key_material, key_material_kwargs
 
 logger = logging.getLogger("memdiver.app.tools_pipeline")
 
@@ -84,11 +86,21 @@ def _read_reference_bytes(
     """
     from memdiver.core.dump_source import open_dump
 
-    with open_dump(Path(reference_path), **key_material) as source:
-        source.open()
-        if on_source is not None:
-            on_source(source)
-        return source.read_all()
+    def _load() -> bytes:
+        with open_dump(Path(reference_path), **key_material) as source:
+            source.open()
+            if on_source is not None:
+                on_source(source)
+            return source.read_all()
+
+    # Cache only plaintext, non-observed reads. Key material carries secrets
+    # (must never enter a shared cache); an ``on_source`` hook must observe a
+    # real open on every call (a cache hit would skip it). Both bypass to a
+    # direct load. With no active reference_cache_scope, cache_reference_bytes
+    # is a no-op wrapper over _load, so the CLI/MCP path stays byte-identical.
+    if on_source is not None or has_key_material(key_material):
+        return _load()
+    return cache_reference_bytes(reference_path, _load)
 
 
 def _is_msl_source(source: Any) -> bool:
@@ -158,35 +170,39 @@ def search_reduce(
     from memdiver.engine.candidate_pipeline import reduce_search_space
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    try:
-        variance = np.load(variance_path)
-        reference = _read_reference_bytes(reference_path, km, on_source)
-    except FileNotFoundError as exc:
-        raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
-    except (OSError, ValueError) as exc:
-        raise CapabilityError(
-            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
-        ) from exc
-    _emit(on_progress, "stage_start", stage="search_reduce", pct=0.0,
-          msg=f"total_bytes={len(reference)}")
-    _experiment_check_cancelled(is_cancelled, on_progress)
-    reduce_extra: Dict[str, Any] = {}
-    pcb = _progress_bridge(on_progress, "search_reduce")
-    if pcb is not None:
-        reduce_extra["progress_callback"] = pcb
-    result = reduce_search_space(
-        variance, reference, num_dumps=num_dumps,
-        alignment=alignment, block_size=block_size,
-        density_threshold=density_threshold,
-        min_variance=min_variance,
-        entropy_window=entropy_window,
-        entropy_threshold=entropy_threshold,
-        min_region=min_region,
-        **reduce_extra,
-    )
-    # Advisory only: a data-driven floor to consider for min_variance
-    # (0.0 = too few dumps / no crypto component; keep everything).
-    recommended = floor_policy.recommended_floor(variance, num_dumps)
+    with ExitStack() as _vstack:
+        try:
+            # enter_context runs np.load(mmap_mode="r"); its FileNotFound /
+            # OSError / ValueError stay translated exactly as the old np.load.
+            variance = _vstack.enter_context(mmapped_variance(variance_path))
+            reference = _read_reference_bytes(reference_path, km, on_source)
+        except FileNotFoundError as exc:
+            raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
+        except (OSError, ValueError) as exc:
+            raise CapabilityError(
+                f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+            ) from exc
+        _emit(on_progress, "stage_start", stage="search_reduce", pct=0.0,
+              msg=f"total_bytes={len(reference)}")
+        _experiment_check_cancelled(is_cancelled, on_progress)
+        reduce_extra: Dict[str, Any] = {}
+        pcb = _progress_bridge(on_progress, "search_reduce")
+        if pcb is not None:
+            reduce_extra["progress_callback"] = pcb
+        result = reduce_search_space(
+            variance, reference, num_dumps=num_dumps,
+            alignment=alignment, block_size=block_size,
+            density_threshold=density_threshold,
+            min_variance=min_variance,
+            entropy_window=entropy_window,
+            entropy_threshold=entropy_threshold,
+            min_region=min_region,
+            **reduce_extra,
+        )
+        # Advisory only: a data-driven floor to consider for min_variance
+        # (0.0 = too few dumps / no crypto component; keep everything).
+        # Computed inside the mmap block (it reads ``variance``).
+        recommended = floor_policy.recommended_floor(variance, num_dumps)
     out = _ensure_dir(Path(output_dir))
     candidates_path = out / "candidates.json"
     payload = result.to_dict()
@@ -332,9 +348,11 @@ def n_sweep(
     are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
     ``nsweep`` stage.
     """
+    from memdiver.app.reports import write_nsweep_artifacts
     from memdiver.core.dump_source import open_dump
-    from memdiver.engine.nsweep import run_nsweep, write_nsweep_artifacts
+    from memdiver.engine.nsweep import run_nsweep
     from memdiver.engine.oracle import load_oracle, load_oracle_config
+    from memdiver.presentation.reports import nsweep_headline
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     sources = []
@@ -381,9 +399,10 @@ def n_sweep(
                 pass
 
     out = _ensure_dir(Path(output_dir))
-    paths = write_nsweep_artifacts(result, out)
+    headline = nsweep_headline(result)
+    paths = write_nsweep_artifacts(result, out, headline=headline)
     _emit(on_progress, "stage_end", stage="nsweep", pct=1.0,
-          msg=result.headline(),
+          msg=headline,
           extra={"first_hit_n": result.first_hit_n,
                  "first_hit_offset": result.first_hit_offset,
                  "total_dumps": result.total_dumps})
@@ -394,7 +413,7 @@ def n_sweep(
         "first_hit_n": result.first_hit_n,
         "first_hit_offset": result.first_hit_offset,
         "total_dumps": result.total_dumps,
-        "headline": result.headline(),
+        "headline": headline,
     }
     if result.escalation is not None:
         payload["escalation"] = result.escalation
@@ -773,53 +792,55 @@ def auto_floor(
     are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
     ``escalate`` stage (the pipeline's floor-free fall-through).
     """
+    from memdiver.app.reports import write_auto_floor_artifacts
     from memdiver.core.dump_source import open_dump
-    from memdiver.engine.auto_floor import (
-        hit_tier,
-        run_auto_floor,
-        write_auto_floor_artifacts,
-    )
+    from memdiver.engine.auto_floor import hit_tier, run_auto_floor
     from memdiver.engine.oracle import load_oracle, load_oracle_config
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
-    try:
-        variance = np.load(variance_path)
-        with open_dump(Path(reference_path), **km) as source:
-            source.open()
-            if on_source is not None:
-                on_source(source)
-            _raise_if_locked(source)
-            reference_data = source.read_all()[: len(variance)]
-        oracle = load_oracle(
-            Path(oracle_path),
-            load_oracle_config(Path(oracle_config_path) if oracle_config_path else None),
-        )
-    except FileNotFoundError as exc:
-        raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
-    except (OSError, ValueError) as exc:
-        raise CapabilityError(
-            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
-        ) from exc
+    with ExitStack() as _vstack:
+        try:
+            # enter_context runs np.load(mmap_mode="r"); its FileNotFound /
+            # OSError / ValueError stay translated exactly as the old np.load.
+            variance = _vstack.enter_context(mmapped_variance(variance_path))
+            with open_dump(Path(reference_path), **km) as source:
+                source.open()
+                if on_source is not None:
+                    on_source(source)
+                _raise_if_locked(source)
+                reference_data = source.read_all()[: len(variance)]
+            oracle = load_oracle(
+                Path(oracle_path),
+                load_oracle_config(Path(oracle_config_path) if oracle_config_path else None),
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
+        except (OSError, ValueError) as exc:
+            raise CapabilityError(
+                f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+            ) from exc
 
-    positive_control = bytes.fromhex(positive_control_hex) if positive_control_hex else None
-    _emit(on_progress, "stage_start", stage="escalate", pct=0.0,
-          msg="floor-free descending-variance sweep (brute-force found no hit)")
-    _experiment_check_cancelled(is_cancelled, on_progress)
-    af_extra: Dict[str, Any] = {}
-    pcb = _progress_bridge(on_progress, "escalate")
-    if pcb is not None:
-        af_extra["progress_callback"] = pcb
-    result = run_auto_floor(
-        variance, reference_data, num_dumps, oracle,
-        reduce_kwargs=dict(reduce_kwargs or {}), key_sizes=tuple(key_sizes),
-        stride=stride, coverage=coverage, correspondence=correspondence,
-        filter_recall=filter_recall, min_coverage=min_coverage,
-        positive_control=positive_control, phi0_method=phi0_method,
-        p_min=p_min, self_test_trials=self_test_trials,
-        oracle_budget=oracle_budget, alignment_quality=alignment_quality,
-        min_alignment=min_alignment, managed_region=managed_region,
-        **af_extra,
-    )
+        positive_control = bytes.fromhex(positive_control_hex) if positive_control_hex else None
+        _emit(on_progress, "stage_start", stage="escalate", pct=0.0,
+              msg="floor-free descending-variance sweep (brute-force found no hit)")
+        _experiment_check_cancelled(is_cancelled, on_progress)
+        af_extra: Dict[str, Any] = {}
+        pcb = _progress_bridge(on_progress, "escalate")
+        if pcb is not None:
+            af_extra["progress_callback"] = pcb
+        # Kept inside the mmap block: run_auto_floor reads ``variance`` (it
+        # asarray(float64)-copies it up front, so no view escapes).
+        result = run_auto_floor(
+            variance, reference_data, num_dumps, oracle,
+            reduce_kwargs=dict(reduce_kwargs or {}), key_sizes=tuple(key_sizes),
+            stride=stride, coverage=coverage, correspondence=correspondence,
+            filter_recall=filter_recall, min_coverage=min_coverage,
+            positive_control=positive_control, phi0_method=phi0_method,
+            p_min=p_min, self_test_trials=self_test_trials,
+            oracle_budget=oracle_budget, alignment_quality=alignment_quality,
+            min_alignment=min_alignment, managed_region=managed_region,
+            **af_extra,
+        )
     out = _ensure_dir(Path(output_dir))
     paths = write_auto_floor_artifacts(result, out)
     verdict = result.to_dict()

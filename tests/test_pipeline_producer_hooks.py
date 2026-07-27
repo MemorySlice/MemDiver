@@ -189,6 +189,28 @@ def test_consensus_batch_byte_identical_without_hooks(tmp_path, source_paths):
     assert a["num_dumps"] == b["num_dumps"] and a["size"] == b["size"]
 
 
+def test_consensus_default_omits_welford_state(tmp_path, source_paths):
+    """The default (batch) path must NOT persist the Welford accumulator state.
+
+    ``mean.npy`` / ``m2.npy`` / ``state.json`` are gated behind the opt-in
+    ``persist_welford`` flag (only ``/refine``, ``/neighborhood`` and brute-force
+    ``state_path`` need them, and those run off a ``persist_welford=True`` fold).
+    A default consensus run still writes ``variance.npy`` (the variance map every
+    caller needs) but none of the accumulator state, so plain CLI/MCP runs don't
+    pay to materialize + write the two full-size arrays. This locks that
+    contract."""
+    out = tmp_path / "o"
+    result = tools_pipeline.consensus(
+        dump_paths=source_paths, output_dir=str(out),
+    )
+    assert (out / "variance.npy").is_file()
+    for gated in ("mean.npy", "m2.npy", "state.json"):
+        assert not (out / gated).exists(), gated
+    # The result envelope likewise omits the persist-only pointers.
+    for gated_key in ("state_path", "mean_path", "m2_path"):
+        assert gated_key not in result, gated_key
+
+
 def test_emit_plugin_byte_identical_without_hooks(tmp_path):
     hits_path, ref_path = _synthetic_hits_json(tmp_path)
     common = dict(hits_path=str(hits_path), reference_path=str(ref_path),

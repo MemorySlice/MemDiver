@@ -35,9 +35,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 
-from memdiver.engine.candidate_stats import (
-    load_consensus, render_report, run_phase_a,
-)
+from memdiver.app.reports import render_candidate_report
+from memdiver.engine.candidate_stats import load_consensus, run_phase_a
 from memdiver.engine.subsample_stability import load_halves
 
 
@@ -92,7 +91,7 @@ def _write(result, out: Path) -> None:
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "phase_a.json").write_text(json.dumps(result.to_dict(), indent=2))
-    report = render_report(result)
+    report = render_candidate_report(result)
     (out / "phase_a.md").write_text(report)
     print(report, flush=True)
     print(f"[phase-a] wrote {out/'phase_a.md'} and {out/'phase_a.json'}", flush=True)

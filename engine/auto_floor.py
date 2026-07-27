@@ -22,11 +22,9 @@ reported so the analyst never has to guess a floor.  See the paper section
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -465,6 +463,14 @@ def _maximal_candidates(
     enumeration at DEFAULT_FLOOR for bit-exact parity with the default's
     nonlinear density gate (a wvar>=DEFAULT_FLOOR threshold would drift the
     verdict label at density-gated region edges).
+
+    Already reconciled / minimal: the second pass runs in cheap mode
+    (``compute_wvar=False``, no window-variance cumsum). The density gate keys
+    off the per-byte ``variance >= min_variance`` mask, so its variance mask,
+    alignment/density filter and region extraction MUST re-run at DEFAULT_FLOOR
+    regardless -- they cannot be recovered from the min_variance=0.0 output. The
+    only cost the two passes share is enumeration over the in-memory variance
+    array (plus the min_variance-independent entropy profile), not I/O.
     """
     offsets, sizes, wvar = floor_policy.enumerate_maximal(
         variance, reference_data, num_dumps, reduce_kwargs, key_sizes, stride,
@@ -688,22 +694,3 @@ def run_auto_floor(
     # ---- Absence: oracle rejected the ENTIRE maximal set, preconditions met ----
     conf = absence_confidence(coverage, filter_recall)
     return AutoFloorResult(verdict=VERDICT_ABSENT, confidence=conf, **common)
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Artifacts
-# ─────────────────────────────────────────────────────────────────────
-def write_auto_floor_artifacts(result: AutoFloorResult, output_dir: Path) -> dict:
-    """Write verdict.json + report.md. Returns paths written."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    vjson = output_dir / "verdict.json"
-    vjson.write_text(json.dumps(result.to_dict(), indent=2))
-
-    # Markdown line assembly lives in the presentation layer; the file IO
-    # (join + trailing newline + write) stays here. Lazy import avoids a
-    # module-load cycle.
-    from memdiver.presentation.reports import auto_floor_report_lines
-    lines = auto_floor_report_lines(result)
-    (output_dir / "report.md").write_text("\n".join(lines) + "\n")
-    return {"verdict_json": str(vjson), "report_md": str(output_dir / "report.md")}

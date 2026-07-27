@@ -533,13 +533,6 @@ def _locate_key_index(offsets: np.ndarray, sizes: np.ndarray,
     return int(np.argmin(np.abs(offsets - key_offset)))
 
 
-def render_report(result: PhaseAResult) -> str:
-    # Text/markdown logic lives in the presentation layer; lazy import keeps
-    # engine free of a module-load cycle.
-    from memdiver.presentation.reports import candidate_report_md
-    return candidate_report_md(result)
-
-
 def load_consensus(artifact_dir: Path) -> Tuple[np.ndarray, bytes, int]:
     """Load (variance, reference, num_dumps) from a pipeline consensus dir."""
     artifact_dir = Path(artifact_dir)

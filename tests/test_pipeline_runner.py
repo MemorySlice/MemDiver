@@ -464,3 +464,42 @@ def test_run_pipeline_escalate_recovers_diluted_key_reports_phi0(
     assert len(consensus_starts) == 1
 
 
+# ------------------------------------------------------------------
+# _register_artifact: streamed sha256
+# ------------------------------------------------------------------
+
+
+def test_register_artifact_streamed_sha_matches_whole_file(artifact_dir):
+    """A multi-chunk artifact hashes byte-identically to a whole-file sha256."""
+    import hashlib
+
+    from memdiver.engine.pipeline_runner import _register_artifact
+
+    # Deterministic payload several MiB long so the incremental hash spans many
+    # internal read buffers (not a single-shot read) and any chunk-boundary bug
+    # would surface.
+    data = bytes((i * 37 + 11) & 0xFF for i in range(2 * 1024 * 1024 + 123))
+    (artifact_dir / "big.bin").write_bytes(data)
+
+    artifacts: List[Dict[str, Any]] = []
+    spec = _register_artifact(
+        artifacts, artifact_dir, name="big", relpath="big.bin"
+    )
+
+    assert spec["sha256"] == hashlib.sha256(data).hexdigest()
+    assert spec["size"] == len(data)
+    assert artifacts == [spec]
+
+
+def test_register_artifact_missing_relpath_yields_none_sha(artifact_dir):
+    """A relpath that is not a file records ``sha256 == None`` and size 0."""
+    from memdiver.engine.pipeline_runner import _register_artifact
+
+    artifacts: List[Dict[str, Any]] = []
+    spec = _register_artifact(
+        artifacts, artifact_dir, name="ghost", relpath="does_not_exist.bin"
+    )
+
+    assert spec["sha256"] is None
+    assert spec["size"] == 0
+

@@ -200,8 +200,8 @@ def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     """
     from memdiver.algorithms.base import AnalysisContext
     from memdiver.algorithms.registry import get_registry
-    from memdiver.api.services.key_material import decode_key_material
     from memdiver.core.dump_source import open_dump
+    from memdiver.core.key_material import from_hex
 
     artifact_dir = _resolve_artifact_dir(params, ctx)
 
@@ -222,7 +222,7 @@ def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     )
 
     # Read dump data via DumpSource (key material decrypts encrypted .msl).
-    km = decode_key_material(
+    km = from_hex(
         params.get("passphrase"),
         params.get("key_hex"),
         params.get("kem_key_hex"),

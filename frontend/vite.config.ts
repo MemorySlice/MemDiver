@@ -8,13 +8,15 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },
-  // Phase 3A Plotly rescue. react-plotly.js ships CJS and its default
-  // export is the React component; under Vite 8 + React 19 ESM interop
-  // `import Plot from "react-plotly.js"` resolves to the module namespace
-  // instead. Force pre-bundling to normalize the default-export chain,
-  // and tell Rollup (build-time) to transform the mixed exports.
+  // Phase 3A Plotly rescue. The Plotly component is built in
+  // `charts/plotly/normalize-plot.ts` from `react-plotly.js/factory` + the
+  // `plotly.js-basic-dist-min` partial bundle (both CJS). Under Vite 8 +
+  // React 19 ESM interop the CJS default-export chain resolves to the module
+  // namespace instead of the value. Force pre-bundling of exactly the entries
+  // we import at runtime to normalize that chain, and tell Rollup (build-time)
+  // to transform the mixed exports.
   optimizeDeps: {
-    include: ["react-plotly.js", "plotly.js"],
+    include: ["react-plotly.js/factory", "plotly.js-basic-dist-min"],
   },
   build: {
     commonjsOptions: {

@@ -132,6 +132,18 @@ def _run_producer(fn: Callable, /, **kwargs: Any) -> Any:
         raise
 
 
+def _sha256_streamed(path: Path) -> str:
+    """Return the hex sha256 of ``path``, read incrementally.
+
+    ``hashlib.file_digest`` (Python 3.11+, the project's floor) streams the file
+    through a bounded internal buffer, so peak memory stays bounded and
+    full-dump-scale artifacts never load whole into RAM. Byte-identical to
+    hashing the whole file at once.
+    """
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
 def _register_artifact(
     artifacts: List[Dict[str, Any]],
     artifact_dir: Path,
@@ -146,7 +158,7 @@ def _register_artifact(
         size = full.stat().st_size
     except OSError:
         size = 0
-    sha = hashlib.sha256(full.read_bytes()).hexdigest() if full.is_file() else None
+    sha = _sha256_streamed(full) if full.is_file() else None
     spec = {
         "name": name,
         "relpath": relpath,
@@ -427,12 +439,13 @@ def _run_nsweep(
     the other stages share. The producer emits the identical ``nsweep`` stage
     stream + stage_end extra (``first_hit_n`` / ``first_hit_offset`` /
     ``total_dumps``) and writes the same ``report.{json,md,html}`` via
-    ``engine.nsweep.write_nsweep_artifacts``.
+    ``app.reports.write_nsweep_artifacts``.
 
     The per-stage summary is read back from ``report.json`` (which
-    ``write_nsweep_artifacts`` fills with ``NSweepResult.to_dict()``) so it stays
-    equal to the pre-refactor ``result.to_dict()`` the frontend consumes — the
-    producer's own trimmed return payload does not carry the full dict.
+    ``write_nsweep_artifacts`` fills with ``NSweepResult.to_dict()`` plus the
+    injected ``headline``) so it stays equal to the pre-refactor
+    ``result.to_dict()`` the frontend consumes — the producer's own trimmed
+    return payload does not carry the full dict.
     """
     from memdiver.app import tools_pipeline
 
@@ -817,7 +830,7 @@ def _stage_escalate(state: "PipelineState") -> None:
     re-runs) and reuses the same oracle. It emits the identical ``escalate``
     stage stream + stage_end extra (``verdict`` / ``hit_tier`` / ``phi_star`` /
     ``phi0``) and writes ``verdict.json`` + ``report.md`` via
-    ``engine.auto_floor.write_auto_floor_artifacts`` — the same
+    ``app.reports.write_auto_floor_artifacts`` — the same
     ``engine.auto_floor.run_auto_floor`` compute the CLI ``auto-floor`` and
     ``POST /auto-floor`` (through :func:`run_auto_floor_stage`) use. This wrapper
     registers the two artifacts, translates cancellation, and reconstructs the
@@ -1053,13 +1066,20 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         escalate=escalate,
         escalate_oracle_budget=escalate_oracle_budget,
     )
+    # A per-run reference-bytes cache so the reading stages (search_reduce /
+    # brute_force / emit_plugin) share one read of the immutable consensus
+    # ``reference.bin`` instead of re-opening it each. The scope drops the blob
+    # on exit, so a reused pool worker never retains the previous run's bytes.
+    from memdiver.app.artifact_cache import reference_cache_scope
+
     try:
         # Compose the registered stages (default order below) instead of an
         # inline sequence. Ordering, optional gating and per-stage cancel
         # guards are carried by the Stage objects / _execute_stages:
         #   consensus → search_reduce → brute_force
         #   → [nsweep if params.nsweep] → [emit_plugin if params.emit]
-        _execute_stages(state, get_pipeline_stages())
+        with reference_cache_scope():
+            _execute_stages(state, get_pipeline_stages())
     except _CancelledByContext:
         ctx.emit("error", error="cancelled")
         raise RuntimeError("pipeline cancelled")

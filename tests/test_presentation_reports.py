@@ -1,16 +1,21 @@
-"""Golden tests for memdiver.presentation.reports.
+"""Golden tests for memdiver.presentation.reports and the app-layer writers.
 
-Asserts the relocated presentation builders reproduce the exact strings the
-engine delegators emit, and that the engine methods now delegate to them
-byte-for-byte (behavior preserved across the presentation-separation refactor).
-Mirrors the existing assertions in tests/test_nsweep.py and
-tests/test_candidate_stats.py.
+Asserts the presentation builders produce the expected report strings, and that
+the app-layer writers (``memdiver.app.reports``) that render them to files
+reproduce those builder strings byte-for-byte — behavior preserved across the
+P1.2 engine→presentation decoupling. The writers moved UP from engine into app
+so the engine no longer imports presentation; these tests pin that the relocated
+writers still emit identical artifacts (including ``report.json`` keeping
+``headline`` in its original key position).
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
-from memdiver.engine.candidate_stats import render_report, run_phase_a
+from memdiver.app.reports import render_candidate_report, write_nsweep_artifacts
+from memdiver.engine.candidate_stats import run_phase_a
 from memdiver.engine.nsweep import NSweepResult, run_nsweep
 from memdiver.presentation.reports import (
     candidate_report_md,
@@ -47,8 +52,6 @@ def test_nsweep_headline_keyed_hit_says_decrypted():
     )
     assert result.first_hit_n is not None
     assert "decrypted" in nsweep_headline(result)
-    # the engine method now delegates → identical string
-    assert result.headline() == nsweep_headline(result)
 
 
 def test_nsweep_headline_no_hit_says_without_a_hit():
@@ -59,13 +62,12 @@ def test_nsweep_headline_no_hit_says_without_a_hit():
     )
     assert result.first_hit_n is None
     assert "without a hit" in nsweep_headline(result)
-    assert result.headline() == nsweep_headline(result)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# n-sweep markdown + plotly
+# n-sweep markdown + plotly  (via the relocated app-layer writer)
 # ─────────────────────────────────────────────────────────────────────
-def test_nsweep_markdown_matches_delegator_and_structure():
+def test_nsweep_markdown_matches_writer_and_structure(tmp_path):
     sources = _synth_dumps(num=10)
     target = _target_from(sources)
     result = run_nsweep(
@@ -76,9 +78,17 @@ def test_nsweep_markdown_matches_delegator_and_structure():
     assert "# N-sweep report" in md
     assert "| N |" in md
     assert "![reduction curve](report.html)" in md
-    # delegator (engine private fn) reproduces it byte-for-byte
-    from memdiver.engine.nsweep import _nsweep_markdown
-    assert _nsweep_markdown(result, plot_href="report.html") == md
+
+    # The app-layer writer renders report.md via the same builder byte-for-byte,
+    # and injects the headline into report.json at its original key position.
+    paths = write_nsweep_artifacts(result, tmp_path)
+    assert paths["md"].read_text() == md
+    rep = json.loads(paths["json"].read_text())
+    assert rep["headline"] == nsweep_headline(result)
+    # report.json byte-parity: headline sits between first_hit_offset and points.
+    assert list(rep.keys())[:5] == [
+        "total_dumps", "first_hit_n", "first_hit_offset", "headline", "points",
+    ]
 
 
 def test_nsweep_plotly_html_has_titles():
@@ -94,12 +104,12 @@ def test_nsweep_plotly_html_has_titles():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# candidate_stats (Phase A) report
+# candidate_stats (Phase A) report  (via the relocated app-layer wrapper)
 # ─────────────────────────────────────────────────────────────────────
-def test_candidate_report_md_matches_delegator():
+def test_candidate_report_md_matches_writer():
     var, ref, n, key_off = _build_synthetic()
     res = run_phase_a(var, ref, n, key_off, key_size=KEY_SIZE, stride=8)
     report = candidate_report_md(res)
     assert "Phase A" in report and "R_composite" in report
-    # engine render_report now delegates → identical string
-    assert render_report(res) == report
+    # The app-layer render wrapper delegates → identical string.
+    assert render_candidate_report(res) == report

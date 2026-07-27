@@ -25,10 +25,10 @@ from memdiver.engine.auto_floor import (  # noqa: E402
     oracle_self_test,
     recall_lower_bound,
     run_auto_floor,
-    write_auto_floor_artifacts,
     _enumerate_candidates,
     _sigma_k2_interior,
 )
+from memdiver.app.reports import write_auto_floor_artifacts  # noqa: E402
 from memdiver.engine.candidate_pipeline import CandidateRegion  # noqa: E402
 
 REDUCE_KWARGS = dict(

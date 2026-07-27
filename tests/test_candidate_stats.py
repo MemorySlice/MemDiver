@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from memdiver.app.reports import render_candidate_report
 from memdiver.engine.candidate_stats import (
     SIGMA_K2,
     calibrate_thresholds,
@@ -19,7 +20,6 @@ from memdiver.engine.candidate_stats import (
     keylike_gate,
     kneedle_descending,
     run_phase_a,
-    render_report,
     trimmed_mean_window,
 )
 
@@ -153,5 +153,5 @@ def test_composite_from_dumps_prefers_displaced_key_over_static_table():
 def test_render_report_is_nonempty():
     var, ref, n, key_off = _build_synthetic()
     res = run_phase_a(var, ref, n, key_off, key_size=KEY_SIZE, stride=8)
-    report = render_report(res)
+    report = render_candidate_report(res)
     assert "Phase A" in report and "R_composite" in report

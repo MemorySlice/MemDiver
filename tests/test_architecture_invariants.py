@@ -232,6 +232,54 @@ def test_app_layer_never_imports_up_into_api():
     )
 
 
+def test_engine_layer_never_imports_up_into_presentation():
+    """The ``engine`` layer is pure numeric/compute; it must never import UP into
+    the ``presentation`` layer.
+
+    ``presentation`` holds the surface-agnostic text/markdown/plotly builders and
+    is allowed to depend DOWN on ``engine`` (result types under ``TYPE_CHECKING``
+    plus a lazy ``SIGMA_K2`` constant — the correct direction). The reverse edge
+    is an inverted dependency: it used to be masked by deferred in-function
+    ``from memdiver.presentation.reports import ...`` calls inside the engine's
+    report delegators. P1.2 relocated those writers UP into ``app.reports`` (which
+    may import both layers); this test locks the inversion closed so a new engine
+    report method can't quietly re-open the cycle. Mirrors
+    ``test_app_layer_never_imports_up_into_api``.
+    """
+    offenders = []
+    for path in _py_files("engine"):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if node.level and node.level > 0:
+                    mod = ("." * node.level) + mod
+                targets = [mod]
+            for t in targets:
+                if (
+                    t == "memdiver.presentation"
+                    or t.startswith("memdiver.presentation.")
+                    or t == "presentation"
+                    or t.startswith("presentation.")
+                    or ".presentation." in t
+                    or t.endswith(".presentation")
+                ):
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}: imports {t}"
+                    )
+    assert not offenders, (
+        "engine/ must not import UP into presentation/. Engine returns pure data; "
+        "render in the app-layer writers (app/reports.py) instead. Offending "
+        "imports:\n" + "\n".join(offenders)
+    )
+
+
 def test_legacy_error_dict_functions_unreachable_from_production():
     """app/tools_inspect.py keeps un-migrated legacy functions that still
     ``return {"error": ...}`` dicts (``read_hex``, ``get_session_info``, etc.)

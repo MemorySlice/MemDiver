@@ -3,21 +3,22 @@
 Drives the ``memdiver n-sweep`` CLI: builds one incremental Welford
 accumulator, adds dumps one at a time, runs the
 ``candidate_pipeline.reduce_search_space`` chain at every N checkpoint,
-and invokes a user oracle against the surviving candidates. Emits a
-headline-first report (json + markdown + plotly HTML) describing how
-the survivor count shrinks per stage as N grows.
+and invokes a user oracle against the surviving candidates, returning a
+pure ``NSweepResult`` describing how the survivor count shrinks per stage
+as N grows. The headline-first report artifacts (json + markdown + plotly
+HTML) are rendered by the app-layer writer
+(``memdiver.app.reports.write_nsweep_artifacts``), keeping this engine
+module free of any presentation dependency.
 
 Split from ``engine/convergence.py`` so the legacy ground-truth sweep
-stays small and the new harness owns its own dataclasses and plot code.
+stays small and the new harness owns its own dataclasses.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, List, Optional
 
 from memdiver.core.variance import WelfordVariance
@@ -76,19 +77,14 @@ class NSweepResult:
     # populated only when escalate=True and no checkpoint found a hit.
     escalation: Optional[dict] = None
 
-    def headline(self) -> str:
-        # Text logic lives in the presentation layer; lazy import avoids a
-        # module-load cycle (presentation imports engine types only under
-        # TYPE_CHECKING).
-        from memdiver.presentation.reports import nsweep_headline
-        return nsweep_headline(self)
-
     def to_dict(self) -> dict:
+        # Pure data only — the presentation ``headline`` is injected by the
+        # app-layer writer (memdiver.app.reports.write_nsweep_artifacts) so the
+        # engine never imports up into presentation.
         d = {
             "total_dumps": self.total_dumps,
             "first_hit_n": self.first_hit_n,
             "first_hit_offset": self.first_hit_offset,
-            "headline": self.headline(),
             "points": [p.to_dict() for p in self.points],
         }
         # Additive: absent when escalation was not requested / not reached, so
@@ -278,28 +274,3 @@ def run_nsweep(
         )
         result.escalation = escalation_verdict(af)
     return result
-
-
-def _nsweep_markdown(result: NSweepResult, plot_href: Optional[str] = None) -> str:
-    # Delegated to the presentation layer (text/formatting edge).
-    from memdiver.presentation.reports import nsweep_markdown
-    return nsweep_markdown(result, plot_href=plot_href)
-
-
-def _nsweep_plotly_html(result: NSweepResult) -> str:
-    # Delegated to the presentation layer (plotly HTML/title construction).
-    from memdiver.presentation.reports import nsweep_plotly_html
-    return nsweep_plotly_html(result)
-
-
-def write_nsweep_artifacts(result: NSweepResult, output_dir: Path) -> dict:
-    """Write report.json, report.md, report.html under output_dir."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "report.json"
-    html_path = output_dir / "report.html"
-    md_path = output_dir / "report.md"
-    json_path.write_text(json.dumps(result.to_dict(), indent=2))
-    html_path.write_text(_nsweep_plotly_html(result))
-    md_path.write_text(_nsweep_markdown(result, plot_href="report.html"))
-    return {"json": json_path, "html": html_path, "md": md_path}

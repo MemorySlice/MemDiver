@@ -4,11 +4,15 @@ import json
 
 import numpy as np
 
+from memdiver.app.reports import write_nsweep_artifacts
+from memdiver.core.variance import WelfordVariance
 from memdiver.engine.nsweep import (
     NSweepResult,
+    _fold_until,
+    _probe_min_size,
     run_nsweep,
-    write_nsweep_artifacts,
 )
+from memdiver.presentation.reports import nsweep_headline
 
 
 class _FakeSource:
@@ -62,7 +66,7 @@ def test_finds_hit_and_builds_headline():
     )
     assert result.first_hit_n is not None
     assert result.first_hit_offset == 256
-    assert "decrypted" in result.headline()
+    assert "decrypted" in nsweep_headline(result)
 
 
 def test_no_hit_headline_mentions_exhaustion():
@@ -81,7 +85,7 @@ def test_no_hit_headline_mentions_exhaustion():
         oracle=always_false, key_sizes=(32,), stride=8,
     )
     assert result.first_hit_n is None
-    assert "without a hit" in result.headline()
+    assert "without a hit" in nsweep_headline(result)
 
 
 def test_write_artifacts_creates_all_three(tmp_path):
@@ -107,7 +111,7 @@ def test_write_artifacts_creates_all_three(tmp_path):
 
     rep = json.loads(paths["json"].read_text())
     assert rep["total_dumps"] == 10
-    assert rep["headline"] == result.headline()
+    assert rep["headline"] == nsweep_headline(result)
 
     md = paths["md"].read_text()
     assert "N-sweep report" in md
@@ -189,3 +193,56 @@ def test_timing_fields_populated():
         assert p.timing.consensus_ms >= 0.0
         assert p.timing.reduce_ms >= 0.0
         assert p.timing.brute_force_ms >= 0.0
+
+
+class _SizeDivergentSource:
+    """A source whose advertised ``.size`` exceeds its real ``read_all()`` length.
+
+    Mirrors the reachable ``MslDumpSource`` edge case: ``.size`` (=
+    ``size_for("vas")``) SUMS each captured run's *claimed* length
+    (``iv.count * page_size``) without reading the payload, while
+    ``read_all()`` materialises the *actual* captured bytes. For a truncated /
+    short .msl container ``core.msl_helpers.get_region_page_data`` →
+    ``MslReader.read_bytes`` clamps to the buffer end, so the real bytes are
+    fewer than ``.size`` claims. ``_probe_min_size`` MUST fold on the real
+    ``read_all()`` length, never on ``.size`` — otherwise the fold guard at
+    ``nsweep._fold_until`` (``len(data) < welford.size``) would spuriously
+    raise. This test locks that in so a ``len(src.read_all())`` → ``src.size``
+    optimization cannot be introduced silently.
+    """
+
+    def __init__(self, data: bytes, claimed_size: int) -> None:
+        self._data = data
+        self.size = claimed_size
+
+    def read_all(self) -> bytes:
+        return self._data
+
+
+def test_probe_min_size_uses_read_all_length_across_multiple_sources():
+    sources = [
+        _FakeSource(b"\x00" * 1024),
+        _FakeSource(b"\x01" * 768),   # the true minimum
+        _FakeSource(b"\x02" * 900),
+    ]
+    assert _probe_min_size(sources) == 768
+
+
+def test_probe_min_size_ignores_inflated_size_attribute():
+    # The short source advertises a LARGER .size than it can actually deliver
+    # (truncated-MSL analogue). _probe_min_size must return the real read_all
+    # length (400), NOT the inflated .size (2048).
+    sources = [
+        _SizeDivergentSource(b"\xaa" * 400, claimed_size=2048),
+        _SizeDivergentSource(b"\xbb" * 1024, claimed_size=1024),
+    ]
+    assert _probe_min_size(sources) == 400
+
+    # And the probed width must fold cleanly over every source — swapping in
+    # the inflated .size (2048) would make _fold_until raise on the 400-byte
+    # source (400 < 2048).
+    size = _probe_min_size(sources)
+    welford = WelfordVariance(size)
+    welford.add_dump(sources[0].read_all()[:size])
+    folded = _fold_until(welford, sources, 1, len(sources))
+    assert folded == len(sources)

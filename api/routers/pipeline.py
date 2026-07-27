@@ -336,7 +336,7 @@ def run_auto_floor_endpoint(request: AutoFloorRunRequest):
     ``engine.auto_floor.run_auto_floor``. Returns the ``AutoFloorResult``
     as JSON (``verdict``, ``phi_star``, ``phi0``, ``key_hex``, sweep, …).
     """
-    from memdiver.api.services.key_material import decode_key_material
+    from memdiver.core.key_material import from_hex
     from memdiver.engine.pipeline_runner import run_auto_floor_stage
 
     registry = _oracle_registry_or_503()
@@ -376,7 +376,7 @@ def run_auto_floor_endpoint(request: AutoFloorRunRequest):
             status_code=400, detail="Invalid positive_control_hex encoding"
         ) from exc
 
-    key_material = decode_key_material(
+    key_material = from_hex(
         request.passphrase, request.key_hex, request.kem_key_hex
     )
 

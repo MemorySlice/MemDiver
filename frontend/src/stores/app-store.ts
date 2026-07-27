@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { PathInfo, SessionSnapshot } from "@/api/types";
 import { apiToUiInputMode } from "@/utils/input-mode";
+import { getPathInfo } from "@/api/client";
+import { useAnalysisStore } from "@/stores/analysis-store";
+import { useResultsStore } from "@/stores/results-store";
+import { useDumpStore } from "@/stores/dump-store";
+import { useHexStore } from "@/stores/hex-store";
+import { useStringsStore } from "@/stores/strings-store";
 
 /** All algorithms that can run on a single dump file. */
 export const SINGLE_FILE_ALGORITHMS = [
@@ -164,21 +170,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ wizardComplete: true, appView: "workspace" });
     const { inputMode, inputPath, pathInfo } = get();
     if (inputMode === "file" && inputPath) {
-      import("@/stores/dump-store").then((m) => {
-        const store = m.useDumpStore.getState();
-        if (store.dumps.some((d) => d.path === inputPath)) return;
-        const name = inputPath.split("/").pop() ?? inputPath;
-        // Extension-based detection, case-insensitive — kept consistent
-        // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
-        const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
-        store.addDump({
-          path: inputPath,
-          name,
-          // pathInfo is populated earlier in the wizard; fall back to 0
-          // intentionally if it is missing rather than blocking the add.
-          size: pathInfo?.file_size ?? 0,
-          format,
-        });
+      const store = useDumpStore.getState();
+      if (store.dumps.some((d) => d.path === inputPath)) return;
+      const name = inputPath.split("/").pop() ?? inputPath;
+      // Extension-based detection, case-insensitive — kept consistent
+      // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
+      const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
+      store.addDump({
+        path: inputPath,
+        name,
+        // pathInfo is populated earlier in the wizard; fall back to 0
+        // intentionally if it is missing rather than blocking the add.
+        size: pathInfo?.file_size ?? 0,
+        format,
       });
     }
   },
@@ -203,17 +207,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     if (resolvedMode === "file" && snap.input_path) {
       const filePath = snap.input_path;
-      import("@/stores/dump-store").then(async (m) => {
-        const store = m.useDumpStore.getState();
-        if (store.dumps.some((d) => d.path === filePath)) return;
-        const name = filePath.split("/").pop() ?? filePath;
-        // Extension-based detection, case-insensitive — kept consistent
-        // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
-        const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
-        // Fetch file size from API
+      const store = useDumpStore.getState();
+      if (store.dumps.some((d) => d.path === filePath)) return;
+      const name = filePath.split("/").pop() ?? filePath;
+      // Extension-based detection, case-insensitive — kept consistent
+      // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
+      const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
+      // Fetch file size from API. Only the network call is async, so this
+      // runs in a fire-and-forget async block; the dump is added once the
+      // size resolves (or on failure, with a size-0 fallback below).
+      void (async () => {
         let fileSize = 0;
         try {
-          const { getPathInfo } = await import("@/api/client");
           const info = await getPathInfo(filePath);
           fileSize = info.file_size ?? 0;
         } catch {
@@ -228,7 +233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           size: fileSize,
           format,
         });
-      });
+      })();
     }
   },
   setHexFocus: (focus) => set({ hexFocus: focus }),
@@ -258,11 +263,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       fullWidthHex: false,
       mode: "verification",
     });
-    // Clear sibling stores (lazy dynamic imports to avoid circular deps at init time)
-    import("@/stores/analysis-store").then((m) => m.useAnalysisStore.getState().reset());
-    import("@/stores/results-store").then((m) => m.useResultsStore.getState().clearResults());
-    import("@/stores/dump-store").then((m) => m.useDumpStore.getState().clearAll());
-    import("@/stores/hex-store").then((m) => m.useHexStore.getState().reset());
-    import("@/stores/strings-store").then((m) => m.useStringsStore.getState().clear());
+    // Clear sibling stores. These are plain runtime getState() calls; no
+    // sibling store references app-store at module-eval time, so static
+    // imports introduce no circular-init hazard and keep the resets
+    // synchronous (they must complete within resetWizard).
+    useAnalysisStore.getState().reset();
+    useResultsStore.getState().clearResults();
+    useDumpStore.getState().clearAll();
+    useHexStore.getState().reset();
+    useStringsStore.getState().clear();
   },
 }));

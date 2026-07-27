@@ -21,14 +21,12 @@ def key_material_kwargs(
 ) -> dict:
     """Turn MCP decryption params into ``open_dump(**kw)`` kwargs.
 
-    Reads ``key_file`` / ``kem_key_file`` as raw bytes and UTF-8 encodes
-    ``passphrase``. Returns ``{"key", "passphrase", "kem_private_key"}``
-    with every value ``None`` when no decryption param was supplied.
+    Thin surface adapter over :func:`core.key_material.from_files`; keeps the
+    app/MCP public name and always returns ``{"key", "passphrase",
+    "kem_private_key"}`` with every value ``None`` when no param was supplied.
     """
-    key = Path(key_file).read_bytes() if key_file else None
-    kem_private = Path(kem_key_file).read_bytes() if kem_key_file else None
-    pass_bytes = passphrase.encode("utf-8") if passphrase else None
-    return {"key": key, "passphrase": pass_bytes, "kem_private_key": kem_private}
+    from memdiver.core.key_material import from_files
+    return from_files(key_file, passphrase, kem_key_file)
 
 
 def has_key_material(km: dict) -> bool:

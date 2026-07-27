@@ -62,17 +62,17 @@ def _key_material_from_args(args: argparse.Namespace) -> dict:
 
     Returns a dict with key/passphrase/kem_private_key (all None when no
     decryption flags were supplied), suitable for ``open_dump(path, **kw)``.
+
+    Thin surface adapter over :func:`core.key_material.from_files`; the
+    ``getattr`` guards let subcommands whose Namespace lacks the decryption
+    attributes still resolve to the all-None dict.
     """
-    key = None
-    if getattr(args, "key_file", None):
-        key = Path(args.key_file).read_bytes()
-    kem_private = None
-    if getattr(args, "kem_key_file", None):
-        kem_private = Path(args.kem_key_file).read_bytes()
-    passphrase = None
-    if getattr(args, "passphrase", None):
-        passphrase = args.passphrase.encode("utf-8")
-    return {"key": key, "passphrase": passphrase, "kem_private_key": kem_private}
+    from memdiver.core.key_material import from_files
+    return from_files(
+        getattr(args, "key_file", None),
+        getattr(args, "passphrase", None),
+        getattr(args, "kem_key_file", None),
+    )
 
 
 # CLI-surface remedy for a locked encrypted dump. The neutral core hint
