@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-logger = logging.getLogger("memdiver.engine.experiment_task_runner")
+logger = logging.getLogger("memdiver.app.pipeline.experiment_task_runner")
 
 
 def _missing_backend(ctx, message: str) -> Dict[str, Any]:

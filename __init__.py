@@ -62,7 +62,7 @@ from memdiver.engine.consensus_service import build_consensus
 # --- Extension registration hooks -------------------------------------------
 from memdiver.core.dump_source import register_dump_source
 from memdiver.core.binary_formats.format_descriptor import register_format
-from memdiver.engine.pipeline_runner import register_stage
+from memdiver.app.pipeline.pipeline_runner import register_stage
 from memdiver.core.structure_library import get_structure_library
 
 # --- Structured error model -------------------------------------------------

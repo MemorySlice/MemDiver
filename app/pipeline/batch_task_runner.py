@@ -1,9 +1,9 @@
 """TaskManager worker entry for batch analysis.
 
-Mirrors :mod:`engine.pipeline_runner` for the Phase B
+Mirrors :mod:`app.pipeline.pipeline_runner` for the Phase B
 ``POST /api/analysis/batch`` endpoint. The router translates a
 :class:`BatchRunRequest` into a JSON-friendly ``params`` dict and
-hands it to ``TaskManager.submit(runner_dotted="memdiver.engine.batch_task_runner.run_batch")``.
+hands it to ``TaskManager.submit(runner_dotted="memdiver.app.pipeline.batch_task_runner.run_batch")``.
 This module then reconstructs a :class:`core.input_schemas.BatchRequest`
 from those params, drives the existing :class:`engine.batch.BatchRunner`,
 and writes the aggregated result JSON into the per-task artifact
@@ -22,7 +22,7 @@ Design notes:
   parallelism is fine — every batch job is dominated by I/O and
   GIL-releasing numpy work.
 * Progress is emitted through the same ``ctx.emit`` mp-queue contract
-  ``engine.pipeline_runner`` uses, so the WebSocket consumer treats
+  ``app.pipeline.pipeline_runner`` uses, so the WebSocket consumer treats
   batch tasks identically.
 """
 
@@ -34,7 +34,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("memdiver.engine.batch_task_runner")
+logger = logging.getLogger("memdiver.app.pipeline.batch_task_runner")
 
 
 def _register_artifact(
@@ -137,7 +137,7 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     )
 
     def _progress(current: int, total_jobs: int, status: Optional[str]) -> None:
-        # Mirror engine.pipeline_runner's bridge: forward as fine-grained
+        # Mirror app.pipeline.pipeline_runner's bridge: forward as fine-grained
         # progress on the parent stage. ``current``/``total_jobs`` lets
         # the UI render a job counter alongside the percentage.
         if ctx.is_cancelled():

@@ -280,6 +280,53 @@ def test_engine_layer_never_imports_up_into_presentation():
     )
 
 
+def test_engine_layer_never_imports_up_into_app():
+    """The ``engine`` layer is pure compute; it must never import UP into ``app``.
+
+    ``app`` (the surface-agnostic service layer) depends DOWN on ``engine`` — the
+    correct direction. The reverse edge used to exist: the pipeline runner and
+    task runners lived in ``engine/`` yet reached up into ``app.tools_pipeline`` /
+    ``app.artifact_cache`` via deferred in-function imports that masked the cycle.
+    P1.1 relocated that orchestration layer UP into ``app.pipeline`` so the
+    direction is now ``app.pipeline → app.tools_pipeline → engine``. This test
+    locks the inversion closed so no new engine module can re-open it. Mirrors
+    ``test_app_layer_never_imports_up_into_api`` and
+    ``test_engine_layer_never_imports_up_into_presentation``.
+    """
+    offenders = []
+    for path in _py_files("engine"):
+        try:
+            tree = _parse(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if node.level and node.level > 0:
+                    mod = ("." * node.level) + mod
+                targets = [mod]
+            for t in targets:
+                if (
+                    t == "memdiver.app"
+                    or t.startswith("memdiver.app.")
+                    or t == "app"
+                    or t.startswith("app.")
+                    or ".app." in t
+                    or t.endswith(".app")
+                ):
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{node.lineno}: imports {t}"
+                    )
+    assert not offenders, (
+        "engine/ must not import UP into app/. Engine returns pure data; the "
+        "orchestration that calls app producers lives in app/pipeline/. Offending "
+        "imports:\n" + "\n".join(offenders)
+    )
+
+
 def test_legacy_error_dict_functions_unreachable_from_production():
     """app/tools_inspect.py keeps un-migrated legacy functions that still
     ``return {"error": ...}`` dicts (``read_hex``, ``get_session_info``, etc.)

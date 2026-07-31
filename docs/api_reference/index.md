@@ -1,6 +1,6 @@
 # Python API reference
 
-Auto-generated from the public MemDiver packages. Internal orchestration modules (`api.*`, `engine.pipeline_runner`, `engine.worker`, `cli.py` internals, `ui/*`) are omitted — they are not part of the external contract.
+Auto-generated from the public MemDiver packages. Internal orchestration modules (`api.*`, `app.pipeline.pipeline_runner`, `cli.py` internals, `ui/*`) are omitted — they are not part of the external contract.
 
 ```{toctree}
 :maxdepth: 1

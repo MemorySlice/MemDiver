@@ -9,8 +9,8 @@ worker that long and risks proxy/gateway timeouts.
 
 The two top-level functions here (``run_analysis`` / ``run_file``) match
 the ``runner_dotted`` contract shared by
-:mod:`engine.pipeline_runner`, :mod:`engine.batch_task_runner`, and
-:mod:`engine.experiment_task_runner`: each takes ``(params, ctx)`` where
+:mod:`app.pipeline.pipeline_runner`, :mod:`app.pipeline.batch_task_runner`, and
+:mod:`app.pipeline.experiment_task_runner`: each takes ``(params, ctx)`` where
 ``ctx`` is a :class:`api.services.task_manager.WorkerContext`, emits
 progress via ``ctx.emit``, and returns the
 ``{"artifacts": [...], "summary": {...}}`` shape
@@ -28,7 +28,7 @@ Design notes:
   directory and registered as the ``analysis_result`` artifact, so the
   SPA fetches it via the shared artifact contract
   (``GET /api/pipeline/runs/{task_id}/artifacts/analysis_result``) —
-  identical to how ``engine.batch_task_runner`` exposes ``batch_result``.
+  identical to how ``app.pipeline.batch_task_runner`` exposes ``batch_result``.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-logger = logging.getLogger("memdiver.engine.analysis_task_runner")
+logger = logging.getLogger("memdiver.app.pipeline.analysis_task_runner")
 
 STAGE = "analyze"
 
@@ -116,13 +116,13 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     * ``algorithms`` (list[str] | None)
     * ``task_root`` / ``artifact_dir`` — per-task output location.
 
-    Reuses :func:`mcp_server.tools.analyze_library` (which itself drives
+    Reuses :func:`app.tools.analyze_library` (which itself drives
     ``engine.batch.run_analysis_request`` + ``engine.serializer``) so the
     algorithm logic is never duplicated. Returns the
     ``{"artifacts": [...], "summary": {...}}`` shape.
     """
-    from memdiver.mcp_server.session import ToolSession
-    from memdiver.mcp_server.tools import analyze_library
+    from memdiver.app.session import ToolSession
+    from memdiver.app.tools import analyze_library
 
     artifact_dir = _resolve_artifact_dir(params, ctx)
 

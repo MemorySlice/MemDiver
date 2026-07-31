@@ -25,7 +25,7 @@ import { getPipelineRun, artifactDownloadUrl } from "./pipeline";
 import { request } from "./client";
 import type { AnalyzeRequest, AnalysisResult } from "./types";
 
-/** Name of the artifact the analysis runner registers (see engine.analysis_task_runner). */
+/** Name of the artifact the analysis runner registers (see app.pipeline.analysis_task_runner). */
 export const ANALYSIS_RESULT_ARTIFACT = "analysis_result";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);

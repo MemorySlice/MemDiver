@@ -44,7 +44,7 @@ def run_analysis(request: AnalyzeRequestAPI):
     Previously this ran ``tools.analyze_library`` inline on the request
     thread ("Runs synchronously for now"). The GIL-bound algorithm work
     is now dispatched to the TaskManager's ProcessPool via
-    ``engine.analysis_task_runner.run_analysis`` — the same async pattern
+    ``app.pipeline.analysis_task_runner.run_analysis`` — the same async pattern
     as ``POST /api/analysis/batch`` and the pipeline endpoint. Progress
     streams over ``/ws/tasks/{task_id}`` and the full ``AnalysisResult``
     is downloadable as the ``analysis_result`` artifact.
@@ -64,7 +64,7 @@ def run_analysis(request: AnalyzeRequestAPI):
     record = manager.submit(
         kind="analysis",
         params=worker_params,
-        runner_dotted="memdiver.engine.analysis_task_runner.run_analysis",
+        runner_dotted="memdiver.app.pipeline.analysis_task_runner.run_analysis",
         stage_names=["analyze"],
     )
     return AnalysisRunResponse(
@@ -160,7 +160,7 @@ def run_file_analysis(request: AnalyzeFileRequest):
     ~102.5 s for ``entropy_scan`` on a 10 MB dump — long enough to trip
     proxy/gateway timeouts. The GIL-bound work now runs on the
     TaskManager's ProcessPool via
-    ``engine.analysis_task_runner.run_file`` (which preserves the exact
+    ``app.pipeline.analysis_task_runner.run_file`` (which preserves the exact
     algorithm loop, including optional decryption key material). Progress
     streams over ``/ws/tasks/{task_id}`` — one event per algorithm — and
     the full ``AnalysisResult`` is downloadable as the ``analysis_result``
@@ -189,7 +189,7 @@ def run_file_analysis(request: AnalyzeFileRequest):
     record = manager.submit(
         kind="analysis",
         params=worker_params,
-        runner_dotted="memdiver.engine.analysis_task_runner.run_file",
+        runner_dotted="memdiver.app.pipeline.analysis_task_runner.run_file",
         stage_names=["analyze"],
     )
     return AnalysisRunResponse(
@@ -226,7 +226,7 @@ def run_batch(request: BatchRunRequest):
     Mirrors :func:`api.routers.pipeline.run_pipeline_endpoint`: the
     request is translated into JSON-friendly worker params, dispatched
     to the TaskManager's ProcessPool via
-    ``engine.batch_task_runner.run_batch``, and a ``task_id`` is
+    ``app.pipeline.batch_task_runner.run_batch``, and a ``task_id`` is
     returned immediately. Progress streams over ``/ws/tasks/{task_id}``
     and the aggregated batch result is downloadable as the
     ``batch_result`` artifact via the same artifact contract the
@@ -242,7 +242,7 @@ def run_batch(request: BatchRunRequest):
     record = manager.submit(
         kind="batch",
         params=worker_params,
-        runner_dotted="memdiver.engine.batch_task_runner.run_batch",
+        runner_dotted="memdiver.app.pipeline.batch_task_runner.run_batch",
         stage_names=["batch"],
     )
     return BatchRunResponse(

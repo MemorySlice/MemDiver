@@ -94,7 +94,7 @@ class BatchJobDTO(BaseModel):
     Mirrors the fields of ``core.input_schemas.AnalyzeRequest`` but with
     ``library_dirs: list[str]`` instead of ``list[Path]`` so it
     serializes cleanly across the wire and across the multiprocessing
-    queue boundary. The worker (``engine.batch_task_runner.run_batch``)
+    queue boundary. The worker (``app.pipeline.batch_task_runner.run_batch``)
     re-hydrates each DTO into a real ``AnalyzeRequest``, which is the
     point at which dataclass __post_init__ validates the directories
     exist.

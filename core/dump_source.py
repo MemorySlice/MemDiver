@@ -47,7 +47,7 @@ class DumpSource(Protocol):
     callers must feature-test with ``hasattr`` before calling.
 
     Caveat — some engine paths still assume ``read_all``: the raw (non-MSL)
-    branch of the consensus builder (:func:`engine.pipeline_runner._build_consensus`)
+    branch of the consensus builder (:func:`app.pipeline.pipeline_runner._build_consensus`)
     calls ``read_all()`` on every source. A source lacking it (gcore / regioned
     raw) therefore cannot currently be fed into that raw-consensus path. This is
     a pre-existing engine assumption, not a guarantee of this Protocol; migrating

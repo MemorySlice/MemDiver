@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 
-import memdiver.engine.pipeline_runner as pr
+import memdiver.app.pipeline.pipeline_runner as pr
 
 
 # Canonical order the pipeline had before the Stage/registry refactor.

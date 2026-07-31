@@ -132,7 +132,7 @@ def _representative_result() -> AnalysisResult:
 def test_summarize_result_equivalence_lock():
     """summarize_result must be byte-identical to the runner's legacy
     _result_summary for the serialized-dict inputs the runner passes."""
-    from memdiver.engine.analysis_task_runner import _result_summary
+    from memdiver.app.pipeline.analysis_task_runner import _result_summary
 
     result = _representative_result()
     serialized = serialize_result(result)

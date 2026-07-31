@@ -562,7 +562,7 @@ def consensus(
     Encrypted ``.msl`` inputs are decrypted when key material is supplied.
 
     Opt-in ``persist_welford`` switches to the web runner's *incremental*
-    estimator (:func:`engine.pipeline_runner._build_consensus`): it folds each
+    estimator (:func:`app.pipeline.pipeline_runner._build_consensus`): it folds each
     source one at a time (raw via :class:`ConsensusVector` Welford, native
     ``.msl`` via :class:`MslIncrementalBuilder`), emits a per-fold ``progress``
     event, and additionally persists ``mean.npy`` / ``m2.npy`` / ``state.json``
@@ -1107,7 +1107,7 @@ def _progress_bridge(
 ) -> Optional[Callable[[Any], None]]:
     """Adapt an ``on_progress`` sink into an engine ``progress_callback``.
 
-    Mirrors :func:`engine.pipeline_runner._bridge`: each
+    Mirrors :func:`app.pipeline.pipeline_runner._bridge`: each
     :class:`engine.progress.ProgressEvent` the leaf emits is translated into an
     ``on_progress("progress", stage=..., pct=..., msg=..., extra=...)`` call,
     prefixing the stage with ``stage_prefix:`` only when it has no ``:`` of its

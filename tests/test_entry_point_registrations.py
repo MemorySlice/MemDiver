@@ -41,8 +41,8 @@ from memdiver.core.dump_source import (
     register_dump_source,
 )
 from memdiver.core.plugin_discovery import load_entry_point_registrations
-from memdiver.engine import pipeline_runner as pr
-from memdiver.engine.pipeline_runner import (
+from memdiver.app.pipeline import pipeline_runner as pr
+from memdiver.app.pipeline.pipeline_runner import (
     STAGE_ENTRY_POINT_GROUP,
     Stage,
     get_pipeline_stages,

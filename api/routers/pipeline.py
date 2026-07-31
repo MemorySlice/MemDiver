@@ -38,7 +38,7 @@ from memdiver.api.services.oracle_registry import (
     OracleRegistryError,
 )
 from memdiver.api.services.task_manager import TERMINAL_STATUSES
-from memdiver.engine.pipeline_runner import get_pipeline_stages
+from memdiver.app.pipeline.pipeline_runner import get_pipeline_stages
 
 logger = logging.getLogger("memdiver.api.routers.pipeline")
 
@@ -164,7 +164,7 @@ def _store_task_dir(manager, task_id: str) -> Optional[Path]:
 
     The pipeline worker writes every stage's artifacts to
     ``artifact_store.root / <task_id>`` (see
-    :func:`engine.pipeline_runner.run_pipeline`, which derives its
+    :func:`app.pipeline.pipeline_runner.run_pipeline`, which derives its
     ``artifact_dir`` from ``params["task_root"]`` — the artifact-store
     root — joined with ``ctx.task_id``). ``TaskRecord`` intentionally
     carries no ``artifact_dir`` field, so this is the authoritative way to
@@ -315,7 +315,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
     record = manager.submit(
         kind="pipeline",
         params=worker_params,
-        runner_dotted="memdiver.engine.pipeline_runner.run_pipeline",
+        runner_dotted="memdiver.app.pipeline.pipeline_runner.run_pipeline",
         stage_names=stage_names,
     )
     return PipelineRunResponse(
@@ -331,13 +331,13 @@ def run_auto_floor_endpoint(request: AutoFloorRunRequest):
 
     Synchronous (the oracle-arbitrated sweep is fast and single-shot): it
     resolves the armed oracle, then delegates to
-    :func:`engine.pipeline_runner.run_auto_floor_stage`, which loads the
+    :func:`app.pipeline.pipeline_runner.run_auto_floor_stage`, which loads the
     variance ``.npy`` + reference dump and calls
     ``engine.auto_floor.run_auto_floor``. Returns the ``AutoFloorResult``
     as JSON (``verdict``, ``phi_star``, ``phi0``, ``key_hex``, sweep, …).
     """
     from memdiver.core.key_material import from_hex
-    from memdiver.engine.pipeline_runner import run_auto_floor_stage
+    from memdiver.app.pipeline.pipeline_runner import run_auto_floor_stage
 
     registry = _oracle_registry_or_503()
     try:

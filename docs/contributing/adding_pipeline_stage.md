@@ -9,7 +9,7 @@ insert a stage without editing `run_pipeline`'s body.
 A `Stage` is a small dataclass:
 
 ```python
-from memdiver.engine.pipeline_runner import Stage, PipelineState
+from memdiver.app.pipeline.pipeline_runner import Stage, PipelineState
 
 def _my_stage(state: PipelineState) -> None:
     # read upstream results, do work, write artifacts + summary back onto state
@@ -48,7 +48,7 @@ fine-grained progress reaches the UI.
 ## Registering
 
 ```python
-from memdiver.engine.pipeline_runner import register_stage
+from memdiver.app.pipeline.pipeline_runner import register_stage
 
 register_stage(stage)                       # append to the end
 register_stage(stage, before="brute_force") # insert before a named stage
@@ -76,7 +76,7 @@ worker. The simplest pattern is to register at module scope:
 
 ```python
 # engine/stages/my_stage.py — imported by engine/pipeline_runner
-from memdiver.engine.pipeline_runner import Stage, register_stage
+from memdiver.app.pipeline.pipeline_runner import Stage, register_stage
 
 def _my_stage(state):
     ...

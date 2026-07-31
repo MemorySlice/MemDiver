@@ -50,7 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 if TYPE_CHECKING:
     from memdiver.engine.auto_floor import AutoFloorResult
 
-logger = logging.getLogger("memdiver.engine.pipeline_runner")
+logger = logging.getLogger("memdiver.app.pipeline.pipeline_runner")
 
 # Default oracle probe config for Shape-2 oracles at pipeline time.
 _EMPTY_CONFIG: Dict[str, Any] = {}

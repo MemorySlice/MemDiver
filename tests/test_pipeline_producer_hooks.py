@@ -502,7 +502,7 @@ def test_consensus_persist_msl_matches_runner_helper(tmp_path):
     from typing import Tuple as _Tuple
 
     from memdiver.core.dump_source import open_dump
-    from memdiver.engine.pipeline_runner import _build_consensus
+    from memdiver.app.pipeline.pipeline_runner import _build_consensus
 
     paths = _msl_fixture_paths(tmp_path, count=3)
 

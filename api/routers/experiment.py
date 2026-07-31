@@ -9,7 +9,7 @@ immediately with a ``task_id``.
 
 Like :mod:`api.routers.pipeline`, the request body is the only place
 parameters are validated; the worker entry point in
-:mod:`engine.experiment_task_runner` consumes a plain dict.
+:mod:`app.pipeline.experiment_task_runner` consumes a plain dict.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def run_experiment_endpoint(request: ExperimentRunRequest):
     record = manager.submit(
         kind="experiment",
         params=params,
-        runner_dotted="memdiver.engine.experiment_task_runner.run_experiment",
+        runner_dotted="memdiver.app.pipeline.experiment_task_runner.run_experiment",
         stage_names=["capture", "consensus", "verify"],
     )
     return ExperimentRunResponse(

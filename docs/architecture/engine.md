@@ -34,4 +34,4 @@ The analysis orchestrator. Not an algorithm itself — it composes the 8 algorit
 
 ## Concurrency
 
-Threads for I/O-bound; `spawn`-context `ProcessPoolExecutor` for CPU-bound oracle work. Cooperative cancellation via `cancellation.CancellationToken` (an `mp.Event` wrapper).
+Threads for I/O-bound; `spawn`-context `ProcessPoolExecutor` for CPU-bound oracle work. Cooperative cancellation via `progress.check_cancel` / `progress.Cancelled` in engine hot-loops, gated at stage boundaries by `WorkerContext.is_cancelled()`.

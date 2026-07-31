@@ -1,4 +1,4 @@
-"""Tests for engine.analysis_task_runner.
+"""Tests for app.pipeline.analysis_task_runner.
 
 Two layers:
 
@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 
 from memdiver.api.config import get_settings
 from memdiver.api.main import create_app
-from memdiver.engine.analysis_task_runner import run_analysis, run_file
+from memdiver.app.pipeline.analysis_task_runner import run_analysis, run_file
 
 
 # ------------------------------------------------------------------

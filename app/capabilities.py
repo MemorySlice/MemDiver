@@ -106,7 +106,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("structure.apply", "memdiver.app.tools_xref.apply_structure_result",
          ("library", "web")),
     # -- pipeline stages (Phase 25) -----------------------------------------
-    # The web pipeline (engine.pipeline_runner, streamed via the task manager)
+    # The web pipeline (app.pipeline.pipeline_runner, streamed via the task manager)
     # now delegates each stage's compute to these app producers, so web is wired
     # for all of them. ``pipeline.consensus`` on CLI is still a gap — the CLI
     # `consensus` command is a separate region-report implementation, not the
@@ -164,7 +164,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
 #:     module_index / blocks and structure.apply lack CLI subcommands.
 #:   * structure.apply is web-only (no MCP tool).
 #:   * the web pipeline now routes every stage through the app producers
-#:     (engine.pipeline_runner delegates consensus / search_reduce / brute_force /
+#:     (app.pipeline.pipeline_runner delegates consensus / search_reduce / brute_force /
 #:     n_sweep / auto_floor / emit_plugin to ``app.tools_pipeline``), so those are
 #:     wired on web. ``pipeline.consensus`` still differs on CLI: the CLI
 #:     `consensus` command is a separate region-report implementation, not the
