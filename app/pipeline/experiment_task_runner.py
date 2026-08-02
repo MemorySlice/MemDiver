@@ -71,260 +71,265 @@ def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
 # NOTE(single-source): the three stage helpers below (_capture_dumps,
 # _build_per_tool_consensus, _verify_and_emit) are SUPERSEDED by
 # ``memdiver.app.tools_pipeline.experiment_result`` (+ its ``_experiment_*``
-# helpers), through which ``run_experiment`` now routes. They are retained —
-# not deleted (repo policy) — as the historical reference implementation and
-# are no longer on the production path. In particular ``_verify_and_emit`` /
-# ``_build_per_tool_consensus`` still carry the raw-bytes (``ConsensusVector.build``
-# / ``StaticChecker``) analysis the producer replaced with the memory-relative
-# consensus, so they should NOT be reintroduced; removal is pending approval.
+# helpers), through which ``run_experiment`` now routes. In particular
+# ``_verify_and_emit`` / ``_build_per_tool_consensus`` still carry the
+# raw-bytes (``ConsensusVector.build`` / ``StaticChecker``) analysis the
+# producer replaced with the memory-relative consensus, so they should NOT
+# be reintroduced.
+#
+# === DEAD CODE — SCHEDULED FOR REMOVAL IN A FUTURE RELEASE ===
+# The three helpers below (_capture_dumps / _build_per_tool_consensus /
+# _verify_and_emit) are superseded by memdiver.app.tools_pipeline.experiment_result
+# and are no longer on any execution path. Commented out (not yet deleted) per the
+# repo no-delete policy; slated for deletion in a future release.
 
 
-def _capture_dumps(
-    orch,
-    target_path: Path,
-    num_runs: int,
-    output_dir: Path,
-    *,
-    ctx,
-) -> Any:
-    """Run the orchestrator and stream a ``capture`` event per finished run.
-
-    DumpOrchestrator.run_experiment is synchronous and does not expose a
-    progress callback, so we can only emit a single bracketing event
-    here. To preserve responsive UI feedback the SPA still gets a
-    stage_start before the call and a stage_end with the per-tool dump
-    counts after.
-    """
-    ctx.emit(
-        "stage_start",
-        stage="capture",
-        pct=0.0,
-        msg=f"capturing {num_runs} runs across {len(orch.available_tools)} tools",
-    )
-    exp = orch.run_experiment(target_path, num_runs, output_dir)
-
-    dump_summary: Dict[str, int] = {}
-    for tool_name, tool_dir in exp.tool_dirs.items():
-        dump_paths = sorted(
-            list(tool_dir.glob("*/*.dump")) + list(tool_dir.glob("*/*.msl"))
-        )
-        dump_summary[tool_name] = len(dump_paths)
-        ctx.emit(
-            "progress",
-            stage="capture",
-            pct=1.0,
-            msg=f"{tool_name}: {len(dump_paths)} dumps",
-            extra={"tool": tool_name, "dumps": len(dump_paths)},
-        )
-
-    ctx.emit(
-        "stage_end",
-        stage="capture",
-        pct=1.0,
-        msg=f"captured {sum(dump_summary.values())} dumps total",
-        extra={"dumps_per_tool": dump_summary},
-    )
-    return exp
-
-
-def _build_per_tool_consensus(
-    exp,
-    *,
-    ctx,
-) -> Dict[str, Dict[str, Any]]:
-    """Fold each tool's dumps into a ConsensusVector and emit progress events."""
-    from memdiver.engine.consensus import ConsensusVector
-
-    tools = list(exp.tool_dirs.items())
-    ctx.emit(
-        "stage_start",
-        stage="consensus",
-        pct=0.0,
-        msg=f"folding consensus for {len(tools)} tools",
-    )
-
-    per_tool: Dict[str, Dict[str, Any]] = {}
-    for idx, (tool_name, tool_dir) in enumerate(tools):
-        dump_paths = sorted(
-            list(tool_dir.glob("*/*.dump")) + list(tool_dir.glob("*/*.msl"))
-        )
-        if len(dump_paths) < 2:
-            ctx.emit(
-                "progress",
-                stage="consensus",
-                pct=(idx + 1) / max(len(tools), 1),
-                msg=f"{tool_name}: not enough dumps ({len(dump_paths)}); skipping",
-                extra={"tool": tool_name, "skipped": True},
-            )
-            continue
-
-        cm = ConsensusVector()
-        cm.build(dump_paths)
-        aligned = cm.get_aligned_candidates()
-        volatile = cm.get_volatile_regions()
-        per_tool[tool_name] = {
-            "consensus": cm,
-            "dump_paths": dump_paths,
-            "aligned": aligned,
-            "volatile": volatile,
-        }
-        ctx.emit(
-            "progress",
-            stage="consensus",
-            pct=(idx + 1) / max(len(tools), 1),
-            msg=(
-                f"{tool_name}: {len(aligned)} aligned, "
-                f"{len(volatile)} volatile regions"
-            ),
-            extra={
-                "tool": tool_name,
-                "aligned_regions": len(aligned),
-                "volatile_regions": len(volatile),
-                "num_dumps": len(dump_paths),
-            },
-        )
-
-    ctx.emit(
-        "stage_end",
-        stage="consensus",
-        pct=1.0,
-        msg=f"consensus ready for {len(per_tool)} tools",
-        extra={"tools": list(per_tool.keys())},
-    )
-    return per_tool
-
-
-def _verify_and_emit(
-    exp,
-    per_tool: Dict[str, Dict[str, Any]],
-    *,
-    output_dir: Path,
-    export_format: str,
-    ctx,
-) -> Dict[str, Dict[str, Any]]:
-    """Run decryption verification + auto-export and stream a ``verify`` event per tool."""
-    from memdiver.engine.verification import (
-        AesCbcVerifier,
-        HAS_CRYPTO,
-        VERIFICATION_PLAINTEXT,
-        VERIFICATION_IV,
-    )
-    from memdiver.architect.static_checker import StaticChecker
-    from memdiver.architect.pattern_generator import PatternGenerator
-
-    verifier = AesCbcVerifier()
-    # Bind the verify method once (it is invoked at every offset in the
-    # byte-by-byte scan below) to avoid a per-offset attribute lookup.
-    verify = verifier.verify
-    tools = list(per_tool.items())
-    ctx.emit(
-        "stage_start",
-        stage="verify",
-        pct=0.0,
-        msg=f"verifying {len(tools)} tools",
-    )
-
-    results: Dict[str, Dict[str, Any]] = {}
-    for idx, (tool_name, info) in enumerate(tools):
-        cm = info["consensus"]
-        dump_paths = info["dump_paths"]
-        aligned = info["aligned"]
-        volatile = info["volatile"]
-
-        first_data = dump_paths[0].read_bytes()
-        first_key = exp.metadata["runs"][0]["key_hex"]
-        key_bytes = bytes.fromhex(first_key)
-        ciphertext = verifier.create_ciphertext(
-            key_bytes, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
-        )
-
-        dec_verified = False
-        # Without the crypto backend, verify() returns None (falsy) at every
-        # offset, so the whole scan is a guaranteed no-op: skip it wholesale.
-        # This changes no accepted offset — the result stays False either way.
-        if HAS_CRYPTO:
-            for region in aligned:
-                # Hoist the per-region upper bound out of the inner loop; the
-                # exact offset set (region.start .. region.end - 32) and the
-                # per-offset AES-CBC verify are preserved byte-for-byte.
-                last_off = region.end - 31
-                for off in range(region.start, last_off):
-                    if verify(
-                        first_data[off:off + 32], ciphertext,
-                        VERIFICATION_IV, VERIFICATION_PLAINTEXT,
-                    ):
-                        dec_verified = True
-                        break
-                if dec_verified:
-                    break
-
-        plugin_path = None
-        if volatile:
-            best = max(volatile, key=lambda r: r.end - r.start)
-            ctx_pad = 32
-            exp_offset = max(0, best.start - ctx_pad)
-            exp_end = min(cm.size, best.end + ctx_pad)
-            exp_length = exp_end - exp_offset
-
-            static_mask, reference = StaticChecker.check(
-                dump_paths, exp_offset, exp_length,
-            )
-            if reference:
-                pattern = PatternGenerator.generate(
-                    reference, static_mask, f"{tool_name}_aes256_key",
-                )
-                plugin_content = None
-                if pattern:
-                    if export_format in ("volatility3", "vol3"):
-                        from memdiver.architect.volatility3_exporter import (
-                            Volatility3Exporter,
-                        )
-                        from memdiver.architect.yara_exporter import YaraExporter
-                        yara_rule = YaraExporter.export(pattern)
-                        plugin_content = Volatility3Exporter.export(
-                            pattern, yara_rule=yara_rule,
-                        )
-                    elif export_format == "yara":
-                        from memdiver.architect.yara_exporter import YaraExporter
-                        plugin_content = YaraExporter.export(pattern)
-
-                if plugin_content:
-                    plugins_dir = output_dir / "plugins"
-                    plugins_dir.mkdir(parents=True, exist_ok=True)
-                    ext = ".py" if export_format in ("volatility3", "vol3") else ".yar"
-                    plugin_path = plugins_dir / f"{tool_name}_aes256_key{ext}"
-                    plugin_path.write_text(plugin_content)
-
-        tool_result = {
-            "tool": tool_name,
-            "format": "MSL (.msl)" if tool_name == "memslicer" else "Raw (.dump)",
-            "num_dumps": len(dump_paths),
-            "volatile_regions": len(volatile),
-            "aligned_regions": len(aligned),
-            "decryption_verified": dec_verified,
-            "plugin_saved": str(plugin_path) if plugin_path else None,
-        }
-        results[tool_name] = tool_result
-
-        ctx.emit(
-            "progress",
-            stage="verify",
-            pct=(idx + 1) / max(len(tools), 1),
-            msg=(
-                f"{tool_name}: decryption "
-                f"{'verified' if dec_verified else 'not verified'}"
-            ),
-            extra=tool_result,
-        )
-
-    ctx.emit(
-        "stage_end",
-        stage="verify",
-        pct=1.0,
-        msg=f"verified {len(results)} tools",
-        extra={"tool_results": results},
-    )
-    return results
+# def _capture_dumps(
+#     orch,
+#     target_path: Path,
+#     num_runs: int,
+#     output_dir: Path,
+#     *,
+#     ctx,
+# ) -> Any:
+#     """Run the orchestrator and stream a ``capture`` event per finished run.
+#
+#     DumpOrchestrator.run_experiment is synchronous and does not expose a
+#     progress callback, so we can only emit a single bracketing event
+#     here. To preserve responsive UI feedback the SPA still gets a
+#     stage_start before the call and a stage_end with the per-tool dump
+#     counts after.
+#     """
+#     ctx.emit(
+#         "stage_start",
+#         stage="capture",
+#         pct=0.0,
+#         msg=f"capturing {num_runs} runs across {len(orch.available_tools)} tools",
+#     )
+#     exp = orch.run_experiment(target_path, num_runs, output_dir)
+#
+#     dump_summary: Dict[str, int] = {}
+#     for tool_name, tool_dir in exp.tool_dirs.items():
+#         dump_paths = sorted(
+#             list(tool_dir.glob("*/*.dump")) + list(tool_dir.glob("*/*.msl"))
+#         )
+#         dump_summary[tool_name] = len(dump_paths)
+#         ctx.emit(
+#             "progress",
+#             stage="capture",
+#             pct=1.0,
+#             msg=f"{tool_name}: {len(dump_paths)} dumps",
+#             extra={"tool": tool_name, "dumps": len(dump_paths)},
+#         )
+#
+#     ctx.emit(
+#         "stage_end",
+#         stage="capture",
+#         pct=1.0,
+#         msg=f"captured {sum(dump_summary.values())} dumps total",
+#         extra={"dumps_per_tool": dump_summary},
+#     )
+#     return exp
+#
+#
+# def _build_per_tool_consensus(
+#     exp,
+#     *,
+#     ctx,
+# ) -> Dict[str, Dict[str, Any]]:
+#     """Fold each tool's dumps into a ConsensusVector and emit progress events."""
+#     from memdiver.engine.consensus import ConsensusVector
+#
+#     tools = list(exp.tool_dirs.items())
+#     ctx.emit(
+#         "stage_start",
+#         stage="consensus",
+#         pct=0.0,
+#         msg=f"folding consensus for {len(tools)} tools",
+#     )
+#
+#     per_tool: Dict[str, Dict[str, Any]] = {}
+#     for idx, (tool_name, tool_dir) in enumerate(tools):
+#         dump_paths = sorted(
+#             list(tool_dir.glob("*/*.dump")) + list(tool_dir.glob("*/*.msl"))
+#         )
+#         if len(dump_paths) < 2:
+#             ctx.emit(
+#                 "progress",
+#                 stage="consensus",
+#                 pct=(idx + 1) / max(len(tools), 1),
+#                 msg=f"{tool_name}: not enough dumps ({len(dump_paths)}); skipping",
+#                 extra={"tool": tool_name, "skipped": True},
+#             )
+#             continue
+#
+#         cm = ConsensusVector()
+#         cm.build(dump_paths)
+#         aligned = cm.get_aligned_candidates()
+#         volatile = cm.get_volatile_regions()
+#         per_tool[tool_name] = {
+#             "consensus": cm,
+#             "dump_paths": dump_paths,
+#             "aligned": aligned,
+#             "volatile": volatile,
+#         }
+#         ctx.emit(
+#             "progress",
+#             stage="consensus",
+#             pct=(idx + 1) / max(len(tools), 1),
+#             msg=(
+#                 f"{tool_name}: {len(aligned)} aligned, "
+#                 f"{len(volatile)} volatile regions"
+#             ),
+#             extra={
+#                 "tool": tool_name,
+#                 "aligned_regions": len(aligned),
+#                 "volatile_regions": len(volatile),
+#                 "num_dumps": len(dump_paths),
+#             },
+#         )
+#
+#     ctx.emit(
+#         "stage_end",
+#         stage="consensus",
+#         pct=1.0,
+#         msg=f"consensus ready for {len(per_tool)} tools",
+#         extra={"tools": list(per_tool.keys())},
+#     )
+#     return per_tool
+#
+#
+# def _verify_and_emit(
+#     exp,
+#     per_tool: Dict[str, Dict[str, Any]],
+#     *,
+#     output_dir: Path,
+#     export_format: str,
+#     ctx,
+# ) -> Dict[str, Dict[str, Any]]:
+#     """Run decryption verification + auto-export and stream a ``verify`` event per tool."""
+#     from memdiver.engine.verification import (
+#         AesCbcVerifier,
+#         HAS_CRYPTO,
+#         VERIFICATION_PLAINTEXT,
+#         VERIFICATION_IV,
+#     )
+#     from memdiver.architect.static_checker import StaticChecker
+#     from memdiver.architect.pattern_generator import PatternGenerator
+#
+#     verifier = AesCbcVerifier()
+#     # Bind the verify method once (it is invoked at every offset in the
+#     # byte-by-byte scan below) to avoid a per-offset attribute lookup.
+#     verify = verifier.verify
+#     tools = list(per_tool.items())
+#     ctx.emit(
+#         "stage_start",
+#         stage="verify",
+#         pct=0.0,
+#         msg=f"verifying {len(tools)} tools",
+#     )
+#
+#     results: Dict[str, Dict[str, Any]] = {}
+#     for idx, (tool_name, info) in enumerate(tools):
+#         cm = info["consensus"]
+#         dump_paths = info["dump_paths"]
+#         aligned = info["aligned"]
+#         volatile = info["volatile"]
+#
+#         first_data = dump_paths[0].read_bytes()
+#         first_key = exp.metadata["runs"][0]["key_hex"]
+#         key_bytes = bytes.fromhex(first_key)
+#         ciphertext = verifier.create_ciphertext(
+#             key_bytes, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
+#         )
+#
+#         dec_verified = False
+#         # Without the crypto backend, verify() returns None (falsy) at every
+#         # offset, so the whole scan is a guaranteed no-op: skip it wholesale.
+#         # This changes no accepted offset — the result stays False either way.
+#         if HAS_CRYPTO:
+#             for region in aligned:
+#                 # Hoist the per-region upper bound out of the inner loop; the
+#                 # exact offset set (region.start .. region.end - 32) and the
+#                 # per-offset AES-CBC verify are preserved byte-for-byte.
+#                 last_off = region.end - 31
+#                 for off in range(region.start, last_off):
+#                     if verify(
+#                         first_data[off:off + 32], ciphertext,
+#                         VERIFICATION_IV, VERIFICATION_PLAINTEXT,
+#                     ):
+#                         dec_verified = True
+#                         break
+#                 if dec_verified:
+#                     break
+#
+#         plugin_path = None
+#         if volatile:
+#             best = max(volatile, key=lambda r: r.end - r.start)
+#             ctx_pad = 32
+#             exp_offset = max(0, best.start - ctx_pad)
+#             exp_end = min(cm.size, best.end + ctx_pad)
+#             exp_length = exp_end - exp_offset
+#
+#             static_mask, reference = StaticChecker.check(
+#                 dump_paths, exp_offset, exp_length,
+#             )
+#             if reference:
+#                 pattern = PatternGenerator.generate(
+#                     reference, static_mask, f"{tool_name}_aes256_key",
+#                 )
+#                 plugin_content = None
+#                 if pattern:
+#                     if export_format in ("volatility3", "vol3"):
+#                         from memdiver.architect.volatility3_exporter import (
+#                             Volatility3Exporter,
+#                         )
+#                         from memdiver.architect.yara_exporter import YaraExporter
+#                         yara_rule = YaraExporter.export(pattern)
+#                         plugin_content = Volatility3Exporter.export(
+#                             pattern, yara_rule=yara_rule,
+#                         )
+#                     elif export_format == "yara":
+#                         from memdiver.architect.yara_exporter import YaraExporter
+#                         plugin_content = YaraExporter.export(pattern)
+#
+#                 if plugin_content:
+#                     plugins_dir = output_dir / "plugins"
+#                     plugins_dir.mkdir(parents=True, exist_ok=True)
+#                     ext = ".py" if export_format in ("volatility3", "vol3") else ".yar"
+#                     plugin_path = plugins_dir / f"{tool_name}_aes256_key{ext}"
+#                     plugin_path.write_text(plugin_content)
+#
+#         tool_result = {
+#             "tool": tool_name,
+#             "format": "MSL (.msl)" if tool_name == "memslicer" else "Raw (.dump)",
+#             "num_dumps": len(dump_paths),
+#             "volatile_regions": len(volatile),
+#             "aligned_regions": len(aligned),
+#             "decryption_verified": dec_verified,
+#             "plugin_saved": str(plugin_path) if plugin_path else None,
+#         }
+#         results[tool_name] = tool_result
+#
+#         ctx.emit(
+#             "progress",
+#             stage="verify",
+#             pct=(idx + 1) / max(len(tools), 1),
+#             msg=(
+#                 f"{tool_name}: decryption "
+#                 f"{'verified' if dec_verified else 'not verified'}"
+#             ),
+#             extra=tool_result,
+#         )
+#
+#     ctx.emit(
+#         "stage_end",
+#         stage="verify",
+#         pct=1.0,
+#         msg=f"verified {len(results)} tools",
+#         extra={"tool_results": results},
+#     )
+#     return results
 
 
 def _register_plugin_artifacts(

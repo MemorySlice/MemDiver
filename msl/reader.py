@@ -432,7 +432,7 @@ class MslReader:
                 # decoders remain strict when called directly.
                 try:
                     decoded.append(decoder(h, p, self._byte_order))
-                except MslParseError as exc:
+                except (MslParseError, struct.error, IndexError, OverflowError) as exc:
                     logger.warning(
                         "Skipping malformed %s block at 0x%X: %s",
                         block_type.name, h.file_offset, exc,

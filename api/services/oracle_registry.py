@@ -39,7 +39,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from memdiver.engine.oracle import OracleLoadError, load_oracle
+from memdiver.engine.oracle import (
+    OracleLoadError,
+    load_oracle,
+    validate_oracle_sandboxed,
+)
 
 logger = logging.getLogger("memdiver.api.services.oracle_registry")
 
@@ -264,6 +268,13 @@ class OracleRegistry:
             raise OracleRegistryError("stored oracle is world-writable; aborting")
         _purge_pycache(on_disk)
         sha = _sha256_file(on_disk)
+        # Reject a hanging/OOMing oracle here, in a resource-capped subprocess,
+        # BEFORE _detect_shape() imports the untrusted module in-process.
+        try:
+            validate_oracle_sandboxed(on_disk, {})
+        except OracleLoadError as exc:
+            on_disk.unlink(missing_ok=True)
+            raise OracleRegistryError(f"oracle failed to load: {exc}") from exc
         try:
             shape = _detect_shape(on_disk)
         except OracleLoadError as exc:

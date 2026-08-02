@@ -1,5 +1,6 @@
 """Raw-to-MSL import: convert .dump files to .msl format."""
 
+import functools
 import logging
 import struct
 from dataclasses import dataclass
@@ -32,6 +33,32 @@ logger = logging.getLogger("memdiver.msl.importer")
 _DEFAULT_PAGE_SIZE_LOG2 = 12
 _MIN_PAGE_SIZE_LOG2 = 10
 _MAX_PAGE_SIZE_LOG2 = 40
+
+
+def _reject_malformed_dump(fn):
+    """Translate low-level pack/parse faults on the untrusted-import path into
+    a clean ``ValueError`` (the parser contract).
+
+    The importer serializes attacker-controlled dump fields (region sizes,
+    base/vaddrs, module base/size, page counts) with ``struct.pack``. A
+    corrupted field can drive a value out of its packed range — e.g. a negative
+    ``module_size`` from an ``end < start`` NT_FILE entry raises
+    ``struct.error`` — or a bogus length can raise ``IndexError`` /
+    ``OverflowError``. Those are honest "malformed input" rejections, so they
+    must surface as ``ValueError`` rather than leak a raw library error.
+
+    Only those three low-level types are caught, so ``ValueError`` (incl.
+    ``MslParseError`` and the ``_check_region_pages`` OOM cap),
+    ``NotImplementedError`` and ``CapabilityError`` pass through unchanged —
+    no double-wrapping and no swallowing of deliberate rejections.
+    """
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (struct.error, IndexError, OverflowError) as exc:
+            raise ValueError(f"malformed dump: {exc}") from exc
+    return _wrapper
 
 
 @dataclass
@@ -225,9 +252,11 @@ def _add_module_index(writer: MslWriter, mappings: List[NtFileEntry]) -> None:
                 continue
             lo, hi = by_path.get(m.path, (m.start, m.end))
             by_path[m.path] = (min(lo, m.start), max(hi, m.end))
+        _U64_MAX = (1 << 64) - 1
         modules = [
             ModuleEntrySpec(base_addr=lo, module_size=hi - lo, path=path)
             for path, (lo, hi) in sorted(by_path.items(), key=lambda kv: kv[1][0])
+            if 0 <= lo <= hi <= _U64_MAX  # drop unpackable (e.g. end < start) entries
         ]
         if modules:
             writer.add_module_list_index(modules)
@@ -253,6 +282,7 @@ def _add_key_hints(writer: MslWriter, region_uuid, data: bytes,
     return hints
 
 
+@_reject_malformed_dump
 def import_elf_core(
     elf_path: Path,
     output_path: Path,
@@ -596,6 +626,7 @@ def _derive_regions(reader: MinidumpReader,
     return specs
 
 
+@_reject_malformed_dump
 def import_minidump(
     dmp_path: Path,
     output_path: Path,
@@ -656,6 +687,7 @@ def import_minidump(
     )
 
 
+@_reject_malformed_dump
 def import_raw_dump(
     raw_path: Path,
     output_path: Path,
@@ -786,6 +818,7 @@ def _is_et_core(head: bytes) -> bool:
     return e_type == _ET_CORE
 
 
+@_reject_malformed_dump
 def import_dump(
     src_path: Path,
     output_path: Path,

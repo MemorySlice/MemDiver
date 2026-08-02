@@ -183,7 +183,10 @@ class MinidumpReader:
         if size == 0:
             raise ValueError(f"Empty minidump file: {self._path}")
         self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
-        self._info = self._parse()
+        try:
+            self._info = self._parse()
+        except (struct.error, IndexError, OverflowError, EOFError) as e:
+            raise ValueError(f"malformed minidump: {e}") from e
 
     def close(self) -> None:
         if self._mmap is not None:

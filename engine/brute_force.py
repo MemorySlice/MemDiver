@@ -25,7 +25,12 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 
 from memdiver.engine.candidate_grid import iter_region_grid
-from memdiver.engine.oracle import OracleFn, load_oracle, load_oracle_config
+from memdiver.engine.oracle import (
+    OracleFn,
+    load_oracle,
+    load_oracle_config,
+    validate_oracle_sandboxed,
+)
 from memdiver.engine.progress import (
     Cancelled,
     ProgressEvent,
@@ -208,7 +213,12 @@ _WORKER_ORACLE: Optional[OracleFn] = None
 
 def _worker_init(oracle_path: str, oracle_config: dict) -> None:
     global _WORKER_ORACLE
-    _WORKER_ORACLE = load_oracle(Path(oracle_path), oracle_config)
+    # sandbox=False: run_brute_force() validates the oracle exactly once in the
+    # parent (validate_oracle_sandboxed, before the serial/parallel split), so
+    # this invariant is genuinely established for BOTH branches. The W pool
+    # workers must NOT each re-spawn a redundant validation subprocess on this
+    # hot startup path.
+    _WORKER_ORACLE = load_oracle(Path(oracle_path), oracle_config, sandbox=False)
 
 
 def _worker_verify(job: Tuple[int, int, int, bytes]) -> Tuple[int, int, int, bool]:
@@ -455,6 +465,16 @@ def run_brute_force(
     regions: List[dict] = payload.get("regions", [])
     oracle_config = load_oracle_config(oracle_config_path)
 
+    # Validate the oracle ONCE here in the parent, before the serial/parallel
+    # split, so every path is covered — including the parallel branch whose
+    # workers load with sandbox=False. This is the single parent-side chokepoint
+    # that establishes the "validated upstream" invariant _worker_init relies on;
+    # without it, ``--jobs N`` would run untrusted oracle code in W workers with
+    # the load-time sandbox fully bypassed. Raises OracleLoadError on hang/OOM/
+    # crash BEFORE any worker (or serial load) touches the oracle. The ok-cache
+    # in engine.oracle dedups this against the serial branch's own load.
+    validate_oracle_sandboxed(oracle_path, oracle_config)
+
     # Count candidates via a slice-free grid pass instead of holding the full
     # materialized list; the dispatch below then streams a fresh generator
     # (serial iterates it directly; the parallel path keeps its bounded
@@ -480,7 +500,9 @@ def run_brute_force(
             cancel_event=cancel_event,
         )
     else:
-        oracle = load_oracle(oracle_path, oracle_config)
+        # Already validated once in the parent above (sandbox=True), so skip the
+        # redundant re-spawn here; the ok-cache would dedup it anyway.
+        oracle = load_oracle(oracle_path, oracle_config, sandbox=False)
         raw_hits, total = _run_serial(
             job_iter, oracle, exhaustive,
             total_estimate=total_estimate,

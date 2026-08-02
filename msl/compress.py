@@ -74,7 +74,10 @@ def decompress(payload: bytes, algo: CompAlgo) -> bytes:
                 "zstandard not installed; install with: pip install memdiver"
             )
         logger.debug("Decompressing %d bytes with zstd", len(payload))
-        return zstandard.ZstdDecompressor().decompress(payload)
+        try:
+            return zstandard.ZstdDecompressor().decompress(payload)
+        except zstandard.ZstdError as e:
+            raise MslParseError(f"malformed zstd block: {e}") from e
 
     if algo == CompAlgo.LZ4:
         try:
@@ -84,7 +87,10 @@ def decompress(payload: bytes, algo: CompAlgo) -> bytes:
                 "lz4 not installed; install with: pip install memdiver"
             )
         logger.debug("Decompressing %d bytes with lz4", len(payload))
-        return lz4.frame.decompress(payload)
+        try:
+            return lz4.frame.decompress(payload)
+        except RuntimeError as e:
+            raise MslParseError(f"malformed lz4 block: {e}") from e
 
     raise MslParseError(f"Unsupported compression algorithm: {algo}")
 

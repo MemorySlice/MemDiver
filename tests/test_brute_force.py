@@ -118,6 +118,67 @@ def test_run_brute_force_parallel_path(tmp_path):
     assert result.hits[0].offset == 256
 
 
+def test_parallel_path_validates_oracle_in_parent(tmp_path, monkeypatch):
+    """FIX #5: the parallel (jobs>1) branch must validate the oracle ONCE in the
+    parent before workers spawn — otherwise --jobs N bypasses the load-time
+    sandbox entirely. Spy the parent-side validator and assert it fired."""
+    import memdiver.engine.brute_force as bf
+
+    ref, target, cand_path, _ = _synth_setup(tmp_path)
+    oracle = _write_oracle(
+        tmp_path,
+        "TARGET = bytes(range(32))\n"
+        "def verify(c): return c == TARGET\n",
+    )
+    calls = {"n": 0}
+    real = bf.validate_oracle_sandboxed
+
+    def _spy(path, config=None, **kw):
+        calls["n"] += 1
+        return real(path, config, **kw)
+
+    monkeypatch.setattr(bf, "validate_oracle_sandboxed", _spy)
+    result = run_brute_force(
+        candidates_path=cand_path,
+        reference_data=ref,
+        oracle_path=oracle,
+        jobs=2,
+        stride=8,
+    )
+    assert result.exit_code == EXIT_HIT
+    # Exactly one parent-side validation for the whole parallel run.
+    assert calls["n"] == 1
+
+
+def test_parallel_path_rejects_hanging_oracle_before_workers(tmp_path, monkeypatch):
+    """FIX #5: a hanging oracle is rejected in the parent (jobs>1) BEFORE any
+    worker spawns. Patch the parent validator to raise (fast, deterministic —
+    no real 4-worker hang) and assert the run aborts with OracleLoadError and
+    _run_parallel is never reached."""
+    import memdiver.engine.brute_force as bf
+    from memdiver.engine.oracle import OracleLoadError
+
+    ref, target, cand_path, _ = _synth_setup(tmp_path)
+    oracle = _write_oracle(tmp_path, "def verify(c): return True\n")
+
+    def _reject(path, config=None, **kw):
+        raise OracleLoadError("oracle load exceeded 0.5s wall-clock (possible hang)")
+
+    def _boom_parallel(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("_run_parallel reached despite rejected oracle")
+
+    monkeypatch.setattr(bf, "validate_oracle_sandboxed", _reject)
+    monkeypatch.setattr(bf, "_run_parallel", _boom_parallel)
+    with pytest.raises(OracleLoadError, match="wall-clock"):
+        run_brute_force(
+            candidates_path=cand_path,
+            reference_data=ref,
+            oracle_path=oracle,
+            jobs=4,
+            stride=8,
+        )
+
+
 def test_run_brute_force_hits_sorted_and_job_invariant(tmp_path):
     """Exhaustive hits are offset-sorted and identical across job counts.
 

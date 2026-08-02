@@ -2,15 +2,19 @@
 
 import os
 import stat
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
+from memdiver.engine import oracle as oracle_mod
 from memdiver.engine.oracle import (
     OracleLoadError,
     load_oracle,
     load_oracle_config,
+    validate_oracle_sandboxed,
 )
 
 
@@ -135,3 +139,199 @@ def test_load_config_toml_roundtrip(tmp_path):
     cfg.write_text('target = "foo"\nnumber = 42\n')
     out = load_oracle_config(cfg)
     assert out == {"target": "foo", "number": 42}
+
+
+# ---------- load-time sandbox ----------
+
+
+def test_sandbox_accepts_good_shape1(tmp_path):
+    """A well-behaved Shape-1 oracle validates without raising."""
+    src = _write(tmp_path / "o.py", "def verify(c): return c == b'yes'\n")
+    # Returns None (no raise).
+    assert validate_oracle_sandboxed(src, {}) is None
+
+
+def test_sandbox_accepts_good_shape2(tmp_path):
+    """A Shape-2 oracle whose build_oracle succeeds validates cleanly."""
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    return O()\n"
+        "class O:\n"
+        "    def verify(self, c): return True\n",
+    )
+    assert validate_oracle_sandboxed(src, {}) is None
+
+
+def test_sandbox_rejects_hang_at_import(tmp_path):
+    """A module-top-level infinite loop is killed by the wall-clock timeout."""
+    src = _write(
+        tmp_path / "o.py",
+        "while True:\n    pass\n\ndef verify(c): return True\n",
+    )
+    t0 = time.monotonic()
+    # cpu_s kept well above the wall budget so the wall-clock join is the
+    # deterministic trigger (not a racing SIGXCPU during spawn bootstrap).
+    with pytest.raises(OracleLoadError, match="wall-clock"):
+        validate_oracle_sandboxed(src, {}, timeout_s=0.5, cpu_s=30)
+    # Must fail fast — the short wall-clock timeout, not the 10s default.
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_sandbox_rejects_hang_in_build_oracle(tmp_path):
+    """A hang inside build_oracle() is caught by the wall-clock timeout."""
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    while True:\n"
+        "        pass\n",
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OracleLoadError, match="wall-clock"):
+        validate_oracle_sandboxed(src, {}, timeout_s=0.5, cpu_s=30)
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_sandbox_rejects_build_oracle_that_raises(tmp_path):
+    """A normal exception in build_oracle surfaces as a load failure."""
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    raise ValueError('boom')\n",
+    )
+    with pytest.raises(OracleLoadError, match="failed to load"):
+        validate_oracle_sandboxed(src, {}, timeout_s=5.0)
+
+
+def test_sandbox_rejects_import_error(tmp_path):
+    """A module that raises at import surfaces as a load failure."""
+    src = _write(tmp_path / "o.py", "raise RuntimeError('nope')\n")
+    with pytest.raises(OracleLoadError, match="failed to load"):
+        validate_oracle_sandboxed(src, {}, timeout_s=5.0)
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="RLIMIT_AS is unreliable on macOS; wall-clock hang test is the "
+    "portable guarantee",
+)
+def test_sandbox_rejects_memory_bomb_at_import(tmp_path):
+    """A large allocation at import trips RLIMIT_AS (Linux)."""
+    src = _write(tmp_path / "o.py", "x = bytearray(4 * 1024**3)\n")
+    with pytest.raises(OracleLoadError):
+        validate_oracle_sandboxed(
+            src, {}, timeout_s=5.0, cpu_s=5, mem_bytes=256 * 1024**2
+        )
+
+
+def test_load_oracle_runs_sandbox_by_default(tmp_path, monkeypatch):
+    """load_oracle probes via the sandbox on the default path."""
+    called = {}
+
+    def _spy(path, config, timeout_s, cpu_s, mem_bytes):
+        called["path"] = Path(path)
+        return ("ok", None)
+
+    monkeypatch.setattr(oracle_mod, "_sandbox_probe", _spy)
+    src = _write(tmp_path / "o.py", "def verify(c): return True\n")
+    load_oracle(src)
+    assert called["path"] == src.resolve()
+
+
+def test_sandbox_ok_result_is_memoized_until_file_changes(tmp_path, monkeypatch):
+    """A successful validation of an unchanged file is not re-spawned; touching
+    the file's mtime/size busts the cache and re-spawns (TOCTOU re-check)."""
+    spawns = {"n": 0}
+
+    def _counting_spawn(path, config, timeout_s, cpu_s, mem_bytes):
+        spawns["n"] += 1
+        return ("ok", None)
+
+    monkeypatch.setattr(oracle_mod, "_sandbox_probe_spawn", _counting_spawn)
+    monkeypatch.setattr(oracle_mod, "_SANDBOX_OK_CACHE", {})
+
+    src = _write(tmp_path / "o.py", "def verify(c): return True\n")
+    validate_oracle_sandboxed(src, {})
+    assert spawns["n"] == 1
+    # Second validation of the identical file hits the cache — no new spawn.
+    validate_oracle_sandboxed(src, {})
+    assert spawns["n"] == 1
+
+    # Modify the file (new content → different size + mtime) → cache miss.
+    _write(src, "def verify(c): return c == b'x'\n")
+    validate_oracle_sandboxed(src, {})
+    assert spawns["n"] == 2
+
+
+def test_sandbox_cache_is_content_addressed_not_mtime_size(tmp_path, monkeypatch):
+    """FIX #4: a same-length content swap with a forged (identical) mtime must
+    still bust the ok-cache, because the key folds in the file's sha256. A
+    (mtime, size)-only key would falsely hit and skip re-validation."""
+    spawns = {"n": 0}
+
+    def _counting_spawn(path, config, timeout_s, cpu_s, mem_bytes):
+        spawns["n"] += 1
+        return ("ok", None)
+
+    monkeypatch.setattr(oracle_mod, "_sandbox_probe_spawn", _counting_spawn)
+    monkeypatch.setattr(oracle_mod, "_SANDBOX_OK_CACHE", {})
+
+    src = tmp_path / "o.py"
+    # Two distinct 400-byte bodies (same length, different content).
+    body_a = b"# benign\n" + b"def verify(c): return True\n"
+    body_b = b"# EVIL!!\n" + b"def verify(c): return True\n"
+    body_a = body_a + b"#" * (400 - len(body_a)) + b"\n"
+    body_b = body_b + b"#" * (400 - len(body_b)) + b"\n"
+    assert len(body_a) == len(body_b)
+
+    src.write_bytes(body_a)
+    os.chmod(src, 0o644)
+    st = src.stat()
+    validate_oracle_sandboxed(src, {})
+    assert spawns["n"] == 1
+
+    # Swap content but forge identical mtime + size (same length) — the classic
+    # TOCTOU evasion a (mtime,size)-only key would miss.
+    src.write_bytes(body_b)
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert src.stat().st_size == st.st_size
+    assert src.stat().st_mtime_ns == st.st_mtime_ns
+
+    validate_oracle_sandboxed(src, {})
+    # sha256 differs → cache miss → re-spawn. Without FIX #4 this stays 1.
+    assert spawns["n"] == 2
+
+
+def test_sandbox_err_with_huge_repr_is_fast_not_a_hang(tmp_path):
+    """FIX #3: a build_oracle raising an exception with a multi-MB repr() must be
+    classified as 'err' (fast), NOT starve the pipe send and be misclassified as
+    a wall-clock 'hang'. The child truncates the detail so the send never blocks."""
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    raise ValueError('X' * 5_000_000)\n",
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OracleLoadError, match="failed to load") as ei:
+        validate_oracle_sandboxed(src, {}, timeout_s=5.0)
+    elapsed = time.monotonic() - t0
+    # Fast err path, well under the 5s timeout — and NOT the hang message.
+    assert elapsed < 3.0
+    assert "wall-clock" not in str(ei.value)
+
+
+def test_load_oracle_sandbox_false_skips_validation(tmp_path, monkeypatch):
+    """sandbox=False opts out of validation (the hot-path re-load case).
+
+    Bounded/safe: rather than actually hanging, we monkeypatch the probe to blow
+    up if called — proving sandbox=False never invokes it, while a valid oracle
+    still loads exactly as before.
+    """
+    def _boom(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("_sandbox_probe called with sandbox=False")
+
+    monkeypatch.setattr(oracle_mod, "_sandbox_probe", _boom)
+    src = _write(tmp_path / "o.py", "def verify(c): return c == b'ok'\n")
+    verify = load_oracle(src, sandbox=False)
+    assert verify(b"ok") is True
+    assert verify(b"no") is False

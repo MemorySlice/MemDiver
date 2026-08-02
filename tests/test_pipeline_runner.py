@@ -465,6 +465,84 @@ def test_run_pipeline_escalate_recovers_diluted_key_reports_phi0(
 
 
 # ------------------------------------------------------------------
+# Phase 2: emit-plugin empty-hits skip + escalate gating
+# ------------------------------------------------------------------
+
+
+def test_run_pipeline_emit_plugin_skipped_when_no_hits(
+    diluted_dumps_dir, oracle_path, artifact_dir
+):
+    """When brute-force verifies nothing, emit_plugin takes the skip branch.
+
+    Reaches ``_run_emit_plugin``'s empty-hits guard: it emits a ``skipped``
+    stage_end and returns ``None`` WITHOUT invoking the plugin generator, so no
+    plugin artifact is registered and no ``emit_plugin`` directory is written.
+    """
+    ctx = _FakeCtx()
+    params = {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": diluted_dumps_dir,
+        "reduce_kwargs": _diluted_reduce_kwargs(),
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1, "exhaustive": True},
+        "emit": {"name": "test_plugin", "hit_index": 0},
+    }
+    result = run_pipeline(params, ctx)
+
+    # No verified hit at the default floor.
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] == 0
+
+    # emit_plugin skipped: no plugin path, no plugin dir, no plugin artifact.
+    assert result["summary"]["plugin_path"] is None
+    assert not (artifact_dir / "emit_plugin").exists()
+    assert not any(a["name"] == "vol3_plugin" for a in result["artifacts"])
+
+    # The skip surfaces as a stage_end carrying ``skipped``.
+    skip_ends = [
+        e for e in ctx.events
+        if e["type"] == "stage_end" and e.get("stage") == "emit_plugin"
+        and e.get("extra", {}).get("skipped")
+    ]
+    assert skip_ends
+
+
+def test_run_pipeline_escalate_skipped_when_default_hits(
+    dumps_dir, oracle_path, artifact_dir
+):
+    """escalate=True is a no-op when brute-force already found a verified hit.
+
+    Exercises ``_escalate_enabled``'s ``verified_count != 0`` short-circuit: the
+    escalate stage is gated off, so no escalation summary/artifacts/dir appear
+    even though escalation was opted in.
+    """
+    ctx = _FakeCtx()
+    params = {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": dumps_dir,
+        "reduce_kwargs": {
+            "min_variance": 100.0, "entropy_window": 16, "entropy_threshold": 3.5,
+            "min_region": 8, "alignment": 8, "block_size": 16,
+        },
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1, "exhaustive": True},
+        "escalate": True,
+    }
+    result = run_pipeline(params, ctx)
+
+    # The default floor found the key, so escalation must not fire.
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] >= 1
+    assert "escalation" not in result["summary"]
+    assert not (artifact_dir / "escalate").exists()
+    assert not any(a["name"].startswith("escalate") for a in result["artifacts"])
+    assert not any(
+        e.get("stage") == "escalate" for e in ctx.events
+        if e["type"] in ("stage_start", "stage_end")
+    )
+
+
+# ------------------------------------------------------------------
 # _register_artifact: streamed sha256
 # ------------------------------------------------------------------
 

@@ -208,6 +208,9 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: npx tsc --noEmit
+      - name: Unit tests (vitest)
+        working-directory: frontend
+        run: npm run test:run
       - name: Colour-literal lint (baseline-locked)
         run: node scripts/check-no-tailwind-colour-literals.mjs
       # Hex-literal lint remains advisory-only for now (49 pre-existing

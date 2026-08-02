@@ -115,6 +115,44 @@ def test_upload_broken_oracle_rejected(registry):
         registry.upload(filename="broken.py", content=b"this is not python(((")
 
 
+def test_upload_rejects_sandbox_failure(registry, monkeypatch):
+    """A hanging/OOMing oracle rejected by the load-time sandbox surfaces as an
+    OracleRegistryError (→ 4xx), not a 500. We patch the sandbox validator (the
+    real subprocess behaviour is covered in test_oracle) to raise before
+    _detect_shape imports the untrusted module in-process."""
+    import memdiver.api.services.oracle_registry as reg_mod
+    from memdiver.engine.oracle import OracleLoadError
+
+    def _reject(path, config=None, **kw):
+        raise OracleLoadError("oracle load exceeded 10.0s wall-clock (possible hang)")
+
+    monkeypatch.setattr(reg_mod, "validate_oracle_sandboxed", _reject)
+    with pytest.raises(OracleRegistryError, match="failed to load"):
+        registry.upload(filename="hang.py", content=ORACLE_SHAPE1.encode())
+
+
+def test_upload_sandbox_runs_before_shape_detection(registry, monkeypatch):
+    """The sandbox validation must run BEFORE _detect_shape imports the module
+    in-process, so a hang is caught before any untrusted in-process import."""
+    import memdiver.api.services.oracle_registry as reg_mod
+
+    order = []
+
+    real_detect = reg_mod._detect_shape
+
+    def _spy_validate(path, config=None, **kw):
+        order.append("validate")
+
+    def _spy_detect(path):
+        order.append("detect")
+        return real_detect(path)
+
+    monkeypatch.setattr(reg_mod, "validate_oracle_sandboxed", _spy_validate)
+    monkeypatch.setattr(reg_mod, "_detect_shape", _spy_detect)
+    registry.upload(filename="s.py", content=ORACLE_SHAPE1.encode())
+    assert order == ["validate", "detect"]
+
+
 def test_upload_purges_pycache(registry, tmp_path):
     # Upload, create a rogue __pycache__ next to it, then re-detect
     # shape via list_entries; the pycache should not cause a load.

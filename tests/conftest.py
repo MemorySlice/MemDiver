@@ -18,6 +18,19 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from hypothesis import settings
+
+# Hypothesis profile for the parser fuzz suite. deadline (ms) catches hangs;
+# max_examples keeps the file-I/O-backed fuzz tests fast. derandomize=True gives
+# a fixed per-test seed so the committed suite is DETERMINISTIC in CI — it locks
+# in the currently-hardened parser boundaries as a regression guard rather than a
+# flaky continuous fuzzer (which would intermittently re-discover any future
+# un-hardened boundary and red the build). Registered/loaded at import time so it
+# applies to the whole session.
+settings.register_profile(
+    "memdiver", max_examples=75, deadline=1500, derandomize=True
+)
+settings.load_profile("memdiver")
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
