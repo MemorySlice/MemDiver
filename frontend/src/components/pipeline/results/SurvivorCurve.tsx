@@ -4,19 +4,17 @@
  * code splitting (Plotly chunk is ~2.3 MB).
  *
  * Call sites continue to import `{ SurvivorCurve }` from this path.
+ *
+ * See @/components/charts/ChartDispatcher.tsx for the shared
+ * retry/lazy/Suspense/ErrorBoundary wiring this delegates to.
  */
-import { lazy, Suspense } from "react";
-import { useSettingsStore } from "@/stores/settings-store";
-
-const PlotlyImpl = lazy(() => import("./plotly/SurvivorCurve"));
-const SvgImpl = lazy(() => import("./svg/SurvivorCurve"));
+import { ChartDispatcher } from "@/components/charts/ChartDispatcher";
 
 export function SurvivorCurve() {
-  const backend = useSettingsStore((s) => s.display.chartBackend);
-  const Impl = backend === "svg" ? SvgImpl : PlotlyImpl;
   return (
-    <Suspense fallback={null}>
-      <Impl />
-    </Suspense>
+    <ChartDispatcher
+      loadPlotly={() => import("./plotly/SurvivorCurve")}
+      loadSvg={() => import("./svg/SurvivorCurve")}
+    />
   );
 }

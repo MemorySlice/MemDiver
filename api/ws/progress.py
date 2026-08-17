@@ -19,7 +19,9 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from memdiver.api.config import get_settings
 from memdiver.api.dependencies import task_manager_or_503 as _manager_or_503
+from memdiver.api.security import check_ws_token
 from memdiver.api.services.task_manager import get_task_manager
 
 logger = logging.getLogger("memdiver.api.ws.progress")
@@ -28,7 +30,9 @@ router = APIRouter(tags=["progress"])
 
 
 @router.websocket("/ws/tasks/{task_id}")
-async def ws_task_progress(websocket: WebSocket, task_id: str, since: int = 0):
+async def ws_task_progress(
+    websocket: WebSocket, task_id: str, since: int = 0, token: str | None = None
+):
     """Stream task progress events over a WebSocket.
 
     Protocol:
@@ -37,8 +41,18 @@ async def ws_task_progress(websocket: WebSocket, task_id: str, since: int = 0):
     2. Then streams live events until a terminal ``done`` / ``error``.
     3. Closes the socket after the terminal event (client should
        reconnect with the latest ``seq`` if they need to resubscribe).
+
+    Auth: browsers cannot set WebSocket handshake headers, so when
+    ``MEMDIVER_API_TOKEN`` is configured this endpoint takes the token via a
+    ``?token=`` query param instead of the ``Authorization``/``X-API-Key``
+    headers the HTTP routes use. A missing or mismatched token closes the
+    socket with code 1008 (policy violation) right after accepting.
     """
     await websocket.accept()
+    settings = get_settings()
+    if settings.api_token and not check_ws_token(settings.api_token, token):
+        await websocket.close(code=1008)
+        return
     try:
         manager = get_task_manager()
     except RuntimeError as exc:
@@ -71,6 +85,10 @@ async def ws_task_progress(websocket: WebSocket, task_id: str, since: int = 0):
             if event.type in ("done", "error"):
                 await websocket.close()
                 return
+        # ``subscribe`` exhausted (e.g. bus/subscriber torn down) without
+        # ever yielding a terminal event — close explicitly so the socket
+        # isn't leaked open with no one left to send a terminal frame.
+        await websocket.close()
     except WebSocketDisconnect:
         return
     except Exception:  # pragma: no cover - defensive

@@ -29,6 +29,11 @@ import type {
   ReduceParams,
   TaskStatus,
 } from "@/api/pipeline";
+import {
+  isBruteForceStageEnd,
+  isConsensusStageEnd,
+  isEmitPluginStageEnd,
+} from "@/api/websocket";
 import type { TaskProgressEvent } from "@/api/websocket";
 
 const PIPELINE_STORE_VERSION = 1;
@@ -253,10 +258,7 @@ export function reducePipelineEvent(
         patch.activeStageMsg = event.msg;
       }
       // Engine search_reduce sub-stages carry funnel counts via extra.
-      const extra = event.extra as
-        | { survivor_bytes?: number; input_bytes?: number }
-        | null
-        | undefined;
+      const extra = event.extra;
       if (extra && typeof extra.survivor_bytes === "number") {
         const survivor = extra.survivor_bytes;
         const input = extra.input_bytes;
@@ -281,20 +283,8 @@ export function reducePipelineEvent(
         patch.activeStageMsg = event.msg ?? "";
       }
       // brute_force stage_end carries the verified count + hits.
-      if (event.stage === "brute_force" && event.extra) {
-        const extra = event.extra as {
-          verified_count?: number;
-          total_candidates?: number;
-          variance_threshold?: number;
-          hits?: Array<{
-            offset?: number;
-            length?: number;
-            region_index?: number;
-            key_hex?: string;
-            neighborhood_start?: number;
-            neighborhood_variance?: number[];
-          }>;
-        };
+      if (isBruteForceStageEnd(event) && event.extra) {
+        const extra = event.extra;
         if (typeof extra.verified_count === "number") {
           patch.funnel = {
             ...state.funnel,
@@ -325,8 +315,8 @@ export function reducePipelineEvent(
       }
       // consensus stage_end carries total_bytes so we can seed the funnel's
       // ``raw`` bar before the variance filter has a chance to run.
-      if (event.stage === "consensus" && event.extra) {
-        const extra = event.extra as { total_bytes?: number; num_dumps?: number };
+      if (isConsensusStageEnd(event) && event.extra) {
+        const extra = event.extra;
         if (typeof extra.total_bytes === "number") {
           patch.funnel = {
             ...state.funnel,
@@ -338,24 +328,21 @@ export function reducePipelineEvent(
         }
       }
       // emit_plugin stage_end carries inferred structure fields.
-      if (event.stage === "emit_plugin" && event.extra) {
-        const extra = event.extra as { fields?: InferredField[] };
+      if (isEmitPluginStageEnd(event) && event.extra) {
+        const extra = event.extra;
         if (extra.fields && Array.isArray(extra.fields)) {
           patch.inferredFields = extra.fields;
         }
       }
       break;
     }
+    case "funnel": {
+      // intentionally ignored (no store effect)
+      break;
+    }
     case "nsweep_point": {
-      if (event.extra && typeof event.extra === "object") {
-        const extra = event.extra as {
-          n?: number;
-          stages?: Record<string, number>;
-          candidates_tried?: number;
-          hits?: number;
-          hit_offset?: number | null;
-          timing_ms?: Partial<StageTimings>;
-        };
+      if (event.extra) {
+        const extra = event.extra;
         if (typeof extra.n === "number") {
           const point: NSweepPoint = {
             n: extra.n,
@@ -370,16 +357,13 @@ export function reducePipelineEvent(
       }
       break;
     }
+    case "oracle_tick": {
+      // intentionally ignored (no store effect)
+      break;
+    }
     case "oracle_hit": {
-      if (event.extra && typeof event.extra === "object") {
-        const extra = event.extra as {
-          offset?: number;
-          size?: number;
-          region_index?: number;
-          key_hex?: string;
-          neighborhood_start?: number;
-          neighborhood_variance?: number[];
-        };
+      if (event.extra) {
+        const extra = event.extra;
         if (typeof extra.offset === "number") {
           patch.hits = [
             ...state.hits,

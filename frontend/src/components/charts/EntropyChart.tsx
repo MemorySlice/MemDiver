@@ -9,20 +9,19 @@
  *
  * Call sites continue to `import { EntropyChart } from
  * "@/components/charts/EntropyChart"` — no churn elsewhere.
+ *
+ * See ChartDispatcher.tsx for the shared retry/lazy/Suspense/
+ * ErrorBoundary wiring this delegates to.
  */
-import { lazy, Suspense } from "react";
-import { useSettingsStore } from "@/stores/settings-store";
+import { ChartDispatcher } from "@/components/charts/ChartDispatcher";
 import type { EntropyChartProps } from "./types";
 
-const PlotlyImpl = lazy(() => import("./plotly/EntropyChart"));
-const SvgImpl = lazy(() => import("./svg/EntropyChart"));
-
 export function EntropyChart(props: EntropyChartProps) {
-  const backend = useSettingsStore((s) => s.display.chartBackend);
-  const Impl = backend === "svg" ? SvgImpl : PlotlyImpl;
   return (
-    <Suspense fallback={null}>
-      <Impl {...props} />
-    </Suspense>
+    <ChartDispatcher<EntropyChartProps>
+      loadPlotly={() => import("./plotly/EntropyChart")}
+      loadSvg={() => import("./svg/EntropyChart")}
+      {...props}
+    />
   );
 }

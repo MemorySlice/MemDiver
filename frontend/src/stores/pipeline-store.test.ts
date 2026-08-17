@@ -19,11 +19,30 @@ function baseState(overrides: Partial<PipelineState> = {}): PipelineState {
   return { ...usePipelineStore.getState(), ...overrides };
 }
 
-function event(
-  type: TaskProgressEventType,
-  fields: Partial<TaskProgressEvent> = {},
-): TaskProgressEvent {
-  return { task_id: "t1", type, seq: 1, ts: 100, ...fields };
+/**
+ * Builds one variant of the TaskProgressEvent union. Generic over the
+ * ``type`` literal so ``fields`` is checked against that variant's own
+ * ``extra`` shape (e.g. passing `{ extra: { survivor_bytes: 1 } }` for
+ * "progress" vs. `{ extra: { total_bytes: 1 } }` for a "consensus"
+ * `stage_end`) instead of the flattened shape a plain
+ * `Partial<TaskProgressEvent>` would produce. The `as` is confined to
+ * this test helper: TypeScript can't verify that spreading a
+ * `Partial<Variant>` over the four common fields reconstructs exactly
+ * `Variant`, but every field on the right of the spread is itself
+ * type-checked against that variant, so this can't smuggle in a
+ * mismatched shape.
+ */
+function event<T extends TaskProgressEventType>(
+  type: T,
+  fields: Partial<Extract<TaskProgressEvent, { type: T }>> = {},
+): Extract<TaskProgressEvent, { type: T }> {
+  return {
+    task_id: "t1",
+    type,
+    seq: 1,
+    ts: 100,
+    ...fields,
+  } as Extract<TaskProgressEvent, { type: T }>;
 }
 
 describe("reducePipelineEvent seq handling", () => {

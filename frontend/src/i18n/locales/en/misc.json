@@ -1,6 +1,7 @@
 {
   "app": {
     "errorBoundaryTitle": "Something went wrong.",
+    "errorBoundaryRetry": "Retry",
     "notificationDismiss": "Dismiss notification",
     "themeLabelLight": "Light",
     "themeLabelDark": "Dark",

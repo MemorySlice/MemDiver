@@ -1,19 +1,17 @@
 /**
- * VarianceMap dispatcher. See ./EntropyChart.tsx for design rationale.
+ * VarianceMap dispatcher. See ./EntropyChart.tsx for design rationale
+ * and ./ChartDispatcher.tsx for the shared retry/lazy/Suspense/
+ * ErrorBoundary wiring this delegates to.
  */
-import { lazy, Suspense } from "react";
-import { useSettingsStore } from "@/stores/settings-store";
+import { ChartDispatcher } from "@/components/charts/ChartDispatcher";
 import type { VarianceMapProps } from "./types";
 
-const PlotlyImpl = lazy(() => import("./plotly/VarianceMap"));
-const SvgImpl = lazy(() => import("./svg/VarianceMap"));
-
 export function VarianceMap(props: VarianceMapProps) {
-  const backend = useSettingsStore((s) => s.display.chartBackend);
-  const Impl = backend === "svg" ? SvgImpl : PlotlyImpl;
   return (
-    <Suspense fallback={null}>
-      <Impl {...props} />
-    </Suspense>
+    <ChartDispatcher<VarianceMapProps>
+      loadPlotly={() => import("./plotly/VarianceMap")}
+      loadSvg={() => import("./svg/VarianceMap")}
+      {...props}
+    />
   );
 }

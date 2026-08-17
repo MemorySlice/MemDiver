@@ -196,6 +196,35 @@ def test_ws_live_loop_streams_subscribe_event_then_closes(client, monkeypatch):
     assert fake_ws.closed is True
 
 
+def test_ws_subscribe_exhausted_without_terminal_still_closes(client, monkeypatch):
+    """``subscribe`` exhausting without a terminal event must still close.
+
+    If the live-subscribe generator is torn down (e.g. bus/task cleanup)
+    before ever yielding a ``done``/``error`` event, the ``async for`` loop
+    ends on its own and falls off the end of the handler's ``try`` block.
+    Without an explicit close on that fall-through, the socket would be
+    left open with nothing left to send a terminal frame — a resource
+    leak. Assert the handler closes it anyway.
+    """
+    mgr = get_task_manager()
+    task_id = "ws-exhausted-task"
+    with mgr._lock:  # noqa: SLF001 — test-only direct publish
+        bus = mgr.progress_bus
+        bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
+
+    async def fake_subscribe(_task_id):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(bus, "subscribe", fake_subscribe)
+
+    fake_ws = _FakeWebSocket()
+    asyncio.run(ws_task_progress(fake_ws, task_id, since=0))
+
+    assert [f["type"] for f in fake_ws.sent] == ["stage_start"]
+    assert fake_ws.closed is True
+
+
 def test_ws_disconnect_during_live_send_stops_cleanly(client, monkeypatch):
     """A client disconnect while sending a live event returns quietly.
 

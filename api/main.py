@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from memdiver.api.config import get_settings
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
+from memdiver.api.security import ApiTokenAuthMiddleware
 from memdiver.api.services.artifact_store import ArtifactStore
 from memdiver.api.services.oracle_registry import (
     init_oracle_registry,
@@ -147,7 +148,8 @@ def create_app() -> FastAPI:
     # requests), so any literal "*" is stripped from the configured origins and
     # we fall back to the localhost dev origin. allow_methods / allow_headers
     # are narrowed to exactly what the SPA sends (GET/POST/DELETE + the OPTIONS
-    # preflight; Content-Type on JSON/upload bodies) instead of "*".
+    # preflight; Content-Type on JSON/upload bodies, Authorization/X-API-Key
+    # when an API token is configured) instead of "*".
     cors_origins = [o for o in settings.cors_origins if o != "*"]
     if not cors_origins:
         cors_origins = ["http://localhost:5173"]
@@ -157,9 +159,20 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # API token auth (Phase 2.5): a no-op unless MEMDIVER_API_TOKEN is set.
+    # Protects every /api, /ws, and /notebook route; the health check, the
+    # OpenAPI/docs endpoints, and the static frontend bundle stay exempt.
+    # See api/security.py for the exemption rules and WebSocket handling.
+    app.add_middleware(ApiTokenAuthMiddleware, settings=settings)
+
+    @app.get("/health")
+    def health() -> dict:
+        """Liveness/readiness check. Always reachable, even with a token set."""
+        return {"status": "ok"}
 
     from memdiver.api.routers import (
         algorithms,

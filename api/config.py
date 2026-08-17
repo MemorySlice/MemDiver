@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     config_path: Path = Path("config.json")
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # API authentication (Phase 2.5). api_token stays None by default so the
+    # API remains open — every existing test fixture and local single-user
+    # workflow relies on that no-auth posture. allow_insecure is the explicit,
+    # loud opt-out for the non-loopback bind guardrail (see api/security.py).
+    api_token: str | None = None
+    allow_insecure: bool = False
+
     # Phase 25 pipeline substrate
     oracle_dir: Path | None = None
     task_root: Path = Path("")

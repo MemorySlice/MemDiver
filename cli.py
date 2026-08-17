@@ -207,15 +207,25 @@ def _cmd_web(args: argparse.Namespace) -> int:
     """Launch the FastAPI + React web application."""
     try:
         import uvicorn
+        from memdiver.api.config import get_settings
         from memdiver.api.main import create_app
+        from memdiver.api.security import InsecureBindError, enforce_bind_guardrail
     except ImportError:
         _print_missing_package("The FastAPI web backend (fastapi + uvicorn)", extra="api")
         return 1
     port = getattr(args, "port", 8080)
-    print(f"MemDiver starting on http://127.0.0.1:{port}", file=sys.stderr, flush=True)
+    settings = get_settings()
+    # Refuse a non-loopback bind with no auth and no explicit override
+    # *before* touching the socket — see api/security.py for the rationale.
+    try:
+        enforce_bind_guardrail(settings.host, settings)
+    except InsecureBindError as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        return 1
+    print(f"MemDiver starting on http://{settings.host}:{port}", file=sys.stderr, flush=True)
     try:
         app = create_app()
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+        uvicorn.run(app, host=settings.host, port=port, log_level="info")
     except KeyboardInterrupt:
         pass
     return 0

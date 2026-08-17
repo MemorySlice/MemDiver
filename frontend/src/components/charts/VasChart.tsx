@@ -1,19 +1,17 @@
 /**
- * VasChart dispatcher. See ./EntropyChart.tsx for design rationale.
+ * VasChart dispatcher. See ./EntropyChart.tsx for design rationale and
+ * ./ChartDispatcher.tsx for the shared retry/lazy/Suspense/
+ * ErrorBoundary wiring this delegates to.
  */
-import { lazy, Suspense } from "react";
-import { useSettingsStore } from "@/stores/settings-store";
+import { ChartDispatcher } from "@/components/charts/ChartDispatcher";
 import type { VasChartProps } from "./types";
 
-const PlotlyImpl = lazy(() => import("./plotly/VasChart"));
-const SvgImpl = lazy(() => import("./svg/VasChart"));
-
 export function VasChart(props: VasChartProps) {
-  const backend = useSettingsStore((s) => s.display.chartBackend);
-  const Impl = backend === "svg" ? SvgImpl : PlotlyImpl;
   return (
-    <Suspense fallback={null}>
-      <Impl {...props} />
-    </Suspense>
+    <ChartDispatcher<VasChartProps>
+      loadPlotly={() => import("./plotly/VasChart")}
+      loadSvg={() => import("./svg/VasChart")}
+      {...props}
+    />
   );
 }

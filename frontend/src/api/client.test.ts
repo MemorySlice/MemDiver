@@ -35,15 +35,45 @@ describe("request", () => {
     expect(init.headers).toMatchObject({ "Content-Type": "application/json" });
   });
 
-  it("lets a caller-supplied headers object replace the default header", async () => {
-    // NOTE: in client.ts the request body spreads `...init` AFTER the
-    // `headers` key, so a caller `headers` object overwrites the merged
-    // default rather than extending it — the default Content-Type is dropped.
+  it("merges a caller-supplied headers object with the default Content-Type", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}));
     await request("/api/thing", { headers: { "X-Trace": "abc" } });
 
     const init = fetchMock.mock.calls[0][1];
-    expect(init.headers).toEqual({ "X-Trace": "abc" });
+    expect(init.headers).toEqual({
+      "Content-Type": "application/json",
+      "X-Trace": "abc",
+    });
+  });
+
+  it("lets a caller-supplied Content-Type override the default", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    await request("/api/thing", {
+      headers: { "Content-Type": "text/plain", "X-Trace": "abc" },
+    });
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.headers).toEqual({
+      "Content-Type": "text/plain",
+      "X-Trace": "abc",
+    });
+  });
+
+  it("still forwards other init fields (method, body) alongside the merged headers", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    await request("/api/thing", {
+      method: "POST",
+      body: JSON.stringify({ a: 1 }),
+      headers: { "X-Trace": "abc" },
+    });
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ a: 1 }));
+    expect(init.headers).toEqual({
+      "Content-Type": "application/json",
+      "X-Trace": "abc",
+    });
   });
 
   it("throws an ApiError carrying status + body on a non-ok response", async () => {

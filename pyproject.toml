@@ -81,7 +81,7 @@ experiment = [
 # liboqs C library (native build). ML-KEM code paths degrade gracefully when
 # this extra is absent — only KeyEncap=None and X25519 are then available.
 crypto = ["liboqs-python>=0.10"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis"]
 docs = [
     "sphinx>=7.3,<9",
     "sphinx-rtd-theme>=2.0,<4",
@@ -260,6 +260,96 @@ files = [
     "core/service_errors.py",
     "engine/consensus_service.py",
 ]
+
+# ---------------------------------------------------------------------------
+# Coverage gate (P2.10). The editable install maps the `memdiver` import name
+# onto the ENTIRE repo root (see [tool.setuptools] package-dir above), so a
+# naive `--cov=memdiver` run counts tests/*.py, run.py, docs/, etc. as
+# "source" and reports a misleading ~39% TOTAL dragged down by non-production
+# files. `source` below scopes measurement to the `memdiver` package (i.e.
+# the whole repo, since that's what it maps to); `omit` then excludes the
+# non-production slices — the same tests/docs/scripts/tools/frontend/build
+# split already used by [tool.ruff] extend-exclude and [tool.bandit]
+# exclude_dirs above, plus run.py (generated Marimo notebook, exempted from
+# ruff for the same reason) and conftest.py (test fixtures, not source).
+# `--cov=memdiver.<submodule>` is NOT used anywhere (CI or locally): it
+# double-imports numpy under some import orders and crashes. The bare `--cov`
+# flag (relying on this `source` setting) is the stable form.
+#
+# `report.exclude_lines` deliberately keeps only the standard `pragma: no
+# cover` escape — no aggressive exclusions (e.g. blanket `if TYPE_CHECKING`
+# or `def __repr__` skips) that would inflate the number. The goal is an
+# honest production total, not a flattering one.
+#
+# The CI `test` job's `--cov-fail-under` ratchet floor lives in
+# .github/workflows/ci.yml (not here) so its value sits next to the pytest
+# invocation it gates.
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["memdiver"]
+omit = [
+    "tests/*",
+    "*/tests/*",
+    "conftest.py",
+    "*/conftest.py",
+    "run.py",
+    "docs/*",
+    "*/docs/*",
+    "scripts/*",
+    "*/scripts/*",
+    "tools/*",
+    "*/tools/*",
+    "frontend/*",
+    "*/frontend/*",
+    "build/*",
+    "*/build/*",
+    "*.egg-info/*",
+    "*/*.egg-info/*",
+]
+
+[tool.coverage.report]
+precision = 1
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+]
+
+# ---------------------------------------------------------------------------
+# Security static-analysis (P2.9). Scoped to PRODUCTION code only — the same
+# split used by [tool.ruff] extend-exclude above: tests/docs/scripts/tools are
+# reference/dev material, frontend/ is JS (not bandit's domain), build/ is the
+# stale packaging mirror, and run.py is a generated Marimo notebook (already
+# exempted from ruff for the same "not real source" reason).
+#
+# A one-off baseline (.bandit-baseline.json — plain JSON, so this comment
+# carries the notes it can't) freezes today's pre-existing findings so the CI
+# `security` job only fails on NEW issues introduced going forward. Triage of
+# what's in it (47 findings, all LOW severity except one MEDIUM, NONE High):
+#   B110/B112 (try/except/pass|continue, 23x): parser- and UI-robustness code
+#     (kaitai_compiled generated parsers, ui/views navigator, format_detect
+#     suggestion loop) that must tolerate malformed/partial input by design;
+#     none touch msl/ crypto code.
+#   B101 (assert, 10x): non-security invariant checks, not stripped-under--O
+#     security gates.
+#   B603/B404 (subprocess w/o shell=True + the subprocess import itself, 9x):
+#     the safer subprocess pattern (no shell), flagged only because bandit
+#     wants literal-arg provenance audited — this is a forensics tool that
+#     legitimately shells out to gdb/lldb/memslicer/etc.
+#   B607 (partial exe path, 2x): same shell-out-to-system-tool pattern
+#     (core/dump_driver.py invoking "memslicer"/"lldb" by name via PATH).
+#   B105 (hardcoded "password", 2x): false positive — these are enum-like
+#     string literals for `secret_source` ("keylog"/"msl_hints" in
+#     core/discovery.py), not actual secrets.
+#   B108 (hardcoded /tmp dir, 1x, the only MEDIUM): api/config.py's default
+#     `upload_dir`, an overridable settings default, not a live secret/path
+#     injection.
+# Regenerate after an intentional change to one of these patterns with:
+#   bandit -c pyproject.toml -r . -x run.py -f json -o .bandit-baseline.json
+# ---------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", "docs", "scripts", "tools", "frontend", "build", "misc"]
+# run.py isn't a directory so exclude_dirs can't catch it; -x/--exclude in the
+# CI invocation (and locally) adds it as a glob-matched path exclusion.
 
 # tests/ is intentionally excluded from sdist/wheel — fixtures (including
 # the AES sample binary and private dataset paths) must never ship.

@@ -1,4 +1,11 @@
 {
+  "error": {
+    "message": "This chart failed to render.",
+    "retry": "Retry"
+  },
+  "skeleton": {
+    "loading": "Loading chart…"
+  },
   "consensus": {
     "empty": {
       "title": "No consensus matrix yet",

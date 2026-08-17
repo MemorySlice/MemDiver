@@ -38,7 +38,6 @@ import { useHexStore } from "@/stores/hex-store";
 import { NeighborhoodOverlayPanel } from "@/components/hex/NeighborhoodOverlayPanel";
 import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NotificationStack } from "@/components/NotificationStack";
 import { ConsensusChart } from "@/components/charts/ConsensusChart";
 import { ArchitectPlaceholder } from "@/components/research/ArchitectPlaceholder";
@@ -449,9 +448,7 @@ function BottomTabs() {
           ) : entropyLoading ? (
             <p className="p-3 text-sm md-text-muted">{t("loadingEntropy")}</p>
           ) : entropyData ? (
-            <ErrorBoundary fallback={<p className="p-3 text-sm md-text-muted">{t("entropyChartFailed")}</p>}>
-              <EntropyChart data={entropyData} />
-            </ErrorBoundary>
+            <EntropyChart data={entropyData} />
           ) : (
             <p className="p-3 text-sm md-text-muted">{t("entropyLoadFailed")}</p>
           )

@@ -78,6 +78,37 @@ memdiver experiment --target path/to/target.py --num-runs 10
 memdiver ui
 ```
 
+## API authentication
+
+The FastAPI backend is **open by default** (no login, matching its localhost
+single-user design) unless you set `MEMDIVER_API_TOKEN`:
+
+```bash
+export MEMDIVER_API_TOKEN="a-long-random-secret"
+memdiver web
+```
+
+Once a token is configured, every data route — everything under `/api/`,
+`/ws/`, and `/notebook` — requires it. Send it as either:
+
+- `Authorization: Bearer <token>` (HTTP), or
+- `X-API-Key: <token>` (HTTP), or
+- `?token=<token>` query param (WebSocket only — browsers can't set custom
+  headers on the WS handshake)
+
+A missing or wrong token gets a `401` on HTTP routes, or a WebSocket close
+with code `1008` (policy violation). All comparisons are constant-time
+(`hmac.compare_digest`), so response timing can't be used to guess the token.
+The health check (`/health`), the OpenAPI/docs endpoints (`/docs`, `/redoc`,
+`/openapi.json`), and the static frontend bundle stay reachable without a
+token even when one is set.
+
+**Bind guardrail:** `memdiver web` refuses to start if `MEMDIVER_HOST` is set
+to anything other than `127.0.0.1` / `::1` / `localhost` and no
+`MEMDIVER_API_TOKEN` is configured — binding a forensic-data API to the
+network with zero auth is refused outright. Set a token, or override with
+`MEMDIVER_API_ALLOW_INSECURE=1` (logs a loud warning on every startup).
+
 ## At a glance
 
 | Surface | Count | Location |

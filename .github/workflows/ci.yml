@@ -37,7 +37,25 @@ jobs:
         # self-materialise synthetic fixtures — runs here with no dataset or
         # browser setup. (test_e2e_real_dumps.py is NOT a browser test and DOES
         # run here.)
-        run: python -m pytest -q --ignore-glob='tests/e2e_*_test.py'
+        #
+        # --cov (P2.10 coverage gate): scope is set by [tool.coverage.run] in
+        # pyproject.toml (production code only — tests/docs/scripts/tools/
+        # frontend/build/run.py/conftest.py are omitted there), so the reported
+        # TOTAL is real production coverage, not the ~39% you'd get by naively
+        # counting the whole repo. Measured production total on the main branch
+        # at the time this gate was added: 86.0% (local, Python 3.11, this same
+        # command minus the fail-under flag). --cov-fail-under=82 sets a RATCHET
+        # floor ~4 points below that — enough headroom to absorb the modules
+        # that are only exercised by the separate test-crypto/test-e2e jobs
+        # (this job doesn't run those), while still catching a real regression.
+        # Raise this floor in a follow-up once coverage grows; do not lower it.
+        run: python -m pytest -q --ignore-glob='tests/e2e_*_test.py' --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=82
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml-${{ matrix.python-version }}
+          path: coverage.xml
 
   # Python lint + type gate, introduced by the code-quality campaign. Runs on
   # the ratchet config in pyproject.toml: ruff enforces E/F/W/B (legacy codes
@@ -64,6 +82,68 @@ jobs:
         run: ruff format --check .
       - name: mypy (typed-island scope)
         run: mypy
+
+  # Dependency + static security scanning (P2.9). Kept a separate lean job
+  # (like `lint`/`test-crypto`/`test-e2e`) so a scan finding can't mask test
+  # failures and vice-versa.
+  #   - bandit: static analysis over PRODUCTION code only (scope defined by
+  #     [tool.bandit] in pyproject.toml). Gated against .bandit-baseline.json
+  #     so only NEW findings fail the job — the ~47 pre-existing LOW/MEDIUM
+  #     findings (acceptable-by-design: parser/UI robustness try/except,
+  #     shelling out to gdb/lldb/memslicer by name, etc. — see the
+  #     [tool.bandit] comment in pyproject.toml for the full triage) are
+  #     frozen in the baseline rather than reformatted to please the scanner.
+  #   - pip-audit: audits the SAME editable install the `test` job uses.
+  #     `pip install --upgrade pip setuptools` first — an unpatched
+  #     ambient/bootstrap setuptools is otherwise the #1 source of noise here
+  #     (PYSEC-2022-43012 et al. against the venv's own setuptools, unrelated
+  #     to any memdiver dependency). No advisories are ignored: at the time
+  #     this job was added, a clean env has zero known vulnerabilities.
+  #   - npm audit (both frontend/ and tests/e2e/): advisory-only
+  #     (`continue-on-error: true`), mirroring the `ruff format --check`
+  #     advisory convention in `lint` above. Transitive frontend build-tool
+  #     deps (vite/react-router/etc.) routinely trip `--audit-level=high`
+  #     well before a real, actionable MemDiver-side fix exists; Dependabot
+  #     (.github/dependabot.yml) is the mechanism that actually clears these.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            tests/e2e/package-lock.json
+      - name: Install memdiver with dev + all interface extras
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install -e '.[dev,all]'
+      - name: Install security scanning tools
+        run: python -m pip install bandit pip-audit
+      - name: bandit (production code, baseline-gated)
+        run: bandit -c pyproject.toml -r . -x run.py -b .bandit-baseline.json
+      - name: pip-audit (installed dependency tree)
+        run: pip-audit
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: npm audit -- frontend (advisory)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit --audit-level=high
+      - name: Install e2e deps
+        working-directory: tests/e2e
+        run: npm ci
+      - name: npm audit -- tests/e2e (advisory)
+        working-directory: tests/e2e
+        continue-on-error: true
+        run: npm audit --audit-level=high
 
   # Proves the built WHEEL installs into a clean environment and the
   # `memdiver.*` namespace resolves WITHOUT the repo root on sys.path. The

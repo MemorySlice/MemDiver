@@ -16,42 +16,47 @@
  *    have rolled past the client's last-seen seq.
  *
  * ``TaskProgressEvent`` is the superset discriminated union the backend
- * can emit; consumers pick out the fields they care about.
+ * can emit; consumers pick out the fields they care about. The union
+ * itself, its per-``type`` payload shapes, and the ``isTaskProgressEvent``
+ * runtime validation guard live in ``./progress-events`` and are
+ * re-exported here so existing imports keep resolving.
  */
 
-export type TaskProgressEventType =
-  | "stage_start"
-  | "progress"
-  | "stage_end"
-  | "funnel"
-  | "nsweep_point"
-  | "oracle_tick"
-  | "oracle_hit"
-  | "artifact"
-  | "done"
-  | "error";
+export type {
+  TaskProgressEventType,
+  ProgressArtifact,
+  TaskProgressEvent,
+  ProgressStageExtra,
+  BruteForceHitPayload,
+  BruteForceStageEndExtra,
+  ConsensusStageEndExtra,
+  EmitPluginStageEndExtra,
+  NSweepPointExtra,
+  OracleHitExtra,
+  StageStartEvent,
+  ProgressEvent,
+  BruteForceStageEndEvent,
+  ConsensusStageEndEvent,
+  EmitPluginStageEndEvent,
+  GenericStageEndEvent,
+  StageEndEvent,
+  FunnelEvent,
+  NSweepPointEvent,
+  OracleTickEvent,
+  OracleHitEvent,
+  ArtifactEvent,
+  DoneEvent,
+  ErrorEvent,
+} from "./progress-events";
+export {
+  isTaskProgressEvent,
+  isBruteForceStageEnd,
+  isConsensusStageEnd,
+  isEmitPluginStageEnd,
+} from "./progress-events";
 
-export interface ProgressArtifact {
-  name: string;
-  relpath?: string;
-  path?: string;
-  size?: number;
-  sha256?: string;
-  media_type?: string;
-}
-
-export interface TaskProgressEvent {
-  task_id: string;
-  type: TaskProgressEventType;
-  seq: number;
-  ts: number;
-  stage?: string | null;
-  pct?: number | null;
-  msg?: string | null;
-  extra?: Record<string, unknown> | null;
-  artifact?: ProgressArtifact | null;
-  error?: string | null;
-}
+import type { TaskProgressEvent, TaskProgressEventType } from "./progress-events";
+import { isTaskProgressEvent } from "./progress-events";
 
 export type ProgressHandler = (msg: TaskProgressEvent) => void;
 
@@ -156,8 +161,18 @@ export class TaskWebSocket {
     try {
       const resp = await fetch(this.buildBackfillUrl(this.taskId));
       if (resp.ok) {
-        const data: { events?: TaskProgressEvent[] } = await resp.json();
-        for (const ev of data.events ?? []) {
+        const data: unknown = await resp.json();
+        const rawEvents =
+          data !== null &&
+          typeof data === "object" &&
+          Array.isArray((data as Record<string, unknown>).events)
+            ? ((data as Record<string, unknown>).events as unknown[])
+            : [];
+        for (const ev of rawEvents) {
+          if (!isTaskProgressEvent(ev)) {
+            console.warn("[TaskWebSocket] dropping malformed backfill event", ev);
+            continue;
+          }
           this.handleEvent(ev);
           if (this.terminated) return;
         }
@@ -177,9 +192,9 @@ export class TaskWebSocket {
     }
     this.ws = ws;
     ws.onmessage = (evt) => {
+      let parsed: unknown;
       try {
-        const ev = JSON.parse(evt.data) as TaskProgressEvent;
-        this.handleEvent(ev);
+        parsed = JSON.parse(evt.data);
       } catch {
         this.dispatch({
           task_id: this.taskId ?? "",
@@ -188,7 +203,18 @@ export class TaskWebSocket {
           ts: Date.now() / 1000,
           error: "Invalid message from server",
         });
+        return;
       }
+      // Runtime validation boundary: a value that merely parses as JSON
+      // is not necessarily a well-shaped TaskProgressEvent (a buggy
+      // backend build, a proxy error page, etc). Drop anything that
+      // doesn't pass the guard rather than let a malformed value crash
+      // a handler downstream -- never tear down the socket over it.
+      if (!isTaskProgressEvent(parsed)) {
+        console.warn("[TaskWebSocket] dropping malformed progress event", parsed);
+        return;
+      }
+      this.handleEvent(parsed);
     };
     ws.onerror = () => {
       // Don't emit here — onclose will follow and handle reconnect.
