@@ -77,11 +77,13 @@ export function StageOracle({ onAdvance }: Props) {
         <OracleShapeExplainer />
       </div>
 
-      <div className="flex gap-2 border-b border-[var(--md-border)]">
+      <div role="tablist" className="flex gap-2 border-b border-[var(--md-border)]">
         {(["upload", "examples"] as const).map((tabKey) => (
           <button
             key={tabKey}
             type="button"
+            role="tab"
+            aria-selected={tab === tabKey}
             onClick={() => setTab(tabKey)}
             className={`text-xs px-3 py-1.5 transition-colors ${
               tab === tabKey
@@ -104,13 +106,15 @@ export function StageOracle({ onAdvance }: Props) {
         </div>
       )}
 
-      {tab === "upload" && <OracleUpload />}
-      {tab === "examples" && (
-        <OracleExamplePicker
-          selected={exampleHint}
-          onSelect={handleExample}
-        />
-      )}
+      <div role="tabpanel">
+        {tab === "upload" && <OracleUpload />}
+        {tab === "examples" && (
+          <OracleExamplePicker
+            selected={exampleHint}
+            onSelect={handleExample}
+          />
+        )}
+      </div>
 
       <div className="pt-1" data-tour-id="pipeline-oracle-dryrun">
         <OracleDryRunBar oracleId={oracleId} samplesB64={DRY_RUN_SAMPLES} />

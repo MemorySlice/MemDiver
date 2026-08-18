@@ -65,7 +65,7 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
       <h3 className="text-sm font-semibold mb-2" style={{ color: t.textPrimary }}>
         {tr("convergence.title")}
       </h3>
-      <div className="flex gap-4 text-xs mb-2" style={{ color: t.textSecondary }}>
+      <div className="flex gap-4 text-xs mb-2" style={{ color: t.textSecondary }} role="status" aria-live="polite">
         {data.first_detection_n && (
           <span>{tr("convergence.firstDetection", { n: data.first_detection_n })}</span>
         )}
@@ -79,9 +79,12 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
       <svg
         width={chartWidth}
         height={chartHeight}
+        role="img"
+        aria-label={tr("convergence.title")}
         className="rounded"
         style={{ background: t.chartPlot }}
       >
+        <title>{tr("convergence.title")}</title>
         {/* Grid lines */}
         {[0, 0.25, 0.5, 0.75, 1].map(v => (
           <line key={v} x1={padding.left} x2={chartWidth - padding.right}

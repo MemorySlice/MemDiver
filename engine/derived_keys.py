@@ -1,8 +1,9 @@
 """DerivedKeyExpander - compute derived keys via the KDF registry."""
 
 import logging
-from typing import List
+from typing import List, Optional
 
+from memdiver.core.kdf_base import BaseKDF
 from memdiver.core.kdf_registry import get_kdf_registry
 from memdiver.core.models import CryptoSecret
 
@@ -29,7 +30,7 @@ class DerivedKeyExpander:
     def expand_secrets(
         self,
         secrets: List[CryptoSecret],
-        key_lengths: List[int] = None,
+        key_lengths: Optional[List[int]] = None,
         hash_algo: str = "sha256",
     ) -> List[CryptoSecret]:
         """Expand secrets into derived keys using registered KDF plugins.
@@ -47,7 +48,7 @@ class DerivedKeyExpander:
             New CryptoSecret objects for each derived key/IV.
         """
         registry = get_kdf_registry()
-        type_to_kdf = {}
+        type_to_kdf: dict[str, BaseKDF] = {}
         for kdf in registry.list_all():
             for st in kdf.supported_secret_types():
                 type_to_kdf.setdefault(st, kdf)

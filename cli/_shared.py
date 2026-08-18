@@ -31,14 +31,19 @@ _CLI_EXIT = {
 }
 
 
-def to_cli_exit(err: CapabilityError, *, stream=sys.stderr) -> int:
+def to_cli_exit(err: CapabilityError, *, stream=None) -> int:
     """Translate a propagating ``CapabilityError`` into a CLI message + exit code.
 
     Prints a single ``memdiver: ERROR — <message>`` line to ``stream`` and maps
     the error's category to a process exit code via ``_CLI_EXIT``. Internal
     errors additionally log a full traceback under ``memdiver.cli`` so an
     operator can diagnose an unexpected failure.
+
+    ``stream`` defaults to ``sys.stderr`` resolved AT CALL TIME (not bound once
+    at definition), so it honours any active redirection of ``sys.stderr``.
     """
+    if stream is None:
+        stream = sys.stderr
     print(f"memdiver: ERROR — {err.message}", file=stream)
     if err.category is ErrorCategory.INTERNAL:
         logging.getLogger("memdiver.cli").exception("internal error")

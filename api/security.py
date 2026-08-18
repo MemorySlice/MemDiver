@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -25,6 +26,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 from memdiver.api.config import Settings
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 logger = logging.getLogger("memdiver.api.security")
 
@@ -118,8 +120,21 @@ class ApiTokenAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-class InsecureBindError(RuntimeError):
-    """Raised when refusing to bind a non-loopback host without a token."""
+class InsecureBindError(CapabilityError):
+    """Raised when refusing to bind a non-loopback host without a token.
+
+    A ``CapabilityError`` (category ``PRECONDITION``) so it flows through the
+    same funnel as every other surfaced error: the CLI ``web`` command routes
+    it to :func:`cli._shared.to_cli_exit` (``memdiver: ERROR — …`` + a
+    category exit code) instead of a bespoke print, and — were it ever raised
+    inside a request — the API's ``CapabilityError`` handler would map it to
+    HTTP 400. It is a misconfiguration precondition, not bad user input.
+    """
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        kwargs.setdefault("category", ErrorCategory.PRECONDITION)
+        kwargs.setdefault("code", "insecure_bind")
+        super().__init__(message, **kwargs)
 
 
 def enforce_bind_guardrail(host: str, settings: Settings) -> None:

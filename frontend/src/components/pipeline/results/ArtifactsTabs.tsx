@@ -113,10 +113,15 @@ export function ArtifactsTabs() {
 
   return (
     <div className="flex flex-col gap-2" data-tour-id="pipeline-artifacts">
-      <div className="flex gap-4 px-3 py-1.5 border-b border-[var(--md-border)]">
+      <div
+        role="tablist"
+        className="flex gap-4 px-3 py-1.5 border-b border-[var(--md-border)]"
+      >
         {tabs.map((t) => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
             onClick={() => setTab(t.key)}
             className={`text-xs px-2 py-0.5 capitalize transition-colors ${
               tab === t.key
@@ -128,7 +133,7 @@ export function ArtifactsTabs() {
           </button>
         ))}
       </div>
-      <div className="flex-1">
+      <div role="tabpanel" className="flex-1">
         {tab === "plugin" &&
           (hasPlugin ? (
             <PluginPreview taskId={taskId} />

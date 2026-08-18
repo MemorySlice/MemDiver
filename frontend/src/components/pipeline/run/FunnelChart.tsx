@@ -53,7 +53,7 @@ export function FunnelChart(): JSX.Element {
           {t("run.funnel.awaiting")}
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" aria-live="polite">
           {ROWS.map((row) => {
             const count = funnel[row.key];
             const fraction = logFraction(count, raw);

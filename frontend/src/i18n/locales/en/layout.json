@@ -2,6 +2,11 @@
   "openNotebook": "Open Notebook",
   "openNotebookTitle": "Open Marimo research notebook in new tab",
   "newSession": "New Session",
+  "modeBadge": {
+    "verification": "verification",
+    "exploration": "exploration"
+  },
+  "analysisRunningAria": "Analysis running",
   "tabs": {
     "bookmarks": "bookmarks",
     "dumps": "dumps",

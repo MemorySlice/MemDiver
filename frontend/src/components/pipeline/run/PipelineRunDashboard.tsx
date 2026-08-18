@@ -147,7 +147,7 @@ export function PipelineRunDashboard(): JSX.Element {
       )}
 
       {isRunning && activeStage && (
-        <div className="md-panel p-3 space-y-1">
+        <div className="md-panel p-3 space-y-1" aria-live="polite">
           <div className="flex justify-between text-xs">
             <span className="md-text-accent">{activeStage}</span>
             <span className="md-text-muted">
@@ -156,6 +156,10 @@ export function PipelineRunDashboard(): JSX.Element {
           </div>
           <div className="h-1.5 rounded bg-[var(--md-bg-hover)] overflow-hidden">
             <div
+              role="progressbar"
+              aria-valuenow={pctClamped * 100}
+              aria-valuemin={0}
+              aria-valuemax={100}
               className="h-full bg-[var(--md-accent-blue)] transition-all duration-300"
               style={{ width: `${pctClamped * 100}%` }}
             />

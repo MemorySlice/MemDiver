@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ._shared import _print_missing_package, _write_output
+from ._shared import _print_missing_package, _write_output, to_cli_exit
 
 logger = logging.getLogger("memdiver.cli")
 
@@ -19,7 +19,9 @@ def _cmd_ui(args: argparse.Namespace) -> int:
         _print_missing_package("Marimo", extra="marimo")
         return 1
     extra = getattr(args, "extra_args", [])
-    app = str(Path(__file__).parent / "run.py")
+    # run.py lives at the memdiver package root; this module is one level deeper
+    # (memdiver/cli/dataset.py) since the P3.1 cli-package split, so go up twice.
+    app = str(Path(__file__).parent.parent / "run.py")
     return subprocess.call([sys.executable, "-m", "marimo", "run", app] + extra)
 
 
@@ -40,8 +42,11 @@ def _cmd_web(args: argparse.Namespace) -> int:
     try:
         enforce_bind_guardrail(settings.host, settings)
     except InsecureBindError as exc:
-        print(str(exc), file=sys.stderr, flush=True)
-        return 1
+        # Funnel through the shared CLI error mapper (prefixed message +
+        # category exit code) rather than a bespoke print — see api/security.py.
+        # This path is dispatched at main.py:main() *outside* the CapabilityError
+        # backstop, so the catch is kept here (not delegated upward).
+        return to_cli_exit(exc)
     print(f"MemDiver starting on http://{settings.host}:{port}", file=sys.stderr, flush=True)
     try:
         app = create_app()

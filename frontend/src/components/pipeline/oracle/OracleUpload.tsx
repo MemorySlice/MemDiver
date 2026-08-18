@@ -80,8 +80,17 @@ export function OracleUpload() {
   return (
     <div className="space-y-3">
       <div
+        role="button"
+        tabIndex={0}
+        aria-label={t("oracle.upload.dropTitle")}
         className="md-panel p-4 text-xs text-center cursor-pointer hover:bg-[var(--md-bg-hover)] transition-colors"
         onClick={() => inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         onDragOver={(e) => {
           e.preventDefault();
         }}
@@ -144,12 +153,21 @@ export function OracleUpload() {
             return (
               <div
                 key={o.id}
+                role="button"
+                tabIndex={0}
+                aria-selected={isSelected}
                 className={`md-panel p-3 space-y-2 cursor-pointer transition-colors ${
                   isSelected
                     ? "border-2 border-[var(--md-accent-blue)]"
                     : "hover:bg-[var(--md-bg-hover)]"
                 }`}
                 onClick={() => selectOracle(o.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    selectOracle(o.id);
+                  }
+                }}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">

@@ -33,7 +33,7 @@ export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: Conse
   }
 
   return (
-    <div className="p-3 text-xs space-y-3">
+    <div className="p-3 text-xs space-y-3" role="status" aria-live="polite">
       <h3 className="text-sm font-semibold md-text-accent">{t("consensus.title")}</h3>
       <div className="flex gap-4 md-text-muted">
         <span>{t("consensus.totalBytes", { value: size.toLocaleString() })}</span>

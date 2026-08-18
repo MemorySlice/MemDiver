@@ -81,7 +81,7 @@ function Toolbar() {
             color: "white",
           }}
         >
-          {mode}
+          {t(`modeBadge.${mode}`)}
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -349,6 +349,10 @@ function DetailPanel() {
 
 function BottomTabs() {
   const { t } = useTranslation("layout");
+  // Aliased reference to the translate function: the tab-row `.map((t) => ...)`
+  // below shadows `t` with the tab name, so the aria-label lookup inside that
+  // callback must go through this alias instead of the shadowed `t`.
+  const translate = t;
   const [tab, setTab] = useState<BottomTab>("analysis");
   const totalHits = useResultsStore((s) => s.getTotalHitCount());
   const isRunning = useAnalysisStore((s) => s.isRunning);
@@ -429,10 +433,18 @@ function BottomTabs() {
           >
             {t}
             {t === "analysis" && isRunning && (
-              <span className="ml-1 md-spinner" />
+              <span
+                className="ml-1 md-spinner"
+                role="status"
+                aria-live="polite"
+                aria-label={translate("analysisRunningAria")}
+              />
             )}
             {t === "results" && totalHits > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-[var(--md-accent-blue)] text-white">
+              <span
+                className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-[var(--md-accent-blue)] text-white"
+                aria-live="polite"
+              >
                 {totalHits}
               </span>
             )}
@@ -443,15 +455,17 @@ function BottomTabs() {
         {tab === "analysis" && <AnalysisPanel />}
         {tab === "results" && <ScanResultsPanel />}
         {tab === "entropy" && (
-          !dumpPath ? (
-            <p className="p-3 text-sm md-text-muted">{t("loadDumpForEntropy")}</p>
-          ) : entropyLoading ? (
-            <p className="p-3 text-sm md-text-muted">{t("loadingEntropy")}</p>
-          ) : entropyData ? (
-            <EntropyChart data={entropyData} />
-          ) : (
-            <p className="p-3 text-sm md-text-muted">{t("entropyLoadFailed")}</p>
-          )
+          <div aria-live="polite">
+            {!dumpPath ? (
+              <p className="p-3 text-sm md-text-muted">{t("loadDumpForEntropy")}</p>
+            ) : entropyLoading ? (
+              <p className="p-3 text-sm md-text-muted">{t("loadingEntropy")}</p>
+            ) : entropyData ? (
+              <EntropyChart data={entropyData} />
+            ) : (
+              <p className="p-3 text-sm md-text-muted">{t("entropyLoadFailed")}</p>
+            )}
+          </div>
         )}
         {tab === "strings" && (
           !dumpPath ? (

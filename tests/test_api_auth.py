@@ -256,6 +256,50 @@ def test_bind_guardrail_allows_loopback_hosts_without_token(host):
     enforce_bind_guardrail(host, settings)  # must not raise
 
 
+def test_insecure_bind_error_funnels_through_cli_error_mapper(capsys):
+    """P3.8: InsecureBindError is a CapabilityError(PRECONDITION), so the CLI
+    routes it through to_cli_exit — a ``memdiver: ERROR — …`` prefixed message
+    and a category exit code (2), instead of the pre-P3.8 raw print + exit 1."""
+    from memdiver.cli import to_cli_exit
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+
+    err = InsecureBindError(
+        "Refusing to bind 0.0.0.0 without MEMDIVER_API_TOKEN. Set a token, "
+        "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+    )
+    assert isinstance(err, CapabilityError)
+    assert err.category is ErrorCategory.PRECONDITION
+    assert err.code == "insecure_bind"
+
+    exit_code = to_cli_exit(err)
+    assert exit_code == 2  # PRECONDITION -> 2 (was a hard-coded 1 pre-P3.8)
+    assert "memdiver: ERROR — Refusing to bind 0.0.0.0" in capsys.readouterr().err
+
+
+def test_cmd_web_routes_insecure_bind_through_funnel(monkeypatch, capsys):
+    """The ``web`` command's guardrail refusal returns the category exit code
+    via to_cli_exit (2), not the old bespoke exit 1."""
+    pytest.importorskip("uvicorn")
+    import argparse
+
+    import memdiver.api.security as security
+    from memdiver.cli.dataset import _cmd_web
+
+    def _refuse(host, settings):
+        # Raise the *live* module's class (some suite tests reload
+        # memdiver.api.security) so it matches what _cmd_web's own fresh import
+        # will catch — otherwise a stale class object would slip past the except.
+        raise security.InsecureBindError(
+            "Refusing to bind 0.0.0.0 without MEMDIVER_API_TOKEN. Set a token, "
+            "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+        )
+
+    monkeypatch.setattr(security, "enforce_bind_guardrail", _refuse)
+    rc = _cmd_web(argparse.Namespace(port=8080))
+    assert rc == 2
+    assert "memdiver: ERROR —" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # check_credentials / check_ws_token — pure-function guards
 # ---------------------------------------------------------------------------

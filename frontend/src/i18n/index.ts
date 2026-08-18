@@ -35,6 +35,8 @@ const resources = {
 
 void i18n.use(initReactI18next).init({
   resources,
+  // Single-locale (en-only) is an intentional current choice, not a bug —
+  // there is no locale switcher and no other `locales/<lng>/` directory yet.
   lng: "en",
   fallbackLng: "en",
   defaultNS: "common",

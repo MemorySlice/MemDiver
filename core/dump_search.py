@@ -23,6 +23,7 @@ class DumpSearcher:
     def find_all(self, needle: bytes) -> List[int]:
         if self.data is None:
             self.load()
+        assert self.data is not None  # nosec B101 — load() sets self.data (bytes) or raises; narrows Optional for mypy
         offsets = []
         start = 0
         while True:
@@ -36,6 +37,7 @@ class DumpSearcher:
     def extract_context(self, offset: int, key_len: int, ctx: int = 0x100) -> Tuple[bytes, bytes, bytes]:
         if self.data is None:
             self.load()
+        assert self.data is not None  # nosec B101 — load() sets self.data (bytes) or raises; narrows Optional for mypy
         file_len = len(self.data)
 
         before_start = max(0, offset - ctx)

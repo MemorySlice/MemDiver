@@ -259,6 +259,23 @@ files = [
     # Wave 3 — new fully-typed service/error modules.
     "core/service_errors.py",
     "engine/consensus_service.py",
+    # Wave 4 — P3.4 ratchet (2026-08).
+    "core/artifact_util.py",
+    "app/_progress.py",
+    "core/constants.py",
+    "core/classify.py",
+    "core/structure_library_ssh.py",
+    "core/structure_loader.py",
+    "core/log.py",
+    "core/alignment_filter.py",
+    "core/input_schemas.py",
+    "core/dump_search.py",
+    "core/msl_helpers.py",
+    "core/display_labels.py",
+    "engine/derived_keys.py",
+    "engine/results.py",
+    "engine/envelope_serializer.py",
+    "app/tools_fields.py",
 ]
 
 # ---------------------------------------------------------------------------
