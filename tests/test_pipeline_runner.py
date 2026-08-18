@@ -543,7 +543,13 @@ def test_run_pipeline_escalate_skipped_when_default_hits(
 
 
 # ------------------------------------------------------------------
-# _register_artifact: streamed sha256
+# register_artifact (memdiver.core.artifact_util): streamed sha256
+#
+# NOTE: register_artifact used to be defined locally in pipeline_runner.py
+# as `_register_artifact`; it was promoted to the shared
+# `memdiver.core.artifact_util` module (P3.2 dedup) since pipeline_runner
+# and batch_task_runner both had byte-identical copies. These tests were
+# repointed to the new canonical location; behavior is unchanged.
 # ------------------------------------------------------------------
 
 
@@ -551,7 +557,7 @@ def test_register_artifact_streamed_sha_matches_whole_file(artifact_dir):
     """A multi-chunk artifact hashes byte-identically to a whole-file sha256."""
     import hashlib
 
-    from memdiver.app.pipeline.pipeline_runner import _register_artifact
+    from memdiver.core.artifact_util import register_artifact
 
     # Deterministic payload several MiB long so the incremental hash spans many
     # internal read buffers (not a single-shot read) and any chunk-boundary bug
@@ -560,7 +566,7 @@ def test_register_artifact_streamed_sha_matches_whole_file(artifact_dir):
     (artifact_dir / "big.bin").write_bytes(data)
 
     artifacts: List[Dict[str, Any]] = []
-    spec = _register_artifact(
+    spec = register_artifact(
         artifacts, artifact_dir, name="big", relpath="big.bin"
     )
 
@@ -571,10 +577,10 @@ def test_register_artifact_streamed_sha_matches_whole_file(artifact_dir):
 
 def test_register_artifact_missing_relpath_yields_none_sha(artifact_dir):
     """A relpath that is not a file records ``sha256 == None`` and size 0."""
-    from memdiver.app.pipeline.pipeline_runner import _register_artifact
+    from memdiver.core.artifact_util import register_artifact
 
     artifacts: List[Dict[str, Any]] = []
-    spec = _register_artifact(
+    spec = register_artifact(
         artifacts, artifact_dir, name="ghost", relpath="does_not_exist.bin"
     )
 

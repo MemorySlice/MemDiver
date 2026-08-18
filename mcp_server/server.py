@@ -12,6 +12,8 @@ def create_server():
     """Create and configure the MemDiver MCP server."""
     from mcp.server.fastmcp import FastMCP
 
+    from memdiver.app import experiment_orchestration
+
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
     from .session import ToolSession
@@ -513,7 +515,7 @@ def create_server():
         ``missing_backend`` CapabilityError when none are available.
         """
         from memdiver.app.key_material import key_material_kwargs
-        return json.dumps(tools_pipeline.experiment_result(
+        return json.dumps(experiment_orchestration.experiment_result(
             target=target, output_dir=output_dir, num_runs=num_runs,
             tools=tools, export_format=export_format,
             convergence=convergence, max_fp=max_fp,

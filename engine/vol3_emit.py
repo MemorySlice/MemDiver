@@ -48,6 +48,11 @@ logger = logging.getLogger("memdiver.engine.vol3_emit")
 PLUGIN_STATIC_THRESHOLD = 2000.0
 
 
+def resolve_variance_threshold(variance_threshold: Optional[float]) -> float:
+    """Return ``variance_threshold`` if given, else the plugin default."""
+    return variance_threshold if variance_threshold is not None else PLUGIN_STATIC_THRESHOLD
+
+
 def _static_mask_from_variance(
     variance: List[float],
     threshold: float = PLUGIN_STATIC_THRESHOLD,
@@ -133,7 +138,7 @@ def emit_plugin_for_hit(
             f"length {len(reference_data)}"
         )
     window = reference_data[nb_start:nb_end]
-    thresh = variance_threshold if variance_threshold is not None else PLUGIN_STATIC_THRESHOLD
+    thresh = resolve_variance_threshold(variance_threshold)
     static_mask = _static_mask_from_variance(nb_variance, threshold=thresh)
 
     # Compute key position within the neighborhood window.
@@ -212,7 +217,7 @@ def extract_inferred_fields(
     nb_start = int(hit.get("neighborhood_start", hit["offset"]))
     key_off = int(hit["offset"]) - nb_start
     key_len = int(hit["length"])
-    thresh = variance_threshold if variance_threshold is not None else PLUGIN_STATIC_THRESHOLD
+    thresh = resolve_variance_threshold(variance_threshold)
     return PatternGenerator.infer_fields(
         nb_variance, key_off, key_len, threshold=thresh,
     )

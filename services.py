@@ -72,12 +72,12 @@ from memdiver.app.tools_xref import (
 )
 
 # --- pipeline stages + verify / experiment ----------------------------------
+from memdiver.app.experiment_orchestration import experiment_result
 from memdiver.app.tools_pipeline import (
     auto_floor,
     brute_force,
     consensus,
     emit_plugin,
-    experiment_result,
     export_pattern,
     n_sweep,
     search_reduce,

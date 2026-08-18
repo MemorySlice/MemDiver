@@ -190,7 +190,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
       return useHexStore.getState().neighborhoodVarianceMap.get(offset);
     },
     // No dep needed — reads from getState() on each call.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
     []
   );
 

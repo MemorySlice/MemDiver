@@ -207,17 +207,25 @@ def test_run_batch_cancelled_context_suppresses_progress_events(tmp_path, lib_di
 
 
 # ------------------------------------------------------------------
-# _register_artifact: defensive stat() OSError branch
+# register_artifact (memdiver.core.artifact_util): defensive stat() OSError
+# branch.
+#
+# NOTE: register_artifact used to be defined locally in
+# batch_task_runner.py as `_register_artifact`; it was promoted to the
+# shared `memdiver.core.artifact_util` module (P3.2 dedup) since
+# pipeline_runner and batch_task_runner both had byte-identical copies.
+# This test was repointed to the new canonical location; behavior is
+# unchanged.
 # ------------------------------------------------------------------
 
 
 def test_register_artifact_stat_oserror_falls_back_to_zero_size(tmp_path):
     """If ``stat()`` on the artifact file raises, size falls back to 0.
 
-    sha256 is still computed via ``read_bytes()`` independently of
+    sha256 is still computed via the streamed hasher independently of
     ``stat()``, so only the ``size`` field is affected.
     """
-    from memdiver.app.pipeline.batch_task_runner import _register_artifact
+    from memdiver.core.artifact_util import register_artifact
 
     artifact_dir = tmp_path / "task"
     artifact_dir.mkdir()
@@ -240,7 +248,7 @@ def test_register_artifact_stat_oserror_falls_back_to_zero_size(tmp_path):
 
     with patch.object(Path, "stat", flaky_stat):
         artifacts: List[Dict[str, Any]] = []
-        spec = _register_artifact(
+        spec = register_artifact(
             artifacts, artifact_dir, name="batch_result", relpath=relpath
         )
 

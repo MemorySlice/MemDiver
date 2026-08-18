@@ -192,7 +192,7 @@ class WorkerContext:
                 {"task_id": self.task_id, "type": event_type, **fields}
             )
         except Exception:  # pragma: no cover - best effort
-            pass
+            logger.debug("progress emit failed", exc_info=True)
 
     def is_cancelled(self) -> bool:
         try:

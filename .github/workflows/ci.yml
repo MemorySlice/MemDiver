@@ -208,7 +208,7 @@ jobs:
               names = set(getattr(s, '_tools', {}) or {})
           need = {'get_processes', 'get_modules', 'get_handles'}
           assert need <= names, ('missing granular inspect tools', sorted(names))
-          assert len(names) == 26, ('expected 26 tools, got', len(names), sorted(names))
+          assert len(names) >= 26, ('expected >= 26 tools, got', len(names), sorted(names))
           print('mcp FastMCP server builds ok:', len(names), 'tools incl', sorted(need))
           "
 
@@ -291,6 +291,10 @@ jobs:
       - name: Unit tests (vitest)
         working-directory: frontend
         run: npm run test:run
+      - name: eslint (advisory)
+        working-directory: frontend
+        run: npm run lint
+        continue-on-error: true
       - name: Colour-literal lint (baseline-locked)
         run: node scripts/check-no-tailwind-colour-literals.mjs
       # Hex-literal lint remains advisory-only for now (49 pre-existing

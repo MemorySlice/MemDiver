@@ -1,7 +1,7 @@
 """Tests for app.pipeline.experiment_task_runner.run_experiment.
 
 Drives the thin streaming adapter directly (no ProcessPool) inside a fake
-``WorkerContext``, patching the shared ``app.tools_pipeline.experiment_result``
+``WorkerContext``, patching the shared ``app.experiment_orchestration.experiment_result``
 producer at the boundary the runner calls. Exercises the three
 ``CapabilityError`` branches (missing_backend -> graceful summary, cancelled ->
 RuntimeError, other -> propagate) plus the happy path.
@@ -59,7 +59,7 @@ def test_run_experiment_missing_backend_returns_graceful_summary(tmp_path):
     def _raise(**kwargs):
         raise CapabilityError("frida not installed", code="missing_backend")
 
-    with patch("memdiver.app.tools_pipeline.experiment_result", _raise):
+    with patch("memdiver.app.experiment_orchestration.experiment_result", _raise):
         ret = run_experiment(_params(tmp_path), ctx)
 
     assert ret["artifacts"] == []
@@ -84,7 +84,7 @@ def test_run_experiment_cancelled_raises_runtime_error(tmp_path):
     def _raise(**kwargs):
         raise CapabilityError("aborted", code="cancelled")
 
-    with patch("memdiver.app.tools_pipeline.experiment_result", _raise):
+    with patch("memdiver.app.experiment_orchestration.experiment_result", _raise):
         with pytest.raises(RuntimeError, match="cancelled"):
             run_experiment(_params(tmp_path), ctx)
 
@@ -100,7 +100,7 @@ def test_run_experiment_other_capability_error_propagates(tmp_path):
     def _raise(**kwargs):
         raise CapabilityError("bad input", code="something_else")
 
-    with patch("memdiver.app.tools_pipeline.experiment_result", _raise):
+    with patch("memdiver.app.experiment_orchestration.experiment_result", _raise):
         with pytest.raises(CapabilityError):
             run_experiment(_params(tmp_path), ctx)
 
@@ -122,7 +122,7 @@ def test_run_experiment_happy_path(tmp_path):
     def _ok(**kwargs):
         return canned
 
-    with patch("memdiver.app.tools_pipeline.experiment_result", _ok):
+    with patch("memdiver.app.experiment_orchestration.experiment_result", _ok):
         ret = run_experiment(
             _params(
                 tmp_path,
@@ -170,7 +170,7 @@ def test_run_experiment_registers_saved_plugin_artifact(tmp_path):
     def _ok(**kwargs):
         return canned
 
-    with patch("memdiver.app.tools_pipeline.experiment_result", _ok):
+    with patch("memdiver.app.experiment_orchestration.experiment_result", _ok):
         ret = run_experiment(_params(tmp_path), ctx)
 
     spec = next(a for a in ret["artifacts"] if a["name"] == "plugin_memslicer")

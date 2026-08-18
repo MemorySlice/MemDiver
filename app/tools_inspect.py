@@ -5,7 +5,7 @@ read_hex, get_entropy, extract_strings, get_session_info.
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from memdiver.core.dump_source import ViewMode
 from memdiver.core.entropy import compute_entropy_profile, find_high_entropy_regions, shannon_entropy
@@ -19,6 +19,9 @@ from memdiver.core.strings import extract_strings
 
 from .key_material import key_material_kwargs, open_dump_source, open_msl_reader
 from .session import ToolSession
+
+if TYPE_CHECKING:  # annotations only; the *_result producers import it at runtime in-body
+    from memdiver.core.service_result import ServiceResult
 
 logger = logging.getLogger("memdiver.app.tools_inspect")
 

@@ -988,7 +988,7 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
     import inspect
 
     pytest.importorskip("mcp")
-    from memdiver.app import tools_pipeline
+    from memdiver.app import experiment_orchestration, tools_pipeline
     from memdiver.mcp_server.server import create_server
 
     server = create_server()
@@ -997,7 +997,11 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
     problems = []
     for tool_name, producer_attr in _MCP_TOOL_PRODUCERS.items():
         assert tool_name in tools, f"MCP tool {tool_name!r} is not registered"
-        producer = getattr(tools_pipeline, producer_attr)
+        # experiment_result was extracted to its own module (P3.1); the other
+        # producers still live in tools_pipeline.
+        source = (experiment_orchestration
+                  if producer_attr == "experiment_result" else tools_pipeline)
+        producer = getattr(source, producer_attr)
         tool_params = set(inspect.signature(tools[tool_name].fn).parameters)
         producer_params = {
             name for name, p in inspect.signature(producer).parameters.items()

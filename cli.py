@@ -1023,7 +1023,7 @@ def _experiment_cli_progress(event: str, **fields) -> None:
 def _cmd_experiment(args: argparse.Namespace) -> int:
     """Orchestrate: spawn target, dump, build consensus, verify, export.
 
-    Routes the whole flow through ``app.tools_pipeline.experiment_result`` —
+    Routes the whole flow through ``app.experiment_orchestration.experiment_result`` —
     the single implementation now shared with the API experiment task runner
     and the MCP ``experiment`` tool (previously the CLI and the API each
     re-implemented the spawn→dump→consensus→verify→emit orchestration, with the
@@ -1031,7 +1031,7 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
     handler keeps its own presentation: streamed stderr progress, the
     side-by-side comparison table, and the JSON ``--output`` file.
     """
-    from memdiver.app.tools_pipeline import experiment_result
+    from memdiver.app.experiment_orchestration import experiment_result
 
     tools = args.tools.split(",") if args.tools else None
     try:

@@ -787,7 +787,7 @@ def import_run_directory(
         | set(run_dir.glob("*.core"))
     )
     for dump_file in dump_files:
-        out_path = output_dir / dump_file.with_suffix(".msl").name
+        out_path = output_dir / (dump_file.name + ".msl")
         result = import_dump(dump_file, out_path, secrets=secrets)
         results.append(result)
 

@@ -1,5 +1,5 @@
 """End-to-end (synthetic) tests for the ``experiment`` path of
-``memdiver.app.tools_pipeline``.
+``memdiver.app.experiment_orchestration``.
 
 The whole point of this file is to execute the *real* ``experiment_result``
 producer and its ``_experiment_*`` helpers — nothing in the module under test
@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from memdiver.app import tools_pipeline as tp
+from memdiver.app import experiment_orchestration as tp
 from memdiver.core.dump_driver import ExperimentResult
 from memdiver.core.service_errors import (
     CapabilityError,

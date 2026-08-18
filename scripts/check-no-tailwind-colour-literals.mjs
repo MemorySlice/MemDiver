@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { walk } from "./lib/walk.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "..");
@@ -21,14 +22,15 @@ const ALLOW_PATH = /\/components\/charts\/|\/components\/pipeline\/results\/Surv
 // Per-line escape hatch.
 const ALLOW_COMMENT = /design-token-source/;
 
-function walk(dir, out = []) {
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (/\.(ts|tsx)$/.test(name)) out.push(full);
-  }
-  return out;
-}
+// MOVED to scripts/lib/walk.mjs (P3.2 dedup)
+// function walk(dir, out = []) {
+//   for (const name of readdirSync(dir)) {
+//     const full = join(dir, name);
+//     if (statSync(full).isDirectory()) walk(full, out);
+//     else if (/\.(ts|tsx)$/.test(name)) out.push(full);
+//   }
+//   return out;
+// }
 
 function collectOffenders() {
   const hits = [];

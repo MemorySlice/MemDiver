@@ -28,6 +28,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from memdiver.core.artifact_util import sha256_streamed
+
 logger = logging.getLogger("memdiver.app.pipeline.experiment_task_runner")
 
 
@@ -70,7 +72,7 @@ def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
 
 # NOTE(single-source): the three stage helpers below (_capture_dumps,
 # _build_per_tool_consensus, _verify_and_emit) are SUPERSEDED by
-# ``memdiver.app.tools_pipeline.experiment_result`` (+ its ``_experiment_*``
+# ``memdiver.app.experiment_orchestration.experiment_result`` (+ its ``_experiment_*``
 # helpers), through which ``run_experiment`` now routes. In particular
 # ``_verify_and_emit`` / ``_build_per_tool_consensus`` still carry the
 # raw-bytes (``ConsensusVector.build`` / ``StaticChecker``) analysis the
@@ -79,7 +81,7 @@ def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
 #
 # === DEAD CODE — SCHEDULED FOR REMOVAL IN A FUTURE RELEASE ===
 # The three helpers below (_capture_dumps / _build_per_tool_consensus /
-# _verify_and_emit) are superseded by memdiver.app.tools_pipeline.experiment_result
+# _verify_and_emit) are superseded by memdiver.app.experiment_orchestration.experiment_result
 # and are no longer on any execution path. Commented out (not yet deleted) per the
 # repo no-delete policy; slated for deletion in a future release.
 
@@ -365,7 +367,7 @@ def _register_plugin_artifacts(
             target = plugins_dir / src_path.name
             shutil.copy2(src_path, target)
         size = target.stat().st_size
-        sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        sha = sha256_streamed(target)
         relpath = str(target.relative_to(artifact_dir))
         artifacts.append({
             "name": f"plugin_{tool_name}",
@@ -396,7 +398,7 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     TaskManager can publish the terminal ``done`` event.
 
     The orchestration itself now lives in
-    :func:`memdiver.app.tools_pipeline.experiment_result` — the single
+    :func:`memdiver.app.experiment_orchestration.experiment_result` — the single
     implementation shared with the CLI ``experiment`` command and the MCP
     ``experiment`` tool. This runner is the thin streaming adapter: it maps the
     producer's ``on_progress`` events onto ``ctx.emit`` (so the SPA's
@@ -405,7 +407,7 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     expects, forwards cancellation, and registers the emitted plugins as
     downloadable artifacts.
     """
-    from memdiver.app.tools_pipeline import experiment_result
+    from memdiver.app.experiment_orchestration import experiment_result
     from memdiver.core.service_errors import CapabilityError
 
     artifact_dir = _resolve_artifact_dir(params, ctx)

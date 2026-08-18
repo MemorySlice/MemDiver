@@ -34,6 +34,8 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from memdiver.core.artifact_util import sha256_streamed
+
 logger = logging.getLogger("memdiver.engine.oracle")
 
 OracleFn = Callable[[bytes], bool]
@@ -105,7 +107,7 @@ def _log_module_fingerprint(path: Path) -> str:
     that load oracle code — WARNING keeps it visible while still routing through
     the logging system (capturable to a file/SIEM) rather than a raw print.
     """
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = sha256_streamed(path)
     logger.warning("memdiver: loaded oracle %s sha256=%s", path, digest)
     return digest
 
@@ -224,7 +226,7 @@ def _sandbox_cache_key(
     resolved = Path(path).resolve()
     try:
         st = resolved.stat()
-        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        digest = sha256_streamed(resolved)
     except OSError:
         return None
     return (str(resolved), st.st_mtime_ns, st.st_size, digest, cpu_s, mem_bytes)

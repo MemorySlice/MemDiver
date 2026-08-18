@@ -168,7 +168,7 @@ def test_verify_key_result_valid_and_error_paths(tmp_path):
 
 
 def test_experiment_result_missing_target_raises(tmp_path):
-    from memdiver.app.tools_pipeline import experiment_result
+    from memdiver.app.experiment_orchestration import experiment_result
     from memdiver.core.service_errors import FileNotFoundServiceError
 
     with pytest.raises(FileNotFoundServiceError):

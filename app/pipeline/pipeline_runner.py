@@ -47,6 +47,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
+from memdiver.core.artifact_util import register_artifact, sha256_streamed
+
 if TYPE_CHECKING:
     from memdiver.engine.auto_floor import AutoFloorResult
 
@@ -132,42 +134,43 @@ def _run_producer(fn: Callable, /, **kwargs: Any) -> Any:
         raise
 
 
-def _sha256_streamed(path: Path) -> str:
-    """Return the hex sha256 of ``path``, read incrementally.
-
-    ``hashlib.file_digest`` (Python 3.11+, the project's floor) streams the file
-    through a bounded internal buffer, so peak memory stays bounded and
-    full-dump-scale artifacts never load whole into RAM. Byte-identical to
-    hashing the whole file at once.
-    """
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def _register_artifact(
-    artifacts: List[Dict[str, Any]],
-    artifact_dir: Path,
-    *,
-    name: str,
-    relpath: str,
-    media_type: str = "application/octet-stream",
-) -> Dict[str, Any]:
-    """Compute size + sha256 of a written artifact and append a record."""
-    full = artifact_dir / relpath
-    try:
-        size = full.stat().st_size
-    except OSError:
-        size = 0
-    sha = _sha256_streamed(full) if full.is_file() else None
-    spec = {
-        "name": name,
-        "relpath": relpath,
-        "media_type": media_type,
-        "size": size,
-        "sha256": sha,
-    }
-    artifacts.append(spec)
-    return spec
+# MOVED to memdiver.core.artifact_util (P3.2 dedup)
+# def _sha256_streamed(path: Path) -> str:
+#     """Return the hex sha256 of ``path``, read incrementally.
+#
+#     ``hashlib.file_digest`` (Python 3.11+, the project's floor) streams the file
+#     through a bounded internal buffer, so peak memory stays bounded and
+#     full-dump-scale artifacts never load whole into RAM. Byte-identical to
+#     hashing the whole file at once.
+#     """
+#     with path.open("rb") as f:
+#         return hashlib.file_digest(f, "sha256").hexdigest()
+#
+#
+# def _register_artifact(
+#     artifacts: List[Dict[str, Any]],
+#     artifact_dir: Path,
+#     *,
+#     name: str,
+#     relpath: str,
+#     media_type: str = "application/octet-stream",
+# ) -> Dict[str, Any]:
+#     """Compute size + sha256 of a written artifact and append a record."""
+#     full = artifact_dir / relpath
+#     try:
+#         size = full.stat().st_size
+#     except OSError:
+#         size = 0
+#     sha = _sha256_streamed(full) if full.is_file() else None
+#     spec = {
+#         "name": name,
+#         "relpath": relpath,
+#         "media_type": media_type,
+#         "size": size,
+#         "sha256": sha,
+#     }
+#     artifacts.append(spec)
+#     return spec
 
 
 def _is_msl(source) -> bool:
@@ -203,7 +206,7 @@ def _persist_welford_state(
         "mean_path": str(mean_path),
         "m2_path": str(m2_path),
     }, indent=2))
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="consensus_state",
         relpath="consensus/state.json",
@@ -297,13 +300,13 @@ def _build_consensus(
     ref_path = artifact_dir / "consensus" / "reference.bin"
     np.save(variance_path, variance)
     ref_path.write_bytes(reference)
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="consensus_variance",
         relpath="consensus/variance.npy",
         media_type="application/octet-stream",
     )
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="consensus_reference",
         relpath="consensus/reference.bin",
@@ -365,7 +368,7 @@ def _run_reduce(
         **reduce_kwargs,
     )
     candidates_path = out_dir / "candidates.json"
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="candidates",
         relpath="search_reduce/candidates.json",
@@ -413,7 +416,7 @@ def _run_brute_force(
         **bf_kwargs,
     )
     hits_path = out_dir / "hits.json"
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="hits",
         relpath="brute_force/hits.json",
@@ -468,7 +471,7 @@ def _run_nsweep(
     for name, media_type in (("json", "application/json"),
                              ("html", "text/html"),
                              ("md", "text/markdown")):
-        _register_artifact(
+        register_artifact(
             artifacts, artifact_dir,
             name=f"nsweep_{name}",
             relpath=f"nsweep/report.{name}",
@@ -533,13 +536,13 @@ def _run_emit_plugin(
         is_cancelled=ctx.is_cancelled,
     )
     output_path = output_dir / f"{name}.py"
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="vol3_plugin",
         relpath=f"emit_plugin/{output_path.name}",
         media_type="text/x-python",
     )
-    _register_artifact(
+    register_artifact(
         artifacts, artifact_dir,
         name="inferred_fields",
         relpath=f"emit_plugin/{name}_fields.json",
@@ -731,17 +734,17 @@ def _stage_consensus(state: "PipelineState") -> None:
         on_progress=_producer_sink(state.ctx),
         is_cancelled=state.ctx.is_cancelled,
     )
-    _register_artifact(
+    register_artifact(
         state.artifacts, state.artifact_dir,
         name="consensus_variance", relpath="consensus/variance.npy",
         media_type="application/octet-stream",
     )
-    _register_artifact(
+    register_artifact(
         state.artifacts, state.artifact_dir,
         name="consensus_reference", relpath="consensus/reference.bin",
         media_type="application/octet-stream",
     )
-    _register_artifact(
+    register_artifact(
         state.artifacts, state.artifact_dir,
         name="consensus_state", relpath="consensus/state.json",
         media_type="application/json",
@@ -855,12 +858,12 @@ def _stage_escalate(state: "PipelineState") -> None:
         on_progress=_producer_sink(state.ctx),
         is_cancelled=state.ctx.is_cancelled,
     )
-    _register_artifact(
+    register_artifact(
         state.artifacts, state.artifact_dir,
         name="escalate_verdict", relpath="escalate/verdict.json",
         media_type="application/json",
     )
-    _register_artifact(
+    register_artifact(
         state.artifacts, state.artifact_dir,
         name="escalate_report", relpath="escalate/report.md",
         media_type="text/markdown",

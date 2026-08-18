@@ -66,6 +66,28 @@ def test_import_run_directory(tmp_path):
     assert all(r.output_path.suffix == ".msl" for r in results)
 
 
+def test_import_run_directory_no_filename_collision(tmp_path):
+    """Dumps sharing a stem across suffixes (.dump/.dmp) must not collide.
+
+    Regression test: the output path used to be derived from
+    ``dump_file.with_suffix(".msl")``, which drops the original suffix and
+    made e.g. ``proc.dump`` and ``proc.dmp`` both map to ``proc.msl`` —
+    silently overwriting one result with the other.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "proc.dump").write_bytes(b"\xAA" * 256)
+    (run_dir / "proc.dmp").write_bytes(b"\xBB" * 256)
+
+    out_dir = tmp_path / "msl_out"
+    results = import_run_directory(run_dir, out_dir)
+
+    assert len(results) == 2
+    output_paths = {r.output_path for r in results}
+    assert output_paths == {out_dir / "proc.dump.msl", out_dir / "proc.dmp.msl"}
+    assert all(p.exists() for p in output_paths)
+
+
 def test_roundtrip_readback(tmp_path):
     """Import, read back with MslReader, verify region data matches."""
     data = b"\xCA\xFE" * 256  # 512 bytes — not page-aligned

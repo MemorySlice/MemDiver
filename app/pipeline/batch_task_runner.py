@@ -34,33 +34,36 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from memdiver.core.artifact_util import register_artifact
+
 logger = logging.getLogger("memdiver.app.pipeline.batch_task_runner")
 
 
-def _register_artifact(
-    artifacts: List[Dict[str, Any]],
-    artifact_dir: Path,
-    *,
-    name: str,
-    relpath: str,
-    media_type: str = "application/octet-stream",
-) -> Dict[str, Any]:
-    """Compute size + sha256 and append an artifact spec dict."""
-    full = artifact_dir / relpath
-    try:
-        size = full.stat().st_size
-    except OSError:
-        size = 0
-    sha = hashlib.sha256(full.read_bytes()).hexdigest() if full.is_file() else None
-    spec = {
-        "name": name,
-        "relpath": relpath,
-        "media_type": media_type,
-        "size": size,
-        "sha256": sha,
-    }
-    artifacts.append(spec)
-    return spec
+# MOVED to memdiver.core.artifact_util (P3.2 dedup)
+# def _register_artifact(
+#     artifacts: List[Dict[str, Any]],
+#     artifact_dir: Path,
+#     *,
+#     name: str,
+#     relpath: str,
+#     media_type: str = "application/octet-stream",
+# ) -> Dict[str, Any]:
+#     """Compute size + sha256 and append an artifact spec dict."""
+#     full = artifact_dir / relpath
+#     try:
+#         size = full.stat().st_size
+#     except OSError:
+#         size = 0
+#     sha = hashlib.sha256(full.read_bytes()).hexdigest() if full.is_file() else None
+#     spec = {
+#         "name": name,
+#         "relpath": relpath,
+#         "media_type": media_type,
+#         "size": size,
+#         "sha256": sha,
+#     }
+#     artifacts.append(spec)
+#     return spec
 
 
 def _job_dict_to_request(job: Dict[str, Any]):
@@ -177,7 +180,7 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         out_path.write_text(json.dumps(result_dict, indent=2))
 
     artifacts: List[Dict[str, Any]] = []
-    _register_artifact(
+    register_artifact(
         artifacts,
         artifact_dir,
         name="batch_result",

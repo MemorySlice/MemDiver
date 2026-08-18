@@ -128,7 +128,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     # -- verify + experiment (Phase 5, G4) ----------------------------------
     _cap("verify", "memdiver.app.tools_pipeline.verify_key_result",
          ("library", "cli", "web", "mcp")),
-    _cap("experiment", "memdiver.app.tools_pipeline.experiment_result",
+    _cap("experiment", "memdiver.app.experiment_orchestration.experiment_result",
          ("library", "cli", "web", "mcp")),
     # -- dataset / analysis (app.tools) -------------------------------------
     # CLI scan/analyze are separate (non-producer) implementations

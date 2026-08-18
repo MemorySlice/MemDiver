@@ -39,6 +39,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from memdiver.core.artifact_util import sha256_streamed
+
 logger = logging.getLogger("memdiver.app.pipeline.analysis_task_runner")
 
 STAGE = "analyze"
@@ -75,7 +77,7 @@ def _write_result_artifact(
         size = out_path.stat().st_size
     except OSError:
         size = 0
-    sha = hashlib.sha256(out_path.read_bytes()).hexdigest()
+    sha = sha256_streamed(out_path)
     return [
         {
             "name": "analysis_result",
