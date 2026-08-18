@@ -1,0 +1,549 @@
+"""CLI entry point for MemDiver — headless analysis and interactive UI."""
+
+import argparse
+import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
+
+from ._shared import (
+    _KEY_FLAGS_HINT,
+    _decrypt_parent_parser,
+    _format_jsonl,
+    _key_material_from_args,
+    _print_missing_package,
+    _resolve_dump_paths,
+    _setup_logging,
+    _warn_tag_status,
+    _write_output,
+    to_cli_exit,
+)
+from .dataset import (
+    _cmd_analyze,
+    _cmd_batch,
+    _cmd_import,
+    _cmd_mcp,
+    _cmd_scan,
+    _cmd_ui,
+    _cmd_web,
+)
+from .consensus import (
+    _cmd_consensus,
+    _cmd_consensus_add,
+    _cmd_consensus_begin,
+    _cmd_consensus_finalize,
+    _consensus_state_paths,
+    _load_welford_session,
+)
+from .experiment import _cmd_experiment, _experiment_cli_progress, _print_experiment_table
+from .pipeline import (
+    _cmd_auto_floor,
+    _cmd_brute_force,
+    _cmd_emit_plugin,
+    _cmd_export,
+    _cmd_gen_kem_key,
+    _cmd_import_dir,
+    _cmd_n_sweep,
+    _cmd_search_reduce,
+    _cmd_verify,
+)
+
+from .inspect import (
+    _INSPECT_HANDLERS,
+    _cmd_inspect,
+    _cmd_inspect_byte_search,
+    _cmd_inspect_entropy,
+    _cmd_inspect_handles,
+    _cmd_inspect_hex,
+    _cmd_inspect_modules,
+    _cmd_inspect_page_states,
+    _cmd_inspect_processes,
+    _cmd_inspect_session_info,
+    _cmd_inspect_strings,
+    _cmd_inspect_structure,
+    _cmd_inspect_xref,
+    _emit_inspect,
+    _inspect_key_kwargs,
+    _new_tool_session,
+    _present_inspect_cli_call,
+    present_inspect_cli,
+)
+
+logger = logging.getLogger("memdiver.cli")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
+    parser = argparse.ArgumentParser(prog="memdiver", description="MemDiver — Memory dump analysis platform")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("ui", help="Launch interactive Marimo UI (needs memdiver[marimo])").add_argument("extra_args", nargs="*", default=[])
+    az = sub.add_parser("analyze", help="Analyze library directories")
+    az.add_argument("library_dirs", nargs="+", help="Library directory paths")
+    az.add_argument("--phase", required=True, help="Lifecycle phase")
+    az.add_argument("--protocol-version", required=True, help="Protocol version")
+    az.add_argument("--keylog-filename", default="keylog.csv")
+    az.add_argument("--template", default="Auto-detect")
+    az.add_argument("--max-runs", type=int, default=10)
+    az.add_argument("--normalize", action="store_true")
+    az.add_argument("--no-expand", action="store_true", help="Skip key expansion")
+    az.add_argument("-o", "--output", help="Output JSON file")
+    az.add_argument("-v", "--verbose", action="store_true")
+    # scan
+    sc = sub.add_parser("scan", help="Scan dataset root")
+    sc.add_argument("--root", required=True, help="Dataset root path")
+    sc.add_argument("--keylog-filename", default="keylog.csv")
+    sc.add_argument("--protocols", nargs="*", help="Protocol names to scan")
+    sc.add_argument("-o", "--output", help="Output JSON file")
+    sc.add_argument("-v", "--verbose", action="store_true")
+    # mcp
+    mc = sub.add_parser("mcp", help="Start MCP server for AI integration (needs memdiver[mcp])")
+    mc.add_argument("--sse", action="store_true", help="Use SSE transport instead of stdio")
+    mc.add_argument("--port", type=int, default=8080, help="SSE port (default: 8080)")
+    mc.add_argument("-v", "--verbose", action="store_true")
+    # batch
+    bt = sub.add_parser("batch", help="Run batch analysis from config")
+    bt.add_argument("--config", required=True, help="Batch config JSON file")
+    bt.add_argument("-w", "--workers", type=int, default=1,
+                    help="Number of parallel workers (default: 1)")
+    bt.add_argument("-o", "--output", help="Output file")
+    bt.add_argument("--output-format", choices=["json", "jsonl"], default=None,
+                    help="Output format (overrides config); default: from config or 'json'")
+    bt.add_argument("-v", "--verbose", action="store_true")
+    # web (FastAPI + React — also the default when no command given)
+    wp = sub.add_parser("web", help="Launch FastAPI + React web application (needs memdiver[api])")
+    wp.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
+    # consensus
+    cs = sub.add_parser("consensus", help="Build consensus matrix from dumps",
+                        parents=[_decrypt_parent_parser()])
+    cs.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+    cs.add_argument("--normalize", action="store_true", help="ASLR-aware normalization")
+    cs.add_argument("--min-length", type=int, default=16,
+                    help="Minimum region length (default: 16)")
+    cs.add_argument("--align", action="store_true",
+                    help="Apply alignment filtering to KEY_CANDIDATE regions")
+    cs.add_argument("--block-size", type=int, default=32,
+                    help="Alignment block size (default: 32)")
+    cs.add_argument("--alignment-bytes", type=int, default=16,
+                    help="Memory alignment (default: 16)")
+    cs.add_argument("--density", type=float, default=0.75,
+                    help="Alignment density threshold (default: 0.75)")
+    cs.add_argument("--convergence", action="store_true",
+                    help="Run convergence sweep")
+    cs.add_argument("--max-fp", type=int, default=0,
+                    help="FP target for convergence (default: 0)")
+    cs.add_argument("-o", "--output", help="Output JSON file")
+    cs.add_argument("-v", "--verbose", action="store_true")
+    # incremental consensus (Welford-backed, persisted state)
+    cb = sub.add_parser(
+        "consensus-begin",
+        help="Create a new incremental consensus session on disk",
+    )
+    cb.add_argument("--state", required=True, help="Path to session state JSON")
+    cb.add_argument("--size", type=int, required=True,
+                    help="Consensus width in bytes")
+    cb.add_argument("-v", "--verbose", action="store_true")
+    ca = sub.add_parser(
+        "consensus-add",
+        help="Fold one dump into an existing incremental consensus session",
+        parents=[_decrypt_parent_parser()],
+    )
+    ca.add_argument("--state", required=True, help="Path to session state JSON")
+    ca.add_argument("dump", help="Path to a .dump or .msl file")
+    ca.add_argument("-v", "--verbose", action="store_true")
+    cf = sub.add_parser(
+        "consensus-finalize",
+        help="Materialize variance + classifications from a session",
+    )
+    cf.add_argument("--state", required=True, help="Path to session state JSON")
+    cf.add_argument("-o", "--output", help="Output JSON file")
+    cf.add_argument("-v", "--verbose", action="store_true")
+    # search-reduce
+    sr = sub.add_parser(
+        "search-reduce",
+        help="Reduce candidate set: variance → alignment → entropy",
+        parents=[_decrypt_parent_parser()],
+    )
+    sr.add_argument("--state", required=True, help="Path to consensus state JSON")
+    sr.add_argument("--reference-dump", required=True,
+                    help="One dump file used for per-region entropy sampling")
+    sr.add_argument("--alignment", type=int, default=8)
+    sr.add_argument("--block-size", type=int, default=32)
+    sr.add_argument("--density-threshold", type=float, default=0.5)
+    sr.add_argument("--min-variance", type=float, default=3000.0,
+                    help="Variance floor for candidate regions (default 3000). "
+                         "The output's 'recommended_floor' is a data-driven "
+                         "suggestion to consider here (0.0 = too few dumps / no "
+                         "crypto component: keep everything).")
+    sr.add_argument("--entropy-window", type=int, default=32)
+    sr.add_argument("--entropy-threshold", type=float, default=4.5)
+    sr.add_argument("--min-region", type=int, default=16)
+    sr.add_argument("-o", "--output", required=True, help="Output candidates.json")
+    sr.add_argument("-v", "--verbose", action="store_true")
+    # brute-force
+    bf = sub.add_parser(
+        "brute-force",
+        help="Iterate candidates through a user oracle script",
+        parents=[_decrypt_parent_parser()],
+    )
+    bf.add_argument("--candidates", required=True, help="candidates.json from search-reduce")
+    bf.add_argument("--dump", required=True, help="Reference dump file")
+    bf.add_argument("--oracle", required=True, help="Path to user Python oracle script")
+    bf.add_argument("--oracle-config", help="Optional TOML config passed to build_oracle")
+    bf.add_argument("--key-sizes", default="32", help="Comma-separated key sizes in bytes")
+    bf.add_argument("--stride", type=int, default=8)
+    bf.add_argument("--jobs", type=int, default=1)
+    bf.add_argument("--first-hit", action="store_true",
+                    help="Stop at the first verified candidate (default: exhaustive)")
+    bf.add_argument("--state", help="Consensus state path (attaches neighborhood variance)")
+    bf.add_argument("--top-k", type=int, default=10)
+    bf.add_argument("-o", "--output", required=True, help="Output hits.json")
+    bf.add_argument("-v", "--verbose", action="store_true")
+    # n-sweep
+    ns = sub.add_parser(
+        "n-sweep",
+        help="Sweep N=1..N_max; emit survivor-count curve + oracle hits",
+        parents=[_decrypt_parent_parser()],
+    )
+    ns.add_argument("--runs-dir", required=True, help="Directory containing run_* subdirs")
+    ns.add_argument("--dump-glob", default="*.msl", help="Glob under each run")
+    ns.add_argument("--n-values", default="1,3,5,10,20,30,50,75,100")
+    ns.add_argument("--alignment", type=int, default=8)
+    ns.add_argument("--block-size", type=int, default=32)
+    ns.add_argument("--density-threshold", type=float, default=0.5)
+    ns.add_argument("--min-variance", type=float, default=3000.0)
+    ns.add_argument("--entropy-window", type=int, default=32)
+    ns.add_argument("--entropy-threshold", type=float, default=4.5)
+    ns.add_argument("--min-region", type=int, default=16)
+    ns.add_argument("--oracle", required=True, help="Path to user oracle script")
+    ns.add_argument("--oracle-config", help="Optional TOML config")
+    ns.add_argument("--key-sizes", default="32")
+    ns.add_argument("--stride", type=int, default=8)
+    ns.add_argument("--first-hit", action="store_true")
+    ns.add_argument("--escalate", action="store_true",
+                    help="If no checkpoint finds a hit, run a floor-free "
+                         "descending-variance sweep once at the terminal N "
+                         "(reuses the in-memory variance; no re-fold)")
+    ns.add_argument("--escalate-oracle-budget", type=int, default=None,
+                    help="Optional cap on oracle calls during escalation "
+                         "(default: exhaustive)")
+    ns.add_argument("--output-dir", required=True, help="Directory for report.{json,md,html}")
+    ns.add_argument("-v", "--verbose", action="store_true")
+    # auto-floor
+    af = sub.add_parser(
+        "auto-floor",
+        help="Automated ground-truth-free variance-floor selection (single verdict)",
+        parents=[_decrypt_parent_parser()],
+    )
+    af.add_argument("--state", required=True, help="Path to consensus state JSON")
+    af.add_argument("--reference-dump", required=True,
+                    help="One dump the oracle verifies candidates against")
+    af.add_argument("--oracle", required=True, help="Path to user Python oracle script")
+    af.add_argument("--oracle-config", help="Optional TOML config passed to build_oracle")
+    af.add_argument("--key-sizes", default="32", help="Comma-separated key sizes in bytes")
+    af.add_argument("--stride", type=int, default=8)
+    af.add_argument("--alignment", type=int, default=8)
+    af.add_argument("--block-size", type=int, default=32)
+    af.add_argument("--density-threshold", type=float, default=0.5)
+    af.add_argument("--entropy-window", type=int, default=32)
+    af.add_argument("--entropy-threshold", type=float, default=4.5)
+    af.add_argument("--min-region", type=int, default=16)
+    af.add_argument("--phi0-method", default="pmin", choices=["pmin", "otsu"],
+                    help="Recommended-floor method: 'pmin' (phi=p_min*sigma_k^2, "
+                         "default) or 'otsu' (legacy data-driven valley fit)")
+    af.add_argument("--p-min", type=float, default=0.35,
+                    help="Retention policy for --phi0-method pmin: retain keys "
+                         "whose per-run correspondence >= p_min (default 0.35)")
+    af.add_argument("--coverage", type=float, default=None,
+                    help="Precomputed cross-run coverage-intersection C∩ in [0,1] "
+                         "(gates/qualifies the ABSENT verdict)")
+    af.add_argument("--correspondence", type=float, default=None,
+                    help="Precomputed correspondence score in [0,1] (reported)")
+    af.add_argument("--filter-recall", type=float, default=None,
+                    help="Precomputed entropy/alignment filter recall in [0,1]")
+    af.add_argument("--min-coverage", type=float, default=0.80)
+    af.add_argument("--self-test-trials", type=int, default=8,
+                    help="Oracle self-test random-negative probes (lower for "
+                         "one-shot/rate-limited oracles; each costs one call)")
+    af.add_argument("--oracle-budget", type=int, default=None,
+                    help="Max total oracle calls; if the maximal set is not "
+                         "exhausted within budget, the verdict is INCONCLUSIVE(cost), "
+                         "never a false ABSENT")
+    af.add_argument("--alignment-quality", type=float, default=None,
+                    help="Precomputed per-region alignment quality in [0,1]; below "
+                         "--min-alignment a no-hit is INCONCLUSIVE(alignment)")
+    af.add_argument("--min-alignment", type=float, default=0.5)
+    af.add_argument("--managed-region", action="store_true",
+                    help="Target is a managed runtime / moving-GC heap: a no-hit is "
+                         "INCONCLUSIVE(regime) (off-grid object headers may hide the key)")
+    af.add_argument("--positive-control",
+                    help="Hex of a known-good key for the oracle self-test (optional)")
+    af.add_argument("--output-dir", required=True, help="Directory for verdict.json/report.md")
+    af.add_argument("-v", "--verbose", action="store_true")
+    # emit-plugin
+    ep_emit = sub.add_parser(
+        "emit-plugin",
+        help="Emit a Volatility3 plugin from a brute-force hit neighborhood",
+        parents=[_decrypt_parent_parser()],
+    )
+    ep_emit.add_argument("--hit", required=True, help="hits.json from brute-force")
+    ep_emit.add_argument("--reference", required=True, help="Reference dump file")
+    ep_emit.add_argument("--name", required=True, help="Plugin class / rule name")
+    ep_emit.add_argument("--hit-index", type=int, default=0)
+    ep_emit.add_argument("--description")
+    ep_emit.add_argument(
+        "--variance-threshold", type=float, default=None,
+        help="Max variance for static bytes (default: 2000). Lower values "
+        "produce more wildcards → more cross-session robust patterns.",
+    )
+    ep_emit.add_argument("-o", "--output", required=True, help="Output .py file path")
+    ep_emit.add_argument("-v", "--verbose", action="store_true")
+    # export
+    ex = sub.add_parser("export", help="Export pattern as YARA/JSON/Volatility3",
+                        parents=[_decrypt_parent_parser()])
+    ex.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+    ex.add_argument("--offset", type=lambda x: int(x, 0), default=None,
+                    help="Region offset (hex or decimal)")
+    ex.add_argument("--length", type=int, default=None, help="Region length in bytes")
+    ex.add_argument("--auto", action="store_true",
+                    help="Auto-detect largest KEY_CANDIDATE region")
+    ex.add_argument("--context", type=int, default=32,
+                    help="Bytes of context around auto-detected region (default: 32)")
+    ex.add_argument("--name", default="memdiver_pattern", help="Pattern name")
+    ex.add_argument("--format", default="volatility3",
+                    choices=["yara", "json", "volatility3", "vol3"])
+    ex.add_argument("--min-static-ratio", type=float, default=0.3,
+                    help="Minimum static byte ratio (default: 0.3)")
+    ex.add_argument("--align", action="store_true",
+                    help="Use alignment-filtered candidates for auto-detection")
+    ex.add_argument("-o", "--output", help="Output file path")
+    ex.add_argument("-v", "--verbose", action="store_true")
+    # gen-kem-key
+    gk = sub.add_parser(
+        "gen-kem-key",
+        help="Generate a KEM keypair for encrypted-MSL recipients (spec §10.4)",
+    )
+    gk.add_argument("--mechanism", required=True,
+                    choices=["X25519", "ML-KEM-768", "ML-KEM-1024",
+                             "X25519+ML-KEM-768"],
+                    help="Key encapsulation mechanism")
+    gk.add_argument("--public-out", required=True,
+                    help="Output path for the recipient public key")
+    gk.add_argument("--private-out", required=True,
+                    help="Output path for the recipient private key "
+                         "(use later via --kem-key-file)")
+    gk.add_argument("-v", "--verbose", action="store_true")
+    # import
+    im = sub.add_parser(
+        "import", help="Import a dump (raw .dump, ELF core, or minidump) to .msl")
+    im.add_argument("dump_file", help="Dump file path (.dump/.core/.dmp)")
+    im.add_argument("-o", "--output", help="Output .msl file path")
+    im.add_argument("--pid", type=int, default=0, help="Process ID")
+    im.add_argument("--keylog", help="Keylog file for key hints")
+    im.add_argument("-v", "--verbose", action="store_true")
+    # import-dir
+    imd = sub.add_parser(
+        "import-dir",
+        help="Import all dumps (.dump/.dmp/.core) in a directory to .msl")
+    imd.add_argument("run_dir", help="Run directory path")
+    imd.add_argument("-o", "--output-dir", required=True, help="Output directory")
+    imd.add_argument("--keylog-filename", default="keylog.csv")
+    imd.add_argument("-v", "--verbose", action="store_true")
+    # verify
+    vr = sub.add_parser("verify", help="Verify candidate key via decryption",
+                        parents=[_decrypt_parent_parser()])
+    vr.add_argument("dump", help="Dump file path")
+    vr.add_argument("--offset", type=lambda x: int(x, 0), required=True,
+                    help="Candidate key offset (hex or decimal)")
+    vr.add_argument("--length", type=int, default=32, help="Key length (default: 32)")
+    vr.add_argument("--ciphertext-hex", required=True, help="Known ciphertext (hex)")
+    vr.add_argument("--iv-hex", help="IV (hex, default: 0x00010203...0f)")
+    vr.add_argument("--cipher", default="AES-256-CBC", help="Cipher name")
+    vr.add_argument("-o", "--output", help="Output JSON file")
+    vr.add_argument("-v", "--verbose", action="store_true")
+    # experiment
+    ep_exp = sub.add_parser("experiment",
+                            help="Run full dump-and-analyze experiment",
+                            parents=[_decrypt_parent_parser()])
+    ep_exp.add_argument("--target", required=True,
+                        help="Target script path (e.g., aes_sample_process.py)")
+    ep_exp.add_argument("--num-runs", type=int, default=30,
+                        help="Number of dump iterations per tool (default: 30)")
+    ep_exp.add_argument("--tools", help="Comma-separated dump tools (default: auto-detect)")
+    ep_exp.add_argument("--output-dir", type=Path, default=Path("./experiment_output"),
+                        help="Output directory (default: ./experiment_output)")
+    ep_exp.add_argument("--convergence", action="store_true",
+                        help="Run convergence sweep after dumping")
+    ep_exp.add_argument("--max-fp", type=int, default=0,
+                        help="FP target for convergence (default: 0)")
+    ep_exp.add_argument("--export-format", default="volatility3",
+                        choices=["yara", "json", "volatility3"],
+                        help="Auto-export format (default: volatility3)")
+    ep_exp.add_argument("-o", "--output", help="Output JSON results file")
+    ep_exp.add_argument("-v", "--verbose", action="store_true")
+    # inspect — low-level dump / structured-MSL inspection views. Nested
+    # `inspect <action>` group reusing the pure tools_inspect / tools_xref
+    # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
+    dp = _decrypt_parent_parser()
+    insp = sub.add_parser(
+        "inspect",
+        help="Low-level dump / structured-MSL inspection views (hex, entropy, "
+             "strings, byte-search, page-states, session-info, processes, "
+             "modules, handles, xref, structure)",
+    )
+    insp_sub = insp.add_subparsers(dest="inspect_action")
+    # inspect hex
+    ih = insp_sub.add_parser("hex", parents=[dp],
+                             help="Hex + ASCII dump of a byte range")
+    ih.add_argument("dump_path", help="Dump (.dump/.core) or .msl file path")
+    ih.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                    help="Start offset (hex or decimal, default: 0)")
+    ih.add_argument("--length", type=int, default=256,
+                    help="Bytes to read (default: 256)")
+    ih.add_argument("--view", choices=["raw", "vas"], default="raw",
+                    help="MSL byte source: raw container or flattened VAS")
+    ih.add_argument("-o", "--output", help="Output JSON file")
+    ih.add_argument("-v", "--verbose", action="store_true")
+    # inspect entropy
+    ie = insp_sub.add_parser("entropy", parents=[dp],
+                             help="Shannon entropy profile of a region")
+    ie.add_argument("dump_path", help="Dump or .msl file path")
+    ie.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                    help="Start offset (hex or decimal, default: 0)")
+    ie.add_argument("--length", type=int, default=0,
+                    help="Region length (0 = whole file)")
+    ie.add_argument("--window", type=int, default=32,
+                    help="Sliding window size (default: 32)")
+    ie.add_argument("--step", type=int, default=16,
+                    help="Window step (default: 16)")
+    ie.add_argument("--threshold", type=float, default=7.5,
+                    help="High-entropy region threshold (default: 7.5)")
+    ie.add_argument("-o", "--output", help="Output JSON file")
+    ie.add_argument("-v", "--verbose", action="store_true")
+    # inspect strings
+    istr = insp_sub.add_parser("strings", parents=[dp],
+                               help="Extract printable strings")
+    istr.add_argument("dump_path", help="Dump or .msl file path")
+    istr.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                      help="Start offset (hex or decimal, default: 0)")
+    istr.add_argument("--length", type=int, default=0,
+                      help="Scan window length (0 = to end of file)")
+    istr.add_argument("--min-length", type=int, default=4,
+                      help="Minimum string length (default: 4)")
+    istr.add_argument("--encoding", default="ascii",
+                      help="String encoding (default: ascii)")
+    istr.add_argument("--max-results", type=int, default=500,
+                      help="Maximum strings to return (default: 500)")
+    istr.add_argument("-o", "--output", help="Output JSON file")
+    istr.add_argument("-v", "--verbose", action="store_true")
+    # inspect byte-search
+    ibs = insp_sub.add_parser("byte-search", parents=[dp],
+                              help="Find all occurrences of a hex byte pattern")
+    ibs.add_argument("dump_path", help="Dump or .msl file path")
+    ibs.add_argument("--pattern", required=True,
+                     help="Hex byte pattern (optional leading 0x)")
+    ibs.add_argument("--view", choices=["raw", "vas"], default="raw",
+                     help="MSL byte source: raw container or flattened VAS")
+    ibs.add_argument("--max-results", type=int, default=500,
+                     help="Maximum matches to return (default: 500)")
+    ibs.add_argument("-o", "--output", help="Output JSON file")
+    ibs.add_argument("-v", "--verbose", action="store_true")
+    # inspect page-states
+    ips = insp_sub.add_parser("page-states", parents=[dp],
+                              help="MSL three-state page model (MSL only)")
+    ips.add_argument("msl_path", help=".msl file path")
+    ips.add_argument("-o", "--output", help="Output JSON file")
+    ips.add_argument("-v", "--verbose", action="store_true")
+    # inspect session-info
+    isi = insp_sub.add_parser("session-info", parents=[dp],
+                              help="MSL session metadata (MSL only)")
+    isi.add_argument("msl_path", help=".msl file path")
+    isi.add_argument("-o", "--output", help="Output JSON file")
+    isi.add_argument("-v", "--verbose", action="store_true")
+    # inspect processes
+    ipr = insp_sub.add_parser("processes", parents=[dp],
+                              help="List PROCESS_TABLE entries (MSL only)")
+    ipr.add_argument("msl_path", help=".msl file path")
+    ipr.add_argument("-o", "--output", help="Output JSON file")
+    ipr.add_argument("-v", "--verbose", action="store_true")
+    # inspect modules
+    imo = insp_sub.add_parser("modules", parents=[dp],
+                              help="List loaded modules from MSL metadata (MSL only)")
+    imo.add_argument("msl_path", help=".msl file path")
+    imo.add_argument("-o", "--output", help="Output JSON file")
+    imo.add_argument("-v", "--verbose", action="store_true")
+    # inspect handles
+    ihn = insp_sub.add_parser("handles", parents=[dp],
+                              help="List HANDLE_TABLE entries (MSL only)")
+    ihn.add_argument("msl_path", help=".msl file path")
+    ihn.add_argument("-o", "--output", help="Output JSON file")
+    ihn.add_argument("-v", "--verbose", action="store_true")
+    # inspect xref
+    ixr = insp_sub.add_parser("xref", parents=[dp],
+                              help="Resolve cross-references (MSL only)")
+    ixr.add_argument("msl_path", help=".msl file path")
+    ixr.add_argument("-o", "--output", help="Output JSON file")
+    ixr.add_argument("-v", "--verbose", action="store_true")
+    # inspect structure
+    ist = insp_sub.add_parser("structure", parents=[dp],
+                              help="Identify a data structure at an offset")
+    ist.add_argument("dump_path", help="Dump or .msl file path")
+    ist.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                     help="Offset to overlay structures at (hex or decimal)")
+    ist.add_argument("--protocol", default="",
+                     help="Restrict candidates to a protocol (default: all)")
+    ist.add_argument("-o", "--output", help="Output JSON file")
+    ist.add_argument("-v", "--verbose", action="store_true")
+    return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Public alias for sphinx-argparse and external tooling."""
+    return _build_parser()
+
+
+def main():
+    """MemDiver CLI entry point."""
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.command is None or args.command == "web":
+        sys.exit(_cmd_web(args))
+    if args.command == "ui":
+        sys.exit(_cmd_ui(args))
+    _setup_logging(getattr(args, "verbose", False))
+    handlers = {
+        "analyze": _cmd_analyze, "scan": _cmd_scan, "batch": _cmd_batch,
+        "mcp": _cmd_mcp, "import": _cmd_import, "import-dir": _cmd_import_dir,
+        "consensus": _cmd_consensus, "export": _cmd_export, "web": _cmd_web,
+        "verify": _cmd_verify, "experiment": _cmd_experiment,
+        "consensus-begin": _cmd_consensus_begin,
+        "consensus-add": _cmd_consensus_add,
+        "consensus-finalize": _cmd_consensus_finalize,
+        "search-reduce": _cmd_search_reduce,
+        "brute-force": _cmd_brute_force,
+        "n-sweep": _cmd_n_sweep,
+        "auto-floor": _cmd_auto_floor,
+        "emit-plugin": _cmd_emit_plugin,
+        "gen-kem-key": _cmd_gen_kem_key,
+        "inspect": _cmd_inspect,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        sys.exit(1)
+    # BACKSTOP: a CapabilityError propagating out of ANY handler is translated
+    # here into a single stderr line + category exit code, so it never escapes
+    # as a traceback. Handlers that already present their own errors and return
+    # an exit code (e.g. the inspect handlers, which catch CapabilityError in
+    # _present_inspect_cli_call) never reach this except clause.
+    try:
+        sys.exit(handler(args))
+    except CapabilityError as e:
+        sys.exit(to_cli_exit(e))
+
+
+if __name__ == "__main__":
+    main()

@@ -54,7 +54,8 @@ def run_nsweep_cli(
 
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "cli.py"),
+        "-m",
+        "memdiver.cli",
         "n-sweep",
         "--runs-dir", runs_dir,
         "--dump-glob", dump_glob,

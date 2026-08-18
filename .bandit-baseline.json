@@ -1,6 +1,6 @@
 {
   "errors": [],
-  "generated_at": "2026-08-17T13:49:25Z",
+  "generated_at": "2026-08-18T14:29:04Z",
   "metrics": {
     "./__init__.py": {
       "CONFIDENCE.HIGH": 0,
@@ -245,7 +245,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 1,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 63,
+      "loc": 65,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -271,7 +271,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 172,
+      "loc": 178,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -496,6 +496,19 @@
       "nosec": 0,
       "skipped_tests": 0
     },
+    "./api/security.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 106,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
     "./api/services/__init__.py": {
       "CONFIDENCE.HIGH": 0,
       "CONFIDENCE.LOW": 0,
@@ -614,12 +627,12 @@
       "skipped_tests": 0
     },
     "./api/services/task_manager.py": {
-      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.HIGH": 3,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
       "CONFIDENCE.UNDEFINED": 0,
       "SEVERITY.HIGH": 0,
-      "SEVERITY.LOW": 4,
+      "SEVERITY.LOW": 3,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 567,
@@ -648,7 +661,7 @@
       "SEVERITY.LOW": 1,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 78,
+      "loc": 91,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -662,6 +675,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 1,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./app/_progress.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 55,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -688,6 +714,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 142,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./app/experiment_orchestration.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 272,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -739,7 +778,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 285,
+      "loc": 286,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -752,7 +791,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 170,
+      "loc": 147,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -765,7 +804,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 151,
+      "loc": 152,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -778,7 +817,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 872,
+      "loc": 840,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -899,7 +938,59 @@
       "nosec": 0,
       "skipped_tests": 0
     },
-    "./cli.py": {
+    "./cli/__init__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 73,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/__main__.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 8,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/_shared.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 154,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/consensus.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 160,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/dataset.py": {
       "CONFIDENCE.HIGH": 2,
       "CONFIDENCE.LOW": 0,
       "CONFIDENCE.MEDIUM": 0,
@@ -908,7 +999,59 @@
       "SEVERITY.LOW": 2,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 1509,
+      "loc": 157,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/experiment.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 92,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/inspect.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 163,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/main.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 500,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./cli/pipeline.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 413,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -935,6 +1078,19 @@
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
       "loc": 52,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "./core/artifact_util.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 43,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -1974,7 +2130,7 @@
       "SEVERITY.LOW": 2,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 312,
+      "loc": 313,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2091,7 +2247,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 204,
+      "loc": 207,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2195,7 +2351,7 @@
       "SEVERITY.LOW": 0,
       "SEVERITY.MEDIUM": 0,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 472,
+      "loc": 473,
       "nosec": 0,
       "skipped_tests": 0
     },
@@ -2936,7 +3092,7 @@
       "SEVERITY.LOW": 46,
       "SEVERITY.MEDIUM": 1,
       "SEVERITY.UNDEFINED": 0,
-      "loc": 32050,
+      "loc": 32710,
       "nosec": 0,
       "skipped_tests": 0
     }
@@ -2961,27 +3117,6 @@
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html",
       "test_id": "B108",
       "test_name": "hardcoded_tmp_directory"
-    },
-    {
-      "code": "193             )\n194         except Exception:  # pragma: no cover - best effort\n195             pass\n196 \n",
-      "col_offset": 8,
-      "end_col_offset": 16,
-      "filename": "./api/services/task_manager.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 703,
-        "link": "https://cwe.mitre.org/data/definitions/703.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "Try, Except, Pass detected.",
-      "line_number": 194,
-      "line_range": [
-        194,
-        195
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
-      "test_id": "B110",
-      "test_name": "try_except_pass"
     },
     {
       "code": "260                 self._mp_manager.shutdown()\n261             except Exception:  # pragma: no cover\n262                 pass\n263             self._mp_manager = None\n",
@@ -3045,7 +3180,7 @@
       "test_name": "assert_used"
     },
     {
-      "code": "83             await websocket.close()\n84         except Exception:\n85             pass\n86 \n",
+      "code": "97             await websocket.close()\n98         except Exception:\n99             pass\n100 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./api/ws/progress.py",
@@ -3056,20 +3191,60 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 84,
+      "line_number": 98,
       "line_range": [
-        84,
-        85
+        98,
+        99
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
+      "code": "5 import logging\n6 import subprocess\n7 import sys\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "./cli/dataset.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 6,
+      "line_range": [
+        6
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "22     app = str(Path(__file__).parent / \"run.py\")\n23     return subprocess.call([sys.executable, \"-m\", \"marimo\", \"run\", app] + extra)\n24 \n",
+      "col_offset": 11,
+      "end_col_offset": 80,
+      "filename": "./cli/dataset.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "subprocess call - check for execution of untrusted input.",
+      "line_number": 23,
+      "line_range": [
+        23
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
+      "test_id": "B603",
+      "test_name": "subprocess_without_shell_equals_true"
+    },
+    {
       "code": "6 import os\n7 import subprocess\n8 import sys\n",
       "col_offset": 0,
       "end_col_offset": 17,
-      "filename": "./cli.py",
+      "filename": "./cli/main.py",
       "issue_confidence": "HIGH",
       "issue_cwe": {
         "id": 78,
@@ -3084,26 +3259,6 @@
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
       "test_id": "B404",
       "test_name": "blacklist"
-    },
-    {
-      "code": "202     app = str(Path(__file__).parent / \"run.py\")\n203     return subprocess.call([sys.executable, \"-m\", \"marimo\", \"run\", app] + extra)\n204 \n",
-      "col_offset": 11,
-      "end_col_offset": 80,
-      "filename": "./cli.py",
-      "issue_confidence": "HIGH",
-      "issue_cwe": {
-        "id": 78,
-        "link": "https://cwe.mitre.org/data/definitions/78.html"
-      },
-      "issue_severity": "LOW",
-      "issue_text": "subprocess call - check for execution of untrusted input.",
-      "line_number": 203,
-      "line_range": [
-        203
-      ],
-      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
-      "test_id": "B603",
-      "test_name": "subprocess_without_shell_equals_true"
     },
     {
       "code": "209     def _parse(self) -> ElfCoreInfo:\n210         assert self._mmap is not None\n211         buf = self._mmap\n",
@@ -3626,7 +3781,7 @@
       "test_name": "try_except_continue"
     },
     {
-      "code": "192             conn.send((\"err\", repr(exc)[:2000]))\n193         except Exception:  # pragma: no cover - pipe already gone\n194             pass\n195     finally:\n",
+      "code": "194             conn.send((\"err\", repr(exc)[:2000]))\n195         except Exception:  # pragma: no cover - pipe already gone\n196             pass\n197     finally:\n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./engine/oracle.py",
@@ -3637,17 +3792,17 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 193,
+      "line_number": 195,
       "line_range": [
-        193,
-        194
+        195,
+        196
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",
       "test_name": "try_except_pass"
     },
     {
-      "code": "197             conn.close()\n198         except Exception:  # pragma: no cover\n199             pass\n200 \n",
+      "code": "199             conn.close()\n200         except Exception:  # pragma: no cover\n201             pass\n202 \n",
       "col_offset": 8,
       "end_col_offset": 16,
       "filename": "./engine/oracle.py",
@@ -3658,10 +3813,10 @@
       },
       "issue_severity": "LOW",
       "issue_text": "Try, Except, Pass detected.",
-      "line_number": 198,
+      "line_number": 200,
       "line_range": [
-        198,
-        199
+        200,
+        201
       ],
       "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b110_try_except_pass.html",
       "test_id": "B110",

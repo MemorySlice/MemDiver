@@ -85,7 +85,7 @@ def _name_or_attr_usages(dirs, target_name: str):
 # ---------------------------------------------------------------------------
 
 _PRODUCTION_SURFACE_FILES = [
-    ROOT / "cli.py",
+    *sorted((ROOT / "cli").rglob("*.py")),
     ROOT / "mcp_server" / "server.py",
     ROOT / "mcp_server" / "presenters.py",
     ROOT / "api" / "main.py",
@@ -116,8 +116,8 @@ def test_report_key_status_never_passed_in_production_surfaces():
 
 def test_report_key_status_kept_only_as_deprecated_param_in_app_layer():
     """Every function still carrying ``report_key_status`` as a parameter
-    lives in app/tools_inspect.py and is explicitly marked deprecated."""
-    tree = _parse(ROOT / "app" / "tools_inspect.py")
+    lives in app/tools_inspect_legacy.py and is explicitly marked deprecated."""
+    tree = _parse(ROOT / "app" / "tools_inspect_legacy.py")
     carriers = []
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef):
@@ -341,7 +341,7 @@ def test_legacy_error_dict_functions_unreachable_from_production():
         "get_modules", "get_handles",
     ]
     production_files = [
-        ROOT / "cli.py",
+        *sorted((ROOT / "cli").rglob("*.py")),
         ROOT / "mcp_server" / "server.py",
         ROOT / "mcp_server" / "presenters.py",
         *sorted((ROOT / "api" / "routers").rglob("*.py")),
@@ -608,7 +608,7 @@ _LEGACY_DICT_FUNCS = {
 
 def _production_surface_files():
     return [
-        ROOT / "cli.py",
+        *sorted((ROOT / "cli").rglob("*.py")),
         ROOT / "mcp_server" / "server.py",
         ROOT / "mcp_server" / "presenters.py",
         ROOT / "api" / "main.py",
