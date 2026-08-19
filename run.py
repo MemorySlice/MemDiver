@@ -399,7 +399,7 @@ def dataset_scan(Path, get_wizard_done, logger, mo, state):
     mo.stop(not get_wizard_done())
     dataset_info = None
     if state.input_mode == "dataset" and state.dataset_root:
-        # TODO(single-source): app.tools.scan_dataset returns a serialized dict,
+        # NOTE(single-source, by design — do NOT route through app/ producers): app.tools.scan_dataset returns a serialized dict,
         # but the DatasetInfo OBJECT produced here is stored on state and read as
         # an object (attributes: .tls_versions/.libraries/.total_runs) by the
         # selector cells, the sidebar, and dataset_run_analysis. Routing through
@@ -493,7 +493,7 @@ async def dataset_run_analysis(
         state.max_runs = ds_widgets.max_runs.value
         state.algorithm = ds_controls.algo_dd.value
 
-        # TODO(single-source): the app/ pipeline producers (search_reduce /
+        # NOTE(single-source, by design — do NOT route through app/ producers): the app/ pipeline producers (search_reduce /
         # brute_force / n_sweep) are single-DUMP stages returning serialized
         # payloads. This cell runs multi-LIBRARY dataset analysis via
         # AnalysisPipeline.analyze_library and builds an AnalysisResult of
@@ -594,7 +594,7 @@ def dataset_views(
             ])
 
         # Research views
-        # TODO(single-source): (a) the ConsensusVector below is rebuilt from
+        # NOTE(single-source, by design — do NOT route through app/ producers): (a) the ConsensusVector below is rebuilt from
         # per-report counts already computed by the pipeline — app.tools_pipeline
         # .consensus re-runs a full consensus scan over a dump set, a different
         # operation, and render_consensus_view consumes the ConsensusVector
@@ -639,7 +639,7 @@ def file_load(Path, get_wizard_done, logger, mo, state):
     file_data = None
     file_source = None
     if state.input_mode == "single_file" and state.single_file_path:
-        # TODO(single-source): the single-file workspace loads the dump ONCE into
+        # NOTE(single-source, by design — do NOT route through app/ producers): the single-file workspace loads the dump ONCE into
         # `file_data` (bytes) + keeps the live `file_source`/reader, then reuses
         # both across every section built in _build_file_views (hex, entropy,
         # strings, structure overlays, MSL session/VAS/blocks/xref). Those
@@ -679,7 +679,7 @@ def file_views(
 def _():
     def _build_file_views(mo, state, file_data, file_source, mode_mgr, file_view_sections, Path):
         """Build view sections for a loaded file."""
-        # TODO(single-source): every section here renders from the already-loaded
+        # NOTE(single-source, by design — do NOT route through app/ producers): every section here renders from the already-loaded
         # in-memory `file_data` bytes and the live `file_source`/reader. The
         # matching app/ producers are path-based + serialized:
         #   - hex render  -> read_hex_result (re-opens; returns hex_lines payload)
@@ -821,7 +821,7 @@ def dir_views(Path, RunDiscovery, get_wizard_done, mo, state):
                 f"**{len(_runs)} runs** found, **{len(_phases)} phases**: {', '.join(_phases)}"
             )
             # Show hex of first dump
-            # TODO(single-source): reads the first dump's bytes directly and
+            # NOTE(single-source, by design — do NOT route through app/ producers): reads the first dump's bytes directly and
             # renders them in-memory via render_hex_viewer. read_hex_result would
             # re-open the file and return a hex_lines payload the object-based hex
             # viewer here does not consume; kept on the direct read for parity.

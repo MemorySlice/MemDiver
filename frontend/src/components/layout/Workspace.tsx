@@ -44,6 +44,8 @@ import { ArchitectPlaceholder } from "@/components/research/ArchitectPlaceholder
 import { StringsPanel } from "@/components/strings/StringsPanel";
 import { ExperimentPanel } from "@/components/experiment/ExperimentPanel";
 import { ConvergenceChart } from "@/components/charts/ConvergenceChart";
+import { VarianceMap } from "@/components/charts/VarianceMap";
+import { VasChart } from "@/components/charts/VasChart";
 import { KeyVerificationPanel } from "@/components/verification/KeyVerificationPanel";
 import PipelinePanel from "@/components/pipeline/PipelinePanel";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -110,7 +112,7 @@ function Toolbar() {
 }
 
 type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import";
-export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "verify-key" | "pipeline";
+export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline";
 
 function Sidebar() {
   const { t } = useTranslation("layout");
@@ -366,10 +368,15 @@ function BottomTabs() {
   const [entropyLoading, setEntropyLoading] = useState(false);
   const entropyPathRef = useRef("");
   const mode = useAppStore((s) => s.mode);
+  // The variance tab mirrors whatever neighborhood the user is currently
+  // inspecting in the hex viewer (see NeighborhoodOverlayPanel), rather than
+  // a pipeline-run-scoped hit — that overlay is the one "live" variance
+  // series the workspace already tracks.
+  const neighborhoodOverlay = useHexStore((s) => s.activeNeighborhoodOverlay);
   const availableTabs: BottomTab[] =
     mode === "verification"
       ? ["analysis", "results", "strings", "verify-key", "pipeline"]
-      : ["analysis", "results", "strings", "entropy", "consensus", "live-consensus", "architect", "experiment", "convergence", "verify-key", "pipeline"];
+      : ["analysis", "results", "strings", "entropy", "consensus", "live-consensus", "architect", "experiment", "convergence", "variance", "vas", "verify-key", "pipeline"];
 
   // Auto-switch to analysis tab when analysis starts — except when a
   // pipeline task is running; the user is watching the Pipeline tab
@@ -431,7 +438,7 @@ function BottomTabs() {
                 : "md-text-secondary hover:bg-[var(--md-bg-hover)] rounded"
             }`}
           >
-            {t}
+            {translate(`bottomTabs.${t}`, { defaultValue: t })}
             {t === "analysis" && isRunning && (
               <span
                 className="ml-1 md-spinner"
@@ -479,6 +486,14 @@ function BottomTabs() {
         {tab === "architect" && <ArchitectPlaceholder />}
         {tab === "experiment" && <ExperimentPanel />}
         {tab === "convergence" && <ConvergenceChart data={null} />}
+        {tab === "variance" && (
+          neighborhoodOverlay && neighborhoodOverlay.variance.length > 0 ? (
+            <VarianceMap variance={neighborhoodOverlay.variance} />
+          ) : (
+            <p className="p-3 text-sm md-text-muted">{t("noVarianceData")}</p>
+          )
+        )}
+        {tab === "vas" && <VasChart entries={[]} />}
         {tab === "verify-key" && <KeyVerificationPanel />}
         {tab === "pipeline" && <PipelinePanel />}
       </div>

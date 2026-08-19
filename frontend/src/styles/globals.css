@@ -72,6 +72,17 @@
   --md-field-6: #b05a40;
   --md-field-7: #3a80a0;
 
+  /* Ordinal single-hue ramp (blue, light→dark) for ordered marks such as
+     funnel stages. Validated against dataviz ordinal checks: monotone L,
+     >=0.06 adjacent lightness gap, single hue, light-end contrast 2.05:1
+     vs --md-chart-paper. */
+  --md-seq-1: #70b3ff;
+  --md-seq-2: #5597e3;
+  --md-seq-3: #3b7dc7;
+  --md-seq-4: #1f64ab;
+  --md-seq-5: #024b8c;
+  --md-seq-6: #013566;
+
   --md-chart-paper: #f7f7f7;
   --md-chart-plot: #ffffff;
   --md-chart-grid: #e0e0e0;
@@ -149,6 +160,16 @@
   --md-field-5: #4ec9b0;
   --md-field-6: #d69d85;
   --md-field-7: #9cdcfe;
+
+  /* Ordinal single-hue ramp (blue, light→dark) — dark-theme steps, same hue
+     family as light mode. Validated: monotone L, >=0.06 adjacent gap, single
+     hue, dark-end contrast 2.15:1 vs --md-chart-paper. */
+  --md-seq-1: #8fcbff;
+  --md-seq-2: #6db3ee;
+  --md-seq-3: #559bd5;
+  --md-seq-4: #3d84bc;
+  --md-seq-5: #246da4;
+  --md-seq-6: #00568c;
 
   --md-chart-paper: #1e1e1e;
   --md-chart-plot: #252526;

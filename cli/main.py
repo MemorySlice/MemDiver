@@ -1,25 +1,15 @@
 """CLI entry point for MemDiver — headless analysis and interactive UI."""
 
 import argparse
-import json
 import logging
-import os
-import subprocess
 import sys
 from pathlib import Path
 
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import CapabilityError
 
 from ._shared import (
-    _KEY_FLAGS_HINT,
     _decrypt_parent_parser,
-    _format_jsonl,
-    _key_material_from_args,
-    _print_missing_package,
-    _resolve_dump_paths,
     _setup_logging,
-    _warn_tag_status,
-    _write_output,
     to_cli_exit,
 )
 from .dataset import (
@@ -36,10 +26,8 @@ from .consensus import (
     _cmd_consensus_add,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
-    _consensus_state_paths,
-    _load_welford_session,
 )
-from .experiment import _cmd_experiment, _experiment_cli_progress, _print_experiment_table
+from .experiment import _cmd_experiment
 from .pipeline import (
     _cmd_auto_floor,
     _cmd_brute_force,
@@ -53,24 +41,7 @@ from .pipeline import (
 )
 
 from .inspect import (
-    _INSPECT_HANDLERS,
     _cmd_inspect,
-    _cmd_inspect_byte_search,
-    _cmd_inspect_entropy,
-    _cmd_inspect_handles,
-    _cmd_inspect_hex,
-    _cmd_inspect_modules,
-    _cmd_inspect_page_states,
-    _cmd_inspect_processes,
-    _cmd_inspect_session_info,
-    _cmd_inspect_strings,
-    _cmd_inspect_structure,
-    _cmd_inspect_xref,
-    _emit_inspect,
-    _inspect_key_kwargs,
-    _new_tool_session,
-    _present_inspect_cli_call,
-    present_inspect_cli,
 )
 
 logger = logging.getLogger("memdiver.cli")

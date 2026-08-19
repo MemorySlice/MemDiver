@@ -15,6 +15,10 @@
     "sessions": "sessions",
     "import": "import"
   },
+  "bottomTabs": {
+    "variance": "variance",
+    "vas": "vas"
+  },
   "mslBlocks": "MSL Blocks",
   "modules": "Modules",
   "threadContexts": "Thread Contexts",
@@ -44,5 +48,6 @@
   "loadingEntropy": "Loading entropy data...",
   "entropyChartFailed": "Entropy chart failed to render.",
   "entropyLoadFailed": "Failed to load entropy data.",
-  "loadDumpForStrings": "Load a dump file to extract strings."
+  "loadDumpForStrings": "Load a dump file to extract strings.",
+  "noVarianceData": "Select a hit or neighborhood overlay in the hex viewer to inspect its variance profile."
 }

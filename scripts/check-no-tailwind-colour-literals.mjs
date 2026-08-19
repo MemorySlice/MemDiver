@@ -17,8 +17,10 @@ const BASELINE_PATH = resolve(__dirname, "colour-literal-baseline.txt");
 const BAD = /\b(text|bg|border|fill|stroke|ring-offset|ring|placeholder)-(red|yellow|green|blue|orange|purple|cyan|pink|rose|amber|lime|emerald|teal|sky|indigo|violet|fuchsia|zinc|slate|gray|neutral|stone)-\d+\b/;
 
 // Chart files render runtime-string colours (Plotly + hand-rolled SVG). Phase C
-// migrates these; until then they are exempt.
-const ALLOW_PATH = /\/components\/charts\/|\/components\/pipeline\/results\/SurvivorCurve\.tsx|\/components\/pipeline\/run\/FunnelChart\.tsx/;
+// migrates these; until then they are exempt. FunnelChart migrated to the
+// token-based SEQUENTIAL_RAMP (see components/charts/tokens.ts) and no longer
+// needs the exemption.
+const ALLOW_PATH = /\/components\/charts\/|\/components\/pipeline\/results\/SurvivorCurve\.tsx/;
 // Per-line escape hatch.
 const ALLOW_COMMENT = /design-token-source/;
 

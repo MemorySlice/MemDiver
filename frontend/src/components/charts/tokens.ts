@@ -48,6 +48,28 @@ export function getChartColor(name: string): string {
   return getToken(name, TOKEN_FALLBACKS[name] ?? "");
 }
 
+/**
+ * Ordinal single-hue ramp — 6 steps, light→dark, one hue — for ordered/ranked
+ * marks (e.g. funnel stages) as opposed to the unordered categorical accents
+ * above. A funnel stage is a *position in a sequence*, not an independent
+ * identity, so it takes a monotone-lightness ramp rather than a rotating hue.
+ *
+ * Exposed as ready-to-use `var(--md-seq-N)` references rather than resolved
+ * hex: a plain CSS/JSX `style` prop can consume a CSS custom property
+ * directly and stays theme-reactive for free (the browser recomputes it the
+ * moment the `.dark` class toggles), so no `getComputedStyle()` call or
+ * re-render wiring is needed here the way it is for Plotly (see
+ * `chartTokens()` below for that case).
+ */
+export const SEQUENTIAL_RAMP: readonly string[] = [
+  "var(--md-seq-1)",
+  "var(--md-seq-2)",
+  "var(--md-seq-3)",
+  "var(--md-seq-4)",
+  "var(--md-seq-5)",
+  "var(--md-seq-6)",
+];
+
 /** Token set commonly used by charts. Call at render time; do not cache across renders. */
 export function chartTokens() {
   return {

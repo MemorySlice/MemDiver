@@ -10,22 +10,25 @@
 import type { JSX } from "react";
 import { useTranslation } from "react-i18next";
 
+import { SEQUENTIAL_RAMP } from "@/components/charts/tokens";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { FunnelCounts } from "@/stores/pipeline-store";
 
 interface FunnelRow {
   key: keyof FunnelCounts;
   labelKey: string;
-  color: string;
 }
 
+// Stage order doubles as the ramp index: "raw" (the funnel's widest, earliest
+// stage) takes the lightest step, "verified" (narrowest, most-refined) the
+// darkest — see SEQUENTIAL_RAMP in components/charts/tokens.ts.
 const ROWS: FunnelRow[] = [
-  { key: "raw", labelKey: "run.funnel.rows.raw", color: "bg-indigo-600" },
-  { key: "variance", labelKey: "run.funnel.rows.variance", color: "bg-blue-600" },
-  { key: "aligned", labelKey: "run.funnel.rows.aligned", color: "bg-cyan-600" },
-  { key: "high_entropy", labelKey: "run.funnel.rows.highEntropy", color: "bg-teal-600" },
-  { key: "candidates", labelKey: "run.funnel.rows.candidates", color: "bg-green-600" },
-  { key: "verified", labelKey: "run.funnel.rows.verified", color: "bg-emerald-500" },
+  { key: "raw", labelKey: "run.funnel.rows.raw" },
+  { key: "variance", labelKey: "run.funnel.rows.variance" },
+  { key: "aligned", labelKey: "run.funnel.rows.aligned" },
+  { key: "high_entropy", labelKey: "run.funnel.rows.highEntropy" },
+  { key: "candidates", labelKey: "run.funnel.rows.candidates" },
+  { key: "verified", labelKey: "run.funnel.rows.verified" },
 ];
 
 function logFraction(count: number, raw: number): number {
@@ -54,7 +57,7 @@ export function FunnelChart(): JSX.Element {
         </div>
       ) : (
         <div className="space-y-1.5" aria-live="polite">
-          {ROWS.map((row) => {
+          {ROWS.map((row, index) => {
             const count = funnel[row.key];
             const fraction = logFraction(count, raw);
             return (
@@ -64,8 +67,11 @@ export function FunnelChart(): JSX.Element {
                 </div>
                 <div className="flex-1 h-3 rounded bg-[var(--md-bg-hover)] overflow-hidden">
                   <div
-                    className={`h-full ${row.color} transition-[width] duration-500 ease-out`}
-                    style={{ width: `${fraction * 100}%` }}
+                    className="h-full transition-[width] duration-500 ease-out"
+                    style={{
+                      width: `${fraction * 100}%`,
+                      backgroundColor: SEQUENTIAL_RAMP[index],
+                    }}
                   />
                 </div>
                 <div className="w-[110px] shrink-0 text-right font-mono md-text-secondary">
