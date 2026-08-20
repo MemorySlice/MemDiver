@@ -85,7 +85,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     """Scan a dataset root for available data."""
-    from memdiver.core.discovery import DatasetScanner
+    from memdiver.app.composition import build_dataset_scanner
     from memdiver.core.input_schemas import ScanRequest
     from memdiver.engine.serializer import serialize_dataset_info
 
@@ -99,7 +99,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         logger.error("Invalid request: %s", exc)
         return 1
 
-    scanner = DatasetScanner(request.dataset_root, request.keylog_filename)
+    scanner = build_dataset_scanner(request.dataset_root, request.keylog_filename)
     info = scanner.fast_scan(protocols=request.protocols)
     _write_output(serialize_dataset_info(info), args.output)
     return 0

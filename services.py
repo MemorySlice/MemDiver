@@ -62,6 +62,7 @@ from memdiver.app.tools_inspect import (
     search_bytes_result,
     session_info_result,
     strings_result,
+    vas_regions_result,
 )
 
 # --- xref / structure -------------------------------------------------------
@@ -109,6 +110,7 @@ __all__ = [
     "strings_result",
     "detect_format_result",
     "session_info_result",
+    "vas_regions_result",
     "page_states_result",
     "processes_result",
     "modules_result",

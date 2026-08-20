@@ -12,8 +12,9 @@ import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
 import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
 import { EntropyChart } from "@/components/charts/EntropyChart";
-import { getEntropy, saveSession, getNotebookStatus } from "@/api/client";
+import { getEntropy, getVasRegions, saveSession, getNotebookStatus } from "@/api/client";
 import type { EntropyData } from "@/api/types";
+import type { VasEntry } from "@/components/charts/types";
 import { BookmarkList } from "@/components/investigation/BookmarkList";
 import { InvestigationPanel } from "@/components/investigation/InvestigationPanel";
 import { FileUpload } from "@/components/upload/FileUpload";
@@ -367,6 +368,14 @@ function BottomTabs() {
   const [entropyData, setEntropyData] = useState<EntropyData | null>(null);
   const [entropyLoading, setEntropyLoading] = useState(false);
   const entropyPathRef = useRef("");
+  // VAS entries are tagged with the dump path they were fetched for, so the
+  // chart never briefly renders a previous dump's regions while the new
+  // dump's fetch is still in flight (there is no VAS loading placeholder).
+  const [vasData, setVasData] = useState<{ path: string; entries: VasEntry[] }>({
+    path: "",
+    entries: [],
+  });
+  const vasPathRef = useRef("");
   const mode = useAppStore((s) => s.mode);
   // The variance tab mirrors whatever neighborhood the user is currently
   // inspecting in the hex viewer (see NeighborhoodOverlayPanel), rather than
@@ -420,6 +429,24 @@ function BottomTabs() {
         );
       })
       .finally(() => { if (!cancelled) setEntropyLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, dumpPath]);
+
+  useEffect(() => {
+    if (tab !== "vas" || !dumpPath) return;
+    if (vasPathRef.current === dumpPath) return;
+    vasPathRef.current = dumpPath;
+    let cancelled = false;
+    getVasRegions(dumpPath, useDumpStore.getState().getKeyMaterialByPath(dumpPath))
+      .then((d) => { if (!cancelled) setVasData({ path: dumpPath, entries: d.vas_entries }); })
+      .catch((err) => {
+        if (!cancelled) setVasData({ path: dumpPath, entries: [] });
+        notifyError(
+          `VAS fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          "vas",
+          { severity: "warning" },
+        );
+      });
     return () => { cancelled = true; };
   }, [tab, dumpPath]);
 
@@ -493,7 +520,9 @@ function BottomTabs() {
             <p className="p-3 text-sm md-text-muted">{t("noVarianceData")}</p>
           )
         )}
-        {tab === "vas" && <VasChart entries={[]} />}
+        {tab === "vas" && (
+          <VasChart entries={vasData.path === dumpPath ? vasData.entries : []} />
+        )}
         {tab === "verify-key" && <KeyVerificationPanel />}
         {tab === "pipeline" && <PipelinePanel />}
       </div>

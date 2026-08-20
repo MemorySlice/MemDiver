@@ -43,14 +43,8 @@ def boot():
     mode_mgr = ModeManager(initial_mode=state.mode)
 
     # ProjectDB (optional)
-    project_db = None
-    try:
-        from memdiver.engine.project_db import ProjectDB, default_db_path, check_deps
-        if check_deps().get("ready"):
-            project_db = ProjectDB(default_db_path())
-            project_db.open()
-    except Exception:
-        pass
+    from memdiver.app.composition import resolve_project_db
+    project_db = resolve_project_db()
 
     # Wizard sentinel: False = show wizard, True = show workspace
     get_wizard_done, set_wizard_done = mo.state(False)
@@ -375,13 +369,13 @@ def run_import_tool(Path, get_wizard_done, import_widgets, logger, mo):
         # Single-source: route through the shared app/ producer (same
         # msl.importer under the hood) instead of importing the core function
         # directly, so every surface converges on one import path.
+        from memdiver.app.composition import build_tool_session
         from memdiver.app.tools import import_dump as _import_to_msl
-        from memdiver.app.session import ToolSession as _ToolSession
         raw = Path(import_widgets.file_browser.value[0].path)
         out = raw.with_suffix(".msl")
         try:
             with mo.status.spinner(title="Importing to MSL..."):
-                res = _import_to_msl(_ToolSession(), str(raw), str(out))
+                res = _import_to_msl(build_tool_session(), str(raw), str(out))
             import_result_el = mo.callout(
                 mo.md(f"Imported **{raw.name}** -> **{out.name}**  \n"
                        f"Regions: {res['regions_written']}, Key hints: {res['key_hints_written']}"),
@@ -404,9 +398,9 @@ def dataset_scan(Path, get_wizard_done, logger, mo, state):
         # an object (attributes: .tls_versions/.libraries/.total_runs) by the
         # selector cells, the sidebar, and dataset_run_analysis. Routing through
         # the producer would break every object-attribute consumer downstream.
-        from memdiver.core.discovery import DatasetScanner
+        from memdiver.app.composition import build_dataset_scanner
         with mo.status.spinner(title="Scanning dataset..."):
-            scanner = DatasetScanner(
+            scanner = build_dataset_scanner(
                 Path(state.dataset_root),
                 keylog_filename=state.keylog_filename,
             )
@@ -500,12 +494,12 @@ async def dataset_run_analysis(
         # report OBJECTS that dataset_views consumes by attribute
         # (.hits/.library/.metadata/.num_runs). No producer mirrors that
         # object-returning multi-library shape, so it stays on the engine.
+        from memdiver.app.composition import build_analysis_pipeline
         from memdiver.core.keylog_templates import get_template
-        from memdiver.engine.pipeline import AnalysisPipeline
         from memdiver.engine.results import AnalysisResult
 
         template = get_template(state.template_name)
-        pipeline = AnalysisPipeline(project_db=project_db)
+        pipeline = build_analysis_pipeline(project_db=project_db)
         ds_result = AnalysisResult()
         _n = len(state.selected_libraries)
         with mo.status.spinner(title=f"Analyzing {_n} libraries..."):
@@ -647,7 +641,7 @@ def file_load(Path, get_wizard_done, logger, mo, state):
         # producers are path-based and return serialized payloads (and would
         # re-open the file per section), so migrating here would change behavior
         # and multiply I/O. See per-section notes in _build_file_views.
-        from memdiver.core.dump_source import open_dump
+        from memdiver.app.composition import open_dump
         with mo.status.spinner(title="Loading dump file..."):
             file_source = open_dump(Path(state.single_file_path))
             file_source.open()

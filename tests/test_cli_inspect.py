@@ -59,13 +59,13 @@ def test_parser_inspect_all_actions_build():
     from memdiver.cli import _INSPECT_HANDLERS
 
     parser = _build_parser()
-    for action in ("page-states", "session-info", "processes", "modules",
+    for action in ("page-states", "session-info", "vas", "processes", "modules",
                    "handles", "xref"):
         args = parser.parse_args(["inspect", action, "/tmp/x.msl"])
         assert args.inspect_action == action
     assert set(_INSPECT_HANDLERS) == {
         "hex", "entropy", "strings", "byte-search",
-        "page-states", "session-info", "processes", "modules", "handles",
+        "page-states", "session-info", "vas", "processes", "modules", "handles",
         "xref", "structure",
     }
 
@@ -100,6 +100,29 @@ def test_cmd_inspect_session_info(tmp_path, msl_fixture):
     assert data["pid"] == 1234
     assert data["region_count"] >= 1
     assert data["captured_page_count"] >= 1
+
+
+def test_cmd_inspect_vas(tmp_path, msl_fixture):
+    from memdiver.cli import _cmd_inspect_vas
+
+    out = tmp_path / "vas.json"
+    args = argparse.Namespace(msl_path=str(msl_fixture), output=str(out))
+    rc = _cmd_inspect_vas(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["region_count"] >= 1
+    assert "total_region_size" in data
+    assert isinstance(data["vas_coverage"], dict)
+    entries = data["vas_entries"]
+    assert len(entries) >= 1
+    # The full five-field VAS entry shape the VasChart frontend consumes.
+    assert set(entries[0]) == {
+        "base_addr", "region_size", "region_type", "protection", "mapped_path",
+    }
+    # The fixture seeds a libssl mapping at the canonical base.
+    libssl = next(e for e in entries if e["mapped_path"] == "/usr/lib/libssl.so")
+    assert libssl["base_addr"] == 0x00400000
+    assert libssl["region_size"] == 0x10000
 
 
 def test_cmd_inspect_hex(tmp_path, msl_fixture):

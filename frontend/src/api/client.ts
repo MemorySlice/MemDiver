@@ -22,6 +22,7 @@ import type {
   TagStatus,
   PageStatesResponse,
   SessionInfoResponse,
+  VasRegionsResponse,
   KeyMaterial,
 } from "./types";
 
@@ -205,6 +206,12 @@ export const getSessionInfo = (mslPath: string, key?: KeyMaterial) => {
   const qs = new URLSearchParams({ msl_path: mslPath });
   appendKey(qs, key);
   return request<SessionInfoResponse>(`/api/inspect/session-info?${qs.toString()}`);
+};
+
+export const getVasRegions = (mslPath: string, key?: KeyMaterial) => {
+  const qs = new URLSearchParams({ msl_path: mslPath });
+  appendKey(qs, key);
+  return request<VasRegionsResponse>(`/api/inspect/vas?${qs.toString()}`);
 };
 
 export const getTagStatus = (mslPath: string) =>

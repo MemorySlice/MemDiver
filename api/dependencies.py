@@ -7,7 +7,8 @@ import logging
 from fastapi import HTTPException
 
 from memdiver.api.config import Settings, get_settings
-from memdiver.mcp_server.session import ToolSession
+from memdiver.app.composition import build_tool_session
+from memdiver.app.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.dependencies")
 
@@ -18,7 +19,7 @@ def get_tool_session() -> ToolSession:
     """Return a singleton ToolSession for the API lifetime."""
     global _tool_session
     if _tool_session is None:
-        _tool_session = ToolSession()
+        _tool_session = build_tool_session()
         logger.info("Created ToolSession singleton")
     return _tool_session
 

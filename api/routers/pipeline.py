@@ -483,8 +483,8 @@ async def refine_consensus(task_id: str, body: RefineRequest):
 
     import numpy as np
 
+    from memdiver.app.composition import open_dump
     from memdiver.app.tools_fields import infer_fields_result
-    from memdiver.core.dump_source import open_dump
     from memdiver.core.variance import WelfordVariance
     from memdiver.engine.vol3_emit import PLUGIN_STATIC_THRESHOLD
 

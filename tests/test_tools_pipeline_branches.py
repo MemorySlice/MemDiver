@@ -648,7 +648,7 @@ def test_consensus_persist_open_error_funnels(tmp_path, source_paths, monkeypatc
     def _boom(*a, **k):
         raise OSError("cannot open")
 
-    monkeypatch.setattr("memdiver.core.dump_source.open_dump", _boom)
+    monkeypatch.setattr("memdiver.app.composition.open_dump", _boom)
     with pytest.raises(CapabilityError) as exc:
         tp.consensus(
             dump_paths=source_paths, output_dir=str(tmp_path / "o"),

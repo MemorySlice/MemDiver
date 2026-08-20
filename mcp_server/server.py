@@ -13,16 +13,16 @@ def create_server():
     from mcp.server.fastmcp import FastMCP
 
     from memdiver.app import experiment_orchestration
+    from memdiver.app.composition import build_tool_session
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
-    from .session import ToolSession
 
     mcp = FastMCP(
         "memdiver",
         instructions="Memory dump forensic analysis platform for cryptographic key identification",
     )
-    _session = ToolSession()
+    _session = build_tool_session()
 
     @mcp.tool()
     @mcp_error_funnel
@@ -120,6 +120,21 @@ def create_server():
         """Extract session metadata from an MSL file (process, modules, VAS)."""
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.session_info_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
+    def vas_regions(
+        msl_path: str, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """List the per-dump VAS region layout from an MSL file.
+
+        Emits the full five-field entries (base_addr/region_size/region_type/
+        protection/mapped_path) the VasChart frontend consumes.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.vas_regions_result(
+            _session, msl_path, key_file=key_file, passphrase=passphrase,
+            kem_key_file=kem_key_file,
         )))
 
     @mcp.tool()

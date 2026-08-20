@@ -140,7 +140,7 @@ def _cmd_consensus_add(args: argparse.Namespace) -> int:
     """Fold one dump into an existing incremental consensus session."""
     import numpy as np
 
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
 
     state_path = Path(args.state)
     state, welford = _load_welford_session(state_path)

@@ -1,3 +1,8 @@
+// Reuse the shared VasEntry shape defined alongside the chart props. This is
+// a type-only import (erased at compile time), so the charts/types <-> api/types
+// pairing stays a pure compile-time cycle with no runtime dependency.
+import type { VasEntry } from "@/components/charts/types";
+
 // Key material carried on inspect/analysis requests for encrypted dumps.
 export interface KeyMaterial {
   passphrase?: string;
@@ -329,6 +334,14 @@ export interface SessionInfoResponse {
   key_hint_count: number;
   total_pages: number;
   coverage: number;
+}
+
+// --- MSL virtual address space regions (GET /api/inspect/vas) ---
+export interface VasRegionsResponse {
+  vas_entries: VasEntry[];
+  region_count: number;
+  total_region_size: number;
+  vas_coverage: Record<string, number>;
 }
 
 // --- Auto Export ---

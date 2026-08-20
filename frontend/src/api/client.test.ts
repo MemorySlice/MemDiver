@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-import { request, ApiError, readHex, extractStrings } from "./client";
+import {
+  request,
+  ApiError,
+  readHex,
+  extractStrings,
+  getVasRegions,
+} from "./client";
 
 /** Build a minimal Response-like stub for the mocked fetch. */
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
@@ -147,5 +153,48 @@ describe("extractStrings", () => {
 
     const url = new URL(fetchMock.mock.calls[0][0], "http://x");
     expect(url.searchParams.get("cursor")).toBe("0");
+  });
+});
+
+describe("getVasRegions", () => {
+  it("hits /api/inspect/vas with the msl_path query", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    await getVasRegions("/dumps/a.msl");
+
+    const url = new URL(fetchMock.mock.calls[0][0], "http://x");
+    expect(url.pathname).toBe("/api/inspect/vas");
+    expect(url.searchParams.get("msl_path")).toBe("/dumps/a.msl");
+  });
+
+  it("appends only the provided key-material fields (appendKey)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    await getVasRegions("/dumps/a.msl", { passphrase: "hunter2" });
+
+    const url = new URL(fetchMock.mock.calls[0][0], "http://x");
+    expect(url.searchParams.get("passphrase")).toBe("hunter2");
+    expect(url.searchParams.has("key_hex")).toBe(false);
+    expect(url.searchParams.has("kem_key_hex")).toBe(false);
+  });
+
+  it("returns the parsed VasRegionsResponse (entries passed through)", async () => {
+    const body = {
+      vas_entries: [
+        {
+          base_addr: 4096,
+          region_size: 8192,
+          region_type: 1,
+          protection: 3,
+          mapped_path: "/lib/libc.so",
+        },
+      ],
+      region_count: 1,
+      total_region_size: 8192,
+      vas_coverage: { captured: 1 },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(body));
+
+    const out = await getVasRegions("/dumps/a.msl");
+    expect(out).toEqual(body);
+    expect(out.vas_entries[0].mapped_path).toBe("/lib/libc.so");
   });
 });

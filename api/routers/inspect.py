@@ -9,11 +9,11 @@ from pydantic import BaseModel
 
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.services.key_material import decode_key_material
-from memdiver.app.reader_cache import key_material_scope
+from memdiver.app.composition import key_material_scope
+from memdiver.app.session import ToolSession
 from memdiver.core.dump_source import ViewMode
 from memdiver.core.service_errors import CapabilityError
 from memdiver.mcp_server import tools_inspect, tools_xref
-from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.inspect")
 
@@ -241,6 +241,26 @@ def get_session_info(
         return _http_inspect(lambda: tools_inspect.session_info_result(session, msl_path))
 
 
+@router.get("/vas")
+def get_vas_regions(
+    msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Extract the per-dump VAS region layout from an MSL file.
+
+    Emits the full five-field VAS entries the VasChart frontend consumes
+    (base_addr / region_size / region_type / protection / mapped_path).
+    Optional ``passphrase`` / ``key_hex`` / ``kem_key_hex`` unlock an
+    encrypted container (spec §10); without them an encrypted dump reads
+    back empty (no captured regions).
+    """
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return _http_inspect(lambda: tools_inspect.vas_regions_result(session, msl_path))
+
+
 @router.get("/page-states")
 def get_page_states(
     msl_path: str,
@@ -324,7 +344,7 @@ def _open_msl(msl_path: str):
     manager's __enter__, we must wrap the whole yield — not just the
     cached_msl_reader() call.
     """
-    from memdiver.app.reader_cache import cached_msl_reader
+    from memdiver.app.composition import cached_msl_reader
 
     path = _validate_msl_path(msl_path)
     try:
@@ -619,9 +639,9 @@ def detect_format_endpoint(
     """
     from pathlib import Path
 
+    from memdiver.app.composition import open_dump
     from memdiver.core.binary_formats.kaitai_registry import get_kaitai_registry
     from memdiver.core.binary_formats.navigator import build_nav_tree
-    from memdiver.core.dump_source import open_dump
     from memdiver.core.service_errors import OffsetOutOfRangeError
 
     km = decode_key_material(passphrase, key_hex, kem_key_hex)

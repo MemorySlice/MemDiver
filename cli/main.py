@@ -362,7 +362,7 @@ def _build_parser() -> argparse.ArgumentParser:
     insp = sub.add_parser(
         "inspect",
         help="Low-level dump / structured-MSL inspection views (hex, entropy, "
-             "strings, byte-search, page-states, session-info, processes, "
+             "strings, byte-search, page-states, session-info, vas, processes, "
              "modules, handles, xref, structure)",
     )
     insp_sub = insp.add_subparsers(dest="inspect_action")
@@ -434,6 +434,12 @@ def _build_parser() -> argparse.ArgumentParser:
     isi.add_argument("msl_path", help=".msl file path")
     isi.add_argument("-o", "--output", help="Output JSON file")
     isi.add_argument("-v", "--verbose", action="store_true")
+    # inspect vas
+    iva = insp_sub.add_parser("vas", parents=[dp],
+                              help="Per-dump VAS region layout (MSL only)")
+    iva.add_argument("msl_path", help=".msl file path")
+    iva.add_argument("-o", "--output", help="Output JSON file")
+    iva.add_argument("-v", "--verbose", action="store_true")
     # inspect processes
     ipr = insp_sub.add_parser("processes", parents=[dp],
                               help="List PROCESS_TABLE entries (MSL only)")

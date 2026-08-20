@@ -94,6 +94,25 @@ def test_session_info(client, msl_path):
     assert isinstance(data["vas_entries"], list)
 
 
+def test_vas_regions(client, msl_path):
+    resp = client.get("/api/inspect/vas", params={"msl_path": msl_path})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, dict)
+    for key in ("vas_entries", "region_count", "total_region_size", "vas_coverage"):
+        assert key in data, key
+    assert isinstance(data["vas_coverage"], dict)
+    entries = data["vas_entries"]
+    assert isinstance(entries, list) and len(entries) >= 1
+    # The full five-field VAS entry shape the VasChart frontend consumes.
+    assert set(entries[0]) == {
+        "base_addr", "region_size", "region_type", "protection", "mapped_path",
+    }
+    libssl = next(e for e in entries if e["mapped_path"] == "/usr/lib/libssl.so")
+    assert libssl["base_addr"] == 0x00400000
+    assert libssl["region_size"] == 0x10000
+
+
 # -- raw-dump / format endpoints ----------------------------------------
 
 def test_format_detects_msl_container(client, msl_path):

@@ -82,6 +82,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "web", "mcp")),
     _cap("inspect.session_info", "memdiver.app.tools_inspect.session_info_result",
          ("library", "cli", "web", "mcp")),
+    _cap("inspect.vas", "memdiver.app.tools_inspect.vas_regions_result",
+         ("library", "cli", "web", "mcp")),
     _cap("inspect.page_states", "memdiver.app.tools_inspect.page_states_result",
          ("library", "cli", "web", "mcp")),
     _cap("inspect.processes", "memdiver.app.tools_inspect.processes_result",

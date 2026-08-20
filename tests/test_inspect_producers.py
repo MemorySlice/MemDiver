@@ -90,6 +90,7 @@ def raw_dump(tmp_path):
 # is keyless and never gates).
 _MSL_METADATA_PRODUCERS = [
     "session_info_result",
+    "vas_regions_result",
     "page_states_result",
     "processes_result",
     "modules_result",
@@ -166,6 +167,44 @@ def test_plaintext_msl_producer_is_ok(session, plain_msl):
     assert result.status.resolution == Resolution.OK
     assert result.status.key.decrypted is True
     assert result.payload["pid"] == 7
+
+
+@pytest.fixture
+def msl_with_vas(tmp_path):
+    """A complete synthetic .msl carrying a VAS_MAP block (three entries)."""
+    from tests.fixtures.generate_msl_fixtures import write_msl_fixture
+
+    return str(write_msl_fixture(tmp_path / "vas.msl"))
+
+
+def test_vas_regions_result_emits_full_five_field_entries(session, msl_with_vas):
+    """The VAS producer emits the FULL five-field entries the VasChart consumes,
+    plus the region_count / total_region_size / vas_coverage summary fields."""
+    result = tools_inspect.vas_regions_result(session, msl_with_vas)
+    assert result.status.resolution == Resolution.OK
+    assert result.status.key.decrypted is True
+
+    payload = result.payload
+    assert payload["region_count"] >= 1
+    assert isinstance(payload["total_region_size"], int)
+    assert isinstance(payload["vas_coverage"], dict)
+
+    entries = payload["vas_entries"]
+    assert len(entries) >= 1
+    # The summary counts describe the VAS entries themselves (not the captured
+    # regions session_info counts), so they stay consistent with the array.
+    assert payload["region_count"] == len(entries)
+    assert payload["total_region_size"] == sum(e["region_size"] for e in entries)
+    for entry in entries:
+        assert set(entry) == {
+            "base_addr", "region_size", "region_type", "protection", "mapped_path",
+        }
+    # The fixture seeds a libssl mapping at the canonical base (base/size/type/prot).
+    libssl = next(e for e in entries if e["mapped_path"] == "/usr/lib/libssl.so")
+    assert libssl["base_addr"] == 0x00400000
+    assert libssl["region_size"] == 0x10000
+    assert libssl["region_type"] == 0x03
+    assert libssl["protection"] == 0x05
 
 
 def test_read_hex_result_plaintext_vas_is_ok(session, plain_msl):

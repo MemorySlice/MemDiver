@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, get_tool_session
 from memdiver.api.path_safety import ensure_within
+from memdiver.app.session import ToolSession
 from memdiver.mcp_server import tools
-from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.dumps")
 

@@ -588,7 +588,7 @@ def run_auto_floor_stage(
     """
     import numpy as np
 
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.engine.auto_floor import run_auto_floor
     from memdiver.engine.oracle import load_oracle
 

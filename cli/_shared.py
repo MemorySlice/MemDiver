@@ -73,12 +73,13 @@ def _key_material_from_args(args: argparse.Namespace) -> dict:
     Returns a dict with key/passphrase/kem_private_key (all None when no
     decryption flags were supplied), suitable for ``open_dump(path, **kw)``.
 
-    Thin surface adapter over :func:`core.key_material.from_files`; the
-    ``getattr`` guards let subcommands whose Namespace lacks the decryption
+    Thin surface adapter over the shared ``key_material_from_files`` re-export
+    from :mod:`memdiver.app.composition` (itself ``core.key_material.from_files``);
+    the ``getattr`` guards let subcommands whose Namespace lacks the decryption
     attributes still resolve to the all-None dict.
     """
-    from memdiver.core.key_material import from_files
-    return from_files(
+    from memdiver.app.composition import key_material_from_files
+    return key_material_from_files(
         getattr(args, "key_file", None),
         getattr(args, "passphrase", None),
         getattr(args, "kem_key_file", None),

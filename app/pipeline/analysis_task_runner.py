@@ -123,7 +123,7 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     algorithm logic is never duplicated. Returns the
     ``{"artifacts": [...], "summary": {...}}`` shape.
     """
-    from memdiver.app.session import ToolSession
+    from memdiver.app.composition import build_tool_session
     from memdiver.app.tools import analyze_library
 
     artifact_dir = _resolve_artifact_dir(params, ctx)
@@ -151,7 +151,7 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
 
     try:
         result = analyze_library(
-            ToolSession(),
+            build_tool_session(),
             library_dirs,
             params["phase"],
             params["protocol_version"],
@@ -202,7 +202,7 @@ def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     """
     from memdiver.algorithms.base import AnalysisContext
     from memdiver.algorithms.registry import get_registry
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.core.key_material import from_hex
 
     artifact_dir = _resolve_artifact_dir(params, ctx)

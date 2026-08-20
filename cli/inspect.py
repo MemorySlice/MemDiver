@@ -25,8 +25,8 @@ from ._shared import _KEY_FLAGS_HINT, _write_output
 
 def _new_tool_session():
     """Construct a stateless ToolSession for reuse of the shared tool funcs."""
-    from memdiver.mcp_server.session import ToolSession
-    return ToolSession()
+    from memdiver.app.composition import build_tool_session
+    return build_tool_session()
 
 
 def _emit_inspect(result: dict, output: str | None) -> int:
@@ -154,6 +154,15 @@ def _cmd_inspect_session_info(args: argparse.Namespace) -> int:
     return _emit_inspect(machine_payload, args.output)
 
 
+def _cmd_inspect_vas(args: argparse.Namespace) -> int:
+    """Extract the per-dump VAS region layout (MSL only)."""
+    from memdiver.mcp_server.tools_inspect import vas_regions_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: vas_regions_result(_new_tool_session(), args.msl_path,
+                                   **_inspect_key_kwargs(args)))
+    return _emit_inspect(machine_payload, args.output)
+
+
 def _cmd_inspect_processes(args: argparse.Namespace) -> int:
     """List PROCESS_TABLE entries (MSL only)."""
     from memdiver.mcp_server.tools_inspect import processes_result
@@ -205,6 +214,7 @@ _INSPECT_HANDLERS = {
     "byte-search": _cmd_inspect_byte_search,
     "page-states": _cmd_inspect_page_states,
     "session-info": _cmd_inspect_session_info,
+    "vas": _cmd_inspect_vas,
     "processes": _cmd_inspect_processes,
     "modules": _cmd_inspect_modules,
     "handles": _cmd_inspect_handles,

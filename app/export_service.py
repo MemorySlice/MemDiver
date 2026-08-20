@@ -31,7 +31,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from memdiver.core.dump_source import open_dump
+from memdiver.app.composition import open_dump
 from memdiver.core.service_errors import (
     CapabilityError,
     EncryptedDumpLockedError,

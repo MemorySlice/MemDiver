@@ -56,10 +56,10 @@ class ToolSession:
             return self.scan_cache
 
         root = self.require_dataset()
-        from memdiver.core.discovery import DatasetScanner
+        from memdiver.app.composition import build_dataset_scanner
         from memdiver.engine.serializer import serialize_dataset_info
 
-        scanner = DatasetScanner(root, keylog_filename)
+        scanner = build_dataset_scanner(root, keylog_filename)
         info = scanner.fast_scan(protocols=protocols)
         self.scan_cache = serialize_dataset_info(info)
         self._scan_protocols = proto_key

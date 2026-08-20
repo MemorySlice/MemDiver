@@ -14,7 +14,7 @@ from memdiver.api.services.consensus_session import (
     ConsensusSessionManager,
     get_consensus_manager,
 )
-from memdiver.core.dump_source import open_dump
+from memdiver.app.composition import open_dump
 from memdiver.core.variance import count_classifications
 
 logger = logging.getLogger("memdiver.api.routers.consensus")

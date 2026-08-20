@@ -430,6 +430,57 @@ def session_info_result(
         return _finalize_inspect(payload, reader, view=None)
 
 
+def vas_regions_result(
+    session: ToolSession,
+    msl_path: str,
+    *,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer for the per-dump VAS region layout.
+
+    Emits the FULL five-field VAS entries the VasChart frontend consumes
+    (base_addr / region_size / region_type / protection / mapped_path),
+    unlike the reduced three-field copy in :func:`session_info_result`.
+
+    Reads the VAS map directly (``collect_vas_map``) rather than the full
+    :func:`~memdiver.msl.session_extract.extract_session_report` — the extra
+    module/key-hint/identity passes that report makes are unused here. The
+    ``region_count`` / ``total_region_size`` summary describes THESE VAS
+    entries (so ``region_count == len(vas_entries)``), not the captured
+    regions ``session_info_result`` counts.
+    """
+    _require_msl_path(msl_path)
+
+    from collections import Counter
+
+    from memdiver.msl.enums import RegionType
+    from memdiver.msl.session_extract import _safe_enum_name
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    with open_msl_reader(msl_path, km) as reader:
+        entries = [e for vm in reader.collect_vas_map() for e in vm.entries]
+        payload = {
+            "vas_entries": [
+                {
+                    "base_addr": e.base_addr,
+                    "region_size": e.region_size,
+                    "region_type": e.region_type,
+                    "protection": e.protection,
+                    "mapped_path": e.mapped_path,
+                }
+                for e in entries
+            ],
+            "region_count": len(entries),
+            "total_region_size": sum(e.region_size for e in entries),
+            "vas_coverage": dict(Counter(
+                _safe_enum_name(RegionType, e.region_type) for e in entries
+            )),
+        }
+        return _finalize_inspect(payload, reader, view=None)
+
+
 def page_states_result(
     session: ToolSession,
     msl_path: str,

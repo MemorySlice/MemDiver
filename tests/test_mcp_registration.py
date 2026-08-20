@@ -25,6 +25,7 @@ from memdiver.mcp_server.server import create_server  # noqa: E402
 EXPECTED_TOOLS = {
     "scan_dataset", "list_phases", "list_protocols", "analyze_library",
     "read_hex", "get_entropy", "extract_strings", "get_session_info",
+    "vas_regions",
     "get_processes", "get_modules", "get_handles", "detect_format",
     "get_cross_references", "identify_structure", "import_raw_dump",
     "search_reduce", "brute_force", "n_sweep", "emit_plugin",

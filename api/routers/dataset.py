@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.models import ScanRequest
+from memdiver.app.session import ToolSession
 from memdiver.core.dataset_metadata import DatasetMeta, load_run_meta
 from memdiver.core.models import DumpFile, RunDirectory
 from memdiver.mcp_server import tools
-from memdiver.mcp_server.session import ToolSession
 
 logger = logging.getLogger("memdiver.api.routers.dataset")
 

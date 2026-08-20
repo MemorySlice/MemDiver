@@ -85,7 +85,7 @@ def _read_reference_bytes(
     read, letting a surface report AEAD/tag status (the CLI passes its
     ``_warn_tag_status``) without the producer importing any presentation code.
     """
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
 
     def _load() -> bytes:
         with open_dump(Path(reference_path), **key_material) as source:
@@ -350,7 +350,7 @@ def n_sweep(
     ``nsweep`` stage.
     """
     from memdiver.app.reports import write_nsweep_artifacts
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.engine.nsweep import run_nsweep
     from memdiver.engine.oracle import load_oracle, load_oracle_config
     from memdiver.presentation.reports import nsweep_headline
@@ -652,7 +652,7 @@ def _consensus_incremental(
     ``state.json``; the ``.msl`` branch uses the identical
     :class:`MslIncrementalBuilder` calls the web runner makes.
     """
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.engine.consensus import ConsensusVector
     from memdiver.engine.consensus_msl import MslIncrementalBuilder
 
@@ -794,7 +794,7 @@ def auto_floor(
     ``escalate`` stage (the pipeline's floor-free fall-through).
     """
     from memdiver.app.reports import write_auto_floor_artifacts
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.engine.auto_floor import hit_tier, run_auto_floor
     from memdiver.engine.oracle import load_oracle, load_oracle_config
 
@@ -1040,7 +1040,7 @@ def verify_key_result(
     range (INVALID_INPUT), or a locked encrypted dump — so each surface maps it
     to its own idiom. Returns a canonical dict each surface reshapes.
     """
-    from memdiver.core.dump_source import open_dump
+    from memdiver.app.composition import open_dump
     from memdiver.engine.verification import (
         VERIFICATION_IV,
         VERIFICATION_PLAINTEXT,
