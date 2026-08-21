@@ -177,6 +177,8 @@
     "dumpTools": "Dump Tools",
     "convergenceSweep": "Convergence sweep",
     "maxFp": "Max FP:",
+    "maxFpAria": "Maximum false positives",
+    "exportFormat": "Export format",
     "formatVol3": "Volatility3",
     "formatYara": "YARA",
     "formatJson": "JSON",

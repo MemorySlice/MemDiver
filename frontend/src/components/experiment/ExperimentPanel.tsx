@@ -244,6 +244,7 @@ export function ExperimentPanel() {
           value={numRuns}
           onChange={e => setNumRuns(Number(e.target.value))}
           className="flex-1"
+          aria-label={t('experiment.runsPerTool')}
           data-testid="experiment-num-runs"
         />
         <span className="text-xs text-[var(--md-text-primary)] w-8">{numRuns}</span>
@@ -288,12 +289,14 @@ export function ExperimentPanel() {
             onChange={e => setMaxFp(Number(e.target.value))}
             className="w-12 bg-[var(--md-bg-tertiary)] border border-[var(--md-border)] rounded px-1 text-xs text-[var(--md-text-primary)]"
             min={0}
+            aria-label={t('experiment.maxFpAria')}
           />
         </div>
         <select
           value={exportFormat}
           onChange={e => setExportFormat(e.target.value)}
           className="bg-[var(--md-bg-tertiary)] border border-[var(--md-border)] rounded px-2 py-0.5 text-xs text-[var(--md-text-primary)]"
+          aria-label={t('experiment.exportFormat')}
         >
           <option value="volatility3">{t('experiment.formatVol3')}</option>
           <option value="yara">{t('experiment.formatYara')}</option>

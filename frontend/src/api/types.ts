@@ -344,6 +344,24 @@ export interface VasRegionsResponse {
   vas_coverage: Record<string, number>;
 }
 
+// --- Dataset run discovery (GET /api/dataset/runs) ---
+export interface DatasetRunDump {
+  path: string;
+  kind: string;
+  size: number;
+  phase: string | null;
+}
+
+export interface DatasetRun {
+  path: string;
+  meta: Record<string, unknown> | null;
+  dumps: DatasetRunDump[];
+}
+
+export interface DatasetRunsResponse {
+  runs: DatasetRun[];
+}
+
 // --- Auto Export ---
 export interface AutoExportResult {
   format: string;

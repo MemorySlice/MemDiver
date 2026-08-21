@@ -130,6 +130,42 @@ export async function enterWorkspaceWithMsl(
 }
 
 /**
+ * Drive the landing+wizard UI for a DIRECTORY selected as a "Dataset", landing
+ * in the workspace with the dataset overview mounted (inputMode="dataset").
+ * Used to exercise the dataset drill-down (browse runs → open a dump).
+ */
+export async function enterWorkspaceWithDataset(
+  page: Page,
+  dirPath: string,
+): Promise<void> {
+  await disableFtueViaStorage(page);
+  await page.goto("/");
+  await dismissFtueIfPresent(page);
+  await page.getByRole("button", { name: /New Session/i }).first().click();
+
+  const pathInput = page.getByPlaceholder("Enter path to file or directory");
+  await expect(pathInput).toBeVisible({ timeout: 15_000 });
+  await pathInput.fill(dirPath);
+  await page.getByRole("button", { name: /^Next$/ }).click();
+
+  // Directory Type step: choose "Dataset Directory" (also auto-detected), Next.
+  await page.getByRole("button", { name: /Dataset Directory/i }).first().click();
+  await page.getByRole("button", { name: /^Next$/ }).click();
+
+  // Analysis step: Inspect Only avoids kicking off heavy dataset analysis.
+  const inspectOnly = page.getByRole("button", { name: /^Inspect Only/i }).first();
+  if (await inspectOnly.isVisible().catch(() => false)) {
+    await inspectOnly.click();
+  }
+  await page.getByRole("button", { name: /Start Analysis/i }).click();
+
+  await expect(page.locator('[data-testid="dataset-overview"]')).toBeVisible({
+    timeout: 20_000,
+  });
+  await dismissFtueIfPresent(page);
+}
+
+/**
  * Switch the mode-banner to "exploration", which unlocks the
  * exploration-only bottom tabs (entropy, consensus, live-consensus,
  * architect, experiment, convergence). The banner is rendered by

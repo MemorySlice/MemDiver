@@ -12,8 +12,8 @@ import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
 import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
 import { EntropyChart } from "@/components/charts/EntropyChart";
-import { getEntropy, getVasRegions, saveSession, getNotebookStatus } from "@/api/client";
-import type { EntropyData } from "@/api/types";
+import { getEntropy, getVasRegions, saveSession, getNotebookStatus, listDatasetRuns } from "@/api/client";
+import type { EntropyData, DatasetRun } from "@/api/types";
 import type { VasEntry } from "@/components/charts/types";
 import { BookmarkList } from "@/components/investigation/BookmarkList";
 import { InvestigationPanel } from "@/components/investigation/InvestigationPanel";
@@ -235,22 +235,93 @@ function HexFocusBridge() {
   return null;
 }
 
+function formatDumpSize(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+}
+
 function DatasetOverview({ path }: { path: string }) {
   const { t } = useTranslation("layout");
-  const { inputMode, pathInfo } = useAppStore();
+  const { inputMode, pathInfo, setInputMode } = useAppStore();
+  const addDump = useDumpStore((s) => s.addDump);
+  const setActiveDump = useDumpStore((s) => s.setActiveDump);
+  const [runs, setRuns] = useState<DatasetRun[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  // Enumerate the runs (and their dump files) under the selected directory so
+  // the user can drill into an individual dump instead of only seeing a count.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    listDatasetRuns(path)
+      .then((res) => { if (!cancelled) setRuns(res.runs ?? []); })
+      .catch(() => { if (!cancelled) setError(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [path]);
+
+  // Open a dataset dump: register it, make it active, and switch to file mode
+  // so the hex viewer mounts on it (same path as the import flow).
+  const openDump = (dumpPath: string, size: number) => {
+    const name = dumpPath.split(/[\\/]/).pop() || dumpPath;
+    const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
+    const id = addDump({ path: dumpPath, name, size, format });
+    setActiveDump(id);
+    setInputMode("file");
+  };
+
   return (
-    <div className="h-full p-4 overflow-auto flex items-center justify-center">
-      <div className="text-center max-w-md">
-        <p className="text-lg mb-2 md-text-accent">
+    <div className="h-full p-4 overflow-auto" data-testid="dataset-overview">
+      <div className="max-w-3xl mx-auto">
+        <p className="text-lg mb-1 md-text-accent">
           {t("loaded", { label: inputMode === "dataset" ? t("dataset") : t("libraryDirectory") })}
         </p>
-        <p className="text-sm md-text-secondary mb-4 break-all">{path}</p>
+        <p className="text-sm md-text-secondary mb-3 break-all">{path}</p>
         {pathInfo && (
-          <div className="text-xs md-text-muted space-y-1">
+          <div className="text-xs md-text-muted space-y-1 mb-4">
             <p>{t("dumpFilesFound", { n: pathInfo.dump_count })}</p>
             {pathInfo.has_keylog && <p>{t("keylogDetected")}</p>}
           </div>
         )}
+
+        <h3 className="text-sm font-semibold md-text-secondary">{t("datasetRunsHeading")}</h3>
+        <p className="text-xs md-text-muted mb-2">{t("datasetRunsHint")}</p>
+        {loading && <p className="text-xs md-text-muted">{t("loadingRuns")}</p>}
+        {error && <p className="text-xs" style={{ color: "var(--md-accent-red)" }}>{t("runsLoadFailed")}</p>}
+        {!loading && !error && runs.length === 0 && (
+          <p className="text-xs md-text-muted">{t("noRunsFound")}</p>
+        )}
+        <div className="space-y-3">
+          {runs.map((run) => (
+            <div key={run.path} className="md-panel p-2" data-testid="dataset-run">
+              <p className="text-xs font-mono md-text-secondary truncate mb-1" title={run.path}>
+                {run.path.split(/[\\/]/).pop()}
+              </p>
+              <ul className="space-y-0.5">
+                {run.dumps.map((d) => (
+                  <li key={d.path}>
+                    <button
+                      onClick={() => openDump(d.path, d.size)}
+                      title={t("openDumpTitle")}
+                      data-testid="dataset-dump"
+                      className="w-full text-left text-xs font-mono px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] flex items-center gap-2"
+                    >
+                      <span className="truncate flex-1">{d.path.split(/[\\/]/).pop()}</span>
+                      {d.phase && <span className="md-text-muted shrink-0">{d.phase}</span>}
+                      <span className="md-text-muted shrink-0">{d.kind}</span>
+                      <span className="md-text-muted shrink-0 w-16 text-right">{formatDumpSize(d.size)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
         <p className="text-sm md-text-secondary mt-4">
           {t("datasetAnalysisHint")}
         </p>

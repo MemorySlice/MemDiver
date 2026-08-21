@@ -72,10 +72,7 @@
       "scrollable-region-focusable#.min-h-0 > .overflow-auto.flex-1"
     ],
     "experiment": [
-      "label#.w-12",
-      "label#input[min=\"2\"]",
-      "scrollable-region-focusable#.min-h-0 > .overflow-auto.flex-1",
-      "select-name#select"
+      "scrollable-region-focusable#.min-h-0 > .overflow-auto.flex-1"
     ],
     "convergence": [
       "scrollable-region-focusable#.min-h-0 > .overflow-auto.flex-1"

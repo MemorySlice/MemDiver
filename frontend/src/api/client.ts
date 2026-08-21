@@ -23,6 +23,7 @@ import type {
   PageStatesResponse,
   SessionInfoResponse,
   VasRegionsResponse,
+  DatasetRunsResponse,
   KeyMaterial,
 } from "./types";
 
@@ -77,6 +78,12 @@ export const scanDataset = (body: ScanRequest) =>
 
 export const listProtocols = () =>
   request<{ protocols: ProtocolDescriptor[] }>("/api/dataset/protocols");
+
+/** Enumerate run directories (with their dumps) under a dataset/library dir. */
+export const listDatasetRuns = (root: string) =>
+  request<DatasetRunsResponse>(
+    `/api/dataset/runs?root=${encodeURIComponent(root)}`,
+  );
 
 export const listPhases = (libraryDir: string) =>
   request<PhaseInfo>(

@@ -1,5 +1,7 @@
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useDumpStore } from "@/stores/dump-store";
+import { useAppStore } from "@/stores/app-store";
 
 interface UploadResult {
   source: string;
@@ -23,7 +25,21 @@ export function FileUpload() {
       form.append("file", file);
       const res = await fetch("/api/dumps/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-      setResult(await res.json());
+      const data = (await res.json()) as UploadResult;
+      setResult(data);
+      // Register the freshly imported dump so it is actually usable: without
+      // this the import is a dead end — the converted .msl path is displayed
+      // but nothing loads it. Add it to the dump store, make it active, and
+      // switch to file mode so the hex viewer mounts on it.
+      const name = data.output.split(/[\\/]/).pop() || data.output;
+      const id = useDumpStore.getState().addDump({
+        path: data.output,
+        name,
+        size: data.total_bytes,
+        format: "msl",
+      });
+      useDumpStore.getState().setActiveDump(id);
+      useAppStore.getState().setInputMode("file");
     } catch (e) {
       setError(e instanceof Error ? e.message : t("upload.failed"));
     } finally {

@@ -131,10 +131,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const firstVisibleIndex = virtualItems[0]?.index ?? -1;
   const lastVisibleIndex = virtualItems[virtualItems.length - 1]?.index ?? -1;
 
+  // `dumpPath` is a dependency: switching the active dump (e.g. selecting a
+  // different dump in the list, or importing one) resets the chunk cache in
+  // setDumpPath. If the visible row range happens to be identical for the new
+  // dump — the common case, since any dump larger than the viewport shows rows
+  // 0..N — this effect would not re-fire on the indices alone and the new
+  // dump's bytes would stay stuck on the "loading" placeholder. Re-running on
+  // dumpPath guarantees the first chunk loads for the new dump.
   useEffect(() => {
     if (firstVisibleIndex < 0) return;
     useHexStore.getState().ensureChunksLoaded(firstVisibleIndex, lastVisibleIndex);
-  }, [firstVisibleIndex, lastVisibleIndex]);
+  }, [firstVisibleIndex, lastVisibleIndex, dumpPath]);
 
   // Fetch per-byte consensus classifications for the currently visible
   // rows whenever the overlay is on and a row's range is not yet cached.
