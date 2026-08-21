@@ -9,6 +9,7 @@ build/
 .venv/
 env/
 *.log
+*.json
 .DS_Store
 .dSYM/
 *.dSYM/
