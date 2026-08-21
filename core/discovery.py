@@ -132,8 +132,14 @@ class RunDiscovery:
         return m.group(1), m.group(2), int(m.group(3))
 
     @staticmethod
-    def load_run_directory(run_path: Path, keylog_filename: str = "keylog.csv", template=None) -> Optional[RunDirectory]:
-        """Load a single run directory."""
+    def load_run_directory(run_path: Path, keylog_filename: str = "keylog.csv", template=None, extract_secrets: bool = True) -> Optional[RunDirectory]:
+        """Load a single run directory.
+
+        When ``extract_secrets`` is False both the keylog parse and the MSL
+        key-hint fallback are skipped. Callers that only need the dump
+        inventory + ``meta.json`` (e.g. the dataset-browsing endpoint) can
+        avoid the expensive per-file MSL parsing this entails.
+        """
         parsed = RunDiscovery.parse_run_dirname(run_path.name)
         if not parsed:
             # Dataset-style runs (e.g. ``run_0001``) don't match the legacy
@@ -159,19 +165,20 @@ class RunDiscovery:
             if dump is not None:
                 run.dumps.append(dump)
 
-        keylog_path = run_path / keylog_filename
-        if keylog_path.exists():
-            run.secrets = KeylogParser.parse(keylog_path, template=template)
-            if run.secrets:
-                run.secret_source = "keylog"
-
-        # Fallback: extract secrets from MSL key hints if no keylog
-        if not run.secrets:
-            msl_files = [d.path for d in run.dumps if d.path.suffix == ".msl"]
-            if msl_files:
-                run.secrets = _extract_msl_secrets(msl_files)
+        if extract_secrets:
+            keylog_path = run_path / keylog_filename
+            if keylog_path.exists():
+                run.secrets = KeylogParser.parse(keylog_path, template=template)
                 if run.secrets:
-                    run.secret_source = "msl_hints"
+                    run.secret_source = "keylog"
+
+            # Fallback: extract secrets from MSL key hints if no keylog
+            if not run.secrets:
+                msl_files = [d.path for d in run.dumps if d.path.suffix == ".msl"]
+                if msl_files:
+                    run.secrets = _extract_msl_secrets(msl_files)
+                    if run.secrets:
+                        run.secret_source = "msl_hints"
 
         # Attach per-run meta.json (None when absent — legacy runs are ok).
         run.meta = load_run_meta(run_path)

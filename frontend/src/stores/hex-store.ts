@@ -110,6 +110,11 @@ interface HexState {
   highlightedRegions: HighlightRegion[];
   scrollTarget: number | null;
 
+  // First absolute row of the bounded virtualization window. The viewer only
+  // ever hands the virtualizer MAX_WINDOW_ROWS rows starting here, sliding the
+  // window across the file so the spacer height stays within browser limits.
+  windowStartRow: number;
+
   // Byte-pattern search hits (absolute offsets). Shared between the
   // toolbar search box (writer) and the viewer's SearchMinimap (reader)
   // so the two stay decoupled.
@@ -139,6 +144,7 @@ interface HexState {
 
   scrollToOffset: (offset: number) => void;
   clearScrollTarget: () => void;
+  setWindowStart: (row: number) => void;
 
   setHighlightedRegions: (regions: HighlightRegion[]) => void;
   setSearchOffsets: (offsets: number[]) => void;
@@ -273,6 +279,7 @@ export const useHexStore = create<HexState>((set, get) => ({
 
   highlightedRegions: [],
   scrollTarget: null,
+  windowStartRow: 0,
   searchOffsets: [],
   bookmarks: [],
   activeStructureOverlay: null,
@@ -329,6 +336,7 @@ export const useHexStore = create<HexState>((set, get) => ({
         selection: null,
         highlightedRegions: [],
         scrollTarget: null,
+        windowStartRow: 0,
         searchOffsets: [],
         bookmarks: loadBookmarksFor(path),
         activeStructureOverlay: null,
@@ -379,6 +387,7 @@ export const useHexStore = create<HexState>((set, get) => ({
         cursorOffset: null,
         selection: null,
         scrollTarget: null,
+        windowStartRow: 0,
       };
     });
     // Page-state coloring is only needed in the "va" view; fetch lazily the
@@ -456,6 +465,7 @@ export const useHexStore = create<HexState>((set, get) => ({
       focusColumn: "hex",
       highlightedRegions: [],
       scrollTarget: null,
+      windowStartRow: 0,
       searchOffsets: [],
       bookmarks: [],
       activeStructureOverlay: null,
@@ -582,6 +592,8 @@ export const useHexStore = create<HexState>((set, get) => ({
     }),
 
   clearScrollTarget: () => set({ scrollTarget: null }),
+
+  setWindowStart: (row) => set({ windowStartRow: row }),
 
   setHighlightedRegions: (regions) => set({ highlightedRegions: regions }),
 

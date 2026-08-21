@@ -52,6 +52,8 @@ def list_phases(
 @router.get("/runs")
 def list_runs(
     root: str,
+    limit: int | None = None,
+    offset: int = 0,
     session: ToolSession = Depends(get_tool_session),  # noqa: ARG001
 ) -> Dict[str, Any]:
     """Enumerate run directories under ``root`` with their dumps + meta.json.
@@ -59,6 +61,11 @@ def list_runs(
     Designed for the dataset-browsing UI: returns one entry per detected
     run directory (anything that parses as a legacy ``<lib>_run_<ver>_<n>``
     directory OR contains a ``meta.json`` / known dataset dump).
+
+    Candidate directories are enumerated cheaply first; only the requested
+    ``offset:offset+limit`` slice is loaded via the expensive per-run parse.
+    ``limit=None`` loads every run from ``offset`` onward (backward
+    compatible) while still reporting ``total``.
     """
     root_path = Path(root)
     if not root_path.is_dir():
@@ -67,12 +74,25 @@ def list_runs(
             detail=f"Not a directory: {root}",
         )
 
+    candidates = sorted(_iter_run_dirs(root_path))
+    total = len(candidates)
+
+    # Clamp pagination args: never a negative offset; a negative limit means
+    # "no rows" rather than an accidental tail slice.
+    offset = max(offset, 0)
+    if limit is None:
+        page = candidates[offset:]
+    elif limit <= 0:
+        page = []
+    else:
+        page = candidates[offset:offset + limit]
+
     runs: List[Dict[str, Any]] = []
-    for candidate in sorted(_iter_run_dirs(root_path)):
+    for candidate in page:
         run = _load_run_entry(candidate)
         if run is not None:
             runs.append(run)
-    return {"runs": runs}
+    return {"runs": runs, "total": total, "offset": offset, "limit": limit}
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -104,7 +124,9 @@ def _load_run_entry(run_path: Path) -> Dict[str, Any] | None:
     from memdiver.core.discovery import RunDiscovery
 
     try:
-        run = RunDiscovery.load_run_directory(run_path)
+        # The browsing endpoint never returns secrets, so skip the expensive
+        # per-run keylog / MSL key-hint extraction entirely.
+        run = RunDiscovery.load_run_directory(run_path, extract_secrets=False)
     except Exception:  # pragma: no cover — defensive
         logger.exception("Failed to load run directory %s", run_path)
         run = None
@@ -122,19 +144,33 @@ def _load_run_entry(run_path: Path) -> Dict[str, Any] | None:
             meta=meta,
         )
 
+    # Prefer dump sizes already recorded in meta.json to avoid re-stat()-ing
+    # every dump over a slow filesystem.
+    size_by_kind: Dict[str, int] = {}
+    if run.meta is not None:
+        size_by_kind = {kind: ref.size for kind, ref in run.meta.dumps.items()}
+
     return {
         "path": str(run.path),
         "meta": _meta_to_dict(run.meta),
-        "dumps": [_dump_to_dict(d) for d in run.dumps],
+        "dumps": [_dump_to_dict(d, size_by_kind) for d in run.dumps],
     }
 
 
-def _dump_to_dict(dump: DumpFile) -> Dict[str, Any]:
-    """Serialise a :class:`DumpFile` for the API response."""
-    try:
-        size = dump.path.stat().st_size if dump.path.exists() else 0
-    except OSError:
-        size = 0
+def _dump_to_dict(dump: DumpFile, size_by_kind: Dict[str, int] | None = None) -> Dict[str, Any]:
+    """Serialise a :class:`DumpFile` for the API response.
+
+    Prefers the size declared in ``meta.json`` (via ``size_by_kind``) and only
+    falls back to ``stat()`` when meta carries no usable size for this kind.
+    """
+    meta_size = (size_by_kind or {}).get(dump.kind)
+    if meta_size is not None and meta_size > 0:
+        size = meta_size
+    else:
+        try:
+            size = dump.path.stat().st_size if dump.path.exists() else 0
+        except OSError:
+            size = 0
     return {
         "path": str(dump.path),
         "kind": dump.kind,

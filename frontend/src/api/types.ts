@@ -360,6 +360,9 @@ export interface DatasetRun {
 
 export interface DatasetRunsResponse {
   runs: DatasetRun[];
+  total: number;
+  offset: number;
+  limit: number | null;
 }
 
 // --- Auto Export ---

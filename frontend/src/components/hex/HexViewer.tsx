@@ -9,6 +9,12 @@ import { HexLegend } from "./HexLegend";
 import { HexStatusBar } from "./HexStatusBar";
 import { SearchMinimap } from "./SearchMinimap";
 import { buildRegionIndex } from "./highlight-utils";
+import {
+  windowCount,
+  clampWindowStart,
+  recenterWindow,
+  isRowInWindow,
+} from "./window-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 
 const BYTES_PER_ROW = 16;
@@ -45,6 +51,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
   const scrollTarget = useHexStore((s) => s.scrollTarget);
   const clearScrollTarget = useHexStore((s) => s.clearScrollTarget);
+  const windowStartRow = useHexStore((s) => s.windowStartRow);
+  const setWindowStart = useHexStore((s) => s.setWindowStart);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
   const extendSelection = useHexStore((s) => s.extendSelection);
@@ -120,8 +128,16 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const effectiveFileSize = storeFileSize >= 0 ? storeFileSize : fileSize;
   const totalRows = Math.ceil(effectiveFileSize / BYTES_PER_ROW);
 
+  // Bounded virtualization window: the virtualizer only ever sees `count`
+  // rows starting at `safeStart`, so its spacer height stays within browser
+  // limits even for multi-GB dumps. `absRow` maps a virtual (window-relative)
+  // index back to an absolute file row for byte fetches and offsets.
+  const safeStart = clampWindowStart(windowStartRow, totalRows);
+  const count = windowCount(safeStart, totalRows);
+  const absRow = useCallback((i: number) => safeStart + i, [safeStart]);
+
   const virtualizer = useVirtualizer({
-    count: totalRows,
+    count,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 20,
     overscan: 10,
@@ -140,8 +156,12 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // dumpPath guarantees the first chunk loads for the new dump.
   useEffect(() => {
     if (firstVisibleIndex < 0) return;
-    useHexStore.getState().ensureChunksLoaded(firstVisibleIndex, lastVisibleIndex);
-  }, [firstVisibleIndex, lastVisibleIndex, dumpPath]);
+    // Pass ABSOLUTE rows — the store multiplies startRow*16 internally.
+    useHexStore
+      .getState()
+      .ensureChunksLoaded(absRow(firstVisibleIndex), absRow(lastVisibleIndex));
+
+  }, [firstVisibleIndex, lastVisibleIndex, dumpPath, absRow]);
 
   // Fetch per-byte consensus classifications for the currently visible
   // rows whenever the overlay is on and a row's range is not yet cached.
@@ -152,7 +172,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     const pages = useConsensusStore.getState().pageClassifications;
     const inFlight = inFlightClassificationsRef.current;
     for (let idx = firstVisibleIndex; idx <= lastVisibleIndex; idx++) {
-      const rowOffset = idx * BYTES_PER_ROW;
+      const rowOffset = absRow(idx) * BYTES_PER_ROW;
       if (pages.has(rowOffset)) continue;
       if (inFlight.has(rowOffset)) continue;
       inFlight.add(rowOffset);
@@ -168,14 +188,23 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
           inFlight.delete(rowOffset);
         });
     }
-  }, [overlayEnabled, firstVisibleIndex, lastVisibleIndex, pageClassifications]);
+  }, [overlayEnabled, firstVisibleIndex, lastVisibleIndex, pageClassifications, absRow]);
 
+  // scrollTarget is an ABSOLUTE row (set by scrollToOffset). If it already
+  // falls inside the current window, scroll to its window-relative index.
+  // Otherwise slide the window to recenter on it — the effect re-fires on the
+  // resulting `safeStart` change and then takes the in-window branch, so it
+  // terminates thanks to recenterWindow's in-window guarantee.
   useEffect(() => {
-    if (scrollTarget !== null) {
-      virtualizer.scrollToIndex(scrollTarget, { align: "center" });
+    if (scrollTarget === null) return;
+    const c = windowCount(safeStart, totalRows);
+    if (c > 0 && isRowInWindow(scrollTarget, safeStart, c)) {
+      virtualizer.scrollToIndex(scrollTarget - safeStart, { align: "center" });
       clearScrollTarget();
+    } else {
+      setWindowStart(recenterWindow(scrollTarget, totalRows));
     }
-  }, [scrollTarget, virtualizer, clearScrollTarget]);
+  }, [scrollTarget, safeStart, totalRows, virtualizer, clearScrollTarget, setWindowStart]);
 
   const selectionStart = selection
     ? Math.min(selection.anchor, selection.active)
@@ -294,6 +323,9 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
           }}
         >
           {virtualItems.map((vItem) => (
+            // key/data-index stay window-relative: the fixed 20px row height
+            // makes DOM node reuse safe across window shifts (every index maps
+            // to the same layout slot; only the absolute rowOffset changes).
             <div
               key={vItem.index}
               data-index={vItem.index}
@@ -301,7 +333,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
               style={{ top: vItem.start, height: 20 }}
             >
               <HexRow
-                rowOffset={vItem.index * BYTES_PER_ROW}
+                rowOffset={absRow(vItem.index) * BYTES_PER_ROW}
                 getByteAt={getByteAtStable}
                 getVarianceAt={getVarianceAt}
                 cursorOffset={cursorOffset}
@@ -325,7 +357,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
             <SearchMinimap
               fileSize={effectiveFileSize}
               offsets={searchOffsets}
-              currentOffset={Math.max(0, firstVisibleIndex) * BYTES_PER_ROW}
+              currentOffset={absRow(Math.max(0, firstVisibleIndex)) * BYTES_PER_ROW}
               onClickOffset={scrollToOffset}
             />
           </div>

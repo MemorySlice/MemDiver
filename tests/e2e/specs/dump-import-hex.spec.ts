@@ -6,6 +6,7 @@ import {
   syntheticMslPath,
   MSL,
   RUN_0001,
+  DATASET_DIR,
 } from "../fixtures/dataset";
 import {
   enterWorkspaceWithMsl,
@@ -113,8 +114,8 @@ test.describe("dump import + hex viewer", () => {
     // The overview enumerates runs + their dumps (previously just a count).
     await expect(page.locator('[data-testid="dataset-run"]').first()).toBeVisible({ timeout: 30_000 });
     // Open the .msl dump specifically. (A run also contains a multi-GB gcore
-    // core; opening files that large is a separate hex-viewer scaling limit,
-    // out of scope for verifying the dataset drill-down itself.)
+    // core; the dedicated "multi-GB" test below verifies that huge file opens
+    // without crashing via bounded-window virtualization.)
     const mslDump = page.locator('[data-testid="dataset-dump"]').filter({ hasText: ".msl" }).first();
     await expect(mslDump).toBeVisible();
 
@@ -123,6 +124,85 @@ test.describe("dump import + hex viewer", () => {
     const firstByte = page.locator('.hex-byte[data-offset="0"]');
     await expect(firstByte).toBeVisible({ timeout: 20_000 });
     await expect(firstByte).toHaveText(/^[0-9a-f]{2}$/i, { timeout: 20_000 });
+
+    guards.assertClean();
+  });
+
+  // --- Multi-GB dump opens without crashing (bounded-window virtualization). ---
+  // The 2 GB gcore.core previously crashed the renderer ("Target crashed")
+  // because the virtualizer rendered ~134M rows (~2.68e9 px spacer). The window
+  // is now clamped to MAX_WINDOW_ROWS, and any byte stays reachable via the
+  // toolbar "go to offset" box, which recenters the window.
+  test("opening a multi-GB dump does not crash and stays navigable @requires-dataset", async ({ page }) => {
+    test.skip(!datasetAvailable, "real dataset not present");
+    test.setTimeout(120_000);
+    const guards = installErrorGuards(page);
+    await enterWorkspaceWithDataset(page, RUN_0001);
+
+    // Drill into the multi-GB gcore core specifically.
+    const gcoreDump = page
+      .locator('[data-testid="dataset-dump"]')
+      .filter({ hasText: "gcore" })
+      .first();
+    await expect(gcoreDump).toBeVisible({ timeout: 30_000 });
+    await gcoreDump.click();
+
+    // The tab must survive: byte 0 renders as real hex (a crash would abort the
+    // test with "Target crashed" before this resolves).
+    const firstByte = page.locator('.hex-byte[data-offset="0"]');
+    await expect(firstByte).toBeVisible({ timeout: 20_000 });
+    await expect(firstByte).toHaveText(/^[0-9a-f]{2}$/i, { timeout: 20_000 });
+
+    // A file this large is windowed, so the status-bar window controls appear.
+    await expect(page.getByRole("button", { name: "Next window" })).toBeVisible();
+
+    // Jump far past the first window (100 MB, 16-aligned). The window recenters
+    // and the byte at that absolute offset renders — proving the whole file is
+    // reachable, not just the first window.
+    const FAR_OFFSET = 100_000_000; // < 2 GB, divisible by 16 → a row start
+    // Scope to the main panel: a sidebar control shares the "0x offset" placeholder.
+    const gotoInput = page.getByTestId("main").getByPlaceholder("0x offset");
+    await gotoInput.fill(String(FAR_OFFSET));
+    await gotoInput.press("Enter");
+    const farByte = page.locator(`.hex-byte[data-offset="${FAR_OFFSET}"]`);
+    await expect(farByte).toBeVisible({ timeout: 20_000 });
+    await expect(farByte).toHaveText(/^[0-9a-f]{2}$/i, { timeout: 20_000 });
+
+    guards.assertClean();
+  });
+
+  // --- Dataset overview paginates a large (100-run) dataset. ---
+  // The full dataset_gocryptfs corpus has 100 runs; the overview must load a
+  // page at a time (limit/offset) and accumulate the rest on demand, instead of
+  // enumerating all 400+ dump files up front.
+  test("dataset overview paginates a large dataset @requires-dataset", async ({ page }) => {
+    test.skip(!datasetAvailable, "real dataset not present");
+    test.setTimeout(120_000);
+    const guards = installErrorGuards(page);
+
+    // Capture every /runs request so we can prove the fetch is paged.
+    const runReqs: string[] = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/api/dataset/runs")) runReqs.push(req.url());
+    });
+
+    await enterWorkspaceWithDataset(page, DATASET_DIR);
+
+    // First page returns quickly (no longer blocked on statting the whole corpus).
+    await expect(page.locator('[data-testid="dataset-run"]').first()).toBeVisible({ timeout: 45_000 });
+
+    // Pull remaining pages: the IntersectionObserver auto-loads, but click the
+    // fallback button too so the test is deterministic regardless of layout.
+    const loadMore = page.getByTestId("dataset-runs-load-more");
+    for (let i = 0; i < 5 && (await loadMore.isVisible().catch(() => false)); i++) {
+      await loadMore.click().catch(() => {});
+      await page.waitForTimeout(400);
+    }
+
+    // All 100 runs accumulate, and the fetch was genuinely paged (offset 0 then 50).
+    await expect(page.locator('[data-testid="dataset-run"]')).toHaveCount(100, { timeout: 45_000 });
+    expect(runReqs.some((u) => /[?&]limit=50\b/.test(u) && /[?&]offset=0\b/.test(u))).toBe(true);
+    expect(runReqs.some((u) => /[?&]offset=50\b/.test(u))).toBe(true);
 
     guards.assertClean();
   });

@@ -242,27 +242,73 @@ function formatDumpSize(bytes: number): string {
   return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
 }
 
+const RUNS_PAGE = 50;
+
 function DatasetOverview({ path }: { path: string }) {
   const { t } = useTranslation("layout");
   const { inputMode, pathInfo, setInputMode } = useAppStore();
   const addDump = useDumpStore((s) => s.addDump);
   const setActiveDump = useDumpStore((s) => s.setActiveDump);
   const [runs, setRuns] = useState<DatasetRun[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
 
   // Enumerate the runs (and their dump files) under the selected directory so
   // the user can drill into an individual dump instead of only seeing a count.
+  // Load only the first page here; subsequent pages are fetched on demand via
+  // ``loadMore`` (button click or the IntersectionObserver sentinel below).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(false);
-    listDatasetRuns(path)
-      .then((res) => { if (!cancelled) setRuns(res.runs ?? []); })
+    setRuns([]);
+    setOffset(0);
+    setTotal(0);
+    listDatasetRuns(path, RUNS_PAGE, 0)
+      .then((res) => {
+        if (cancelled) return;
+        setRuns(res.runs ?? []);
+        setTotal(res.total ?? 0);
+        setOffset(res.runs?.length ?? 0);
+      })
       .catch(() => { if (!cancelled) setError(true); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [path]);
+
+  const hasMore = total > 0 && runs.length < total;
+
+  // Fetch and append the next page of runs. Guarded so overlapping triggers
+  // (button click + sentinel scrolling into view) can't double-load, and stops
+  // once every run has been accumulated.
+  const loadMore = useCallback(() => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    listDatasetRuns(path, RUNS_PAGE, offset)
+      .then((res) => {
+        setRuns((prev) => [...prev, ...(res.runs ?? [])]);
+        setTotal(res.total ?? 0);
+        setOffset((prev) => prev + (res.runs?.length ?? 0));
+      })
+      .catch(() => setError(true))
+      .finally(() => setLoadingMore(false));
+  }, [path, offset, loadingMore, hasMore]);
+
+  // Auto-load the next page when the sentinel scrolls into view. The "Load
+  // more" button remains as an accessible, keyboard-triggerable fallback.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMore();
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
 
   // Open a dataset dump: register it, make it active, and switch to file mode
   // so the hex viewer mounts on it (same path as the import flow).
@@ -321,6 +367,19 @@ function DatasetOverview({ path }: { path: string }) {
             </div>
           ))}
         </div>
+        {hasMore && (
+          <>
+            <div ref={sentinelRef} aria-hidden="true" />
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              data-testid="dataset-runs-load-more"
+              className="w-full text-xs md-text-secondary px-2 py-1 mt-2 rounded md-panel hover:bg-[var(--md-bg-hover)] disabled:opacity-50"
+            >
+              {t("loadMoreRuns", { loaded: runs.length, total })}
+            </button>
+          </>
+        )}
 
         <p className="text-sm md-text-secondary mt-4">
           {t("datasetAnalysisHint")}

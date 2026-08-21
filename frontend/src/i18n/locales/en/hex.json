@@ -97,5 +97,10 @@
     "byte": "Byte: {{value}}",
     "byteEmpty": "Byte: —",
     "fileInfo": "{{size}} KB | {{rows}} rows"
+  },
+  "window": {
+    "range": "rows {{start}}–{{end}} of {{total}}",
+    "prev": "Prev window",
+    "next": "Next window"
   }
 }

@@ -80,10 +80,16 @@ export const listProtocols = () =>
   request<{ protocols: ProtocolDescriptor[] }>("/api/dataset/protocols");
 
 /** Enumerate run directories (with their dumps) under a dataset/library dir. */
-export const listDatasetRuns = (root: string) =>
-  request<DatasetRunsResponse>(
-    `/api/dataset/runs?root=${encodeURIComponent(root)}`,
-  );
+export const listDatasetRuns = (
+  root: string,
+  limit?: number,
+  offset?: number,
+) => {
+  let query = `/api/dataset/runs?root=${encodeURIComponent(root)}`;
+  if (limit !== undefined) query += `&limit=${limit}`;
+  if (offset !== undefined) query += `&offset=${offset}`;
+  return request<DatasetRunsResponse>(query);
+};
 
 export const listPhases = (libraryDir: string) =>
   request<PhaseInfo>(

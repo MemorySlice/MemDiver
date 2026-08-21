@@ -39,6 +39,7 @@
   "loadingRuns": "Loading runs…",
   "noRunsFound": "No runs with dumps were found in this directory.",
   "runsLoadFailed": "Failed to load runs from this directory.",
+  "loadMoreRuns": "Load more ({{loaded}} of {{total}})",
   "openDumpTitle": "Open in hex viewer",
   "workspaceReady": "Workspace Ready",
   "noPathSelected": "No path selected.",
