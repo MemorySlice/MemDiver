@@ -28,6 +28,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
 from memdiver.core.artifact_util import sha256_streamed
 
 logger = logging.getLogger("memdiver.app.pipeline.experiment_task_runner")
@@ -58,16 +59,7 @@ def _missing_backend(ctx, message: str) -> Dict[str, Any]:
 
 def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
     """Pick the per-task artifact directory the same way pipeline_runner does."""
-    if "artifact_dir" in params:
-        artifact_dir = Path(params["artifact_dir"]).expanduser()
-    elif "task_root" in params:
-        artifact_dir = Path(params["task_root"]).expanduser() / ctx.task_id
-    else:
-        # Fallback for ad-hoc invocations (tests). The TaskManager
-        # always provides one of the above in production.
-        artifact_dir = Path("./experiment_output").expanduser() / ctx.task_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    return artifact_dir
+    return resolve_artifact_dir(params, ctx, fallback_subdir="./experiment_output")
 
 
 # NOTE(single-source): the three stage helpers below (_capture_dumps,

@@ -87,8 +87,6 @@ def _search_dump(dump_data: bytes, search_text: str) -> tuple:
     hex_pattern = parse_hex_pattern(stripped)
     if hex_pattern is not None and hex_pattern != ascii_pattern:
         merged |= set(find_pattern(dump_data, hex_pattern))
-        if not primary:
-            primary = hex_pattern
 
     offsets = sorted(merged)
     logger.debug(

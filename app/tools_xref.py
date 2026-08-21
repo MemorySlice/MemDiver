@@ -181,7 +181,11 @@ def apply_structure_result(
     try:
         with cached_dump_source(Path(dump_path)) as source:
             max_size = compute_max_size(struct_def)
-            if offset + max_size > source.size:
+            # Mirror identify_structure_result: reject a negative offset (a
+            # negative read start would otherwise slice from the tail) and use
+            # the view-aware size_for().
+            file_size = source.size_for()
+            if offset < 0 or offset + max_size > file_size:
                 raise OffsetOutOfRangeError(
                     "Structure extends beyond file boundary",
                     category=ErrorCategory.PRECONDITION,

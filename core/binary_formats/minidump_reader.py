@@ -179,14 +179,22 @@ class MinidumpReader:
         if self._mmap is not None:
             return
         self._file = open(self._path, "rb")
-        size = self._path.stat().st_size
-        if size == 0:
-            raise ValueError(f"Empty minidump file: {self._path}")
-        self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+        # Any failure after the file is opened (empty file, mmap error, or a
+        # malformed-dump parse error) must release the fd + mmap here: __enter__
+        # that raises means __exit__/close() will never run, so the handles
+        # would otherwise leak until GC.
         try:
-            self._info = self._parse()
-        except (struct.error, IndexError, OverflowError, EOFError) as e:
-            raise ValueError(f"malformed minidump: {e}") from e
+            size = self._path.stat().st_size
+            if size == 0:
+                raise ValueError(f"Empty minidump file: {self._path}")
+            self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                self._info = self._parse()
+            except (struct.error, IndexError, OverflowError, EOFError) as e:
+                raise ValueError(f"malformed minidump: {e}") from e
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         if self._mmap is not None:
@@ -391,12 +399,16 @@ class MinidumpReader:
         """Parse the ProcessorArchitecture + OS version of MINIDUMP_SYSTEM_INFO."""
         buf = self._mmap
         assert buf is not None
-        # ProcessorArchitecture (u16) at 0; MajorVersion/MinorVersion (u32)
-        # begin at offset 12 (after the 12-byte processor-info prefix).
+        # MINIDUMP_SYSTEM_INFO layout: ProcessorArchitecture (u16) @0,
+        # ProcessorLevel (u16) @2, ProcessorRevision (u16) @4,
+        # NumberOfProcessors (u8) @6, ProductType (u8) @7 — an 8-byte
+        # processor-info prefix — then MajorVersion (u32) @8, MinorVersion
+        # (u32) @12, BuildNumber (u32) @16. (The previous @12/@16 read returned
+        # MinorVersion/BuildNumber, so a real 10.0.19041 dump decoded as 0/19041.)
         self._check_range(rva, 20, "system info")
         arch = struct.unpack_from("<H", buf, rva)[0]
-        os_major = struct.unpack_from("<I", buf, rva + 12)[0]
-        os_minor = struct.unpack_from("<I", buf, rva + 16)[0]
+        os_major = struct.unpack_from("<I", buf, rva + 8)[0]
+        os_minor = struct.unpack_from("<I", buf, rva + 12)[0]
         info.system_info = MinidumpSystemInfo(
             arch=arch, os_major=os_major, os_minor=os_minor,
         )

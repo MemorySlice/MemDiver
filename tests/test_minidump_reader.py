@@ -135,9 +135,12 @@ def _stream_body(stream_type, size, descriptors, blob_rvas, blob_start,
             out += _MEMINFO.pack(base, ab, ap, 0, rs, st, pr, ty, 0)
         return bytes(out)
     if stream_type == SYSTEM_INFO_STREAM:
-        # arch (u16) at 0; os_major/os_minor (u32) at offsets 12/16.
-        return (struct.pack("<H", arch) + b"\x00" * 10
-                + struct.pack("<II", os_major, os_minor) + b"\x00" * 4)
+        # Real MINIDUMP_SYSTEM_INFO: arch (u16) @0, then an 8-byte
+        # processor-info prefix, then MajorVersion @8, MinorVersion @12,
+        # BuildNumber @16. The distinct BuildNumber makes a wrong-offset read
+        # (the old @12/@16 bug) visible instead of coincidentally matching.
+        return (struct.pack("<H", arch) + b"\x00" * 6
+                + struct.pack("<III", os_major, os_minor, 19041) + b"\x00" * 4)
     if stream_type == MISC_INFO_STREAM:
         return _MISC.pack(_MISC.size, MINIDUMP_MISC1_PROCESS_ID, pid)
     raise AssertionError(f"unhandled stream type {stream_type}")
@@ -219,14 +222,21 @@ def test_memory_info_list_parsed(tmp_path) -> None:
 
 
 def test_system_info_and_misc_info(tmp_path) -> None:
-    """SystemInfo arch and MiscInfo pid are extracted."""
+    """SystemInfo arch + OS version and MiscInfo pid are extracted.
+
+    os_major/os_minor are asserted (not just arch) so the SYSTEM_INFO field
+    offsets stay pinned: with the pre-fix @12/@16 read a 10.0 dump decoded as
+    0/<build> instead of 10/0.
+    """
     path = _write(tmp_path, _build_minidump(
-        [(0x1000, b"xy")], arch=AMD64, pid=4321))
+        [(0x1000, b"xy")], arch=AMD64, pid=4321, os_major=10, os_minor=0))
 
     with MinidumpReader(path) as reader:
         info = reader.info
         assert info.system_info is not None
         assert info.system_info.arch == AMD64
+        assert info.system_info.os_major == 10
+        assert info.system_info.os_minor == 0
         assert info.pid == 4321
 
 

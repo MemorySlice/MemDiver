@@ -210,6 +210,49 @@ def test_validate_rejects_min_max_on_bytes_field():
     assert any("not valid for field_type 'bytes'" in e for e in errors)
 
 
+def test_validate_rejects_non_list_size_choices():
+    """A non-iterable size_choices must be rejected, not crash tuple() later.
+
+    json_to_structure_def does ``tuple(f.get("size_choices", ()))``; an int
+    there raises TypeError inside the "validated" converter, so the validator
+    must catch it up front.
+    """
+    from memdiver.core.structure_schema import validate_structure_json
+
+    data = {
+        "name": "bad_choices",
+        "total_size": 4,
+        "fields": [
+            {"name": "f", "field_type": "uint32", "offset": 0, "size": 4,
+             "size_choices": 5},
+        ],
+    }
+    valid, errors = validate_structure_json(data)
+    assert valid is False
+    assert any("size_choices" in e for e in errors)
+
+
+def test_validate_accepts_list_size_choices():
+    """A well-formed size_choices list passes and converts without error."""
+    from memdiver.core.structure_schema import (
+        json_to_structure_def,
+        validate_structure_json,
+    )
+
+    data = {
+        "name": "ok_choices",
+        "total_size": 8,
+        "fields": [
+            {"name": "f", "field_type": "bytes", "offset": 0, "size": 8,
+             "size_choices": [4, 8]},
+        ],
+    }
+    valid, errors = validate_structure_json(data)
+    assert valid is True, errors
+    sd = json_to_structure_def(data)
+    assert sd.fields[0].size_choices == (4, 8)
+
+
 def test_validate_accepts_byte_equals_and_byte_in():
     """byte_equals and byte_in are engine-supported and must pass validation."""
     from memdiver.core.structure_schema import validate_structure_json

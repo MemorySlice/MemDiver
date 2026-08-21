@@ -73,14 +73,9 @@ def render_hex_comparison(
     page_data_a = dump_a[start_a:end_a]
     page_data_b = dump_b[start_b:end_b]
 
-    # Build diff classes
+    # Build diff classes. Comparison is positional within the page.
     diff_classes_a = None
     diff_classes_b = None
-    # Comparison is positional within the page; for unequal-length dumps on a
-    # high page start_a may differ from start_b, so record both panel offsets
-    # rather than a single (potentially misleading) offset.
-    diff_offsets_a = set()
-    diff_offsets_b = set()
     diff_count = 0
 
     if highlight_diffs:
@@ -95,10 +90,6 @@ def render_hex_comparison(
                 diff_classes_a.append("different")
                 diff_classes_b.append("different")
                 diff_count += 1
-                if i < len(page_data_a):
-                    diff_offsets_a.add(start_a + i)
-                if i < len(page_data_b):
-                    diff_offsets_b.add(start_b + i)
 
     hex_a = render_hex_dump(
         page_data_a, start_a, diff_classes_a, None, bytes_per_row, rows_per_page,

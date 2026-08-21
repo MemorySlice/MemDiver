@@ -21,7 +21,10 @@ interface LoadOptions {
  */
 export function useSessionLoader() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Initialized true to match the immediate fetch consumers fire on mount,
+  // so the "No saved sessions" empty state does not flash for one frame
+  // before that fetch resolves. refresh()'s finally always flips it false.
+  const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);

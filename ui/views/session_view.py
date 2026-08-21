@@ -91,7 +91,7 @@ def render_session_view(mo, report) -> Any:
                 f'<td style="padding:3px 10px;color:{cs.TEXT_PRIMARY};">'
                 f'{_html_escape(str(m.path))}</td>'
                 f'<td style="padding:3px 10px;color:{cs.TEXT_MUTED};">'
-                f'{m.version or "—"}</td></tr>'
+                f'{_html_escape(str(m.version)) if m.version else "—"}</td></tr>'
             )
         sections.append(
             f'<div class="memdiver-header" style="margin-top:12px;">'

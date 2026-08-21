@@ -139,13 +139,13 @@ export function SurvivorCurve() {
         <title>{t("results.survivor.ariaLabel")}</title>
 
         {/* Grid */}
-        {yTicks.map((t) => (
+        {yTicks.map((tick) => (
           <line
-            key={`gy-${t}`}
+            key={`gy-${tick}`}
             x1={MARGIN.left}
             x2={MARGIN.left + plotW}
-            y1={yScale(t)}
-            y2={yScale(t)}
+            y1={yScale(tick)}
+            y2={yScale(tick)}
             stroke={tokens.chartGrid}
             strokeOpacity={0.5}
             strokeWidth={1}
@@ -226,23 +226,23 @@ export function SurvivorCurve() {
           stroke={tokens.chartGrid}
           strokeWidth={1}
         />
-        {xTicks.map((t) => (
-          <g key={`tx-${t}`}>
+        {xTicks.map((tick) => (
+          <g key={`tx-${tick}`}>
             <line
-              x1={xScale(t)}
-              x2={xScale(t)}
+              x1={xScale(tick)}
+              x2={xScale(tick)}
               y1={MARGIN.top + plotH}
               y2={MARGIN.top + plotH + 4}
               stroke={tokens.chartGrid}
             />
             <text
-              x={xScale(t)}
+              x={xScale(tick)}
               y={MARGIN.top + plotH + 16}
               textAnchor="middle"
               fontSize={10}
               fill={tokens.textMuted}
             >
-              {Math.round(t)}
+              {Math.round(tick)}
             </text>
           </g>
         ))}
@@ -257,23 +257,23 @@ export function SurvivorCurve() {
         </text>
 
         {/* Y axis (log) */}
-        {yTicks.map((t) => (
-          <g key={`ty-${t}`}>
+        {yTicks.map((tick) => (
+          <g key={`ty-${tick}`}>
             <line
               x1={MARGIN.left - 4}
               x2={MARGIN.left}
-              y1={yScale(t)}
-              y2={yScale(t)}
+              y1={yScale(tick)}
+              y2={yScale(tick)}
               stroke={tokens.chartGrid}
             />
             <text
               x={MARGIN.left - 6}
-              y={yScale(t) + 3}
+              y={yScale(tick) + 3}
               textAnchor="end"
               fontSize={10}
               fill={tokens.textMuted}
             >
-              {formatNumber(t)}
+              {formatNumber(tick)}
             </text>
           </g>
         ))}
@@ -335,9 +335,9 @@ export function SurvivorCurve() {
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: 3 }}>{t("results.survivor.tooltipN", { n: hoverPoint.n })}</div>
-          {SURVIVOR_TRACES.map((t) => (
-            <div key={t.key} style={{ color: traceColor[t.token] }}>
-              {t.label}: {formatNumber(traceValues(t.key, hoverPoint))}
+          {SURVIVOR_TRACES.map((trace) => (
+            <div key={trace.key} style={{ color: traceColor[trace.token] }}>
+              {trace.label}: {formatNumber(traceValues(trace.key, hoverPoint))}
             </div>
           ))}
           {hoverPoint.hit_offset !== null && (

@@ -287,7 +287,10 @@ jobs:
         run: npm ci
       - name: Typecheck
         working-directory: frontend
-        run: npx tsc --noEmit
+        # Must be `tsc -b`: the root tsconfig is references-only with `files: []`,
+        # so plain `tsc --noEmit` compiles zero files and always passes. `-b`
+        # walks the project references (matches `make fe-typecheck` + the build).
+        run: npx tsc -b
       - name: Unit tests (vitest)
         working-directory: frontend
         run: npm run test:run

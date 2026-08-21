@@ -201,7 +201,9 @@ class GCoreDumpSource:
                 # so a needle crossing the boundary is detected here.
                 tail = self._read_vas_range(vas_base + seg.filesz, overlap)
                 if tail:
-                    window = bytes(seg_bytes) + tail
+                    # seg_bytes is already a fresh bytes from the mmap slice;
+                    # concatenation copies it, so bytes(seg_bytes) is redundant.
+                    window = seg_bytes + tail
             seg_len = seg.filesz
             start = 0
             while True:

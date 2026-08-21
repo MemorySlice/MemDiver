@@ -39,6 +39,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+
 from memdiver.core.artifact_util import sha256_streamed
 
 logger = logging.getLogger("memdiver.app.pipeline.analysis_task_runner")
@@ -48,16 +50,7 @@ STAGE = "analyze"
 
 def _resolve_artifact_dir(params: Dict[str, Any], ctx) -> Path:
     """Pick the per-task artifact directory the same way the other runners do."""
-    if "artifact_dir" in params:
-        artifact_dir = Path(params["artifact_dir"]).expanduser()
-    elif "task_root" in params:
-        artifact_dir = Path(params["task_root"]).expanduser() / ctx.task_id
-    else:
-        # Fallback for ad-hoc invocations (tests). The TaskManager always
-        # provides ``task_root`` in production.
-        artifact_dir = Path("./analysis_output").expanduser() / ctx.task_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    return artifact_dir
+    return resolve_artifact_dir(params, ctx, fallback_subdir="./analysis_output")
 
 
 def _write_result_artifact(

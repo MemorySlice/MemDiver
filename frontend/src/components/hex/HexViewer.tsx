@@ -35,6 +35,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // Rotates getPageStateAtStable's identity when page-states resolve so
   // HexRow's memo invalidates and "va"-view rows repaint. See chunkVersion.
   const pageStateVersion = useHexStore((s) => s.pageStateVersion);
+  const pageStatesLoaded = useHexStore((s) => s.pageStatesLoaded);
+  const fetchPageStates = useHexStore((s) => s.fetchPageStates);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const focusColumn = useHexStore((s) => s.focusColumn);
@@ -97,6 +99,19 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     })();
     return () => { cancelled = true; };
   }, [dumpPath, format, setViewSizes]);
+
+  // On reload the persisted (localStorage) view mode may already be "va"
+  // without setViewMode ever firing, so page-state tinting (CAPTURED/
+  // FAILED/UNMAPPED) would be silently missing until the user toggles
+  // views. Fetch it here whenever the "va" view is active and its page
+  // states have not yet loaded. The store's fetchPageStates guards on
+  // dumpPath/format/already-loaded, so this is a no-op for non-msl dumps
+  // or when the fetch has already run.
+  useEffect(() => {
+    if (viewMode === "va" && !pageStatesLoaded) {
+      fetchPageStates();
+    }
+  }, [viewMode, pageStatesLoaded, fetchPageStates]);
 
   useHexKeyboard(containerRef);
 

@@ -114,7 +114,7 @@ network with zero auth is refused outright. Set a token, or override with
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
-| CLI subcommands | **22** | [`cli.py`](cli.py) |
+| CLI subcommands | **22** | [`cli/`](cli/) |
 | FastAPI routers | **12** + WebSocket | [`api/routers/`](api/routers/) |
 | MCP tools | **15** | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
@@ -139,11 +139,11 @@ Restart the MCP client — the 15 MemDiver tools (`scan_dataset`, `analyze_libra
 
 ## Power-user CLI
 
-All 22 subcommands exposed by [`cli.py`](cli.py):
+All 22 subcommands exposed by [`cli/`](cli/):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Format conversion | Runtime shells |
 |---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `app` · `mcp` · `experiment` |
+| `analyze` · `scan` · `batch` · `verify` · `inspect` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 

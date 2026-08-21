@@ -61,6 +61,14 @@ def validate_structure_json(data: dict) -> Tuple[bool, List[str]]:
             errors.append(f"{prefix}: offset must be non-negative int")
         if "size" in field and (not isinstance(field["size"], int) or field["size"] <= 0):
             errors.append(f"{prefix}: size must be positive int")
+        # size_choices is fed to tuple() by json_to_structure_def, so a
+        # non-iterable (e.g. an int) would crash the "validated" converter.
+        if "size_choices" in field:
+            sc = field["size_choices"]
+            if not isinstance(sc, (list, tuple)) or not all(
+                isinstance(x, int) and x > 0 for x in sc
+            ):
+                errors.append(f"{prefix}: size_choices must be a list of positive ints")
         # Check field fits within total_size
         if (isinstance(total_size, int) and total_size > 0
                 and "offset" in field and isinstance(field["offset"], int)

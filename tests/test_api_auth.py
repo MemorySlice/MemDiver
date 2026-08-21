@@ -35,6 +35,7 @@ from memdiver.api.security import (
     check_credentials,
     check_ws_token,
     enforce_bind_guardrail,
+    guard_notebook_websocket,
 )
 
 API_TOKEN = "s3cr3t-token"
@@ -223,6 +224,105 @@ def test_ws_open_when_no_token_configured(client):
     assert frame["type"] == "error"
     assert frame["task_id"] == "whatever"
     assert frame["error"] == "unknown task"
+
+
+# ---------------------------------------------------------------------------
+# Notebook WebSocket guard (guard_notebook_websocket) — the Marimo kernel WS
+# bypasses the HTTP-only ApiTokenAuthMiddleware, so it is guarded at the mount.
+# ---------------------------------------------------------------------------
+
+
+def _guarded_with(settings):
+    """Build a guarded app whose inner records whether it was invoked."""
+    state = {"called": False}
+
+    async def inner(scope, receive, send):
+        state["called"] = True
+
+    return guard_notebook_websocket(inner, settings), state
+
+
+def test_notebook_ws_rejected_without_token_when_configured():
+    import asyncio
+
+    guarded, state = _guarded_with(Settings(api_token=API_TOKEN))
+    sent: list = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(guarded({"type": "websocket", "query_string": b""}, receive, send))
+    assert state["called"] is False
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+
+
+def test_notebook_ws_rejected_with_wrong_token_when_configured():
+    import asyncio
+
+    guarded, state = _guarded_with(Settings(api_token=API_TOKEN))
+    sent: list = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(
+        guarded({"type": "websocket", "query_string": b"token=wrong"}, receive, send)
+    )
+    assert state["called"] is False
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+
+
+def test_notebook_ws_passes_through_with_correct_token():
+    import asyncio
+
+    guarded, state = _guarded_with(Settings(api_token=API_TOKEN))
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(msg):
+        pass
+
+    qs = f"token={API_TOKEN}".encode()
+    asyncio.run(guarded({"type": "websocket", "query_string": qs}, receive, send))
+    assert state["called"] is True
+
+
+def test_notebook_ws_open_when_no_token_configured():
+    import asyncio
+
+    guarded, state = _guarded_with(Settings(api_token=None))
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(msg):
+        pass
+
+    asyncio.run(guarded({"type": "websocket", "query_string": b""}, receive, send))
+    assert state["called"] is True
+
+
+def test_notebook_http_scope_always_passes_through_to_inner():
+    """HTTP scope is left to the outer middleware; the guard only gates WS."""
+    import asyncio
+
+    guarded, state = _guarded_with(Settings(api_token=API_TOKEN))
+
+    async def receive():
+        return {"type": "http.request"}
+
+    async def send(msg):
+        pass
+
+    asyncio.run(guarded({"type": "http", "query_string": b""}, receive, send))
+    assert state["called"] is True
 
 
 # ---------------------------------------------------------------------------

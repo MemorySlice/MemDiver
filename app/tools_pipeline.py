@@ -1054,6 +1054,14 @@ def verify_key_result(
             f"Unknown cipher: {cipher}. Available: {list(VERIFIER_REGISTRY)}",
             category=ErrorCategory.INVALID_INPUT,
         )
+    # A negative offset would make read_range slice from the tail; a
+    # non-positive length can never satisfy the len(candidate) < length check
+    # meaningfully. Reject both up front (the over-run case is caught below).
+    if offset < 0 or length <= 0:
+        raise CapabilityError(
+            "offset must be non-negative and length positive",
+            category=ErrorCategory.INVALID_INPUT,
+        )
     verifier = VERIFIER_REGISTRY[cipher]
 
     km = dict(key_material or {})

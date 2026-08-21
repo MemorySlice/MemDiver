@@ -47,6 +47,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
+from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+
 from memdiver.core.artifact_util import register_artifact, sha256_streamed
 
 if TYPE_CHECKING:
@@ -1028,11 +1030,7 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     # passes ``task_root`` instead, and we derive the per-task dir
     # inside the worker from ``ctx.task_id``. Callers that already
     # know the absolute dir (tests) can still pass ``artifact_dir``.
-    if "artifact_dir" in params:
-        artifact_dir = Path(params["artifact_dir"]).expanduser()
-    else:
-        artifact_dir = Path(params["task_root"]).expanduser() / ctx.task_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = resolve_artifact_dir(params, ctx)
     source_paths: List[str] = list(params["source_paths"])
     reduce_kwargs: Dict[str, Any] = dict(params.get("reduce_kwargs", {}))
     oracle_path = Path(params["oracle_path"]).expanduser()

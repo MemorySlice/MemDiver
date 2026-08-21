@@ -494,7 +494,7 @@ def main():
     handlers = {
         "analyze": _cmd_analyze, "scan": _cmd_scan, "batch": _cmd_batch,
         "mcp": _cmd_mcp, "import": _cmd_import, "import-dir": _cmd_import_dir,
-        "consensus": _cmd_consensus, "export": _cmd_export, "web": _cmd_web,
+        "consensus": _cmd_consensus, "export": _cmd_export,
         "verify": _cmd_verify, "experiment": _cmd_experiment,
         "consensus-begin": _cmd_consensus_begin,
         "consensus-add": _cmd_consensus_add,

@@ -39,7 +39,7 @@ class KDFRegistry:
         modules = []
         for py_file in sorted(core_dir.glob("kdf_*.py")):
             mod_name = f"memdiver.core.{py_file.stem}"
-            if mod_name == "memdiver.core.kdf_base" or mod_name == "memdiver.core.kdf_registry":
+            if mod_name in {"memdiver.core.kdf_base", "memdiver.core.kdf_registry"}:
                 continue
             try:
                 modules.append(importlib.import_module(mod_name))

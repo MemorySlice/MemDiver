@@ -153,6 +153,8 @@ packages = [
     "memdiver.core.dump_sources",
     "memdiver.msl",
     "memdiver.app",
+    "memdiver.app.pipeline",
+    "memdiver.cli",
     "memdiver.mcp_server",
     "memdiver.api",
     "memdiver.api.routers",

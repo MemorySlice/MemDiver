@@ -57,6 +57,28 @@ def test_search_static_periodic_needle_no_overlap():
     assert [m.offset for m in matches] == [5, 7, 9]
 
 
+def test_empty_secret_value_does_not_hang():
+    """Regression: an empty secret_value must not spin forever.
+
+    ``bytes.find(b"", start)`` returns ``start`` (never -1), so with the
+    ``start = idx + len(needle)`` advance an empty needle looped infinitely.
+    An empty secret simply has no hits. If this test hangs, the guard is gone.
+    """
+    data = b"\x00" * 50 + b"\xCD" * 4 + b"\x00" * 50
+    path = _make_dump(data)
+    empty = TLSSecret("EMPTY", b"\x00" * 32, b"")
+    real = TLSSecret("REAL", b"\x00" * 4, b"\xCD" * 4)
+    corr = SearchCorrelator()
+
+    # search_all (find-loop + Aho-Corasick paths) must terminate and skip the empty.
+    hits = corr.search_all(path, [empty, real], library="test", phase="pre_abort", run_id=1)
+    assert [h.secret_type for h in hits] == ["REAL"]
+
+    # search_static unfiltered path must also terminate and skip the empty.
+    matches = corr.search_static(data, [empty, real])
+    assert [m.label for m in matches] == ["REAL"]
+
+
 def test_search_all_no_match():
     data = b"\x00" * 200
     path = _make_dump(data)

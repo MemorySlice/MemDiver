@@ -471,24 +471,37 @@ def _committed_region_spec(reader: MinidumpReader, mem_info, spans,
     n = (end - base) // page
     _check_region_pages(n, base, "committed")
     states = [PageState.FAILED] * n
-    data = bytearray()
-
-    for i in range(n):
-        pva = base + i * page
-        buffer = bytearray(page)
-        covered = False
-        for idx, (span_start, span_end, span_rva) in enumerate(spans):
+    # Build only the CAPTURED pages by walking the (few) descriptor spans, not
+    # every page in the region. A crafted minidump can declare a MEM_COMMIT
+    # region up to MAX_REGION_PAGES (~64 GiB) while capturing a single small
+    # span; the previous per-page loop allocated a fresh bytearray(page) for
+    # all n pages — O(pages x spans) work + allocator churn that could hang the
+    # untrusted import path for minutes. This touches only pages a span covers
+    # and produces a byte-identical RegionSpec (captured pages, in page order).
+    captured: dict[int, bytearray] = {}
+    for idx, (span_start, span_end, span_rva) in enumerate(spans):
+        if max(span_start, base) >= min(span_end, end):
+            continue  # span does not overlap this region
+        first_pg = (max(span_start, base) - base) // page
+        last_pg = (min(span_end, end) - 1 - base) // page
+        for pg in range(first_pg, last_pg + 1):
+            pva = base + pg * page
             lo = max(pva, span_start)
             hi = min(pva + page, span_end)
             if lo < hi:
+                buffer = captured.get(pg)
+                if buffer is None:
+                    buffer = bytearray(page)
+                    captured[pg] = buffer
                 buffer[lo - pva:hi - pva] = reader.read_at(
                     span_rva + (lo - span_start), hi - lo,
                 )
-                covered = True
+                states[pg] = PageState.CAPTURED
                 consumed[idx] = True
-        if covered:
-            states[i] = PageState.CAPTURED
-            data += buffer
+
+    data = bytearray()
+    for pg in sorted(captured):
+        data += captured[pg]
 
     return RegionSpec(
         base=base,
@@ -618,10 +631,14 @@ def _derive_regions(reader: MinidumpReader,
         captured = sum(
             1 for s in spec.page_states if int(s) == int(PageState.CAPTURED)
         )
-        assert captured * page == len(spec.data), (
-            f"region base={spec.base:#x}: {captured} captured pages * "
-            f"{page} != data length {len(spec.data)}"
-        )
+        # A real integrity check on the untrusted-import path: use raise, not
+        # assert (which `-O` strips), and ValueError so it funnels through
+        # @_reject_malformed_dump like every other malformed-dump signal.
+        if captured * page != len(spec.data):
+            raise ValueError(
+                f"region base={spec.base:#x}: {captured} captured pages * "
+                f"{page} != data length {len(spec.data)}"
+            )
 
     return specs
 

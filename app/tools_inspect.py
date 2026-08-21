@@ -932,10 +932,20 @@ def analyze_region_result(
                     "offset out of range",
                     details={"offset": offset, "file_size": file_size, "view": view},
                 )
-            data = source.read_range(0, file_size, view=view)
-            report = analyze_region(data, offset, window=window)
+            # Read ONLY the neighbourhood window, not the whole dump: this is
+            # the interactive per-offset investigate producer and dumps are
+            # routinely multi-GB, so materialising all of VAS to inspect ~64
+            # bytes was an O(dump size) peak allocation / OOM risk. analyze_region
+            # (with variance/hits=None) only touches the window slice, the byte
+            # at the offset, and len(data), so a bounded read with the offset
+            # rebased into the slice yields a byte-identical RegionReport.
+            half = window // 2
+            win_start = max(0, offset - half)
+            win_end = min(file_size, offset + half)
+            data = source.read_range(win_start, win_end - win_start, view=view)
+            report = analyze_region(data, offset - win_start, window=window)
             payload = {
-                "offset": report.offset,
+                "offset": offset,
                 "byte_value": report.byte_value,
                 "entropy": round(report.entropy, 4),
                 "entropy_level": report.entropy_level,

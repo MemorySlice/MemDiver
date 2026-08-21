@@ -291,7 +291,7 @@ def list_blocks(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.blocks_result(session, msl_path)
-    return result.payload["blocks"]
+    return result.payload.get("blocks", [])
 
 
 @router.get("/modules")
@@ -310,7 +310,7 @@ def list_modules(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.modules_result(session, msl_path)
-    return result.payload["modules"]
+    return result.payload.get("modules", [])
 
 
 # -- MSL table-block endpoints (Phase MSL-Decoders-02) ------------------
@@ -428,7 +428,7 @@ def list_module_index(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.module_index_result(session, msl_path)
-    return result.payload["module_index"]
+    return result.payload.get("module_index", [])
 
 
 @router.get("/processes")
@@ -447,7 +447,7 @@ def list_processes(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.processes_result(session, msl_path)
-    return result.payload["processes"]
+    return result.payload.get("processes", [])
 
 
 @router.get("/connections")
@@ -466,7 +466,7 @@ def list_connections(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.connections_result(session, msl_path)
-    return result.payload["connections"]
+    return result.payload.get("connections", [])
 
 
 @router.get("/handles")
@@ -486,7 +486,7 @@ def list_handles(
     _validate_msl_path(msl_path)
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.handles_result(session, msl_path)
-    return result.payload["handles"]
+    return result.payload.get("handles", [])
 
 
 # -- Ext decoders (speculative layouts; spec §4.3 reserved types) --

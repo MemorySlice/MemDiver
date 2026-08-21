@@ -19,11 +19,12 @@ from __future__ import annotations
 import hmac
 import logging
 from typing import Any
+from urllib.parse import parse_qs
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from memdiver.api.config import Settings
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -118,6 +119,43 @@ class ApiTokenAuthMiddleware(BaseHTTPMiddleware):
                     headers={"WWW-Authenticate": "Bearer"},
                 )
         return await call_next(request)
+
+
+def _ws_query_token(scope: Scope) -> str | None:
+    """Extract a ``?token=`` value from a WebSocket connection scope."""
+    raw = scope.get("query_string", b"") or b""
+    values = parse_qs(raw.decode("latin-1")).get("token")
+    return values[0] if values else None
+
+
+def guard_notebook_websocket(inner: ASGIApp, settings: Settings) -> ASGIApp:
+    """Wrap the mounted Marimo notebook so its kernel WebSocket can't bypass auth.
+
+    :class:`ApiTokenAuthMiddleware` is HTTP-only (``BaseHTTPMiddleware`` never
+    runs for websocket-scope connections), so the notebook's live
+    code-execution kernel WS would otherwise be reachable with no token — an
+    unauthenticated remote-code-execution surface whenever the server is bound
+    to a network interface with a token configured. When a token IS configured,
+    reject any notebook websocket that does not present a valid ``?token=`` at
+    the handshake. HTTP scope is left to the outer middleware, and when no token
+    is set (the loopback single-user default) this is a transparent pass-through
+    so the local notebook keeps working exactly as before.
+    """
+
+    async def wrapped(scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "websocket"
+            and settings.api_token
+            and not check_ws_token(settings.api_token, _ws_query_token(scope))
+        ):
+            # Consume the initial connect event, then reject the handshake
+            # (a close before accept surfaces as an HTTP 403 to the client).
+            await receive()
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await inner(scope, receive, send)
+
+    return wrapped
 
 
 class InsecureBindError(CapabilityError):

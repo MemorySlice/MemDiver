@@ -54,7 +54,18 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const body = await res.text();
     throw new ApiError(res.status, body);
   }
-  return res.json() as Promise<T>;
+  // Read as text first so an empty (e.g. 204 No Content) or malformed body
+  // surfaces as an ApiError instead of a bare SyntaxError from res.json(),
+  // keeping `instanceof ApiError` handling consistent for all callers.
+  const text = await res.text();
+  if (text === "") {
+    return undefined as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(res.status, `Malformed JSON response: ${text.slice(0, 200)}`);
+  }
 }
 
 // Dataset
@@ -196,23 +207,22 @@ export const listModules = (mslPath: string) =>
     `/api/inspect/modules?msl_path=${encodeURIComponent(mslPath)}`,
   );
 
-export const getPageStates = (mslPath: string, key?: KeyMaterial) => {
+// The keyed /api/inspect/* endpoints differ only by path segment + response
+// type, so they share one helper (msl_path + optional key material as query).
+const getKeyedInspect = <T>(endpoint: string, mslPath: string, key?: KeyMaterial) => {
   const qs = new URLSearchParams({ msl_path: mslPath });
   appendKey(qs, key);
-  return request<PageStatesResponse>(`/api/inspect/page-states?${qs.toString()}`);
+  return request<T>(`/api/inspect/${endpoint}?${qs.toString()}`);
 };
 
-export const getSessionInfo = (mslPath: string, key?: KeyMaterial) => {
-  const qs = new URLSearchParams({ msl_path: mslPath });
-  appendKey(qs, key);
-  return request<SessionInfoResponse>(`/api/inspect/session-info?${qs.toString()}`);
-};
+export const getPageStates = (mslPath: string, key?: KeyMaterial) =>
+  getKeyedInspect<PageStatesResponse>("page-states", mslPath, key);
 
-export const getVasRegions = (mslPath: string, key?: KeyMaterial) => {
-  const qs = new URLSearchParams({ msl_path: mslPath });
-  appendKey(qs, key);
-  return request<VasRegionsResponse>(`/api/inspect/vas?${qs.toString()}`);
-};
+export const getSessionInfo = (mslPath: string, key?: KeyMaterial) =>
+  getKeyedInspect<SessionInfoResponse>("session-info", mslPath, key);
+
+export const getVasRegions = (mslPath: string, key?: KeyMaterial) =>
+  getKeyedInspect<VasRegionsResponse>("vas", mslPath, key);
 
 export const getTagStatus = (mslPath: string) =>
   request<{ tag_status: TagStatus }>(

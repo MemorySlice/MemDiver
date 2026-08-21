@@ -34,6 +34,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+
 from memdiver.core.artifact_util import register_artifact
 
 logger = logging.getLogger("memdiver.app.pipeline.batch_task_runner")
@@ -116,11 +118,7 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     from memdiver.core.input_schemas import BatchRequest
     from memdiver.engine.batch import BatchRunner
 
-    if "artifact_dir" in params:
-        artifact_dir = Path(params["artifact_dir"]).expanduser()
-    else:
-        artifact_dir = Path(params["task_root"]).expanduser() / ctx.task_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = resolve_artifact_dir(params, ctx)
 
     jobs_raw: List[Dict[str, Any]] = list(params.get("jobs", []))
     if not jobs_raw:

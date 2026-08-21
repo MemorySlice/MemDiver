@@ -61,6 +61,10 @@ class SearchCorrelator:
 
         for secret in secrets:
             needle = secret.secret_value
+            if not needle:
+                # bytes.find(b"") returns `start` (never -1), so an empty needle
+                # would spin `while True` forever. An empty secret has no hits.
+                continue
             start = 0
             while True:
                 idx = data.find(needle, start)
@@ -97,6 +101,9 @@ class SearchCorrelator:
         """
         A = ahocorasick.Automaton()
         for i, secret in enumerate(secrets):
+            if not secret.secret_value:
+                # keep parity with the find()-based paths: empty secrets have no hits
+                continue
             key = secret.secret_value.decode("latin-1")
             A.add_word(key, (i, secret))
         A.make_automaton()
@@ -129,6 +136,9 @@ class SearchCorrelator:
         matches = []
         for secret in secrets:
             needle = secret.secret_value
+            if not needle:
+                # empty needle -> dump_data.find(b"") never returns -1 (infinite loop)
+                continue
             start = 0
             while True:
                 idx = dump_data.find(needle, start)
@@ -163,6 +173,9 @@ class SearchCorrelator:
         matches = []
         for secret in secrets:
             needle = secret.secret_value
+            if not needle:
+                # empty needle -> dump_data.find(b"") never returns -1 (infinite loop)
+                continue
             start = 0
             while True:
                 idx = dump_data.find(needle, start)

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from memdiver.api.config import get_settings
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
-from memdiver.api.security import ApiTokenAuthMiddleware
+from memdiver.api.security import ApiTokenAuthMiddleware, guard_notebook_websocket
 from memdiver.api.services.artifact_store import ArtifactStore
 from memdiver.api.services.oracle_registry import (
     init_oracle_registry,
@@ -223,6 +223,11 @@ def create_app() -> FastAPI:
                 .with_app(path="", root=notebook_path)
                 .build()
             )
+            # The notebook kernel runs live code over a WebSocket. The HTTP
+            # auth middleware never sees websocket scope, so guard the WS at the
+            # mount: when a token is configured, an unauthenticated notebook WS
+            # is refused (see security.guard_notebook_websocket).
+            marimo_app = guard_notebook_websocket(marimo_app, settings)
             app.mount("/notebook", marimo_app)
             _notebook_available = True
             logger.info("Marimo notebook mounted at /notebook")

@@ -15,6 +15,7 @@ story and avoids duplicating orchestration in TypeScript.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -504,74 +505,89 @@ async def refine_consensus(task_id: str, body: RefineRequest):
             "— was the pipeline run completed?",
         )
 
-    state = json.loads(state_path.read_text())
-    mean = np.load(state["mean_path"])
-    m2 = np.load(state["m2_path"])
-    welford = WelfordVariance.from_state(mean, m2, int(state["num_dumps"]))
+    def _refine_sync() -> tuple[int, int, int, List[Dict[str, Any]]]:
+        """Blocking Welford fold + numpy save I/O; run off the event loop.
 
-    # Validate and fold each additional dump
-    for p in body.additional_paths:
-        path = Path(p).expanduser()
-        if not path.exists():
-            raise HTTPException(400, f"dump not found: {p}")
-        with open_dump(path) as src:
-            data = src.read_all()[: welford.size]
-        if len(data) < welford.size:
-            continue  # skip short dumps
-        welford.add_dump(data)
+        The synchronous ``np.load``/per-dump ``read_all()``/``np.save`` work
+        here can take seconds on real multi-GB dumps, so it must not run inline
+        in the async handler (it would stall every other request). Matches the
+        ``asyncio.to_thread`` treatment already used by the dumps/consensus
+        handlers. Any ``HTTPException`` raised for a bad path still propagates
+        out of ``to_thread`` and is handled normally.
+        """
+        state = json.loads(state_path.read_text())
+        mean = np.load(state["mean_path"])
+        m2 = np.load(state["m2_path"])
+        welford = WelfordVariance.from_state(mean, m2, int(state["num_dumps"]))
 
-    # Save updated state
-    new_mean, new_m2, new_n = welford.state_arrays()
-    np.save(state["mean_path"], new_mean)
-    np.save(state["m2_path"], new_m2)
-    state["num_dumps"] = new_n
-    state_path.write_text(json.dumps(state, indent=2))
+        # Validate and fold each additional dump
+        for p in body.additional_paths:
+            path = Path(p).expanduser()
+            if not path.exists():
+                raise HTTPException(400, f"dump not found: {p}")
+            with open_dump(path) as src:
+                data = src.read_all()[: welford.size]
+            if len(data) < welford.size:
+                continue  # skip short dumps
+            welford.add_dump(data)
 
-    # Update variance.npy
-    variance = welford.variance()
-    variance_path = state_path.parent / "variance.npy"
-    np.save(variance_path, variance)
+        # Save updated state
+        new_mean, new_m2, new_n = welford.state_arrays()
+        np.save(state["mean_path"], new_mean)
+        np.save(state["m2_path"], new_m2)
+        state["num_dumps"] = new_n
+        state_path.write_text(json.dumps(state, indent=2))
 
-    # Compute classification counts
-    static_count = int(np.sum(variance <= PLUGIN_STATIC_THRESHOLD))
-    dynamic_count = int(np.sum(variance > PLUGIN_STATIC_THRESHOLD))
+        # Update variance.npy
+        variance = welford.variance()
+        variance_path = state_path.parent / "variance.npy"
+        np.save(variance_path, variance)
 
-    # Extract neighborhood slices for known hits
-    hit_neighborhoods: List[Dict[str, Any]] = []
-    hits_path = state_path.parent.parent / "brute_force" / "hits.json"
-    if hits_path.exists():
-        hits_data = json.loads(hits_path.read_text())
-        for hit in hits_data.get("hits", []):
-            offset = int(hit["offset"])
-            length = int(hit["length"])
-            nb_pad = 64
-            start = max(0, offset - nb_pad)
-            end = min(len(variance), offset + length + nb_pad)
-            # Use the post-fold variance (welford.variance()), NOT the
-            # stale pre-fold local m2 array — the new dumps were folded
-            # into welford._m2, so m2[start:end]/new_n would be wrong.
-            nb_var = variance[start:end].astype(np.float32).tolist()
-            nb_static = sum(
-                1 for v in nb_var if v <= PLUGIN_STATIC_THRESHOLD
-            )
-            # Attach inferred field structure via the shared app producer so
-            # the frontend consumes ``fields`` instead of recomputing it.
-            fields = infer_fields_result(
-                neighborhood_variance=nb_var,
-                neighborhood_start=start,
-                offset=offset,
-                length=length,
-            )
-            hit_neighborhoods.append(
-                {
-                    "offset": offset,
-                    "neighborhood_start": start,
-                    "neighborhood_variance": nb_var,
-                    "static_count": nb_static,
-                    "dynamic_count": len(nb_var) - nb_static,
-                    "fields": fields,
-                }
-            )
+        # Compute classification counts
+        static_count = int(np.sum(variance <= PLUGIN_STATIC_THRESHOLD))
+        dynamic_count = int(np.sum(variance > PLUGIN_STATIC_THRESHOLD))
+
+        # Extract neighborhood slices for known hits
+        hit_neighborhoods: List[Dict[str, Any]] = []
+        hits_path = state_path.parent.parent / "brute_force" / "hits.json"
+        if hits_path.exists():
+            hits_data = json.loads(hits_path.read_text())
+            for hit in hits_data.get("hits", []):
+                offset = int(hit["offset"])
+                length = int(hit["length"])
+                nb_pad = 64
+                start = max(0, offset - nb_pad)
+                end = min(len(variance), offset + length + nb_pad)
+                # Use the post-fold variance (welford.variance()), NOT the
+                # stale pre-fold local m2 array — the new dumps were folded
+                # into welford._m2, so m2[start:end]/new_n would be wrong.
+                nb_var = variance[start:end].astype(np.float32).tolist()
+                nb_static = sum(
+                    1 for v in nb_var if v <= PLUGIN_STATIC_THRESHOLD
+                )
+                # Attach inferred field structure via the shared app producer so
+                # the frontend consumes ``fields`` instead of recomputing it.
+                fields = infer_fields_result(
+                    neighborhood_variance=nb_var,
+                    neighborhood_start=start,
+                    offset=offset,
+                    length=length,
+                )
+                hit_neighborhoods.append(
+                    {
+                        "offset": offset,
+                        "neighborhood_start": start,
+                        "neighborhood_variance": nb_var,
+                        "static_count": nb_static,
+                        "dynamic_count": len(nb_var) - nb_static,
+                        "fields": fields,
+                    }
+                )
+        return new_n, static_count, dynamic_count, hit_neighborhoods
+
+    new_n, static_count, dynamic_count, hit_neighborhoods = await asyncio.to_thread(
+        _refine_sync
+    )
 
     return RefineResponse(
         num_dumps=new_n,
