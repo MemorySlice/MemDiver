@@ -28,7 +28,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `python cli.py web --port ${BACKEND_PORT}`,
+      command: `python -m memdiver.cli web --port ${BACKEND_PORT}`,
       cwd: REPO_ROOT,
       url: `http://127.0.0.1:${BACKEND_PORT}/api/notebook/status`,
       timeout: 120_000,

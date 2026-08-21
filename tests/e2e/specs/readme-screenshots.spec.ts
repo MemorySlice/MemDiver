@@ -49,7 +49,9 @@ test.describe("README screenshots", { tag: "@requires-dataset" }, () => {
     await page.waitForLoadState("networkidle");
     await injectStableStyles(page);
     // Sessions or empty-state must be visible; either way the header renders.
-    await expect(page.getByText(/MemDiver/)).toBeVisible();
+    // Match the brand logo exactly — a `/MemDiver/` regex also matches session
+    // rows whose file path contains ".../git/MemDiver/...", tripping strict mode.
+    await expect(page.getByText("MemDiver", { exact: true }).first()).toBeVisible();
     await page.waitForTimeout(500);
     await takeShot(page, "01_landing");
     await context.close();

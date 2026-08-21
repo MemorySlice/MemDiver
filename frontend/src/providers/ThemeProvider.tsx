@@ -44,12 +44,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(t);
     useSettingsStore.getState().updateDisplay({ theme: t });
   };
-  const toggleHighContrast = () =>
-    setHighContrast((prev) => {
-      const next = !prev;
-      useSettingsStore.getState().updateDisplay({ highContrast: next });
-      return next;
-    });
+  const toggleHighContrast = () => {
+    // Compute the next value from the current state in the event handler and
+    // write through to the settings store here — NOT inside the setState
+    // updater. A store write inside the updater runs during React's render
+    // phase and synchronously notifies subscribers (e.g. SettingsMenu),
+    // triggering "Cannot update a component while rendering a different
+    // component". This mirrors setTheme's event-time write above.
+    const next = !highContrast;
+    setHighContrast(next);
+    useSettingsStore.getState().updateDisplay({ highContrast: next });
+  };
 
   return (
     <ThemeContext value={{ theme, resolvedTheme: theme, setTheme, highContrast, toggleHighContrast }}>
