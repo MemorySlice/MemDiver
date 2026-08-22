@@ -77,6 +77,7 @@ async function dismissFtueIfPresent(page: Page): Promise<void> {
 export async function enterWorkspaceWithMsl(
   page: Page,
   mslPath: string = MSL,
+  opts: { autoAnalyze?: boolean } = {},
 ): Promise<void> {
   // Suppress the driver.js welcome tour before the app hydrates. The
   // init script fires on every nav; the post-mount sweep is a belt-and-
@@ -108,11 +109,17 @@ export async function enterWorkspaceWithMsl(
   // can wedge the backend for later specs. "Inspect Only" enters the
   // workspace without starting analysis; specs that need analysis can
   // trigger it explicitly via the Analysis panel.
-  const inspectOnly = page
-    .getByRole("button", { name: /^Inspect Only/i })
-    .first();
-  if (await inspectOnly.isVisible().catch(() => false)) {
-    await inspectOnly.click();
+  //
+  // Pass { autoAnalyze: true } to KEEP the default Auto-Analyze approach so
+  // the auto-run effect fires on mount — only safe on small dumps (e.g. the
+  // synthetic MSL fixture), never the 215 MB real MSL.
+  if (!opts.autoAnalyze) {
+    const inspectOnly = page
+      .getByRole("button", { name: /^Inspect Only/i })
+      .first();
+    if (await inspectOnly.isVisible().catch(() => false)) {
+      await inspectOnly.click();
+    }
   }
 
   await startBtn.click();

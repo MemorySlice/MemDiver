@@ -147,31 +147,36 @@ export function ScanResultsPanel() {
 
         return (
           <div key={algo} className="border border-[var(--md-border)] rounded">
-            {/* Section header */}
-            <button onClick={() => toggleCollapse(algo)}
-              className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-[var(--md-bg-hover)] transition-colors text-left">
-              <span className="font-mono">{isCollapsed ? "\u25B6" : "\u25BC"}</span>
-              <span
-                className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ background: `var(--md-hl-${secretTypeToHighlight(algo)})` }}
-              />
-              <span className="font-medium">{algo}</span>
-              <span className="px-1.5 rounded-full text-[10px] text-white"
-                style={{ background: "var(--md-accent-blue)" }}>
-                {entry.hits.length}
-              </span>
-              {entry.running && (
-                <span className="ml-1 animate-spin inline-block w-3 h-3 border border-t-transparent rounded-full"
-                  style={{ borderColor: "var(--md-accent-blue)", borderTopColor: "transparent" }} />
-              )}
-              {entry.error && <span style={{ color: "var(--md-accent-red)" }} className="ml-1 truncate">{entry.error}</span>}
+            {/* Section header. The collapse toggle and the Rerun action are
+                SIBLINGS inside a flex row \u2014 never nest a <button> inside a
+                <button> (invalid HTML; the browser splits/duplicates the
+                controls and clicks behave unpredictably). */}
+            <div className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-[var(--md-bg-hover)] transition-colors">
+              <button onClick={() => toggleCollapse(algo)}
+                className="flex items-center gap-2 flex-1 min-w-0 text-left">
+                <span className="font-mono">{isCollapsed ? "\u25B6" : "\u25BC"}</span>
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                  style={{ background: `var(--md-hl-${secretTypeToHighlight(algo)})` }}
+                />
+                <span className="font-medium">{algo}</span>
+                <span className="px-1.5 rounded-full text-[10px] text-white"
+                  style={{ background: "var(--md-accent-blue)" }}>
+                  {entry.hits.length}
+                </span>
+                {entry.running && (
+                  <span className="ml-1 animate-spin inline-block w-3 h-3 border border-t-transparent rounded-full"
+                    style={{ borderColor: "var(--md-accent-blue)", borderTopColor: "transparent" }} />
+                )}
+                {entry.error && <span style={{ color: "var(--md-accent-red)" }} className="ml-1 truncate">{entry.error}</span>}
+              </button>
               <button
-                className="ml-auto px-1.5 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-[10px] transition-colors"
+                className="ml-auto shrink-0 px-1.5 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-[10px] transition-colors"
                 disabled={entry.running}
-                onClick={(e) => { e.stopPropagation(); handleRerun(algo); }}>
+                onClick={() => handleRerun(algo)}>
                 {entry.running ? t("scan.running") : t("scan.rerun")}
               </button>
-            </button>
+            </div>
 
             {/* Result rows */}
             {!isCollapsed && hits.length > 0 && (
