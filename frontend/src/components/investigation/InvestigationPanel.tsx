@@ -30,7 +30,12 @@ export function InvestigationPanel({ dumpPath, offset }: Props) {
     }).catch((e) => setByteError(e instanceof Error ? e.message : t("panel.readByteError")));
 
     getEntropy(dumpPath, Math.max(0, offset - 128), 256, keyMaterial).then((d) => {
-      setEntropy(d.overall_entropy);
+      // Near EOF (or a locked keyed view) the 256-byte window can fall outside
+      // the entropy-readable size, in which case the backend returns an error
+      // envelope with no `overall_entropy`. Coerce to null so the panel hides
+      // the entropy bar rather than rendering (undefined).toFixed() — which
+      // throws and unmounts the whole hex viewer via the ErrorBoundary.
+      setEntropy(typeof d.overall_entropy === "number" ? d.overall_entropy : null);
     }).catch((e) => setEntropyError(e instanceof Error ? e.message : t("panel.getEntropyError")));
   }, [dumpPath, offset, t, keyMaterial]);
 
