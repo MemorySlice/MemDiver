@@ -8,6 +8,7 @@ import { HexToolbar } from "./HexToolbar";
 import { HexLegend } from "./HexLegend";
 import { HexStatusBar } from "./HexStatusBar";
 import { SearchMinimap } from "./SearchMinimap";
+import { ConsensusVarianceMinimap } from "./ConsensusVarianceMinimap";
 import { buildRegionIndex } from "./highlight-utils";
 import {
   windowCount,
@@ -38,6 +39,10 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const setViewSizes = useHexStore((s) => s.setViewSizes);
   const storeFileSize = useHexStore((s) => s.fileSize);
   const viewMode = useHexStore((s) => s.viewMode);
+  const setViewMode = useHexStore((s) => s.setViewMode);
+  // Base VA that "va"-view offset 0 maps to; consensus overlay in the "va"
+  // view keys its per-row fetch/lookup off this affine mapping.
+  const vaSpanStart = useHexStore((s) => s.vaSpanStart);
   // Rotates getPageStateAtStable's identity when page-states resolve so
   // HexRow's memo invalidates and "va"-view rows repaint. See chunkVersion.
   const pageStateVersion = useHexStore((s) => s.pageStateVersion);
@@ -68,6 +73,10 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // consensus-* CSS class defined in hex.css:140-156.
   const overlayEnabled = useConsensusStore((s) => s.overlayEnabled);
   const pageClassifications = useConsensusStore((s) => s.pageClassifications);
+  // VA-keyed classifications drive the coordinate-correct overlay for .msl
+  // dumps in the "va" view. Rotating on this repaints rows as ranges load.
+  const vaClassifications = useConsensusStore((s) => s.vaClassifications);
+  const consensusId = useConsensusStore((s) => s.consensusId);
   const inFlightClassificationsRef = useRef<Set<number>>(new Set());
 
   const activeFieldRange = useMemo(() => {
@@ -121,6 +130,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     }
   }, [viewMode, pageStatesLoaded, fetchPageStates]);
 
+  // The consensus overlay is only coordinate-correct in the "va" view for
+  // .msl dumps (the classification array lives in an aligned-slab coordinate,
+  // not the container offset). When the overlay is enabled on an .msl dump in
+  // any other view, switch to "va" so the colors land on the right bytes.
+  // setViewMode is a no-op when already in "va", so this cannot loop.
+  useEffect(() => {
+    if (overlayEnabled && format === "msl" && viewMode !== "va") {
+      setViewMode("va");
+    }
+  }, [overlayEnabled, format, viewMode, setViewMode]);
+
   useHexKeyboard(containerRef);
 
   // Prefer the store's fileSize once it has been resolved per-view; fall
@@ -169,8 +189,34 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   useEffect(() => {
     if (!overlayEnabled) return;
     if (firstVisibleIndex < 0) return;
-    const pages = useConsensusStore.getState().pageClassifications;
     const inFlight = inFlightClassificationsRef.current;
+
+    // .msl dumps: fetch VA-keyed classifications so the overlay is painted in
+    // the correct coordinate. Only the "va" view has the affine VA mapping.
+    if (format === "msl") {
+      if (viewMode !== "va" || !consensusId) return;
+      const vaRows = useConsensusStore.getState().vaClassifications;
+      for (let idx = firstVisibleIndex; idx <= lastVisibleIndex; idx++) {
+        const va = vaSpanStart + absRow(idx) * BYTES_PER_ROW;
+        if (vaRows.has(va)) continue;
+        if (inFlight.has(va)) continue;
+        inFlight.add(va);
+        useConsensusStore
+          .getState()
+          .fetchVaRange(dumpPath, va, BYTES_PER_ROW)
+          .catch(() => {
+            // Consensus may be unavailable (404 before runConsensus has
+            // completed). Silently skip; bytes render without the overlay.
+          })
+          .finally(() => {
+            inFlight.delete(va);
+          });
+      }
+      return;
+    }
+
+    // Raw dumps: existing container-offset path (unchanged).
+    const pages = useConsensusStore.getState().pageClassifications;
     for (let idx = firstVisibleIndex; idx <= lastVisibleIndex; idx++) {
       const rowOffset = absRow(idx) * BYTES_PER_ROW;
       if (pages.has(rowOffset)) continue;
@@ -188,7 +234,19 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
           inFlight.delete(rowOffset);
         });
     }
-  }, [overlayEnabled, firstVisibleIndex, lastVisibleIndex, pageClassifications, absRow]);
+  }, [
+    overlayEnabled,
+    firstVisibleIndex,
+    lastVisibleIndex,
+    pageClassifications,
+    vaClassifications,
+    absRow,
+    format,
+    viewMode,
+    consensusId,
+    vaSpanStart,
+    dumpPath,
+  ]);
 
   // scrollTarget is an ABSOLUTE row (set by scrollToOffset). If it already
   // falls inside the current window, scroll to its window-relative index.
@@ -252,12 +310,22 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     // getByteAtStable / chunkVersion pattern above.
     (offset: number): number | undefined => {
       void pageClassifications;
+      void vaClassifications;
+      const byteInRow = offset % BYTES_PER_ROW;
+      // .msl "va" view: look up by row-aligned absolute VA. A -1 entry marks a
+      // VA gap absent from the consensus → undefined so no class is painted.
+      if (format === "msl" && viewMode === "va") {
+        const va = vaSpanStart + Math.floor(offset / BYTES_PER_ROW) * BYTES_PER_ROW;
+        const row = useConsensusStore.getState().vaClassifications.get(va);
+        const c = row?.[byteInRow];
+        return c === undefined || c < 0 ? undefined : c;
+      }
+      // Raw dumps: existing container-offset lookup (unchanged).
       const rowStart = Math.floor(offset / BYTES_PER_ROW) * BYTES_PER_ROW;
-      const byteInRow = offset - rowStart;
       const row = useConsensusStore.getState().pageClassifications.get(rowStart);
       return row?.[byteInRow];
     },
-    [pageClassifications]
+    [pageClassifications, vaClassifications, format, viewMode, vaSpanStart]
   );
 
   const handleMouseDown = useCallback(
@@ -359,6 +427,14 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
               offsets={searchOffsets}
               currentOffset={absRow(Math.max(0, firstVisibleIndex)) * BYTES_PER_ROW}
               onClickOffset={scrollToOffset}
+            />
+          </div>
+        )}
+        {overlayEnabled && format === "msl" && viewMode === "va" && consensusId && (
+          <div className="shrink-0 flex items-stretch py-1 pr-1">
+            <ConsensusVarianceMinimap
+              dumpPath={dumpPath}
+              firstVisibleOffset={absRow(Math.max(0, firstVisibleIndex)) * BYTES_PER_ROW}
             />
           </div>
         )}

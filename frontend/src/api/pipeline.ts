@@ -47,7 +47,12 @@ export interface EmitParams {
 
 export interface PipelineRunRequest {
   source_paths: string[];
-  oracle_id: string;
+  // Supply exactly one oracle source: an armed BYO oracle (oracle_id) or a
+  // pcap/pcapng of the same TLS session (pcap_path), which routes the
+  // brute-force stage through the first-party trusted pcap oracle.
+  oracle_id?: string | null;
+  pcap_path?: string | null;
+  tls_client_random?: string | null;
   reduce?: ReduceParams;
   brute_force?: BruteForceParams;
   nsweep?: NSweepParams | null;
@@ -57,7 +62,8 @@ export interface PipelineRunRequest {
 export interface PipelineRunResponse {
   task_id: string;
   status: string;
-  oracle_sha256: string;
+  // null for a pcap-oracle run (no BYO oracle file to hash).
+  oracle_sha256?: string | null;
 }
 
 // ---- response models ----

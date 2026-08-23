@@ -89,6 +89,12 @@
     "results": "{{count}} results",
     "resultsLimited": "{{count}} results (showing {{max}})"
   },
+  "variance": {
+    "title": "Variance",
+    "jumpTitle": "Cross-dump variance — click to jump",
+    "legendChanges": "Changes",
+    "legendKey": "Key candidate"
+  },
   "statusBar": {
     "offsetLabelVas": "VAS",
     "offsetLabelOffset": "Offset",

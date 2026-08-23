@@ -127,6 +127,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("pipeline.export_pattern", "memdiver.app.tools_pipeline.export_pattern",
          ("library", "cli", "web", "mcp")),
+    # -- export: Wireshark NSS key log (the mission's headline artifact) -----
+    _cap("export.keylog", "memdiver.app.tools_pipeline.keylog_result",
+         ("library", "cli", "web", "mcp")),
     # -- verify + experiment (Phase 5, G4) ----------------------------------
     _cap("verify", "memdiver.app.tools_pipeline.verify_key_result",
          ("library", "cli", "web", "mcp")),

@@ -111,7 +111,14 @@ class InferFieldsRequest(BaseModel):
 
 class PipelineRunRequest(BaseModel):
     source_paths: List[str] = Field(..., min_length=1)
-    oracle_id: str
+    #: Exactly one oracle source must be supplied: an armed BYO oracle from the
+    #: registry (``oracle_id``) OR a pcap/pcapng of the same TLS session
+    #: (``pcap_path``), which routes the brute-force stage through MemDiver's
+    #: first-party trusted pcap oracle. ``tls_client_random`` (hex) optionally
+    #: restricts pcap matching to one session.
+    oracle_id: Optional[str] = None
+    pcap_path: Optional[str] = None
+    tls_client_random: Optional[str] = None
     reduce: ReduceParams = Field(default_factory=ReduceParams)
     brute_force: BruteForceParams = Field(default_factory=BruteForceParams)
     nsweep: Optional[NSweepParams] = None
@@ -152,7 +159,8 @@ class AutoFloorRunRequest(BaseModel):
 class PipelineRunResponse(BaseModel):
     task_id: str
     status: str
-    oracle_sha256: str
+    #: ``None`` for a pcap-oracle run (there is no BYO oracle file to hash).
+    oracle_sha256: Optional[str] = None
 
 
 # ------------------------------------------------------------------
@@ -239,7 +247,7 @@ def _resolve_consensus_state_path(manager, task_id: str, task) -> Optional[Path]
 
 def _build_worker_params(
     request: PipelineRunRequest,
-    oracle_path: Path,
+    oracle_path: Optional[Path],
     task_root: Path,
 ) -> dict:
     """Translate the Pydantic request into the plain-dict the worker expects."""
@@ -248,7 +256,11 @@ def _build_worker_params(
     worker: dict = {
         "task_root": str(task_root),
         "source_paths": list(request.source_paths),
-        "oracle_path": str(oracle_path),
+        # ``oracle_path`` is ``None`` for a pcap-oracle run; the worker routes
+        # the brute-force stage through the first-party trusted pcap oracle.
+        "oracle_path": str(oracle_path) if oracle_path is not None else None,
+        "pcap_path": request.pcap_path,
+        "tls_client_random": request.tls_client_random,
         "reduce_kwargs": reduce_kwargs,
         "brute_force": bf_kwargs,
     }
@@ -273,16 +285,34 @@ def _build_worker_params(
 def run_pipeline_endpoint(request: PipelineRunRequest):
     """Submit the Phase 25 pipeline and return a task_id."""
     manager = _task_manager_or_503()
-    registry = _oracle_registry_or_503()
 
-    try:
-        entry = registry.require_armed(request.oracle_id)
-    except OracleNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except OracleNotArmed as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except OracleRegistryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Exactly one oracle source: an armed BYO oracle (oracle_id) or a pcap.
+    if bool(request.oracle_id) == bool(request.pcap_path):
+        raise HTTPException(
+            status_code=400,
+            detail="provide exactly one of oracle_id or pcap_path",
+        )
+
+    oracle_path: Optional[Path] = None
+    oracle_sha256: Optional[str] = None
+    if request.pcap_path:
+        if not Path(request.pcap_path).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"pcap not found: {request.pcap_path}",
+            )
+    else:
+        registry = _oracle_registry_or_503()
+        try:
+            entry = registry.require_armed(request.oracle_id)
+        except OracleNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except OracleNotArmed as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OracleRegistryError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        oracle_path = entry.path
+        oracle_sha256 = entry.sha256
 
     for p in request.source_paths:
         if not Path(p).is_file():
@@ -310,7 +340,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
 
     worker_params = _build_worker_params(
         request,
-        oracle_path=entry.path,
+        oracle_path=oracle_path,
         task_root=manager.artifact_store.root,
     )
     record = manager.submit(
@@ -322,7 +352,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
     return PipelineRunResponse(
         task_id=record.task_id,
         status=record.status.value,
-        oracle_sha256=entry.sha256,
+        oracle_sha256=oracle_sha256,
     )
 
 

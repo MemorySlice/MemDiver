@@ -46,12 +46,19 @@ export function StageOracle({ onAdvance }: Props) {
   const { t } = useTranslation("pipeline");
   const oracleId = usePipelineStore((s) => s.form.oracleId);
   const oracleSha256 = usePipelineStore((s) => s.form.oracleSha256);
+  const pcapPath = usePipelineStore((s) => s.form.pcapPath);
+  const tlsClientRandom = usePipelineStore((s) => s.form.tlsClientRandom);
+  const updateForm = usePipelineStore((s) => s.updateForm);
   const uploaded = useOracleStore((s) => s.uploaded);
   const [tab, setTab] = useState<OracleTab>("upload");
   const [exampleHint, setExampleHint] = useState<string | null>(null);
 
   const activeEntry = uploaded.find((o) => o.id === oracleId) ?? null;
-  const canAdvance = !!activeEntry && activeEntry.armed && !!oracleSha256;
+  const hasArmedOracle = !!activeEntry && activeEntry.armed && !!oracleSha256;
+  const hasPcap = !!pcapPath && pcapPath.trim().length > 0;
+  // Either oracle source unlocks the next stage; the run request sends whichever
+  // is set (a pcap takes precedence when both happen to be filled).
+  const canAdvance = hasArmedOracle || hasPcap;
 
   const handleExample = (ex: OracleExample): void => {
     setExampleHint(ex.filename);
@@ -118,6 +125,30 @@ export function StageOracle({ onAdvance }: Props) {
 
       <div className="pt-1" data-tour-id="pipeline-oracle-dryrun">
         <OracleDryRunBar oracleId={oracleId} samplesB64={DRY_RUN_SAMPLES} />
+      </div>
+
+      <div className="md-panel p-3 space-y-2" data-tour-id="pipeline-oracle-pcap">
+        <p className="text-xs md-text-muted">{t("stages.oracle.pcap.hint")}</p>
+        <label className="block text-xs md-text-secondary">
+          {t("stages.oracle.pcap.pathLabel")}
+          <input
+            type="text"
+            value={pcapPath ?? ""}
+            onChange={(e) => updateForm({ pcapPath: e.target.value })}
+            placeholder={t("stages.oracle.pcap.pathPlaceholder")}
+            className="mt-1 w-full text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-primary border border-[var(--md-border)]"
+          />
+        </label>
+        <label className="block text-xs md-text-secondary">
+          {t("stages.oracle.pcap.clientRandomLabel")}
+          <input
+            type="text"
+            value={tlsClientRandom ?? ""}
+            onChange={(e) => updateForm({ tlsClientRandom: e.target.value })}
+            placeholder={t("stages.oracle.pcap.clientRandomPlaceholder")}
+            className="mt-1 w-full text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-primary border border-[var(--md-border)]"
+          />
+        </label>
       </div>
 
       <div className="flex justify-between items-center pt-2">

@@ -961,6 +961,7 @@ _MCP_TOOL_PRODUCERS = {
     "consensus": "consensus",
     "auto_floor": "auto_floor",
     "export_pattern": "export_pattern",
+    "export_keylog": "keylog_result",
     "verify": "verify_key_result",
     "experiment": "experiment_result",
 }

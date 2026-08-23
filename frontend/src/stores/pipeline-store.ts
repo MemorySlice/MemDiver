@@ -100,6 +100,11 @@ export interface PipelineFormValues {
   sourcePaths: string[];
   oracleId: string | null;
   oracleSha256: string | null;
+  // Alternative to a BYO oracle: a pcap/pcapng of the same TLS session, routed
+  // through the first-party trusted pcap oracle. Mutually exclusive with
+  // oracleId. tlsClientRandom (hex) optionally restricts matching to one session.
+  pcapPath: string | null;
+  tlsClientRandom: string | null;
   reduce: ReduceParams;
   bruteForce: BruteForceParams;
   nsweep: NSweepParams | null;
@@ -145,6 +150,8 @@ const DEFAULT_FORM: PipelineFormValues = {
   sourcePaths: [],
   oracleId: null,
   oracleSha256: null,
+  pcapPath: null,
+  tlsClientRandom: null,
   reduce: {
     alignment: 8,
     block_size: 32,

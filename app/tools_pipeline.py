@@ -228,13 +228,42 @@ def search_reduce(
 # ----------------------------------------------------------------------
 
 
+def _persist_ground_truth_hits(
+    hits: list, *, confirmed_by: str, project_name: str
+) -> Optional[str]:
+    """Best-effort: file confirmed brute-force hits into the ground-truth ledger.
+
+    Bridges the oracle path (confirmed hits, no DB handle) into ProjectDB via the
+    composition root. Returns the run_id, or ``None`` when the DB is unavailable
+    or persistence fails — it never raises, since the brute-force result is
+    already computed and written.
+    """
+    from memdiver.app.composition import resolve_project_db
+
+    db = resolve_project_db()
+    if db is None:
+        return None
+    try:
+        return db.record_ground_truth_run(
+            hits, confirmed_by=confirmed_by, project_name=project_name
+        ) or None
+    except Exception:
+        logger.warning("ground-truth persistence failed", exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
 def brute_force(
     *,
     candidates_path: str,
     reference_path: str,
-    oracle_path: str,
     output_dir: str,
+    oracle_path: Optional[str] = None,
     oracle_config_path: Optional[str] = None,
+    pcap_path: Optional[str] = None,
+    tls_client_random: Optional[str] = None,
+    persist_ground_truth: bool = False,
     key_sizes: Sequence[int] = (32,),
     stride: int = 8,
     jobs: int = 1,
@@ -249,24 +278,56 @@ def brute_force(
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
-    """Iterate surviving candidates through a BYO oracle and persist hits.json.
+    """Iterate surviving candidates through an oracle and persist hits.json.
+
+    Two oracle sources are supported, mutually exclusive:
+      * ``oracle_path`` — a user-supplied BYO decryption oracle script (sandboxed).
+      * ``pcap_path`` — a pcap/pcapng of the same TLS session; MemDiver's
+        first-party pcap oracle proves a recovered key decrypts the real captured
+        records (TLS 1.3, TLS 1.2 GCM, and older CBC suites). ``tls_client_random``
+        (hex) optionally restricts matching to one session. Requires the ``pcap``
+        extra. Hits it confirms are labelled ``confirmed_by="pcap"``.
+
+    ``persist_ground_truth`` (opt-in, default off) records the confirmed hits in
+    the project database's ``ground_truth`` ledger (labelled ``"pcap"`` or
+    ``"oracle"``) — the trusted denominator for later corpus/precision stats. It
+    no-ops gracefully when the DuckDB backend is unavailable.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
-    a plain ``reference.bin`` opens raw (byte-identical to the previous
-    ``read_bytes`` path).
-
-    ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
-    are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
-    ``brute_force`` stage.
+    a plain ``reference.bin`` opens raw. ``on_progress`` / ``is_cancelled`` are
+    optional surface hooks; unset they are no-ops.
     """
     from memdiver.engine.brute_force import run_brute_force
     from memdiver.engine.vol3_emit import resolve_variance_threshold
+
+    if bool(oracle_path) == bool(pcap_path):
+        raise CapabilityError(
+            "Provide exactly one of oracle_path or pcap_path",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+    bf_oracle_kwargs: Dict[str, Any] = {}
+    if pcap_path:
+        from memdiver.engine.resources.builtin_oracle import BUILTIN_ORACLE_PATH
+        resolved_oracle_path = BUILTIN_ORACLE_PATH
+        oracle_label = Path(pcap_path).name
+        pcap_config: Dict[str, Any] = {"resource_type": "tls-pcap", "pcap": pcap_path}
+        if tls_client_random:
+            pcap_config["client_random"] = tls_client_random
+        bf_oracle_kwargs["oracle_config"] = pcap_config
+        bf_oracle_kwargs["oracle_trusted"] = True
+    else:
+        resolved_oracle_path = oracle_path
+        oracle_label = Path(oracle_path).name
+        bf_oracle_kwargs["oracle_config_path"] = (
+            Path(oracle_config_path) if oracle_config_path else None
+        )
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         reference = _read_reference_bytes(reference_path, km, on_source)
         _emit(on_progress, "stage_start", stage="brute_force", pct=0.0,
-              msg=f"oracle={Path(oracle_path).name}")
+              msg=f"oracle={oracle_label}")
         _experiment_check_cancelled(is_cancelled, on_progress)
         bf_extra: Dict[str, Any] = {}
         pcb = _progress_bridge(on_progress, "brute_force")
@@ -275,14 +336,14 @@ def brute_force(
         result = run_brute_force(
             Path(candidates_path),
             reference,
-            Path(oracle_path),
-            oracle_config_path=Path(oracle_config_path) if oracle_config_path else None,
+            Path(resolved_oracle_path),
             key_sizes=tuple(key_sizes),
             stride=stride,
             jobs=jobs,
             exhaustive=exhaustive,
             state_path=Path(state_path) if state_path else None,
             top_k=top_k,
+            **bf_oracle_kwargs,
             **bf_extra,
         )
     except FileNotFoundError as exc:
@@ -293,7 +354,25 @@ def brute_force(
         ) from exc
     out = _ensure_dir(Path(output_dir))
     hits_path = out / "hits.json"
-    _dump_json(result.to_dict(), hits_path)
+    result_dict = result.to_dict()
+    # A pcap-oracle hit is a proven decryption of real captured traffic — mark it
+    # confirmed so the persistence layer (W5) can record it as ground truth.
+    if pcap_path:
+        for hit in result_dict.get("hits", []):
+            hit["verified"] = True
+            hit["confirmed_by"] = "pcap"
+    _dump_json(result_dict, hits_path)
+    # Opt-in: file the oracle-confirmed hits into the ground-truth ledger. This
+    # is the bridge from the oracle path (which owns confirmed hits but no DB
+    # handle) into ProjectDB; it no-ops when DuckDB is absent and never fails the
+    # brute-force run (hits.json is already written).
+    ground_truth_run_id: Optional[str] = None
+    if persist_ground_truth and result_dict.get("hits"):
+        ground_truth_run_id = _persist_ground_truth_hits(
+            result_dict["hits"],
+            confirmed_by="pcap" if pcap_path else "oracle",
+            project_name=Path(reference_path).stem or "oracle-run",
+        )
     # Resolve the static/dynamic variance cutoff to a concrete value (never
     # ``None``) so the web reducer can seed its convergence preview from the
     # exact threshold the emit stage will use instead of hardcoding the default.
@@ -303,13 +382,14 @@ def brute_force(
           extra={"verified_count": result.verified_count,
                  "total_candidates": result.total_candidates,
                  "variance_threshold": resolved_vt,
-                 "hits": [h.to_dict() for h in result.hits]})
+                 "hits": result_dict.get("hits", [])})
     return {
         "hits_path": str(hits_path),
         "verified_count": result.verified_count,
         "total_candidates": result.total_candidates,
         "exit_code": result.exit_code,
-        "hits": [h.to_dict() for h in result.hits],
+        "hits": result_dict.get("hits", []),
+        "ground_truth_run_id": ground_truth_run_id,
     }
 
 
@@ -1024,6 +1104,9 @@ def verify_key_result(
     ciphertext_hex: str,
     cipher: str = "AES-256-CBC",
     iv_hex: Optional[str] = None,
+    nonce_hex: Optional[str] = None,
+    aad_hex: Optional[str] = None,
+    tag_hex: Optional[str] = None,
     key_material: Optional[Dict[str, Any]] = None,
     on_source: Optional[Callable[[Any], None]] = None,
 ) -> Dict[str, Any]:
@@ -1080,18 +1163,96 @@ def verify_key_result(
     try:
         ciphertext = bytes.fromhex(ciphertext_hex)
         iv = bytes.fromhex(iv_hex) if iv_hex else VERIFICATION_IV
+        nonce = bytes.fromhex(nonce_hex) if nonce_hex else None
+        aad = bytes.fromhex(aad_hex) if aad_hex else None
+        tag = bytes.fromhex(tag_hex) if tag_hex else None
     except ValueError as exc:
         raise CapabilityError(
             f"Invalid hex input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
 
-    verified = verifier.verify(candidate, ciphertext, iv, VERIFICATION_PLAINTEXT)
+    # AEAD ciphers (GCM, ChaCha20-Poly1305) authenticate against a real record
+    # whose plaintext is unknown, so the expected plaintext is dropped; the CBC
+    # path keeps the fixed known-plaintext. AEAD-ness is a fact of the resolved
+    # verifier, not of which optional args the caller happened to pass.
+    is_aead = getattr(verifier, "is_aead", False)
+    expected_plaintext = None if is_aead else VERIFICATION_PLAINTEXT
+    verified = verifier.verify(
+        candidate, ciphertext, iv, expected_plaintext, nonce=nonce, aad=aad, tag=tag
+    )
     return {
         "verified": verified,
         "offset": offset,
         "length": length,
         "cipher": cipher,
         "key_hex": candidate.hex() if verified else None,
+    }
+
+
+# ----------------------------------------------------------------------
+# export-keylog  (Wireshark-loadable NSS key log from recovered secrets)
+# ----------------------------------------------------------------------
+
+
+def keylog_result(
+    *,
+    secrets: List[dict],
+    output_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Emit a Wireshark-loadable NSS key log from recovered TLS secrets.
+
+    The mission's headline export artifact: renders each recovered secret as one
+    ``<LABEL> <client_random_hex> <secret_hex>`` line — the exact
+    ``SSLKEYLOGFILE`` format ``tshark -o tls.keylog_file=...`` / Wireshark loads
+    to decrypt a capture. The single implementation behind the CLI
+    ``export-keylog`` command, the HTTP ``POST /api/analysis/export-keylog``
+    route, and the MCP ``export_keylog`` tool, so the artifact cannot fork.
+
+    Each item in ``secrets`` is a plain (JSON-friendly) dict with keys
+    ``secret_type`` (str), ``client_random`` (hex str) and ``secret`` (hex str);
+    each is converted to a :class:`~memdiver.core.models.CryptoSecret`
+    (``identifier`` = the client_random bytes, ``secret_value`` = the secret
+    bytes). When ``output_path`` is given the key log is also written there.
+
+    Returns ``{"keylog": <str>, "count": <int lines>, "output_path": <str|None>}``.
+
+    Raises :class:`CapabilityError` (INVALID_INPUT) for a missing required key or
+    a malformed hex value, mirroring :func:`verify_key_result`'s hex handling.
+    """
+    from memdiver.core.keylog import format_keylog_lines
+    from memdiver.core.models import CryptoSecret
+
+    crypto_secrets: List[CryptoSecret] = []
+    for i, item in enumerate(secrets):
+        try:
+            secret_type = item["secret_type"]
+            client_random = item["client_random"]
+            secret = item["secret"]
+        except (KeyError, TypeError) as exc:
+            raise CapabilityError(
+                f"secrets[{i}] missing required key {exc}; each item needs "
+                "'secret_type', 'client_random', 'secret'",
+                category=ErrorCategory.INVALID_INPUT,
+            ) from exc
+        try:
+            crypto_secrets.append(CryptoSecret(
+                secret_type=secret_type,
+                identifier=bytes.fromhex(client_random),
+                secret_value=bytes.fromhex(secret),
+            ))
+        except (ValueError, TypeError) as exc:
+            raise CapabilityError(
+                f"secrets[{i}] has malformed hex: {exc}",
+                category=ErrorCategory.INVALID_INPUT,
+            ) from exc
+
+    keylog = format_keylog_lines(crypto_secrets)
+    if output_path is not None:
+        Path(output_path).write_text(keylog)
+    return {
+        "keylog": keylog,
+        "count": keylog.count("\n"),
+        "output_path": output_path,
     }
 
 

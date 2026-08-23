@@ -33,6 +33,7 @@ from .pipeline import (
     _cmd_brute_force,
     _cmd_emit_plugin,
     _cmd_export,
+    _cmd_export_keylog,
     _cmd_gen_kem_key,
     _cmd_import_dir,
     _cmd_n_sweep,
@@ -162,8 +163,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bf.add_argument("--candidates", required=True, help="candidates.json from search-reduce")
     bf.add_argument("--dump", required=True, help="Reference dump file")
-    bf.add_argument("--oracle", required=True, help="Path to user Python oracle script")
+    bf.add_argument("--oracle", help="Path to user Python oracle script "
+                    "(mutually exclusive with --pcap)")
     bf.add_argument("--oracle-config", help="Optional TOML config passed to build_oracle")
+    bf.add_argument("--pcap", help="pcap/pcapng of the same TLS session; confirm a "
+                    "recovered key decrypts real captured records via the "
+                    "first-party trusted oracle (mutually exclusive with --oracle)")
+    bf.add_argument("--tls-client-random", help="Hex TLS client_random restricting "
+                    "the pcap oracle to one session")
+    bf.add_argument("--persist-ground-truth", action="store_true",
+                    help="Record confirmed hits in the project ground-truth ledger "
+                    "(opt-in; no-op if the DuckDB backend is unavailable)")
     bf.add_argument("--key-sizes", default="32", help="Comma-separated key sizes in bytes")
     bf.add_argument("--stride", type=int, default=8)
     bf.add_argument("--jobs", type=int, default=1)
@@ -292,6 +302,19 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Use alignment-filtered candidates for auto-detection")
     ex.add_argument("-o", "--output", help="Output file path")
     ex.add_argument("-v", "--verbose", action="store_true")
+    # export-keylog
+    ekl = sub.add_parser(
+        "export-keylog",
+        help="Emit a Wireshark-loadable NSS key log from recovered TLS secrets",
+    )
+    ekl.add_argument(
+        "--secrets", required=True,
+        help="JSON file: list of {secret_type, client_random, secret} dicts "
+             "(client_random/secret are hex strings)",
+    )
+    ekl.add_argument("-o", "--output",
+                     help="Output key-log file path (default: stdout)")
+    ekl.add_argument("-v", "--verbose", action="store_true")
     # gen-kem-key
     gk = sub.add_parser(
         "gen-kem-key",
@@ -332,6 +355,9 @@ def _build_parser() -> argparse.ArgumentParser:
     vr.add_argument("--length", type=int, default=32, help="Key length (default: 32)")
     vr.add_argument("--ciphertext-hex", required=True, help="Known ciphertext (hex)")
     vr.add_argument("--iv-hex", help="IV (hex, default: 0x00010203...0f)")
+    vr.add_argument("--nonce-hex", help="AEAD nonce (hex, for GCM/ChaCha20-Poly1305)")
+    vr.add_argument("--aad-hex", help="AEAD associated data (hex, optional)")
+    vr.add_argument("--tag-hex", help="AEAD authentication tag (hex, for GCM/ChaCha20-Poly1305)")
     vr.add_argument("--cipher", default="AES-256-CBC", help="Cipher name")
     vr.add_argument("-o", "--output", help="Output JSON file")
     vr.add_argument("-v", "--verbose", action="store_true")
@@ -504,6 +530,7 @@ def main():
         "n-sweep": _cmd_n_sweep,
         "auto-floor": _cmd_auto_floor,
         "emit-plugin": _cmd_emit_plugin,
+        "export-keylog": _cmd_export_keylog,
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,
     }

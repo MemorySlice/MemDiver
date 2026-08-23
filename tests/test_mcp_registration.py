@@ -37,6 +37,8 @@ EXPECTED_TOOLS = {
     # Phase 5 (G4): verify + experiment lifted into shared producers and
     # exposed on MCP alongside the CLI/API surfaces.
     "verify", "experiment",
+    # TLS-key ground-truth: export the recovered keys as an SSLKEYLOGFILE.
+    "export_keylog",
 }
 
 

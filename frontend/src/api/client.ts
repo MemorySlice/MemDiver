@@ -18,6 +18,8 @@ import type {
   ConvergenceSweepResult,
   VerifyKeyResult,
   AutoExportResult,
+  ExportKeylogRequest,
+  ExportKeylogResult,
   FormatSuggestion,
   TagStatus,
   PageStatesResponse,
@@ -354,6 +356,9 @@ export const verifyKey = (body: {
   length?: number;
   ciphertext_hex: string;
   iv_hex?: string;
+  nonce_hex?: string;
+  aad_hex?: string;
+  tag_hex?: string;
   cipher?: string;
 } & KeyMaterial) =>
   request<VerifyKeyResult>("/api/analysis/verify-key", {
@@ -370,6 +375,13 @@ export const autoExport = (body: {
   context?: number;
 } & KeyMaterial) =>
   request<AutoExportResult>("/api/analysis/auto-export", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+// Keylog export -- render recovered TLS secrets as a Wireshark NSS key log
+export const exportKeylog = (body: ExportKeylogRequest) =>
+  request<ExportKeylogResult>("/api/analysis/export-keylog", {
     method: "POST",
     body: JSON.stringify(body),
   });

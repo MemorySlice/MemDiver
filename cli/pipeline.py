@@ -87,6 +87,9 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
             oracle_path=args.oracle,
             output_dir=scratch,
             oracle_config_path=args.oracle_config,
+            pcap_path=args.pcap,
+            tls_client_random=args.tls_client_random,
+            persist_ground_truth=getattr(args, "persist_ground_truth", False),
             key_sizes=key_sizes,
             stride=args.stride,
             jobs=args.jobs,
@@ -362,6 +365,35 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_keylog(args: argparse.Namespace) -> int:
+    """Emit a Wireshark NSS key log from a recovered-secrets JSON file.
+
+    Routes the compute through ``app.tools_pipeline.keylog_result`` — the same
+    producer the HTTP ``/api/analysis/export-keylog`` route and the MCP
+    ``export_keylog`` tool use, so the headline artifact has ONE implementation.
+    Reads a JSON list of ``{secret_type, client_random, secret}`` dicts from
+    ``--secrets`` and writes the key log to ``--output`` (or stdout). A malformed
+    hex / missing key raises a ``CapabilityError`` the main-loop backstop renders
+    to stderr + a category exit code.
+    """
+    from memdiver.app.tools_pipeline import keylog_result
+
+    try:
+        secrets = json.loads(Path(args.secrets).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"memdiver: cannot read secrets file {args.secrets}: {exc}",
+              file=sys.stderr)
+        return 1
+
+    result = keylog_result(secrets=secrets, output_path=args.output)
+    if args.output:
+        print(f"memdiver: wrote {result['count']} key(s) to {args.output}",
+              file=sys.stderr)
+    else:
+        sys.stdout.write(result["keylog"])
+    return 0
+
+
 def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
     """Generate a KEM keypair for encrypted-MSL recipients (spec §10.4).
 
@@ -457,6 +489,9 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             ciphertext_hex=args.ciphertext_hex,
             cipher=args.cipher,
             iv_hex=args.iv_hex,
+            nonce_hex=getattr(args, "nonce_hex", None),
+            aad_hex=getattr(args, "aad_hex", None),
+            tag_hex=getattr(args, "tag_hex", None),
             key_material=_key_material_from_args(args),
             on_source=_warn_tag_status,
         )

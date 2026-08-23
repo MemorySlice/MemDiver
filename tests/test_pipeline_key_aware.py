@@ -92,7 +92,8 @@ def _brute_force_args(msl: Path, candidates: Path, oracle: Path, out: Path,
                       *, key_file):
     return argparse.Namespace(
         candidates=str(candidates), dump=str(msl), oracle=str(oracle),
-        oracle_config=None, key_sizes="32", stride=8, jobs=1, first_hit=False,
+        oracle_config=None, pcap=None, tls_client_random=None,
+        key_sizes="32", stride=8, jobs=1, first_hit=False,
         state=None, top_k=10, output=str(out),
         key_file=key_file, passphrase=None, kem_key_file=None,
     )

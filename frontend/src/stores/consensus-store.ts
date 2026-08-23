@@ -12,6 +12,18 @@ interface StaticRegion {
   mean_variance: number;
 }
 
+// Down-sampled change/variance heatmap over a dump's whole VA span, used by
+// the ConsensusVarianceMinimap. `changing[i]`/`high[i]` are per-bin fractions
+// (0..1); `level[i]` is the peak ByteClass code (0..3) in bin i.
+interface VaOverview {
+  va_start: number;
+  va_end: number;
+  bin_size: number;
+  changing: number[];
+  high: number[];
+  level: number[];
+}
+
 interface ConsensusState {
   available: boolean;
   loading: boolean;
@@ -28,8 +40,17 @@ interface ConsensusState {
   consensusId: string | null;
   pageClassifications: Map<number, number[]>;
 
+  // VA-keyed classifications for the hex viewer's "va" view of .msl dumps.
+  // The container offset overlay (pageClassifications) is coordinate-wrong for
+  // .msl because the classification array lives in an aligned-slab coordinate;
+  // these are keyed by row-aligned ABSOLUTE virtual address instead.
+  vaClassifications: Map<number, number[]>;
+  vaOverview: VaOverview | null;
+
   runConsensus: (dumpPaths: string[], normalize: boolean) => Promise<void>;
   fetchRange: (offset: number, length: number) => Promise<number[]>;
+  fetchVaRange: (dumpPath: string, va: number, length: number) => Promise<number[]>;
+  fetchVaOverview: (dumpPath: string, bins: number) => Promise<void>;
   toggleOverlay: () => void;
   reset: () => void;
 }
@@ -46,6 +67,8 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
   overlayEnabled: false,
   consensusId: null,
   pageClassifications: new Map(),
+  vaClassifications: new Map(),
+  vaOverview: null,
 
   runConsensus: async (dumpPaths, normalize) => {
     set({ loading: true, error: null });
@@ -70,6 +93,8 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
         volatileRegions: json.volatile_regions ?? [],
         consensusId: json.consensus_id ?? null,
         pageClassifications: new Map(),
+        vaClassifications: new Map(),
+        vaOverview: null,
       });
     } catch (err) {
       set({
@@ -114,6 +139,63 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
     return classifications;
   },
 
+  fetchVaRange: async (dumpPath, va, length) => {
+    const state = get();
+    const cached = state.vaClassifications.get(va);
+    if (cached && cached.length >= length) {
+      return cached.slice(0, length);
+    }
+    if (!state.consensusId) {
+      // No consensus built yet — nothing to range over.
+      return [];
+    }
+    const url =
+      `/api/analysis/consensus/va-range?consensus_id=${encodeURIComponent(state.consensusId)}` +
+      `&dump_path=${encodeURIComponent(dumpPath)}&va=${va}&length=${length}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Consensus VA range fetch failed: ${res.status}`);
+    }
+    const json = await res.json();
+    const classes: number[] = json.classes ?? [];
+    set((prev) => {
+      const next = new Map(prev.vaClassifications);
+      next.set(va, classes);
+      // Evict oldest entries once the cache exceeds its bound so scrolling a
+      // large VA span cannot grow the map unbounded.
+      while (next.size > MAX_CACHED_PAGES) {
+        const oldest = next.keys().next().value;
+        if (oldest === undefined) break;
+        next.delete(oldest);
+      }
+      return { vaClassifications: next };
+    });
+    return classes;
+  },
+
+  fetchVaOverview: async (dumpPath, bins) => {
+    const state = get();
+    if (!state.consensusId) return;
+    const url =
+      `/api/analysis/consensus/va-overview?consensus_id=${encodeURIComponent(state.consensusId)}` +
+      `&dump_path=${encodeURIComponent(dumpPath)}&bins=${bins}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Consensus VA overview fetch failed: ${res.status}`);
+    }
+    const json = await res.json();
+    set({
+      vaOverview: {
+        va_start: json.va_start ?? 0,
+        va_end: json.va_end ?? 0,
+        bin_size: json.bin_size ?? 0,
+        changing: json.changing ?? [],
+        high: json.high ?? [],
+        level: json.level ?? [],
+      },
+    });
+  },
+
   toggleOverlay: () =>
     set((state) => ({ overlayEnabled: !state.overlayEnabled })),
 
@@ -130,5 +212,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       overlayEnabled: false,
       consensusId: null,
       pageClassifications: new Map(),
+      vaClassifications: new Map(),
+      vaOverview: null,
     }),
 }));

@@ -8,6 +8,7 @@ Welford's online recurrence or a chunked two-pass estimator — the implicit
 N×d observation matrix is never materialized.
 """
 
+import bisect
 import logging
 from array import array
 from pathlib import Path
@@ -67,6 +68,14 @@ class ConsensusVector:
         # pattern generation to derive static masks (variance == 0) and
         # reference content at the same self-consistent offsets.
         self.reference_bytes: bytes = b""
+        # MSL-only: per-slice VA layout [(slab_offset, page_size, [va_per_dump])]
+        # in slab order, plus the source dump paths in build order. Together they
+        # map any dump's virtual address to the slab index that `variance` /
+        # `classifications` are indexed by — so the consensus overlay can be
+        # painted on a dump's `va` view. None/empty for raw (flat-offset) builds.
+        self.msl_layout: Union[List[Tuple[int, int, List[int]]], None] = None
+        self.dump_paths: List[str] = []
+        self._va_index_cache: Dict[int, List[Tuple[int, int, int]]] = {}
 
     @property
     def classifications(self) -> array:
@@ -132,14 +141,20 @@ class ConsensusVector:
             logger.warning("Need >= 2 dumps for consensus, got %d", len(sources))
             return
         self.num_dumps = len(sources)
+        # Record the source order + reset any prior VA index so the overlay can
+        # map a viewed dump's path -> index -> VA layout for this build.
+        self.dump_paths = [str(getattr(s, "path", "") or "") for s in sources]
+        self._va_index_cache = {}
         if all(_is_native_msl(s) for s in sources):
             from .consensus_msl import build_msl_consensus
             (
                 self.variance,
                 self.size,
                 self.reference_bytes,
-            ) = build_msl_consensus(sources, self.num_dumps)
+                self.msl_layout,
+            ) = build_msl_consensus(sources, self.num_dumps, return_layout=True)
         else:
+            self.msl_layout = None
             self._build_raw(sources)
         self._classifications = classify_variance(self.variance)
 
@@ -154,6 +169,114 @@ class ConsensusVector:
         truncated = [b[:min_size] for b in buffers]
         self.variance = compute_variance(truncated, min_size)
         self.reference_bytes = truncated[0]
+
+    # ------------------------------------------------------------------
+    # VA-coordinate access (MSL overlay + variance heatmap)
+    # ------------------------------------------------------------------
+
+    def dump_index_for_path(self, dump_path: str) -> int:
+        """Index of ``dump_path`` within this build's source order, or -1."""
+        target = Path(dump_path)
+        for i, p in enumerate(self.dump_paths):
+            if p == str(target) or Path(p) == target:
+                return i
+        return -1
+
+    def _va_index_for(self, dump_index: int) -> List[Tuple[int, int, int]]:
+        """Sorted ``[(va_start, slab_offset, page_size)]`` for one dump (cached).
+
+        Sorted by ``va_start`` so a viewed dump's virtual address can be
+        binary-searched to the slab index the classification array uses.
+        """
+        if not self.msl_layout:
+            return []
+        cached = self._va_index_cache.get(dump_index)
+        if cached is not None:
+            return cached
+        idx = [
+            (int(vaddrs[dump_index]), int(slab), int(ps))
+            for (slab, ps, vaddrs) in self.msl_layout
+            if 0 <= dump_index < len(vaddrs)
+        ]
+        idx.sort(key=lambda e: e[0])
+        self._va_index_cache[dump_index] = idx
+        return idx
+
+    def class_window_va(self, dump_index: int, va: int, length: int) -> List[int]:
+        """Per-byte ByteClass codes for ``[va, va+length)`` in a dump's VA space.
+
+        Entries are ByteClass codes for aligned/captured bytes and ``-1`` for VA
+        gaps not present in the consensus (unmapped / not-captured-in-all-dumps).
+        """
+        idx = self._va_index_for(dump_index)
+        length = max(0, int(length))
+        out = np.full(length, -1, dtype=np.int16)
+        if not idx or length == 0:
+            return out.tolist()
+        starts = [e[0] for e in idx]
+        cls = np.asarray(self._classifications)
+        # First slice that could overlap [va, va+length).
+        i = max(0, bisect.bisect_right(starts, va) - 1)
+        while i < len(idx) and idx[i][0] < va + length:
+            va_start, slab, ps = idx[i]
+            seg_start = max(va, va_start)
+            seg_end = min(va + length, va_start + ps)
+            if seg_end > seg_start:
+                s0 = slab + (seg_start - va_start)
+                s1 = slab + (seg_end - va_start)
+                out[seg_start - va:seg_end - va] = cls[s0:s1].astype(np.int16)
+            i += 1
+        return out.tolist()
+
+    def va_overview(self, dump_index: int, bins: int = 256) -> Dict[str, Any]:
+        """Down-sampled change/variance heatmap across a dump's aligned VA span.
+
+        Returns per-bin fractions ``changing`` (class > INVARIANT) and ``high``
+        (class == KEY_CANDIDATE) plus the max ``level`` (0..3), for a whole-dump
+        "what stays vs what changes" minimap. A page maps to the bin of its
+        start VA (page << bin width), which is exact enough for the strip.
+        """
+        idx = self._va_index_for(dump_index)
+        bins = max(1, int(bins))
+        empty = {"va_start": 0, "va_end": 0, "bin_size": 0,
+                 "changing": [], "high": [], "level": []}
+        if not idx:
+            return empty
+        va_start = idx[0][0]
+        va_end = idx[-1][0] + idx[-1][2]
+        span = max(1, va_end - va_start)
+        bin_size = max(1, -(-span // bins))  # ceil division
+        nb = max(1, -(-span // bin_size))
+        total = np.zeros(nb, dtype=np.int64)
+        changing = np.zeros(nb, dtype=np.int64)
+        high = np.zeros(nb, dtype=np.int64)
+        level = np.zeros(nb, dtype=np.int16)
+        cls = np.asarray(self._classifications)
+        key_code = int(ByteClass.KEY_CANDIDATE)
+        for (va0, slab, ps) in idx:
+            b = (va0 - va_start) // bin_size
+            if b < 0 or b >= nb:
+                continue
+            page_cls = cls[slab:slab + ps].astype(np.int16)
+            total[b] += ps
+            changing[b] += int((page_cls > 0).sum())
+            high[b] += int((page_cls >= key_code).sum())
+            m = int(page_cls.max()) if ps else 0
+            if m > level[b]:
+                level[b] = m
+        safe = total > 0
+        ch_frac = np.zeros(nb, dtype=np.float64)
+        hi_frac = np.zeros(nb, dtype=np.float64)
+        ch_frac[safe] = changing[safe] / total[safe]
+        hi_frac[safe] = high[safe] / total[safe]
+        return {
+            "va_start": int(va_start),
+            "va_end": int(va_end),
+            "bin_size": int(bin_size),
+            "changing": [float(x) for x in ch_frac],
+            "high": [float(x) for x in hi_frac],
+            "level": [int(x) for x in level],
+        }
 
     # ------------------------------------------------------------------
     # Incremental / live-update API (Welford-backed)

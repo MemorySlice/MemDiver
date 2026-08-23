@@ -3,10 +3,13 @@
 import pytest
 from memdiver.engine.verification import (
     AesCbcVerifier,
+    AesGcmVerifier,
+    ChaChaPolyVerifier,
     VerificationResult,
     extract_and_verify,
     VERIFICATION_PLAINTEXT,
     VERIFICATION_IV,
+    VERIFICATION_NONCE,
     VERIFIER_REGISTRY,
     HAS_CRYPTO,
 )
@@ -98,8 +101,97 @@ class TestVerifierRegistry:
     def test_aes_in_registry(self):
         assert "AES-256-CBC" in VERIFIER_REGISTRY
 
+    def test_aead_suites_in_registry(self):
+        for name in ("AES-128-GCM", "AES-256-GCM", "CHACHA20-POLY1305"):
+            assert name in VERIFIER_REGISTRY
+
     def test_registry_verifier_works(self):
         v = VERIFIER_REGISTRY["AES-256-CBC"]
         key = bytes(range(32))
         ct = v.create_ciphertext(key, VERIFICATION_PLAINTEXT, VERIFICATION_IV)
         assert v.verify(key, ct, VERIFICATION_IV, VERIFICATION_PLAINTEXT) is True
+
+
+class TestAeadVerifiers:
+    """Round-trip + tamper tests for the AEAD (authenticated) verifiers.
+
+    Each verifier confirms a candidate purely via the authentication tag when
+    ``expected_plaintext`` is None (the real-record path), and additionally by
+    plaintext equality when expected is supplied (the synthetic self-test path).
+    """
+
+    @pytest.mark.parametrize(
+        "name,key_len",
+        [
+            ("AES-128-GCM", 16),
+            ("AES-256-GCM", 32),
+            ("CHACHA20-POLY1305", 32),
+        ],
+    )
+    def test_roundtrip_tag_only(self, name, key_len):
+        v = VERIFIER_REGISTRY[name]
+        assert v.cipher_name == name
+        assert v.key_length == key_len
+        key = bytes(range(key_len))
+        aad = b"tls-record-header"
+        ct = v.create_ciphertext(key, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
+                                 nonce=VERIFICATION_NONCE, aad=aad)
+        # tag-only confirmation (expected_plaintext=None → real-record semantics)
+        assert v.verify(key, ct, VERIFICATION_IV, None,
+                        nonce=VERIFICATION_NONCE, aad=aad) is True
+        # secondary plaintext equality also holds
+        assert v.verify(key, ct, VERIFICATION_IV, VERIFICATION_PLAINTEXT,
+                        nonce=VERIFICATION_NONCE, aad=aad) is True
+
+    @pytest.mark.parametrize(
+        "name,key_len",
+        [
+            ("AES-128-GCM", 16),
+            ("AES-256-GCM", 32),
+            ("CHACHA20-POLY1305", 32),
+        ],
+    )
+    def test_wrong_key_fails(self, name, key_len):
+        v = VERIFIER_REGISTRY[name]
+        key = bytes(range(key_len))
+        ct = v.create_ciphertext(key, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
+                                 nonce=VERIFICATION_NONCE)
+        wrong = bytes(key_len)
+        assert v.verify(wrong, ct, VERIFICATION_IV, None,
+                        nonce=VERIFICATION_NONCE) is False
+
+    @pytest.mark.parametrize(
+        "name,key_len",
+        [
+            ("AES-128-GCM", 16),
+            ("AES-256-GCM", 32),
+            ("CHACHA20-POLY1305", 32),
+        ],
+    )
+    def test_tampered_tag_fails(self, name, key_len):
+        v = VERIFIER_REGISTRY[name]
+        key = bytes(range(key_len))
+        ct = bytearray(v.create_ciphertext(key, VERIFICATION_PLAINTEXT,
+                                           VERIFICATION_IV, nonce=VERIFICATION_NONCE))
+        ct[-1] ^= 0xFF  # flip a tag byte
+        assert v.verify(key, bytes(ct), VERIFICATION_IV, None,
+                        nonce=VERIFICATION_NONCE) is False
+
+    def test_separate_tag_argument(self):
+        """A caller may pass ciphertext and tag separately (the pcap path)."""
+        v = VERIFIER_REGISTRY["AES-256-GCM"]
+        key = bytes(range(32))
+        aad = b"hdr"
+        blob = v.create_ciphertext(key, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
+                                   nonce=VERIFICATION_NONCE, aad=aad)
+        body, tag = blob[:-16], blob[-16:]
+        assert v.verify(key, body, VERIFICATION_IV, None,
+                        nonce=VERIFICATION_NONCE, aad=aad, tag=tag) is True
+
+    def test_wrong_aad_fails(self):
+        v = VERIFIER_REGISTRY["AES-256-GCM"]
+        key = bytes(range(32))
+        ct = v.create_ciphertext(key, VERIFICATION_PLAINTEXT, VERIFICATION_IV,
+                                 nonce=VERIFICATION_NONCE, aad=b"correct")
+        assert v.verify(key, ct, VERIFICATION_IV, None,
+                        nonce=VERIFICATION_NONCE, aad=b"wrong") is False

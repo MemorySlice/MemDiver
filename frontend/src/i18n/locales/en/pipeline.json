@@ -57,10 +57,17 @@
       "exampleHintPrefix": "Copy",
       "exampleHintMid": "from",
       "exampleHintTail": ", tweak it for your dataset, then drop the edited file below to upload + arm it.",
+      "pcap": {
+        "hint": "Or skip the BYO oracle: point at a pcap/pcapng of the same TLS session and MemDiver's first-party trusted oracle will confirm a recovered key decrypts the real captured records.",
+        "pathLabel": "pcap path",
+        "pathPlaceholder": "/absolute/path/to/session.pcap",
+        "clientRandomLabel": "TLS client_random (hex, optional)",
+        "clientRandomPlaceholder": "restrict matching to one session"
+      },
       "back": "← Back",
       "next": "Next: Thresholds →",
       "nextTitleEnabled": "Continue to threshold configuration",
-      "nextTitleDisabled": "Upload and arm an oracle to continue"
+      "nextTitleDisabled": "Upload and arm an oracle — or supply a pcap — to continue"
     },
     "thresholds": {
       "title": "Configure thresholds",

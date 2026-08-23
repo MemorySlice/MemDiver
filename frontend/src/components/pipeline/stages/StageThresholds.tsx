@@ -86,7 +86,9 @@ export function StageThresholds({ onAdvance }: Props) {
   };
 
   async function submit(): Promise<void> {
-    if (!form.oracleId) {
+    const pcapPath = form.pcapPath?.trim() ?? "";
+    // Exactly one oracle source: an armed BYO oracle OR a pcap of the session.
+    if (!form.oracleId && !pcapPath) {
       setSubmitError(t("stages.thresholds.noOracleError"));
       return;
     }
@@ -97,11 +99,17 @@ export function StageThresholds({ onAdvance }: Props) {
     setSubmitError(null);
     setSubmitting(true);
     try {
+      const clientRandom = form.tlsClientRandom?.trim() ?? "";
       const body: PipelineRunRequest = {
         source_paths: form.sourcePaths,
-        oracle_id: form.oracleId,
         reduce: form.reduce,
         brute_force: form.bruteForce,
+        ...(pcapPath
+          ? {
+              pcap_path: pcapPath,
+              ...(clientRandom ? { tls_client_random: clientRandom } : {}),
+            }
+          : { oracle_id: form.oracleId }),
       };
       const resp = await runPipeline(body);
       setTaskId(resp.task_id);

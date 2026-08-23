@@ -21,7 +21,9 @@ logger = logging.getLogger("memdiver.engine.consensus_msl")
 def build_msl_consensus(
     sources: List,
     num_dumps: int,
-) -> Tuple[np.ndarray, int, bytes]:
+    *,
+    return_layout: bool = False,
+):
     """Build variance array from MSL sources with ASLR alignment.
 
     For each source, normalizes memory regions to module-relative keys,
@@ -29,6 +31,13 @@ def build_msl_consensus(
     the intersection of CAPTURED pages. Returns
     ``(variance, total_bytes, reference_bytes)`` where ``reference_bytes``
     is the first source's aligned slab in the same order as variance.
+
+    When ``return_layout`` is True, a fourth element is returned: the
+    per-slice VA layout ``[(slab_offset, page_size, [va_per_dump...]), ...]``
+    in slab order. It lets callers map any dump's virtual address back to the
+    slab index the variance/classification arrays are indexed by — the basis
+    for painting the consensus overlay on a dump's ``va`` view. Kept opt-in so
+    the existing 3-tuple callers (pipeline, tests) are unaffected.
     """
     from memdiver.core.region_align import align_dumps
 
@@ -41,6 +50,8 @@ def build_msl_consensus(
 
     if not slices:
         logger.warning("No aligned slices produced — dumps may have no common regions")
+        if return_layout:
+            return np.array([], dtype=np.float32), 0, b"", []
         return np.array([], dtype=np.float32), 0, b""
 
     total_bytes = sum(s.page_size for s in slices)
@@ -48,6 +59,7 @@ def build_msl_consensus(
     reference = bytearray(total_bytes)
     n = num_dumps
     offset = 0
+    layout: List[Tuple[int, int, List[int]]] = []
 
     for aslice in slices:
         data_mat = np.stack([
@@ -60,9 +72,13 @@ def build_msl_consensus(
         # for downstream static-mask + pattern derivation. Index 0 is
         # arbitrary but stable across callers.
         reference[offset:offset + aslice.page_size] = aslice.data[0]
+        if return_layout:
+            layout.append((offset, aslice.page_size, list(aslice.source_vaddrs)))
         offset += aslice.page_size
 
     logger.info("MSL consensus: %d bytes across %d aligned slices", total_bytes, len(slices))
+    if return_layout:
+        return variance, total_bytes, bytes(reference), layout
     return variance, total_bytes, bytes(reference)
 
 

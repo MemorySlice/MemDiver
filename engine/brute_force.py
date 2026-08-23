@@ -451,6 +451,8 @@ def run_brute_force(
     oracle_path: Path,
     *,
     oracle_config_path: Optional[Path] = None,
+    oracle_config: Optional[dict] = None,
+    oracle_trusted: bool = False,
     key_sizes: Sequence[int] = (32,),
     stride: int = 8,
     jobs: int = 1,
@@ -460,10 +462,20 @@ def run_brute_force(
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
 ) -> BruteForceResult:
-    """Iterate candidates through ``--oracle`` and return a BruteForceResult."""
+    """Iterate candidates through ``--oracle`` and return a BruteForceResult.
+
+    ``oracle_config`` may be passed in-process to bypass the TOML load (used by
+    the first-party builtin resource oracles — e.g. the pcap oracle — whose spec
+    is assembled programmatically rather than read from a user file). Set
+    ``oracle_trusted`` for such first-party oracles to skip the untrusted-code
+    load sandbox: the builtin is our own code and the resource it reads (a pcap)
+    is data, not executable — only user-supplied ``--oracle`` scripts need the
+    sandbox.
+    """
     payload = load_candidates(candidates_path)
     regions: List[dict] = payload.get("regions", [])
-    oracle_config = load_oracle_config(oracle_config_path)
+    if oracle_config is None:
+        oracle_config = load_oracle_config(oracle_config_path)
 
     # Validate the oracle ONCE here in the parent, before the serial/parallel
     # split, so every path is covered — including the parallel branch whose
@@ -473,7 +485,11 @@ def run_brute_force(
     # the load-time sandbox fully bypassed. Raises OracleLoadError on hang/OOM/
     # crash BEFORE any worker (or serial load) touches the oracle. The ok-cache
     # in engine.oracle dedups this against the serial branch's own load.
-    validate_oracle_sandboxed(oracle_path, oracle_config)
+    # Trusted first-party oracles (builtin resource oracles) skip this: they are
+    # not untrusted user code, and sandboxing a large-pcap parse under the tight
+    # wall-clock/mem caps would misclassify a slow parse as a hang.
+    if not oracle_trusted:
+        validate_oracle_sandboxed(oracle_path, oracle_config)
 
     # Count candidates via a slice-free grid pass instead of holding the full
     # materialized list; the dispatch below then streams a fresh generator

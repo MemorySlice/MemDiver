@@ -75,6 +75,9 @@ class VerifyKeyRequest(KeyMaterialFields):
     length: int = 32
     ciphertext_hex: str
     iv_hex: str | None = None
+    nonce_hex: str | None = None
+    aad_hex: str | None = None
+    tag_hex: str | None = None
     cipher: str = "AES-256-CBC"
 
 
@@ -86,6 +89,18 @@ class AutoExportRequest(KeyMaterialFields):
     name: str = "memdiver_pattern"
     align: bool = True
     context: int = 32
+
+
+class ExportKeylogRequest(BaseModel):
+    """Request body for Wireshark NSS key-log export from recovered secrets.
+
+    ``secrets`` is a list of ``{secret_type, client_random, secret}`` dicts
+    (``client_random`` / ``secret`` are hex strings). ``output_path`` is an
+    optional server-side path to also write the key log to.
+    """
+
+    secrets: list[dict]
+    output_path: str | None = None
 
 
 class BatchJobDTO(BaseModel):

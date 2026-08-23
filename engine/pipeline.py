@@ -17,7 +17,7 @@ from .diff_store import DiffStore
 from .results import AnalysisResult, LibraryReport, SecretHit
 
 try:
-    from .project_db import ProjectDB
+    from .project_db import ProjectDB, _finding_row_from_hit
     _HAS_PROJECT_DB = True
 except ImportError:
     _HAS_PROJECT_DB = False
@@ -229,11 +229,22 @@ class AnalysisPipeline:
             "protocol_version": report.protocol_version,
         })
         for hit in hits:
+            hit_meta = getattr(hit, "metadata", None) or {}
+            row = _finding_row_from_hit({
+                "secret_type": hit.secret_type,
+                "offset": hit.offset,
+                "length": hit.length,
+                "value_hex": getattr(hit, "value_hex", None),
+                "verified": getattr(hit, "verified", None),
+                "confirmed_by": hit_meta.get("confirmed_by"),
+                "cipher": hit_meta.get("cipher"),
+                "confidence": getattr(hit, "confidence", 1.0),
+            })
             db.add_finding(
-                rid, finding_type=hit.secret_type,
-                offset=hit.offset, length=hit.length,
-                value_hex=hit.value_hex if hasattr(hit, 'value_hex') else None,
-                confidence=1.0,
+                rid, finding_type=row["finding_type"],
+                offset=row["offset"], length=row["length"],
+                value_hex=row["value_hex"], confidence=row["confidence"],
+                metadata=row["metadata"],
             )
         db.finish_run(rid)
 

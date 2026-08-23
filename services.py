@@ -80,6 +80,7 @@ from memdiver.app.tools_pipeline import (
     consensus,
     emit_plugin,
     export_pattern,
+    keylog_result,
     n_sweep,
     search_reduce,
     verify_key_result,
@@ -130,6 +131,7 @@ __all__ = [
     "auto_floor",
     "emit_plugin",
     "export_pattern",
+    "keylog_result",
     # verify / experiment
     "verify_key_result",
     "experiment_result",

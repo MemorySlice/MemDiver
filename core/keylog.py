@@ -36,6 +36,40 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def format_keylog_lines(secrets: List[CryptoSecret]) -> str:
+    """Render CryptoSecrets as a standard NSS key-log (SSLKEYLOGFILE) body.
+
+    Each secret becomes one ``<LABEL> <client_random_hex> <secret_hex>`` line —
+    the exact format Wireshark / ``tshark -o tls.keylog_file=...`` loads to
+    decrypt a capture (RFC-adjacent NSS format). This is the emit inverse of
+    :meth:`KeylogParser._parse_line`; note the *parser* reads a CSV whose ``line``
+    column holds these strings, whereas Wireshark consumes the plaintext lines
+    directly — so the artifact this produces is the plaintext key log, not the CSV.
+
+    Secrets with an empty ``secret_type`` or ``secret_value`` are skipped.
+    Duplicate ``(secret_type, identifier, secret_value)`` triples are emitted
+    once, preserving input order.
+    """
+    lines: List[str] = []
+    seen = set()
+    for s in secrets:
+        if not s.secret_type or not s.secret_value:
+            continue
+        key = (s.secret_type, s.identifier, s.secret_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"{s.secret_type} {s.identifier.hex()} {s.secret_value.hex()}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def write_keylog(secrets: List[CryptoSecret], path: Path) -> int:
+    """Write *secrets* to *path* as an NSS key log. Returns the line count."""
+    body = format_keylog_lines(secrets)
+    Path(path).write_text(body)
+    return 0 if not body.strip() else body.count("\n")
+
+
 class KeylogParser:
     """Parse keylog.csv files into CryptoSecret objects."""
 

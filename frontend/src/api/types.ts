@@ -377,3 +377,21 @@ export interface AutoExportResult {
     key_end: number;
   };
 }
+
+// --- Keylog Export ---
+export interface KeylogSecret {
+  secret_type: string;
+  client_random: string; // hex
+  secret: string; // hex
+}
+
+export interface ExportKeylogRequest {
+  secrets: KeylogSecret[];
+  output_path?: string;
+}
+
+export interface ExportKeylogResult {
+  keylog: string;
+  count: number;
+  output_path: string | null;
+}

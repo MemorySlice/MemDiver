@@ -335,6 +335,39 @@ class TestVerifyCommand:
         rc = _cmd_verify(args)
         assert rc == 0
 
+    def test_verify_aead_key(self, tmp_path):
+        """Verify a known AEAD (AES-256-GCM) key via nonce/tag against a record."""
+        from memdiver.cli import _cmd_verify
+        from memdiver.engine.verification import AesGcmVerifier
+
+        key = bytes(range(32))
+        dump = bytearray(1024)
+        dump[0x100:0x120] = key
+        dump_path = tmp_path / "test.dump"
+        dump_path.write_bytes(bytes(dump))
+
+        nonce = bytes(range(12))
+        aad = b"header"
+        # AEAD create_ciphertext returns ciphertext||tag (the on-record layout).
+        verifier = AesGcmVerifier()
+        ct = verifier.create_ciphertext(key, b"secret record", b"", nonce=nonce, aad=aad)
+
+        args = argparse.Namespace(
+            dump=str(dump_path),
+            offset=0x100,
+            length=32,
+            ciphertext_hex=ct.hex(),
+            iv_hex=None,
+            nonce_hex=nonce.hex(),
+            aad_hex=aad.hex(),
+            tag_hex=None,
+            cipher="AES-256-GCM",
+            output=None,
+            verbose=False,
+        )
+        rc = _cmd_verify(args)
+        assert rc == 0
+
     def test_verify_wrong_offset(self, tmp_path):
         """Wrong offset should show verified=false but command succeeds."""
         from memdiver.cli import _cmd_verify

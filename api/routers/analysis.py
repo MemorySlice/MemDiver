@@ -22,6 +22,7 @@ from memdiver.api.models import (
     BatchRunResponse,
     ConsensusRequest,
     ConvergenceRequest,
+    ExportKeylogRequest,
     VerifyKeyRequest,
 )
 from memdiver.api.services.consensus_session import (
@@ -149,6 +150,68 @@ def consensus_range(
         "length": end - actual_offset,
         "classifications": classifications,
     }
+
+
+@router.get("/consensus/va-range")
+def consensus_va_range(
+    consensus_id: str,
+    dump_path: str,
+    va: int = 0,
+    length: int = 1024,
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
+):
+    """Per-byte 4-state classifications for one dump's virtual-address window.
+
+    For native-MSL consensus the variance/classification arrays live in an
+    aligned-slab coordinate, not a viewable offset. This maps a dump's VA
+    window (``va``..``va+length``) back to those slab indices so the hex
+    viewer's ``va`` view can paint the overlay on the correct bytes. Entries
+    are ByteClass codes, or ``-1`` for VA gaps absent from the consensus.
+    """
+    built = manager.get(consensus_id)
+    if built is None:
+        raise HTTPException(status_code=404, detail="No consensus computed yet")
+    cm = built.matrix
+    if cm.msl_layout is None:
+        raise HTTPException(
+            status_code=400,
+            detail="VA range is only available for native-MSL consensus",
+        )
+    dump_index = cm.dump_index_for_path(dump_path)
+    if dump_index < 0:
+        raise HTTPException(status_code=404, detail="dump not part of this consensus")
+    length = min(max(0, length), 16384)
+    classes = cm.class_window_va(dump_index, va, length)
+    return {"va": va, "length": length, "dump_index": dump_index, "classes": classes}
+
+
+@router.get("/consensus/va-overview")
+def consensus_va_overview(
+    consensus_id: str,
+    dump_path: str,
+    bins: int = 256,
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
+):
+    """Down-sampled change/variance heatmap over a dump's whole VA span.
+
+    Feeds the variance minimap: per-bin fraction of *changing* bytes
+    (class > invariant) and *high*-variance bytes (key-candidate), plus the
+    peak class level. Only meaningful for native-MSL consensus.
+    """
+    built = manager.get(consensus_id)
+    if built is None:
+        raise HTTPException(status_code=404, detail="No consensus computed yet")
+    cm = built.matrix
+    if cm.msl_layout is None:
+        raise HTTPException(
+            status_code=400,
+            detail="VA overview is only available for native-MSL consensus",
+        )
+    dump_index = cm.dump_index_for_path(dump_path)
+    if dump_index < 0:
+        raise HTTPException(status_code=404, detail="dump not part of this consensus")
+    bins = min(max(1, bins), 4096)
+    return {"dump_index": dump_index, **cm.va_overview(dump_index, bins)}
 
 
 @router.post("/run-file", response_model=AnalysisRunResponse)
@@ -295,6 +358,9 @@ def verify_key(req: VerifyKeyRequest):
             ciphertext_hex=req.ciphertext_hex,
             cipher=req.cipher,
             iv_hex=req.iv_hex,
+            nonce_hex=req.nonce_hex,
+            aad_hex=req.aad_hex,
+            tag_hex=req.tag_hex,
             key_material=km,
         )
     except CapabilityError as exc:
@@ -337,3 +403,27 @@ def auto_export(req: AutoExportRequest):
         )
     except CapabilityError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@router.post("/export-keylog")
+def export_keylog(req: ExportKeylogRequest):
+    """Emit a Wireshark-loadable NSS key log from recovered TLS secrets.
+
+    Thin HTTP adapter over the ``app`` producer
+    :func:`memdiver.app.tools_pipeline.keylog_result` — the single
+    implementation the CLI ``export-keylog`` command and the MCP
+    ``export_keylog`` tool also route through, so the headline artifact cannot
+    drift across surfaces. Returns ``{keylog, count, output_path}``; a malformed
+    hex / missing key surfaces as the producer's ``CapabilityError``, translated
+    here to an ``HTTPException`` (preserving this router's ``{"detail": ...}``
+    contract).
+    """
+    from memdiver.app.tools_pipeline import keylog_result
+
+    try:
+        return keylog_result(
+            secrets=list(req.secrets),
+            output_path=req.output_path,
+        )
+    except CapabilityError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc

@@ -45,10 +45,46 @@ _SCHEMA_SQL = [
     "CREATE TABLE IF NOT EXISTS dumps(dump_id VARCHAR PRIMARY KEY, project_id VARCHAR, file_path VARCHAR, file_type VARCHAR, file_size BIGINT, added_at VARCHAR, metadata_json VARCHAR DEFAULT '{}')",
     "CREATE TABLE IF NOT EXISTS analysis_runs(run_id VARCHAR PRIMARY KEY, project_id VARCHAR, dump_id VARCHAR, started_at VARCHAR, finished_at VARCHAR, status VARCHAR DEFAULT 'running', config_json VARCHAR DEFAULT '{}')",
     "CREATE TABLE IF NOT EXISTS findings(finding_id VARCHAR PRIMARY KEY, run_id VARCHAR, finding_type VARCHAR, \"offset\" BIGINT, \"length\" INTEGER, value_hex VARCHAR, value_text VARCHAR, confidence DOUBLE DEFAULT 1.0, metadata_json VARCHAR DEFAULT '{}', created_at VARCHAR)",
+    "CREATE TABLE IF NOT EXISTS ground_truth(gt_id VARCHAR PRIMARY KEY, run_id VARCHAR, \"offset\" BIGINT, \"length\" INTEGER, key_hex VARCHAR, secret_type VARCHAR, cipher VARCHAR, confirmed_by VARCHAR, library VARCHAR, version VARCHAR, created_at VARCHAR)",
 ]
 
 _now_iso = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
 _new_id = lambda: uuid.uuid4().hex
+
+
+def _confirmed_by(hit: dict) -> Optional[str]:
+    """Provenance label for a hit: the explicit one, else ``"verifier"`` if verified."""
+    return hit.get("confirmed_by") or ("verifier" if hit.get("verified") else None)
+
+
+def _finding_row_from_hit(hit: dict) -> dict:
+    """Build a ``findings``-table row dict from a serialized hit dict.
+
+    Shared by :meth:`ProjectDB.persist_report` and
+    ``pipeline.AnalysisPipeline._persist_report`` so both persistence paths
+    carry ``value_hex`` plus confirmed-key metadata identically (rather than
+    diverging on whether the key bytes and confirmation marker are kept).
+
+    The ``metadata`` field records whether the hit is a confirmed ground-truth
+    key: ``confirmed`` (bool from ``verified``), ``confirmed_by`` (explicit
+    label, else ``"verifier"`` when verified), and ``cipher``. ``None`` values
+    are dropped.
+    """
+    metadata = {
+        "confirmed": bool(hit.get("verified")),
+        "confirmed_by": _confirmed_by(hit),
+        "cipher": hit.get("cipher"),
+    }
+    metadata = {k: v for k, v in metadata.items() if v is not None}
+    return {
+        "finding_type": hit.get("secret_type", ""),
+        "offset": hit.get("offset"),
+        "length": hit.get("length"),
+        "value_hex": hit.get("value_hex"),
+        "value_text": hit.get("value_text"),
+        "confidence": hit.get("confidence", 1.0),
+        "metadata": metadata,
+    }
 
 
 class ProjectDB:
@@ -134,8 +170,14 @@ class ProjectDB:
             "INSERT INTO findings VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", rows)
         return len(rows)
 
-    def persist_report(self, result) -> None:
-        """Persist a serialized AnalysisResult dict with transaction wrapping."""
+    def persist_report(self, result, persist_ground_truth_labels: bool = False) -> None:
+        """Persist a serialized AnalysisResult dict with transaction wrapping.
+
+        When *persist_ground_truth_labels* is True, each confirmed hit (those
+        with ``verified``/``confirmed`` set) is additionally recorded in the
+        opt-in ``ground_truth`` table as a first-class label. The default keeps
+        the historical behavior of writing findings only.
+        """
         if not self._available or result is None:
             return
         self._conn.execute("BEGIN TRANSACTION")
@@ -144,17 +186,72 @@ class ProjectDB:
                 name = f"{lib.get('library', 'unknown')}_{lib.get('protocol_version', '')}"
                 pid = self.create_project(name)
                 rid = self.start_run(pid, config={"phase": lib.get("phase", "")})
-                findings = [
-                    {"finding_type": h.get("secret_type", ""), "offset": h.get("offset"),
-                     "length": h.get("length"), "confidence": h.get("confidence", 1.0)}
-                    for h in lib.get("hits", [])
-                ]
-                self.add_findings_batch(rid, findings)
+                hits = lib.get("hits", [])
+                self.add_findings_batch(rid, [_finding_row_from_hit(h) for h in hits])
+                if persist_ground_truth_labels:
+                    confirmed = [h for h in hits if h.get("verified") or h.get("confirmed")]
+                    self.persist_ground_truth(
+                        rid, confirmed,
+                        library=lib.get("library", ""),
+                        version=lib.get("protocol_version", ""),
+                    )
                 self.finish_run(rid)
             self._conn.execute("COMMIT")
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+
+    def persist_ground_truth(self, run_id: str, hits: list,
+                             *, library: str = "", version: str = "") -> None:
+        """Record confirmed key locations as first-class ground-truth labels.
+
+        Inserts one ``ground_truth`` row per hit. No-op when DuckDB is absent
+        or *hits* is empty. ``confirmed_by`` falls back to ``"verifier"`` when a
+        hit is verified but carries no explicit label.
+        """
+        if not self._available or not hits:
+            return
+        ts = _now_iso()
+        rows = [
+            [_new_id(), run_id, h.get("offset"), h.get("length"),
+             h.get("value_hex"), h.get("secret_type", ""), h.get("cipher"),
+             _confirmed_by(h), library, version, ts]
+            for h in hits
+        ]
+        self._conn.executemany(
+            "INSERT INTO ground_truth VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", rows)
+
+    def record_ground_truth_run(self, hits: list, *, confirmed_by: str,
+                                project_name: str = "oracle-run",
+                                library: str = "", version: str = "") -> str:
+        """File oracle/pcap-confirmed brute-force hits as ground-truth labels.
+
+        The brute-force path owns confirmed hits but no project/run context, so
+        this convenience wrapper creates a fresh project + run, normalizes the
+        brute-force hit shape (``key_hex``) onto the ground_truth schema
+        (``value_hex``), stamps every row with *confirmed_by*, and closes the
+        run. Returns the run_id, or ``""`` when the DB is unavailable or there
+        are no hits.
+        """
+        if not self._available or not hits:
+            return ""
+        pid = self.create_project(project_name)
+        rid = self.start_run(pid, config={"source": confirmed_by})
+        rows = [
+            {
+                "offset": h.get("offset"),
+                "length": h.get("length"),
+                "value_hex": h.get("value_hex") or h.get("key_hex"),
+                "secret_type": h.get("secret_type", ""),
+                "cipher": h.get("cipher"),
+                "confirmed_by": confirmed_by,
+                "verified": True,
+            }
+            for h in hits
+        ]
+        self.persist_ground_truth(rid, rows, library=library, version=version)
+        self.finish_run(rid)
+        return rid
 
     # -- read (Ibis) -----------------------------------------------------
 
@@ -184,6 +281,14 @@ class ProjectDB:
             return []
         t = self._ibis.table("analysis_runs")
         return t.filter(t.project_id == project_id).order_by("started_at").execute().to_dict("records")
+
+    def list_ground_truth(self, run_id: Optional[str] = None) -> List[dict]:
+        """Return ground-truth key labels, optionally filtered by *run_id*."""
+        if not self._available:
+            return []
+        t = self._ibis.table("ground_truth")
+        expr = t if run_id is None else t.filter(t.run_id == run_id)
+        return expr.order_by("created_at").execute().to_dict("records")
 
     def finding_counts(self, run_id: str) -> dict:
         if not self._available:

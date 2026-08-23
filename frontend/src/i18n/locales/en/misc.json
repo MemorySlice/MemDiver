@@ -14,7 +14,7 @@
   "verification": {
     "loadDumpHint": "Load a dump file to verify candidate key bytes against a known ciphertext.",
     "heading": "Key Verification",
-    "description": "Decrypts a known ciphertext with the selected byte range as the candidate key. Verifies the result matches MemDiver's plaintext probe. Only <0>AES-256-CBC</0> is supported today.",
+    "description": "Decrypts a known ciphertext with the selected byte range as the candidate key. For CBC ciphers such as <0>AES-256-CBC</0> the result is matched against MemDiver's plaintext probe; for AEAD ciphers (GCM, ChaCha20-Poly1305) the nonce, AAD, and tag authenticate a real record.",
     "offset": "Offset",
     "length": "Length",
     "ciphertextLabel": "Ciphertext (hex)",
@@ -23,6 +23,16 @@
     "ivLabel": "IV (hex, optional)",
     "ivPlaceholder": "default 000102...0f",
     "ivInvalid": "Invalid hex.",
+    "aeadHint": "AEAD only (GCM, ChaCha20-Poly1305) — leave blank for CBC ciphers.",
+    "nonceLabel": "Nonce (hex)",
+    "noncePlaceholder": "AEAD nonce",
+    "nonceInvalid": "Invalid hex.",
+    "aadLabel": "AAD (hex)",
+    "aadPlaceholder": "optional",
+    "aadInvalid": "Invalid hex.",
+    "tagLabel": "Tag (hex)",
+    "tagPlaceholder": "AEAD auth tag",
+    "tagInvalid": "Invalid hex.",
     "cipherLabel": "Cipher",
     "verifying": "Verifying...",
     "verifyKey": "Verify Key",
@@ -33,7 +43,9 @@
     "returnedNull": "Verification returned null. Check dump path, cipher, or length.",
     "copyKeyHex": "Copy key hex",
     "bookmarkOffset": "Bookmark offset",
-    "bookmarkLabel": "verified {{cipher}} key"
+    "bookmarkLabel": "verified {{cipher}} key",
+    "exportKeylog": "Export key log",
+    "exportFailed": "Key-log export failed"
   },
   "upload": {
     "heading": "Import Dump",

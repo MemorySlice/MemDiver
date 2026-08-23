@@ -4,6 +4,9 @@ import type { VerifyKeyResult } from "@/api/types";
 interface VerificationState {
   ciphertextHex: string;
   ivHex: string;
+  nonceHex: string;
+  aadHex: string;
+  tagHex: string;
   cipher: string;
   isVerifying: boolean;
   result: VerifyKeyResult | null;
@@ -11,6 +14,9 @@ interface VerificationState {
 
   setCiphertextHex: (value: string) => void;
   setIvHex: (value: string) => void;
+  setNonceHex: (value: string) => void;
+  setAadHex: (value: string) => void;
+  setTagHex: (value: string) => void;
   setCipher: (value: string) => void;
   startVerify: () => void;
   setResult: (result: VerifyKeyResult) => void;
@@ -21,6 +27,9 @@ interface VerificationState {
 export const useVerificationStore = create<VerificationState>((set) => ({
   ciphertextHex: "",
   ivHex: "",
+  nonceHex: "",
+  aadHex: "",
+  tagHex: "",
   cipher: "AES-256-CBC",
   isVerifying: false,
   result: null,
@@ -28,6 +37,9 @@ export const useVerificationStore = create<VerificationState>((set) => ({
 
   setCiphertextHex: (value) => set({ ciphertextHex: value }),
   setIvHex: (value) => set({ ivHex: value }),
+  setNonceHex: (value) => set({ nonceHex: value }),
+  setAadHex: (value) => set({ aadHex: value }),
+  setTagHex: (value) => set({ tagHex: value }),
   setCipher: (value) => set({ cipher: value }),
   startVerify: () => set({ isVerifying: true, result: null, error: null }),
   setResult: (result) => set({ isVerifying: false, result }),
@@ -36,6 +48,9 @@ export const useVerificationStore = create<VerificationState>((set) => ({
     set({
       ciphertextHex: "",
       ivHex: "",
+      nonceHex: "",
+      aadHex: "",
+      tagHex: "",
       cipher: "AES-256-CBC",
       isVerifying: false,
       result: null,

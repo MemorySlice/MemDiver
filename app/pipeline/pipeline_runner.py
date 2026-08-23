@@ -382,9 +382,11 @@ def _run_reduce(
 def _run_brute_force(
     candidates_path: Path,
     reference_path: Path,
-    oracle_path: Path,
+    oracle_path: Optional[Path],
     bf_kwargs: Dict[str, Any],
     *,
+    pcap_path: Optional[str] = None,
+    tls_client_random: Optional[str] = None,
     state_path: Optional[Path] = None,
     variance_threshold: Optional[float] = None,
     ctx,
@@ -409,7 +411,11 @@ def _run_brute_force(
         tools_pipeline.brute_force,
         candidates_path=str(candidates_path),
         reference_path=str(reference_path),
-        oracle_path=str(oracle_path),
+        # Exactly one oracle source — the producer routes ``pcap_path`` through
+        # the first-party trusted pcap oracle and raises if both/neither given.
+        oracle_path=str(oracle_path) if oracle_path is not None else None,
+        pcap_path=pcap_path,
+        tls_client_random=tls_client_random,
         output_dir=str(out_dir),
         state_path=str(state_path) if state_path else None,
         variance_threshold=variance_threshold,
@@ -656,10 +662,17 @@ class PipelineState:
     ctx: Any
     artifact_dir: Path
     reduce_kwargs: Dict[str, Any]
-    oracle_path: Path
+    # ``None`` for a pcap-oracle run: the brute_force stage routes through the
+    # first-party trusted pcap oracle (``pcap_path`` / ``tls_client_random``)
+    # instead of a BYO oracle file. Oracle-file stages (nsweep / escalate) are
+    # unavailable on a pcap run.
+    oracle_path: Optional[Path]
     bf_kwargs: Dict[str, Any]
     nsweep_params: Optional[Dict[str, Any]]
     emit_params: Optional[Dict[str, Any]]
+    # Pcap-oracle source (mutually exclusive with ``oracle_path``).
+    pcap_path: Optional[str] = None
+    tls_client_random: Optional[str] = None
     # Static/dynamic variance cutoff (from the emit request) forwarded to the
     # brute_force stage so its stage_end preview matches the emit stage. ``None``
     # resolves to the producer default (``PLUGIN_STATIC_THRESHOLD``).
@@ -776,6 +789,8 @@ def _stage_brute_force(state: "PipelineState") -> None:
         Path(consensus["reference_path"]),
         state.oracle_path,
         state.bf_kwargs,
+        pcap_path=state.pcap_path,
+        tls_client_random=state.tls_client_random,
         state_path=Path(consensus["state_path"]),
         variance_threshold=state.variance_threshold,
         ctx=state.ctx,
@@ -1006,7 +1021,13 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     * ``source_paths`` (list[str], required): dump files to fold.
     * ``reduce_kwargs`` (dict): passed straight to
       :func:`engine.candidate_pipeline.reduce_search_space`.
-    * ``oracle_path`` (str): absolute path to the armed oracle file.
+    * ``oracle_path`` (str, optional): absolute path to the armed oracle
+      file. ``None`` when ``pcap_path`` is supplied instead.
+    * ``pcap_path`` (str, optional): pcap/pcapng of the same TLS session;
+      routes the brute_force stage through the first-party trusted pcap
+      oracle. Mutually exclusive with ``oracle_path``. ``tls_client_random``
+      (hex) optionally restricts pcap matching to one session. Oracle-file
+      stages (``nsweep`` / ``escalate``) are unavailable on a pcap run.
     * ``brute_force`` (dict): ``key_sizes``, ``stride``, ``jobs``,
       ``exhaustive``, ``top_k``, ``oracle_config_path``.
     * ``nsweep`` (dict, optional): if present, runs the N-sweep harness
@@ -1033,7 +1054,12 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     artifact_dir = resolve_artifact_dir(params, ctx)
     source_paths: List[str] = list(params["source_paths"])
     reduce_kwargs: Dict[str, Any] = dict(params.get("reduce_kwargs", {}))
-    oracle_path = Path(params["oracle_path"]).expanduser()
+    _oracle_path_raw = params.get("oracle_path")
+    oracle_path = (
+        Path(_oracle_path_raw).expanduser() if _oracle_path_raw else None
+    )
+    pcap_path = params.get("pcap_path")
+    tls_client_random = params.get("tls_client_random")
     bf_kwargs: Dict[str, Any] = dict(params.get("brute_force", {}))
     # Sanitize brute_force kwargs — run_brute_force does not accept an
     # arbitrary progress_callback from params; the orchestrator supplies
@@ -1060,6 +1086,8 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         source_paths=source_paths,
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,
+        pcap_path=pcap_path,
+        tls_client_random=tls_client_random,
         bf_kwargs=bf_kwargs,
         nsweep_params=nsweep_params,
         emit_params=emit_params,

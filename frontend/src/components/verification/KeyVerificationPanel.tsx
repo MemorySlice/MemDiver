@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation, Trans } from "react-i18next";
-import { verifyKey } from "@/api/client";
+import { verifyKey, exportKeylog } from "@/api/client";
+import { downloadTextFile } from "@/utils/download";
 import { useHexStore } from "@/stores/hex-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
@@ -43,12 +44,18 @@ export function KeyVerificationPanel() {
   const {
     ciphertextHex,
     ivHex,
+    nonceHex,
+    aadHex,
+    tagHex,
     cipher,
     isVerifying,
     result,
     error,
     setCiphertextHex,
     setIvHex,
+    setNonceHex,
+    setAadHex,
+    setTagHex,
     setCipher,
     startVerify,
     setResult,
@@ -78,14 +85,31 @@ export function KeyVerificationPanel() {
 
   const cleanCiphertext = normalizeHex(ciphertextHex);
   const cleanIv = normalizeHex(ivHex);
+  const cleanNonce = normalizeHex(nonceHex);
+  const cleanAad = normalizeHex(aadHex);
+  const cleanTag = normalizeHex(tagHex);
+
+  const isOptionalHexValid = (value: string): boolean =>
+    value.length === 0 || (value.length % 2 === 0 && isHex(value));
 
   const ciphertextValid = cleanCiphertext.length > 0 && cleanCiphertext.length % 2 === 0 && isHex(cleanCiphertext);
-  const ivValid = cleanIv.length === 0 || (cleanIv.length % 2 === 0 && isHex(cleanIv));
+  const ivValid = isOptionalHexValid(cleanIv);
+  const nonceValid = isOptionalHexValid(cleanNonce);
+  const aadValid = isOptionalHexValid(cleanAad);
+  const tagValid = isOptionalHexValid(cleanTag);
   const offsetValid = Number.isFinite(effectiveOffset) && effectiveOffset >= 0;
   const lengthValid = Number.isFinite(effectiveLength) && effectiveLength > 0;
 
   const canVerify =
-    !!dumpPath && ciphertextValid && ivValid && offsetValid && lengthValid && !isVerifying;
+    !!dumpPath &&
+    ciphertextValid &&
+    ivValid &&
+    nonceValid &&
+    aadValid &&
+    tagValid &&
+    offsetValid &&
+    lengthValid &&
+    !isVerifying;
 
   async function runVerify() {
     if (!canVerify) return;
@@ -97,6 +121,9 @@ export function KeyVerificationPanel() {
         length: effectiveLength,
         ciphertext_hex: cleanCiphertext,
         iv_hex: cleanIv.length > 0 ? cleanIv : undefined,
+        nonce_hex: cleanNonce.length > 0 ? cleanNonce : undefined,
+        aad_hex: cleanAad.length > 0 ? cleanAad : undefined,
+        tag_hex: cleanTag.length > 0 ? cleanTag : undefined,
         cipher,
         ...useDumpStore.getState().getKeyMaterialByPath(dumpPath),
       });
@@ -109,6 +136,30 @@ export function KeyVerificationPanel() {
   const handleCopyKey = () => {
     if (result?.key_hex) {
       navigator.clipboard.writeText(result.key_hex).catch(() => {});
+    }
+  };
+
+  // Export the confirmed key as a one-entry Wireshark NSS key log. The verify
+  // flow yields a raw recovered key (no TLS client-random), so we use the
+  // cipher as the label and the key's offset (hex, even-length) as the
+  // identifier — enough to round-trip a downloadable, non-empty key log.
+  const handleExportKeylog = async () => {
+    if (!result || result.verified !== true || !result.key_hex) return;
+    const offsetHex = result.offset.toString(16);
+    const clientRandom = offsetHex.length % 2 ? `0${offsetHex}` : offsetHex;
+    try {
+      const res = await exportKeylog({
+        secrets: [
+          {
+            secret_type: result.cipher,
+            client_random: clientRandom,
+            secret: result.key_hex,
+          },
+        ],
+      });
+      downloadTextFile(res.keylog, "memdiver.keylog");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("verification.exportFailed"));
     }
   };
 
@@ -197,9 +248,55 @@ export function KeyVerificationPanel() {
             value={cipher}
             onChange={(e) => setCipher(e.target.value)}
           >
+            <option value="AES-128-CBC">AES-128-CBC</option>
             <option value="AES-256-CBC">AES-256-CBC</option>
+            <option value="AES-128-GCM">AES-128-GCM</option>
+            <option value="AES-256-GCM">AES-256-GCM</option>
+            <option value="CHACHA20-POLY1305">CHACHA20-POLY1305</option>
           </select>
         </label>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-[10px] md-text-muted">{t("verification.aeadHint")}</p>
+        <div className="grid grid-cols-3 gap-2">
+          <label className="block">
+            <span className="text-[10px] md-text-muted">{t("verification.nonceLabel")}</span>
+            <input
+              className={INPUT}
+              value={nonceHex}
+              onChange={(e) => setNonceHex(e.target.value)}
+              placeholder={t("verification.noncePlaceholder")}
+            />
+            {!nonceValid && (
+              <p className="text-[10px] md-text-error mt-0.5">{t("verification.nonceInvalid")}</p>
+            )}
+          </label>
+          <label className="block">
+            <span className="text-[10px] md-text-muted">{t("verification.aadLabel")}</span>
+            <input
+              className={INPUT}
+              value={aadHex}
+              onChange={(e) => setAadHex(e.target.value)}
+              placeholder={t("verification.aadPlaceholder")}
+            />
+            {!aadValid && (
+              <p className="text-[10px] md-text-error mt-0.5">{t("verification.aadInvalid")}</p>
+            )}
+          </label>
+          <label className="block">
+            <span className="text-[10px] md-text-muted">{t("verification.tagLabel")}</span>
+            <input
+              className={INPUT}
+              value={tagHex}
+              onChange={(e) => setTagHex(e.target.value)}
+              placeholder={t("verification.tagPlaceholder")}
+            />
+            {!tagValid && (
+              <p className="text-[10px] md-text-error mt-0.5">{t("verification.tagInvalid")}</p>
+            )}
+          </label>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
@@ -250,6 +347,7 @@ export function KeyVerificationPanel() {
             <div className="flex gap-1 pt-1">
               <button onClick={handleCopyKey} className={BTN}>{t("verification.copyKeyHex")}</button>
               <button onClick={handleBookmark} className={BTN}>{t("verification.bookmarkOffset")}</button>
+              <button onClick={handleExportKeylog} className={BTN}>{t("verification.exportKeylog")}</button>
             </div>
           )}
         </div>

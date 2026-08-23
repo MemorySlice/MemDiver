@@ -272,8 +272,12 @@ def create_server():
     @mcp.tool()
     @mcp_error_funnel
     def brute_force(
-        candidates_path: str, reference_path: str, oracle_path: str,
-        output_dir: str, oracle_config_path: Optional[str] = None,
+        candidates_path: str, reference_path: str,
+        output_dir: str, oracle_path: Optional[str] = None,
+        oracle_config_path: Optional[str] = None,
+        pcap_path: Optional[str] = None,
+        tls_client_random: Optional[str] = None,
+        persist_ground_truth: bool = False,
         key_sizes: Optional[List[int]] = None, stride: int = 8,
         jobs: int = 1, exhaustive: bool = True,
         state_path: Optional[str] = None, top_k: int = 10,
@@ -281,7 +285,13 @@ def create_server():
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
-        """Iterate surviving candidates through a BYO oracle.
+        """Iterate surviving candidates through an oracle.
+
+        Supply exactly one oracle source: ``oracle_path`` (a BYO decryption
+        oracle script) or ``pcap_path`` (a pcap/pcapng of the same TLS session,
+        routed through MemDiver's first-party trusted pcap oracle to prove a
+        recovered key decrypts real captured records). ``tls_client_random``
+        (hex) optionally restricts pcap matching to one session.
 
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
         against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
@@ -293,6 +303,9 @@ def create_server():
             oracle_path=oracle_path,
             output_dir=output_dir,
             oracle_config_path=oracle_config_path,
+            pcap_path=pcap_path,
+            tls_client_random=tls_client_random,
+            persist_ground_truth=persist_ground_truth,
             key_sizes=tuple(key_sizes or [32]),
             stride=stride,
             jobs=jobs,
@@ -490,6 +503,22 @@ def create_server():
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
         ))
 
+    @mcp.tool()
+    @mcp_error_funnel
+    def export_keylog(
+        secrets: List[dict], output_path: Optional[str] = None,
+    ) -> str:
+        """Emit a Wireshark-loadable NSS key log from recovered TLS secrets.
+
+        Each item in ``secrets`` is a dict with ``secret_type`` (str),
+        ``client_random`` (hex) and ``secret`` (hex). Returns the rendered
+        key-log text + line ``count``; also writes it to ``output_path`` when
+        given. Loadable via ``tshark -o tls.keylog_file=<path>``.
+        """
+        return json.dumps(tools_pipeline.keylog_result(
+            secrets=secrets, output_path=output_path,
+        ))
+
     # ------------------------------------------------------------------
     # verify + experiment — the two capabilities lifted into shared
     # producers in Phase 5 (previously CLI/API-only), now reachable here too.
@@ -500,6 +529,8 @@ def create_server():
     def verify(
         dump_path: str, offset: int, ciphertext_hex: str, length: int = 32,
         cipher: str = "AES-256-CBC", iv_hex: Optional[str] = None,
+        nonce_hex: Optional[str] = None, aad_hex: Optional[str] = None,
+        tag_hex: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -507,11 +538,14 @@ def create_server():
 
         The offset is read through the dump's memory projection (VAS for
         ``.msl``); encrypted containers are decrypted with the key material.
+        AEAD ciphers (GCM, ChaCha20-Poly1305) authenticate a real record via the
+        optional ``nonce_hex`` / ``aad_hex`` / ``tag_hex`` parameters.
         """
         from memdiver.app.key_material import key_material_kwargs
         return json.dumps(tools_pipeline.verify_key_result(
             dump_path=dump_path, offset=offset, length=length,
             ciphertext_hex=ciphertext_hex, cipher=cipher, iv_hex=iv_hex,
+            nonce_hex=nonce_hex, aad_hex=aad_hex, tag_hex=tag_hex,
             key_material=key_material_kwargs(key_file, passphrase, kem_key_file),
         ))
 
