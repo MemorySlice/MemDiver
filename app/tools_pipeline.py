@@ -298,6 +298,7 @@ def brute_force(
     optional surface hooks; unset they are no-ops.
     """
     from memdiver.engine.brute_force import run_brute_force
+    from memdiver.engine.resources.tls_pcap import PcapParseError
     from memdiver.engine.vol3_emit import resolve_variance_threshold
 
     if bool(oracle_path) == bool(pcap_path):
@@ -348,7 +349,10 @@ def brute_force(
         )
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, PcapParseError) as exc:
+        # PcapParseError (a bare ``Exception`` subclass) can surface eagerly from
+        # a pcap oracle's ``ResourceOracle.__init__`` — e.g. a ``tls_client_random``
+        # that matches no captured session — so it must be funnelled too.
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
@@ -1216,10 +1220,17 @@ def keylog_result(
 
     Returns ``{"keylog": <str>, "count": <int lines>, "output_path": <str|None>}``.
 
-    Raises :class:`CapabilityError` (INVALID_INPUT) for a missing required key or
-    a malformed hex value, mirroring :func:`verify_key_result`'s hex handling.
+    Raises :class:`CapabilityError` (INVALID_INPUT) for a missing required key, a
+    non-canonical ``secret_type`` label, or a malformed hex value, mirroring
+    :func:`verify_key_result`'s hex handling.
+
+    A ``secret_type`` that is not a canonical NSS key-log label (the aggregate of
+    every protocol's labels in the registry — TLS 1.2 ``CLIENT_RANDOM``, the TLS
+    1.3 traffic/handshake/exporter labels, plus any non-TLS descriptors) is
+    rejected up front: an unknown label silently yields a key log Wireshark
+    cannot load, so it is caught here rather than shipped as a broken artifact.
     """
-    from memdiver.core.keylog import format_keylog_lines
+    from memdiver.core.keylog import ALL_SECRET_TYPES, format_keylog_lines
     from memdiver.core.models import CryptoSecret
 
     crypto_secrets: List[CryptoSecret] = []
@@ -1234,6 +1245,12 @@ def keylog_result(
                 "'secret_type', 'client_random', 'secret'",
                 category=ErrorCategory.INVALID_INPUT,
             ) from exc
+        if secret_type not in ALL_SECRET_TYPES:
+            raise CapabilityError(
+                f"secrets[{i}] has non-canonical secret_type {secret_type!r}; "
+                f"expected one of {sorted(ALL_SECRET_TYPES)}",
+                category=ErrorCategory.INVALID_INPUT,
+            )
         try:
             crypto_secrets.append(CryptoSecret(
                 secret_type=secret_type,
@@ -1253,6 +1270,66 @@ def keylog_result(
         "keylog": keylog,
         "count": keylog.count("\n"),
         "output_path": output_path,
+    }
+
+
+# ----------------------------------------------------------------------
+# inspect-pcap  (arm/validate a capture: summarise the TLS sessions it holds)
+# ----------------------------------------------------------------------
+
+
+def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
+    """Summarise the TLS sessions a capture contains, without decrypting.
+
+    The "arm/validate" step of the pcap verification flow: before a recovered
+    key is proven against a capture (see :func:`brute_force`'s ``pcap_path``
+    oracle), this producer parses the capture's handshakes and reports the
+    per-session facts the oracle keys off — client/server random, the
+    negotiated cipher suite + version, and how many encrypted application-data
+    records each direction carries. It reads only already-parsed state; it
+    derives no keys and decrypts nothing.
+
+    The single implementation behind the HTTP ``POST /api/pcaps/validate``
+    route, the MCP ``inspect_pcap`` tool, and the CLI ``inspect-pcap`` command,
+    so the summary cannot fork across surfaces.
+
+    Raises :class:`CapabilityError` (UNSUPPORTED) when the ``pcap`` extra
+    (``dpkt``) is not installed, and (INVALID_INPUT) only when the capture
+    itself is unreadable (truncated/corrupt/not a capture at all). A *parseable*
+    capture with no TLS sessions is not an error: it returns ``session_count: 0``
+    with an empty ``sessions`` list. Returns
+    ``{"pcap_path": str, "session_count": int, "sessions": [...]}`` where each
+    session is one :meth:`TlsPcapResource.describe_sessions` dict.
+    """
+    from memdiver.engine.resources.tls_pcap import (
+        HAS_PCAP,
+        PcapParseError,
+        TlsPcapResource,
+    )
+
+    if not HAS_PCAP:
+        raise CapabilityError(
+            "pcap parsing needs the 'pcap' extra (dpkt); install with: "
+            "pip install memdiver[pcap]",
+            category=ErrorCategory.UNSUPPORTED,
+        )
+
+    # ``TlsPcapResource.describe_sessions`` funnels every capture-read failure —
+    # including dpkt's own ``dpkt.dpkt.NeedData`` on a truncated capture — through
+    # ``_read_flows`` into ``PcapParseError`` (see ``tls_pcap._read_flows``), so no
+    # bare dpkt error can reach here; map the funnelled errors to INVALID_INPUT.
+    try:
+        sessions = TlsPcapResource(pcap_path).describe_sessions()
+    except (PcapParseError, OSError, ValueError) as exc:
+        raise CapabilityError(
+            f"could not parse capture {pcap_path!r}: {exc}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+
+    return {
+        "pcap_path": pcap_path,
+        "session_count": len(sessions),
+        "sessions": sessions,
     }
 
 

@@ -26,6 +26,7 @@ import type {
   BruteForceParams,
   EmitParams,
   NSweepParams,
+  PcapSession,
   ReduceParams,
   TaskStatus,
 } from "@/api/pipeline";
@@ -117,6 +118,13 @@ export interface PipelineState {
   form: PipelineFormValues;
   taskId: string | null;
   lastSeq: number;
+  // TLS sessions the server parsed out of the armed pcap (form.pcapPath).
+  // Drives the Oracle-stage session picker and the key-log composer's
+  // "prefill client_random from pcap" synergy. NOT persisted: it would
+  // re-serialize on every WS progress tick (a hot path) and would go stale
+  // after a server restart, so the list simply re-populates when the user
+  // re-validates ``form.pcapPath`` (which is persisted).
+  pcapSessions: PcapSession[];
 
   // ephemeral (rebuilt from the WS replay on reconnect)
   status: TaskStatus | "idle";
@@ -139,6 +147,7 @@ export interface PipelineState {
   // actions
   setStage: (stage: WizardStage) => void;
   updateForm: (patch: Partial<PipelineFormValues>) => void;
+  setPcapSessions: (sessions: PcapSession[]) => void;
   setTaskId: (taskId: string | null) => void;
   ingestEvent: (event: TaskProgressEvent) => void;
   resetRun: () => void;
@@ -429,11 +438,13 @@ export const usePipelineStore = create<PipelineState>()(
       form: { ...DEFAULT_FORM },
       taskId: null,
       lastSeq: 0,
+      pcapSessions: [],
       ...baseRunState(),
 
       setStage: (stage) => set({ stage }),
       updateForm: (patch) =>
         set((prev) => ({ form: { ...prev.form, ...patch } })),
+      setPcapSessions: (sessions) => set({ pcapSessions: sessions }),
       setTaskId: (taskId) =>
         set({
           taskId,

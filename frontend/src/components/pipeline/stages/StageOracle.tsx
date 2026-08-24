@@ -22,6 +22,7 @@ import { OracleDryRunBar } from "@/components/pipeline/oracle/OracleDryRunBar";
 import { OracleExamplePicker } from "@/components/pipeline/oracle/OracleExamplePicker";
 import { OracleShapeExplainer } from "@/components/pipeline/oracle/OracleShapeExplainer";
 import { OracleUpload } from "@/components/pipeline/oracle/OracleUpload";
+import { PcapUpload } from "@/components/pipeline/oracle/PcapUpload";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { useOracleStore } from "@/stores/oracle-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -129,6 +130,7 @@ export function StageOracle({ onAdvance }: Props) {
 
       <div className="md-panel p-3 space-y-2" data-tour-id="pipeline-oracle-pcap">
         <p className="text-xs md-text-muted">{t("stages.oracle.pcap.hint")}</p>
+        <PcapUpload />
         <label className="block text-xs md-text-secondary">
           {t("stages.oracle.pcap.pathLabel")}
           <input

@@ -394,6 +394,23 @@ def _cmd_export_keylog(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_inspect_pcap(args: argparse.Namespace) -> int:
+    """Summarise the TLS sessions in a capture (the pcap arm/validate step).
+
+    Routes the compute through ``app.tools_pipeline.inspect_pcap`` — the same
+    producer the HTTP ``POST /api/pcaps/validate`` route and the MCP
+    ``inspect_pcap`` tool use, so the summary has ONE implementation. Prints the
+    JSON summary to ``--output`` (or stdout). A missing ``pcap`` extra or an
+    unreadable capture raises a ``CapabilityError`` the main-loop backstop
+    renders to stderr + a category exit code.
+    """
+    from memdiver.app.tools_pipeline import inspect_pcap
+
+    result = inspect_pcap(pcap_path=args.pcap)
+    _write_output(result, getattr(args, "output", None))
+    return 0
+
+
 def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
     """Generate a KEM keypair for encrypted-MSL recipients (spec §10.4).
 

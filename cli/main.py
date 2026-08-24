@@ -36,6 +36,7 @@ from .pipeline import (
     _cmd_export_keylog,
     _cmd_gen_kem_key,
     _cmd_import_dir,
+    _cmd_inspect_pcap,
     _cmd_n_sweep,
     _cmd_search_reduce,
     _cmd_verify,
@@ -315,6 +316,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ekl.add_argument("-o", "--output",
                      help="Output key-log file path (default: stdout)")
     ekl.add_argument("-v", "--verbose", action="store_true")
+    # inspect-pcap
+    ipc = sub.add_parser(
+        "inspect-pcap",
+        help="Summarise the TLS sessions in a capture (the pcap arm/validate step)",
+    )
+    ipc.add_argument("pcap", help="Path to a .pcap/.pcapng capture")
+    ipc.add_argument("-o", "--output",
+                     help="Output JSON file (default: stdout)")
+    ipc.add_argument("-v", "--verbose", action="store_true")
     # gen-kem-key
     gk = sub.add_parser(
         "gen-kem-key",
@@ -531,6 +541,7 @@ def main():
         "auto-floor": _cmd_auto_floor,
         "emit-plugin": _cmd_emit_plugin,
         "export-keylog": _cmd_export_keylog,
+        "inspect-pcap": _cmd_inspect_pcap,
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,
     }

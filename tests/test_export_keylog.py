@@ -95,6 +95,26 @@ def test_non_dict_item_raises_invalid_input():
     assert exc_info.value.category == ErrorCategory.INVALID_INPUT
 
 
+def test_non_canonical_secret_type_raises_invalid_input():
+    """A ``secret_type`` that is not a canonical NSS label (e.g. a cipher name)
+    is rejected up front — otherwise it would produce a key log Wireshark cannot
+    load."""
+    secrets = [_secret("AES-256-CBC", _CR1, _SECRET1)]
+    with pytest.raises(CapabilityError) as exc_info:
+        keylog_result(secrets=secrets)
+    assert exc_info.value.category == ErrorCategory.INVALID_INPUT
+
+
+def test_all_canonical_labels_accepted():
+    """Every canonical label across the protocol registry validates through the
+    exporter (the same aggregate the key-log parser accepts)."""
+    from memdiver.core.keylog import ALL_SECRET_TYPES
+
+    secrets = [_secret(label, _CR1, _SECRET1) for label in sorted(ALL_SECRET_TYPES)]
+    result = keylog_result(secrets=secrets)
+    assert result["count"] == len(secrets)
+
+
 def test_keylog_result_reexported_on_library_surface():
     """The producer is reachable via the public ``memdiver.services`` facade."""
     import memdiver.services as services

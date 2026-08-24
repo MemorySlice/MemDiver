@@ -39,6 +39,9 @@ EXPECTED_TOOLS = {
     "verify", "experiment",
     # TLS-key ground-truth: export the recovered keys as an SSLKEYLOGFILE.
     "export_keylog",
+    # Phase 1 pcap oracle: parse an uploaded capture and enumerate its TLS
+    # sessions (client randoms) so a recovered key can be matched to traffic.
+    "inspect_pcap",
 }
 
 

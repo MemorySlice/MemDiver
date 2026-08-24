@@ -37,3 +37,18 @@ export const syntheticMslPath = path.join(
   "sample.msl",
 );
 export const syntheticMslAvailable = existsSync(syntheticMslPath);
+
+// Committed pcap-oracle fixture (see tests/e2e/fixtures/pcap/generate.py): a
+// self-verifying (matched.msl, session_tls13.pcap) pair whose recovered
+// SERVER_TRAFFIC_SECRET_0 decrypts the real captured TLS 1.3 session, plus the
+// manifest describing the embedded secret. CI-runnable wherever the backend
+// has the ``pcap`` extra (dpkt); the spec skips otherwise.
+export const pcapMatchedMslPath = path.join(__dirname, "pcap", "matched.msl");
+export const pcapCapturePath = path.join(__dirname, "pcap", "session_tls13.pcap");
+export const pcapManifestPath = path.join(__dirname, "pcap", "manifest.json");
+// manifest.json is read at module top by pcap-upload-run.spec.ts, so a missing
+// manifest must skip cleanly rather than error at collection.
+export const pcapFixtureAvailable =
+  existsSync(pcapMatchedMslPath) &&
+  existsSync(pcapCapturePath) &&
+  existsSync(pcapManifestPath);

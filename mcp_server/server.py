@@ -519,6 +519,19 @@ def create_server():
             secrets=secrets, output_path=output_path,
         ))
 
+    @mcp.tool()
+    @mcp_error_funnel
+    def inspect_pcap(pcap_path: str) -> str:
+        """Summarise the TLS sessions in a capture (the pcap arm/validate step).
+
+        Parses ``pcap_path``'s handshakes and returns, per session, the
+        client/server random, negotiated cipher suite + version, and the
+        per-direction application-data record counts — the facts the pcap
+        verification oracle keys off. Reads only parsed state (no key
+        derivation, no decryption). Requires the ``pcap`` extra (dpkt).
+        """
+        return json.dumps(tools_pipeline.inspect_pcap(pcap_path=pcap_path))
+
     # ------------------------------------------------------------------
     # verify + experiment — the two capabilities lifted into shared
     # producers in Phase 5 (previously CLI/API-only), now reachable here too.

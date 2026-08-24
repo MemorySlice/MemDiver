@@ -319,13 +319,22 @@ export const exportPattern = (body: { pattern: Record<string, unknown>; format: 
   request<ExportResult>("/api/architect/export", { method: "POST", body: JSON.stringify(body) });
 
 // File uploads (multipart — bypass JSON Content-Type)
-async function uploadFile<T>(url: string, file: File): Promise<T> {
+export async function uploadFile<T>(url: string, file: File): Promise<T> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${BASE}${url}`, { method: "POST", body: form });
   if (!res.ok) {
+    // FastAPI serializes errors as {"detail": "..."}; surface that human
+    // message rather than the raw JSON envelope. A non-JSON body (e.g. a proxy
+    // error page) is kept verbatim.
     const body = await res.text();
-    throw new ApiError(res.status, body);
+    let msg = body;
+    try {
+      msg = (JSON.parse(body) as { detail?: string }).detail ?? body;
+    } catch {
+      // Non-JSON body — keep it verbatim.
+    }
+    throw new ApiError(res.status, msg);
   }
   return res.json() as Promise<T>;
 }

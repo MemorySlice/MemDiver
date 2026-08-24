@@ -178,6 +178,7 @@ addopts = "--import-mode=importlib -m 'not e2e'"
 testpaths = ["tests"]
 markers = [
     "e2e: browser end-to-end tests (Playwright + live backend); run with `-m e2e`",
+    "slow: heavy tests over real machine-local corpora (large dumps); run explicitly",
 ]
 
 # ---------------------------------------------------------------------------

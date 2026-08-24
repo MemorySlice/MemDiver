@@ -267,3 +267,50 @@ def test_producer_persists_confirmed_hit_as_ground_truth(tmp_path, monkeypatch):
     assert rows[0]["confirmed_by"] == "pcap"
     assert rows[0]["key_hex"] == MASTER_SECRET.hex()
     assert rows[0]["offset"] == SECRET_OFFSET
+
+
+# --------------------------------------------------------------------------- #
+# A pcap-oracle run whose tls_client_random matches no session must funnel to
+# CapabilityError(INVALID_INPUT), not escape as a raw PcapParseError.
+# --------------------------------------------------------------------------- #
+
+# A real TLS 1.3 capture (one session) — reused only to have a genuinely
+# parseable pcap whose sole session cannot match a bogus client_random.
+REAL_PCAP = Path(
+    "/Users/danielbaier/Desktop/tls_dumps/TLS13/"
+    "100_iterations_Abort_KeyUpdate/openssl/openssl_run_13_1/"
+    "run_data/traffic.pcap"
+)
+
+
+def test_brute_force_bogus_client_random_is_invalid_input(tmp_path):
+    """A pcap oracle armed with a client_random matching no session raises a
+    ``CapabilityError(INVALID_INPUT)`` — the underlying ``PcapParseError`` (a
+    bare ``Exception`` raised eagerly from ``ResourceOracle.__init__``) is
+    funnelled rather than leaking a raw stack trace to the surface."""
+    if not REAL_PCAP.is_file():
+        pytest.skip(f"sample capture not present: {REAL_PCAP}")
+
+    from memdiver.app.tools_pipeline import brute_force
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+
+    reference = b"\x00" * 128
+    ref_path = tmp_path / "reference.bin"
+    ref_path.write_bytes(reference)
+    cand_path = tmp_path / "candidates.json"
+    cand_path.write_text(
+        json.dumps({"regions": [{"offset": 0, "length": len(reference)}]})
+    )
+
+    with pytest.raises(CapabilityError) as exc_info:
+        brute_force(
+            candidates_path=str(cand_path),
+            reference_path=str(ref_path),
+            output_dir=str(tmp_path / "out"),
+            pcap_path=str(REAL_PCAP),
+            tls_client_random="ff" * 32,  # bogus: matches no captured session
+            key_sizes=(48,),
+            stride=8,
+        )
+
+    assert exc_info.value.category is ErrorCategory.INVALID_INPUT

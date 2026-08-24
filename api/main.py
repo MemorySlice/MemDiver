@@ -185,6 +185,7 @@ def create_app() -> FastAPI:
         inspect,
         oracles,
         path,
+        pcaps,
         pipeline,
         sessions,
         structures,
@@ -198,6 +199,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
     app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
     app.include_router(dumps.router, prefix="/api/dumps", tags=["dumps"])
+    app.include_router(pcaps.router, prefix="/api/pcaps", tags=["pcaps"])
     app.include_router(path.router, prefix="/api/path", tags=["path"])
     app.include_router(structures.router, prefix="/api/structures", tags=["structures"])
     app.include_router(architect.router, prefix="/api/architect", tags=["architect"])

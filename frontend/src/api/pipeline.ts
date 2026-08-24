@@ -7,7 +7,7 @@
  * request/response changes stay in one place.
  */
 
-import { request } from "./client";
+import { request, uploadFile } from "./client";
 
 // ---- request models (must match api/routers/pipeline.py) ----
 
@@ -64,6 +64,41 @@ export interface PipelineRunResponse {
   status: string;
   // null for a pcap-oracle run (no BYO oracle file to hash).
   oracle_sha256?: string | null;
+}
+
+// ---- pcap oracle upload + validation (api/routers/pcaps.py) ----
+
+/** Result of uploading a pcap/pcapng to the server-managed pcap dir. */
+export interface PcapUploadResult {
+  pcap_path: string;
+  filename: string;
+  size: number;
+}
+
+/**
+ * One TLS session dpkt could parse out of the capture. ``version`` is the
+ * negotiated TLS version ("12" = 1.2, "13" = 1.3); the app-record counts hint
+ * whether there is ciphertext worth decrypting on each side.
+ */
+export interface PcapSession {
+  client_random: string;
+  server_random: string;
+  version: "12" | "13";
+  cipher_suite: number;
+  cipher_name: string;
+  client_app_records: number;
+  server_app_records: number;
+  // True when the session carries at least one application_data record the
+  // oracle can decrypt. Always emitted by the backend, so ``sessionHasAppRecords``
+  // reads it directly.
+  has_app_records: boolean;
+}
+
+/** Server-side validation of an uploaded pcap: the sessions it contains. */
+export interface PcapValidateResult {
+  pcap_path: string;
+  session_count: number;
+  sessions: PcapSession[];
 }
 
 // ---- response models ----
@@ -129,6 +164,26 @@ export const runPipeline = (body: PipelineRunRequest) =>
   request<PipelineRunResponse>("/api/pipeline/run", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+
+/**
+ * Upload a pcap/pcapng. Multipart, so it delegates to the shared
+ * ``uploadFile`` helper, which posts under the ``file`` form field and unwraps
+ * FastAPI's ``{"detail": ...}`` error body into an ``ApiError`` so callers can
+ * surface the capability-error message verbatim.
+ */
+export const uploadPcap = (file: File): Promise<PcapUploadResult> =>
+  uploadFile<PcapUploadResult>("/api/pcaps/upload", file);
+
+/**
+ * Ask the server to parse the TLS sessions out of an uploaded pcap. On a
+ * dpkt-missing / bad-capture condition the backend returns HTTP 400 via the
+ * capability-error funnel, which ``request`` re-raises as an ``ApiError``.
+ */
+export const validatePcap = (pcapPath: string) =>
+  request<PcapValidateResult>("/api/pcaps/validate", {
+    method: "POST",
+    body: JSON.stringify({ pcap_path: pcapPath }),
   });
 
 export const getPipelineRun = (taskId: string) =>

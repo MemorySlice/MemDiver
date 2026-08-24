@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     task_quota_bytes: int = 5 * 2**30  # 5 GiB
     pipeline_max_workers: int = 2
 
+    # Aggregate cap for the persisted pcap upload dir (upload_dir/pcaps). Unlike
+    # task artifacts, captures are never GC'd by the task store, so without a cap
+    # the dir is an unbounded disk-exhaustion vector. 5 GiB mirrors
+    # ``task_quota_bytes`` — ~10 captures at the 512 MiB PCAP_UPLOAD_MAX_BYTES
+    # ceiling. Override with ``MEMDIVER_PCAP_QUOTA_BYTES``; <=0 disables pruning.
+    pcap_quota_bytes: int = 5 * 2**30  # 5 GiB
+
     @model_validator(mode="after")
     def _apply_defaults_and_config(self) -> "Settings":
         """Load config.json defaults and resolve factory paths."""

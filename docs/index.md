@@ -88,6 +88,7 @@ user_guide/web_ui_tour
 user_guide/cli_reference
 user_guide/auto_floor
 user_guide/mcp_reference
+user_guide/keylog_export
 ```
 
 ```{toctree}
@@ -108,6 +109,7 @@ visualizations/index
 file_formats/msl_v1_0_0
 file_formats/dataset_layout
 oracle/interface
+oracle/pcap_oracle
 oracle/examples
 api_reference/index
 ```

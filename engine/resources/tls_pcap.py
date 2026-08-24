@@ -53,8 +53,14 @@ try:
     import dpkt
 
     HAS_PCAP = True
+    # dpkt's own exception hierarchy is rooted at ``dpkt.dpkt.Error`` (a bare
+    # ``Exception`` subclass), NOT at ``OSError``/``ValueError``. A truncated or
+    # malformed capture surfaces as ``dpkt.dpkt.NeedData`` (an ``Error``), so the
+    # capture-read funnel must catch this base to map it to ``PcapParseError``.
+    _DpktError: tuple = (dpkt.dpkt.Error,)
 except ImportError:
     HAS_PCAP = False
+    _DpktError = ()  # empty tuple → an ``except`` that matches nothing
 
 _PCAP_MISSING = (
     "dpkt not installed; install the pcap extra to parse captures: "
@@ -154,19 +160,70 @@ class TlsPcapResource:
                 "(need a ClientHello + ServerHello on one TCP connection)"
             )
         emitted = False
+        matched = False
         for session in sessions:
             if (
                 self.client_random is not None
                 and session.client_random != self.client_random
             ):
                 continue
+            matched = True
             for challenge in self._session_challenges(session):
                 emitted = True
                 yield challenge
         if not emitted and self.client_random is not None:
+            if matched:
+                raise PcapParseError(
+                    "the TLS session matching the supplied client_random has no "
+                    "application-data records to verify against"
+                )
             raise PcapParseError(
                 "no TLS session in the capture matched the supplied client_random"
             )
+
+    def describe_sessions(self) -> List[dict]:
+        """Summarise each parsed TLS session without emitting any challenge.
+
+        The read-only companion to :meth:`challenges`: it reuses the very same
+        :meth:`_parse_sessions` handshake mining but, instead of yielding one
+        :class:`DecryptionChallenge` per encrypted record, returns one plain,
+        JSON-friendly dict per recovered session — the handshake facts plus a
+        per-direction application_data record count. Parsing behaviour is
+        unchanged and nothing here mutates session state; it only reads what
+        :meth:`_parse_sessions` already produced.
+
+        Each dict has ``client_random``/``server_random`` (hex), ``version``
+        (``"12"``/``"13"``), ``cipher_suite`` (the IANA code, int),
+        ``cipher_name`` (the IANA suite name, or the code's ``str`` when
+        unknown), ``client_app_records``/``server_app_records`` (ints), and
+        ``has_app_records`` (bool: whether either direction carries at least one
+        encrypted application-data record — the oracle can only verify against a
+        session that does).
+        """
+        if not HAS_PCAP:
+            raise PcapParseError(_PCAP_MISSING)
+        summaries: List[dict] = []
+        for session in self._parse_sessions():
+            client_app_records = _count_app_data(session.client_records)
+            server_app_records = _count_app_data(session.server_records)
+            summaries.append(
+                {
+                    "client_random": session.client_random.hex(),
+                    "server_random": session.server_random.hex(),
+                    "version": session.version,
+                    "cipher_suite": session.cipher_code,
+                    "cipher_name": _cipher_name(session.cipher_code, session.version),
+                    "client_app_records": client_app_records,
+                    "server_app_records": server_app_records,
+                    # The oracle can only USE a session that carries encrypted
+                    # application-data records; a 0-record session is parseable
+                    # but not verifiable (the frontend disables such rows).
+                    "has_app_records": bool(
+                        client_app_records + server_app_records > 0
+                    ),
+                }
+            )
+        return summaries
 
     # -- capture -> TCP flows --------------------------------------------- #
 
@@ -206,7 +263,7 @@ class TlsPcapResource:
                         streams.setdefault(key, []).append((seq, payload))
         except FileNotFoundError as exc:
             raise PcapParseError(f"capture not found: {self.pcap_path!r}") from exc
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, *_DpktError) as exc:
             raise PcapParseError(
                 f"could not read capture {self.pcap_path!r}: {exc}"
             ) from exc
@@ -563,3 +620,15 @@ def _negotiated_version(server_hello, cipher_code: int) -> Optional[str]:
     if cipher_code in TLS12_CIPHER_SUITES:
         return "12"
     return None
+
+
+def _count_app_data(records: list) -> int:
+    """Count the application_data records in one direction's record list."""
+    return sum(1 for record in records if record.type == _CT_APPLICATION_DATA)
+
+
+def _cipher_name(cipher_code: int, version: str) -> str:
+    """Resolve the IANA suite name for a code, or its ``str`` when unknown."""
+    table = TLS13_CIPHER_SUITES if version == "13" else TLS12_CIPHER_SUITES
+    suite = table.get(cipher_code)
+    return suite.name if suite is not None else str(cipher_code)
