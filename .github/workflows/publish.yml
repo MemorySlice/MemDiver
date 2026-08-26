@@ -67,12 +67,15 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
+      # Root workspace install: frontend/ and tests/e2e/ share one lockfile.
+      # Deliberately NOT `npm ci -w frontend` -- the e2e workspace adds 7
+      # packages with no install scripts, and this workflow should build from
+      # the identical tree CI verified.
       - name: Build React frontend
-        working-directory: frontend
         run: |
           npm ci
-          npm run build
+          npm run build -w frontend
       - name: Install build backend
         run: python -m pip install --upgrade build
       - name: Build distributions

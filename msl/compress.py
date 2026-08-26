@@ -2,10 +2,18 @@
 
 import logging
 
+from memdiver.core.install_hints import missing_package_message
+
 from .enums import CompAlgo
 from .types import MslParseError
 
 logger = logging.getLogger("memdiver.msl.compress")
+
+# Both codecs are base dependencies, so their absence means a broken
+# environment, not a forgotten extra. Hoisted so compress/decompress cannot
+# drift apart.
+_ZSTD_MISSING = missing_package_message("zstandard (the ZSTD block codec)")
+_LZ4_MISSING = missing_package_message("lz4 (the LZ4 block codec)")
 
 
 def compress(payload: bytes, algo: CompAlgo) -> bytes:
@@ -30,9 +38,7 @@ def compress(payload: bytes, algo: CompAlgo) -> bytes:
         try:
             import zstandard
         except ImportError:
-            raise MslParseError(
-                "zstandard not installed; install with: pip install memdiver"
-            )
+            raise MslParseError(_ZSTD_MISSING)
         logger.debug("Compressing %d bytes with zstd", len(payload))
         return zstandard.ZstdCompressor().compress(payload)
 
@@ -40,9 +46,7 @@ def compress(payload: bytes, algo: CompAlgo) -> bytes:
         try:
             import lz4.frame
         except ImportError:
-            raise MslParseError(
-                "lz4 not installed; install with: pip install memdiver"
-            )
+            raise MslParseError(_LZ4_MISSING)
         logger.debug("Compressing %d bytes with lz4", len(payload))
         return lz4.frame.compress(payload)
 
@@ -70,9 +74,7 @@ def decompress(payload: bytes, algo: CompAlgo) -> bytes:
         try:
             import zstandard
         except ImportError:
-            raise MslParseError(
-                "zstandard not installed; install with: pip install memdiver"
-            )
+            raise MslParseError(_ZSTD_MISSING)
         logger.debug("Decompressing %d bytes with zstd", len(payload))
         try:
             return zstandard.ZstdDecompressor().decompress(payload)
@@ -83,9 +85,7 @@ def decompress(payload: bytes, algo: CompAlgo) -> bytes:
         try:
             import lz4.frame
         except ImportError:
-            raise MslParseError(
-                "lz4 not installed; install with: pip install memdiver"
-            )
+            raise MslParseError(_LZ4_MISSING)
         logger.debug("Decompressing %d bytes with lz4", len(payload))
         try:
             return lz4.frame.decompress(payload)

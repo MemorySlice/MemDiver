@@ -6,10 +6,27 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# npm workspaces: one hoisted install lives at the repo root. frontend/ and
+# tests/e2e/ no longer get their own tree from npm, but vite still writes
+# frontend/node_modules/.vite (its cacheDir) and tsc writes
+# frontend/node_modules/.tmp/*.tsbuildinfo -- so this must match at any depth.
+node_modules/
 .venv/
 env/
 *.log
 *.json
+# ...but the TS project configs are real source and must be tracked. The blanket
+# *.json above exists to keep generated artifacts out; these are hand-written.
+!frontend/tsconfig*.json
+!tsconfig*.json
+# Same story for the npm manifests now that the repo is an npm workspace root.
+# Anchored with a leading `/` so each names exactly one file: a bare
+# `!package.json` would un-ignore that basename at EVERY level of the tree.
+!/package.json
+!/package-lock.json
+!/frontend/package.json
+!/tests/e2e/package.json
 .DS_Store
 .dSYM/
 *.dSYM/

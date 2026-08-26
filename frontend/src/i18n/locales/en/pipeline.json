@@ -73,7 +73,7 @@
         "matchAny": "Match any session (do not restrict by client_random)",
         "noSessions": "No TLS sessions were found in this capture.",
         "noAppRecords": "(no application data — cannot verify)",
-        "dpktMissing": "The server cannot parse pcaps because the optional 'dpkt' dependency is not installed.",
+        "dpktMissing": "The server cannot parse pcaps: its 'dpkt' dependency is missing. It is part of the base install \u2014 on the server, run: pip install --force-reinstall memdiver",
         "arm": "Arm / re-validate",
         "arming": "Arming…",
         "armHint": "Validates the path above and re-populates the session picker — use it after typing a server-side path by hand, or after a page reload (the path is remembered, the parsed sessions are not).",

@@ -24,7 +24,8 @@ No URL routing today. `useAppStore.appView` switches between `landing`, `wizard`
 ## Build
 
 ```bash
-cd frontend
+# From the repo root: frontend/ is an npm workspace, so there is one hoisted
+# install and one lockfile at the root.
 npm ci
 npm run build           # → frontend/dist
 npm run dev             # → Vite dev server on :5173 with proxy to :8080

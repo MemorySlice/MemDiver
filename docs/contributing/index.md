@@ -10,7 +10,9 @@ pytest tests/ -v
 memdiver web
 
 # Frontend dev server (hot-reload, proxies /api to :8080)
-cd frontend && npm install && npm run dev
+# NOTE: one hoisted npm install at the REPO ROOT -- frontend/ and tests/e2e/
+# are npm workspaces. Do NOT `cd frontend` first; see "JS install" below.
+npm ci && npm run dev
 
 # Marimo sandbox
 memdiver ui
@@ -50,12 +52,47 @@ up until the process restarts.
 - Comments explain **why**, not **what**. Self-documenting names preferred.
 - Never delete existing code without explicit approval — preserve all functionality unless asked otherwise.
 
+## JS install (npm workspaces)
+
+`frontend/` and `tests/e2e/` are **npm workspaces** of the root `package.json`.
+There is exactly one `node_modules` (at the repo root) and exactly one
+`package-lock.json` (at the repo root):
+
+```bash
+npm ci          # from the repo root, never from inside a workspace
+```
+
+| Root command | Underlying |
+| --- | --- |
+| `npm run dev` / `build` / `test:run` | `npm run <script> -w frontend` |
+| `npm run e2e` | `npm run test -w tests/e2e` |
+| `npm run lint` | `eslint .` against the root `eslint.config.mjs` |
+| `npm run typecheck` | `tsc -b frontend` |
+
+`npm install` inside a workspace directory creates a nested `node_modules` with
+a duplicated React — see the warning in
+[`CONTRIBUTING.md`](https://github.com/MemorySlice/MemDiver/blob/main/CONTRIBUTING.md).
+CI asserts that exactly one copy of `react` exists.
+
 ## Test taxonomy
 
 - **Unit** (~90 files) — one per subsystem module.
 - **Integration** — `test_integration.py`, `test_aes_e2e.py`, `test_pipeline.py`.
 - **Real-dump E2E** — gated by the `requires_dataset` marker; skipped when no dataset is configured.
-- **Playwright browser E2E** — `tests/e2e_*_test.py` (manually invoked, not collected by pytest default discovery).
+- **Python browser E2E (pytest-playwright)** — `tests/e2e_*_test.py` (manually invoked, not collected by pytest default discovery).
+- **Frontend unit (vitest)** — 23 files / 209 tests under `tests/frontend/`,
+  mirroring the `frontend/src/` tree. Tests are **never** co-located with the
+  module under test, and the directory anchor is load-bearing: it is what keeps
+  vitest and the Playwright suite apart (Playwright's files are all `*.spec.ts`
+  under `tests/e2e/specs/`, and vitest's include pattern accepts `spec` too).
+  jsdom + `@testing-library/react`; `@/` → `frontend/src`, `@tests/` →
+  `tests/frontend`. Run with `make fe-test`. Typechecked by
+  `frontend/tsconfig.test.json` via `make fe-typecheck` — deliberately a
+  *separate* TS project from `tsconfig.app.json`, which is what `vite build`
+  compiles and must stay test-free.
+- **TypeScript browser E2E / a11y (Playwright)** — `tests/e2e/specs/*.spec.ts`,
+  34 files / 127 tests. Run with `scripts/test-e2e.sh` or `npm run e2e`; the
+  `a11y-*` subset is asserted on every frontend-touching PR.
 
 ## Docs build
 

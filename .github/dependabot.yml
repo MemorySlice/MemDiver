@@ -12,26 +12,20 @@ updates:
           - "minor"
           - "patch"
 
-  # React/Vite frontend.
+  # React/Vite frontend (frontend/) + Playwright e2e/a11y suite (tests/e2e/).
+  # Both are npm WORKSPACES of the root package.json: one hoisted node_modules,
+  # one package-lock.json. Dependabot reads `workspaces` from the root manifest
+  # and updates the child package.json files plus the single root lockfile, so
+  # one `directory: "/"` entry replaces the two per-package entries this used to
+  # need. Do NOT re-add /frontend or /tests/e2e entries -- with no lockfile of
+  # their own they would either no-op or open PRs that resurrect one.
   - package-ecosystem: "npm"
-    directory: "/frontend"
+    directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
     groups:
-      frontend-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Playwright e2e/a11y suite (separate lockfile from frontend/).
-  - package-ecosystem: "npm"
-    directory: "/tests/e2e"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    groups:
-      e2e-minor-patch:
+      npm-minor-patch:
         update-types:
           - "minor"
           - "patch"

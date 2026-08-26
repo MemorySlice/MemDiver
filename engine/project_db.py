@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from memdiver.core.install_hints import BASE_INSTALL_HINT
+
 logger = logging.getLogger("memdiver.engine.project_db")
 
 try:
@@ -37,8 +39,12 @@ def default_db_path() -> Path:
     return memdiver_home() / "project.duckdb"
 
 def install_hint() -> str:
-    """Return a user-friendly install command string."""
-    return "pip install memdiver"
+    """Return a user-friendly install command string.
+
+    DuckDB + Ibis are base dependencies, so a missing one is a broken
+    environment rather than an un-installed extra; point at the repair.
+    """
+    return BASE_INSTALL_HINT
 
 _SCHEMA_SQL = [
     "CREATE TABLE IF NOT EXISTS projects(project_id VARCHAR PRIMARY KEY, name VARCHAR, created_at VARCHAR, description VARCHAR DEFAULT '')",

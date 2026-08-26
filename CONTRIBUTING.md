@@ -16,9 +16,28 @@ pytest tests/ -v
 For frontend work:
 
 ```bash
-cd frontend
+# ONE npm install, at the REPO ROOT. frontend/ and tests/e2e/ are npm
+# workspaces of the root package.json: one node_modules, one package-lock.json.
 npm ci
 npm run dev      # Vite dev server, proxies to backend on :8080
+```
+
+> **Do not run `npm install` inside `frontend/` or `tests/e2e/`.** There is no
+> lockfile there any more. `npm ci` fails loudly (good); `npm install`
+> *succeeds* (bad) -- it creates a nested `frontend/node_modules` with a second
+> copy of React, and the app then dies with "Invalid hook call" while vitest and
+> ESLint quietly resolve two different module instances. If you do it by
+> accident: `rm -rf frontend/node_modules frontend/package-lock.json`, then
+> `npm ci` from the repo root. `git status` will show the stray lockfile, and
+> CI's "Assert one hoisted copy of react" step fails on the duplicate.
+
+Frontend commands, all from the repo root:
+
+```bash
+make fe-test        # vitest -> 23 files / 209 tests under tests/frontend/
+make fe-typecheck   # tsc -b frontend (app + node + test projects)
+make fe-lint        # eslint (advisory)
+npm run build       # -> frontend/dist, the bundle the backend serves
 ```
 
 ## What to read before opening a PR

@@ -253,7 +253,7 @@ def _create_msl_session() -> None:
 def shot_msl_loaded(page) -> None:
     """Land on the workspace with the canonical MSL fixture loaded.
 
-    Strategy mirrors scripts/test_hex_chunk_rerender.py: register a session
+    Strategy mirrors scripts/drive_hex_chunk_rerender.py: register a session
     via the REST API, then click its Load button on the landing page so the
     SPA hydrates the workspace exactly as a returning user would see it.
     """

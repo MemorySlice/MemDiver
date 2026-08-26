@@ -13,6 +13,8 @@ import logging
 import sys
 from pathlib import Path
 
+from memdiver.core.install_hints import (missing_package_message,
+                                        native_runtime_message)
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 logger = logging.getLogger("memdiver.cli")
@@ -187,17 +189,21 @@ def _format_jsonl(data: dict) -> str:
 def _print_missing_package(package: str, extra: str | None = None) -> None:
     """Print a uniform 'package missing' install hint to stderr.
 
-    ``extra`` names an optional-dependencies group (e.g. ``"experiment"``).
-    When omitted, the hint points at a base-install reinstall.
+    ``extra`` names an optional-dependencies group (e.g. ``"marimo"``) and is
+    kept for backward compatibility with every existing call site. Groups that
+    became empty back-compat aliases when their contents moved into the base
+    install are resolved to the reinstall wording by
+    :func:`~memdiver.core.install_hints.missing_package_message`, so a caller
+    never has to know which side of the contract its package sits on.
     """
-    if extra:
-        message = (
-            f"{package} is not available. Install the '{extra}' extras with:\n"
-            f"    pip install memdiver[{extra}]"
-        )
-    else:
-        message = (
-            f"{package} is missing from your environment. It is part of the "
-            f"base install; try: pip install --force-reinstall memdiver"
-        )
-    print(message, file=sys.stderr)
+    print(missing_package_message(package, extra), file=sys.stderr)
+
+
+def _print_missing_native_runtime(component: str, detail: str = "") -> None:
+    """Print the OS-level action for a missing NATIVE runtime piece to stderr.
+
+    The companion to :func:`_print_missing_package` for the case where the
+    Python wheel is present but the C library / OS debugger / attachable target
+    behind it is not, and a pip hint would therefore be wrong.
+    """
+    print(native_runtime_message(component, detail), file=sys.stderr)

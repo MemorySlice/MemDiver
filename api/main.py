@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from memdiver.api.config import get_settings
+from memdiver.core.install_hints import missing_package_message
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.security import ApiTokenAuthMiddleware, guard_notebook_websocket
@@ -236,7 +237,9 @@ def create_app() -> FastAPI:
         else:
             _notebook_error = f"Notebook file not found: {notebook_path}"
     except ImportError:
-        _notebook_error = "Marimo not installed. Install with: pip install marimo"
+        # Marimo is the one interface that is still opt-in, so this is the
+        # only place a genuine "install the extra" hint is still correct.
+        _notebook_error = missing_package_message("Marimo", extra="marimo")
         logger.info("Marimo not installed, /notebook not available")
     except Exception as exc:
         _notebook_error = str(exc)

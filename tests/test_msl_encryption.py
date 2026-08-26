@@ -368,7 +368,11 @@ def test_cli_gen_kem_key_unavailable_mechanism(tmp_path, capsys, monkeypatch):
         mechanism="ML-KEM-768", public_out=str(tmp_path / "p"),
         private_out=str(tmp_path / "s"), verbose=False))
     assert rc == 1
-    assert "memdiver[crypto]" in capsys.readouterr().err
+    # ML-KEM's remedy is the NATIVE liboqs library, not a pip extra: assert the
+    # message names the OS-level action and offers no misleading extra.
+    err = capsys.readouterr().err
+    assert "liboqs" in err
+    assert "memdiver[crypto]" not in err
 
 
 @pytest.mark.skipif(not crypto.kem_is_available(KeyEncap.X25519_ML_KEM_768),

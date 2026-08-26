@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install MemDiver + docs toolchain
         run: |
@@ -74,11 +74,14 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: python -m playwright install-deps chromium
 
+      # Root workspace install: frontend/ and tests/e2e/ share one lockfile.
+      # Deliberately NOT `npm ci -w frontend` -- the e2e workspace adds 7
+      # packages with no install scripts, and this workflow should build from
+      # the identical tree CI verified.
       - name: Build React frontend
-        working-directory: frontend
         run: |
           npm ci
-          npm run build
+          npm run build -w frontend
 
       - name: Verify seed fixtures
         run: python docs/screenshots/capture.py --verify-seed

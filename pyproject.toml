@@ -30,11 +30,30 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Scientific/Engineering",
 ]
-# Base deps = the importable library core (`import memdiver`, `open_dump`,
-# `MslReader`/`MslWriter`, `import_dump`, `run_auto_floor`, `detect_format`) plus
-# the core analysis/CLI stack. The HTTP API, MCP server, and the Marimo
-# UI live behind extras (see below) so a library-only install stays lean — every
-# consumer of those deps imports them lazily and degrades with a clear hint.
+# Base deps = the FULL install. `pip install memdiver` is deliberately the
+# complete product: the importable library core (`import memdiver`, `open_dump`,
+# `MslReader`/`MslWriter`, `import_dump`, `run_auto_floor`, `detect_format`),
+# the analysis/CLI stack, AND every primary interface -- HTTP API + web UI, MCP
+# server, and the pcap verification oracle.
+#
+# This reverses the pre-0.6 "O-4" split. Rationale: the three interfaces cost
+# only ~37 MB on top of the core, and someone who types `memdiver web` should
+# not first have to discover an extra. Marimo is the sole exception and stays
+# opt-in -- it alone costs ~164 MB, more than four times every other interface
+# combined, and `memdiver ui` is the least-central surface.
+#
+# Dump collection (frida-tools + memslicer) and the post-quantum KEM paths
+# (liboqs-python) are in base too. Note what that does and does NOT buy: pip
+# resolves all three fine, but each needs a NATIVE runtime piece that pip cannot
+# provide -- liboqs-python DOWNLOADS AND CMAKE-BUILDS the liboqs C library into
+# ~/_oqs on first `import oqs` (so it needs cmake + a compiler), frida needs an
+# attachable target, and the LLDB backend comes from the OS. Those paths
+# therefore report a NATIVE-dependency error, never a `pip install ...[extra]`
+# hint -- see msl/crypto.py and app/experiment_orchestration.py.
+#
+# The lazy imports and "install the X extra" hints throughout the codebase are
+# retained on purpose: they still fire correctly for [marimo]/[crypto]/
+# [experiment], and for anyone who force-uninstalls a base dependency.
 dependencies = [
     "plotly>=5.18.0",
     "polars>=1.0.0",
@@ -54,36 +73,58 @@ dependencies = [
     "cryptography>=42.0",
     "PyNaCl>=1.5",
     "argon2-cffi>=23.0",
-]
-
-[project.optional-dependencies]
-# HTTP API + Web UI backend: `memdiver serve` runs the FastAPI app that serves
-# the built React frontend and the REST API. Moved out of base so a library-only
-# install does not pull the whole web stack (this is the O-4 change).
-api = [
+    # --- HTTP API + web UI backend (`memdiver web`) ---
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic-settings>=2.0.0",
-]
-# Model Context Protocol server (`memdiver mcp`) for AI-agent integration.
-mcp = ["mcp>=1.0.0"]
-# Marimo interactive notebook UI (`memdiver ui`).
-marimo = ["marimo>=0.8.0"]
-# pcap/pcapng parsing for the TLS decryption-challenge resource
-# (`TlsPcapResource`): prove a memory-recovered key decrypts captured records.
-pcap = ["dpkt>=1.9.8"]
-# Convenience group: every interface at once — reproduces the pre-0.6 base
-# install (`pip install memdiver[all]`).
-all = ["memdiver[api,mcp,marimo,pcap]"]
-experiment = [
+    # REQUIRED, not optional: four routers (dumps, consensus, oracles, pcaps)
+    # declare `UploadFile = File(...)` / `Form(...)`, and FastAPI raises
+    # RuntimeError("Form data requires \"python-multipart\"") at ROUTER IMPORT
+    # time -- so without it `memdiver web` crashes on startup, it does not merely
+    # fail on upload. Neither `fastapi` nor `uvicorn[standard]` pulls it in (only
+    # `fastapi[standard]` does). Pinned to match fastapi's own `standard` extra.
+    "python-multipart>=0.0.18",
+    # --- MCP server for AI-agent integration (`memdiver mcp`) ---
+    "mcp>=1.0.0",
+    # --- pcap/pcapng parsing for the TLS decryption-challenge oracle
+    #     (`TlsPcapResource`): prove a memory-recovered key decrypts real
+    #     captured records. ---
+    "dpkt>=1.9.8",
+    # --- Dump collection (`memdiver experiment`). Needs a live, attachable
+    #     target at runtime; the LLDB backend is installed via the OS (Xcode
+    #     Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu). ---
     "frida-tools>=12.0",
     "memslicer",
+    # --- Post-quantum KEM for MSL encryption (spec 10.4: ML-KEM-768/1024 and
+    #     the X25519+ML-KEM-768 hybrid). liboqs-python builds the liboqs C
+    #     library into ~/_oqs on FIRST IMPORT, which needs cmake + a compiler --
+    #     so a successful pip install does not by itself guarantee ML-KEM works.
+    #     The probe in msl/crypto.py degrades cleanly when the build fails. ---
+    "liboqs-python>=0.10",
 ]
-# Post-quantum key encapsulation for MSL encryption (spec §10.4: ML-KEM-768,
-# ML-KEM-1024, and the recommended X25519+ML-KEM-768 hybrid). Requires the
-# liboqs C library (native build). ML-KEM code paths degrade gracefully when
-# this extra is absent — only KeyEncap=None and X25519 are then available.
-crypto = ["liboqs-python>=0.10"]
+
+[project.optional-dependencies]
+# BACK-COMPAT ALIASES, intentionally empty. api/mcp/pcap are part of the base
+# install now, so `pip install "memdiver[api]"` resolves to exactly the same
+# thing as `pip install memdiver` -- but it still RESOLVES, so every existing
+# README, Dockerfile, CI script and requirements.txt in the wild keeps working
+# instead of failing on an unknown extra. Do not delete these.
+#
+# Note that Python extras can only ever ADD dependencies, never subtract them.
+# Now that the base install is the full product, there is by design no install
+# smaller than the default; a genuinely lean variant would have to be a separate
+# distribution on PyPI.
+api = []
+mcp = []
+pcap = []
+experiment = []
+crypto = []
+# The one interface that is still opt-in: Marimo pulls ~164 MB, more than four
+# times every other interface combined.
+marimo = ["marimo>=0.8.0"]
+# Every interface at once. Base already covers api + mcp + pcap, so this now
+# adds only the Marimo notebook UI.
+all = ["memdiver[marimo]"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis"]
 docs = [
     "sphinx>=7.3,<9",

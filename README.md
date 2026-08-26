@@ -45,21 +45,38 @@ It combines known-key search, entropy scanning, change-point detection, structur
 ## Install
 
 ```bash
-pip install memdiver                 # lean core: CLI + Python library (import memdiver)
-pip install "memdiver[api]"          # + FastAPI/uvicorn web UI & REST API (memdiver web)
-pip install "memdiver[mcp]"          # + MCP server for AI agents (memdiver mcp)
-pip install "memdiver[pcap]"         # + dpkt parser for the pcap verification oracle
-pip install "memdiver[all]"          # every interface (api + mcp + marimo + pcap)
-pip install "memdiver[experiment]"   # + frida-tools, memslicer for dump collection
+pip install memdiver                 # everything: CLI, library, web UI, MCP server,
+                                     # pcap oracle, dump collection, post-quantum KEM
+pip install "memdiver[marimo]"       # + Marimo notebook UI (memdiver ui) -- the one opt-in interface
+pip install "memdiver[all]"          # every interface (= the default install + marimo)
 pip install "memdiver[docs]"         # + Sphinx toolchain for building the docs site
 pip install "memdiver[dev]"          # + pytest and contributor tooling
 ```
 
-The base install stays lean for library/CLI users; the web UI, MCP server, and the
-Marimo (`memdiver[marimo]`) UI are opt-in extras.
-Each CLI command that needs an extra prints the exact `pip install memdiver[...]` hint if it is missing.
+The default install is the **complete product**: `memdiver web`, `memdiver mcp` and
+the pcap verification oracle all work with no extras. Only the Marimo notebook UI is
+opt-in, because it alone costs ~164 MB — more than four times every other interface
+combined.
 
-LLDB is installed via your operating system — Xcode Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu. `memdiver experiment` exits gracefully with an install hint when no backend is present.
+`memdiver[api]`, `[mcp]`, `[pcap]`, `[experiment]` and `[crypto]` still resolve as
+no-op aliases, so existing pinned commands keep working. Note that Python extras can
+only *add* dependencies, never subtract them, so there is deliberately no install
+smaller than the default.
+
+**What pip cannot install for you.** Three capabilities ship by default but need a
+native runtime piece, so a successful `pip install` does not by itself mean they will
+run. Each one reports the OS-level action rather than a misleading `pip install`
+hint:
+
+| Capability | Needs |
+| --- | --- |
+| ML-KEM / hybrid MSL encryption | the **liboqs C library**. `liboqs-python` builds it into `~/_oqs` on first use, so **cmake + a C compiler** must be present. Without them, ML-KEM reports unavailable and only `KeyEncap=None` and X25519 are offered. |
+| `memdiver experiment` (Frida) | an **attachable target process**, plus platform support for Frida. |
+| `memdiver experiment` (LLDB) | **LLDB from your OS** — Xcode Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu. |
+Every command that needs something missing says exactly what to run — a `pip install`
+hint when a Python package is genuinely absent, and the OS-level action when the
+missing piece is native (see the table above). `memdiver experiment` exits gracefully
+when no backend is present.
 
 ## Quick start
 
@@ -111,8 +128,9 @@ memdiver export-keylog --secrets secrets.json -o session.keylog
 | **MCP** | `inspect_pcap` tool | `brute_force` tool (`pcap_path`) |
 | **Library** | `memdiver.services.inspect_pcap(pcap_path=…)` | `memdiver.services.brute_force(pcap_path=…)` |
 
-Needs the optional parser — `pip install "memdiver[pcap]"`; without it the arm
-step returns an `INVALID_INPUT` capability error and pcap runs are unavailable.
+The `dpkt` parser ships in the default install, so the oracle works out of the box.
+(If it is force-uninstalled, the arm step returns an `INVALID_INPUT` capability error
+and pcap runs are unavailable.)
 
 **The `--key-sizes` trap:** the oracle recovers the *secret* and derives record
 keys from it, so the candidate length must match the secret, not the record key

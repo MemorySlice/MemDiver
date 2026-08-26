@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 import numpy as np
 
+from memdiver.core.install_hints import (CAPTURE_BACKEND_HINT,
+                                        missing_package_message)
 from memdiver.core.service_errors import (
     CapabilityError,
     ErrorCategory,
@@ -263,7 +265,7 @@ def experiment_result(
     except ImportError as exc:  # pragma: no cover - environmental
         raise CapabilityError(
             f"experiment backend unavailable: {exc}. "
-            "Install with `pip install memdiver[experiment]`.",
+            + missing_package_message("The dump-driver backend"),
             category=ErrorCategory.UNSUPPORTED, code="missing_backend",
         ) from exc
 
@@ -282,8 +284,7 @@ def experiment_result(
         ) from exc
     if not orch.available_tools:
         raise CapabilityError(
-            "no dump tools available on this machine "
-            "(install frida-tools / memslicer / lldb to enable capture).",
+            CAPTURE_BACKEND_HINT,
             category=ErrorCategory.PRECONDITION, code="missing_backend",
         )
 

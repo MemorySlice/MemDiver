@@ -518,7 +518,7 @@ def test_compress_unavailable_codec_raises(tmp_path, monkeypatch):
 
     out = tmp_path / "missing_codec.msl"
     w = MslWriter(out)
-    with pytest.raises(MslParseError, match="zstandard not installed"):
+    with pytest.raises(MslParseError, match="zstandard"):
         w.add_memory_region(0, b"\x00" * 4096, compression=CompAlgo.ZSTD)
     assert not out.exists()
 

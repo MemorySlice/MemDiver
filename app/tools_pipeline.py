@@ -1408,8 +1408,8 @@ def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
     route, the MCP ``inspect_pcap`` tool, and the CLI ``inspect-pcap`` command,
     so the summary cannot fork across surfaces.
 
-    Raises :class:`CapabilityError` (UNSUPPORTED) when the ``pcap`` extra
-    (``dpkt``) is not installed, and (INVALID_INPUT) only when the capture
+    Raises :class:`CapabilityError` (UNSUPPORTED) when ``dpkt`` (a base
+    dependency) is not installed, and (INVALID_INPUT) only when the capture
     itself is unreadable (truncated/corrupt/not a capture at all). A *parseable*
     capture with no TLS sessions is not an error: it returns ``session_count: 0``
     with an empty ``sessions`` list. Returns
@@ -1417,6 +1417,7 @@ def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
     session is one :meth:`TlsPcapResource.describe_sessions` dict.
     """
     from memdiver.engine.resources.tls_pcap import (
+        _PCAP_MISSING,
         HAS_PCAP,
         PcapParseError,
         TlsPcapResource,
@@ -1424,8 +1425,7 @@ def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
 
     if not HAS_PCAP:
         raise CapabilityError(
-            "pcap parsing needs the 'pcap' extra (dpkt); install with: "
-            "pip install memdiver[pcap]",
+            f"pcap parsing needs dpkt. {_PCAP_MISSING}",
             category=ErrorCategory.UNSUPPORTED,
         )
 

@@ -20,7 +20,11 @@ const BAD = /\b(text|bg|border|fill|stroke|ring-offset|ring|placeholder)-(red|ye
 // migrates these; until then they are exempt. FunnelChart migrated to the
 // token-based SEQUENTIAL_RAMP (see components/charts/tokens.ts) and no longer
 // needs the exemption.
-const ALLOW_PATH = /\/components\/charts\/|\/components\/pipeline\/results\/SurvivorCurve\.tsx/;
+// Both separators: `file` comes from walk() via path.join, so on Windows it is
+// backslash-separated and a forward-slash-only pattern would never match --
+// silently voiding the exemption and reporting every chart colour as a new
+// offender. scripts/check-no-hex-literals.mjs already does it this way.
+const ALLOW_PATH = /[/\\]components[/\\]charts[/\\]|[/\\]components[/\\]pipeline[/\\]results[/\\]SurvivorCurve\.tsx/;
 // Per-line escape hatch.
 const ALLOW_COMMENT = /design-token-source/;
 
@@ -38,7 +42,9 @@ function collectOffenders() {
   const hits = [];
   for (const file of walk(ROOT)) {
     if (ALLOW_PATH.test(file)) continue;
-    const rel = relative(REPO, file);
+    // Normalise to forward slashes so a baseline written on Windows matches
+    // one written on POSIX (same fix as check-store-selectors.mjs).
+    const rel = relative(REPO, file).split("\\").join("/");
     const lines = readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {
       if (BAD.test(line) && !ALLOW_COMMENT.test(line)) {

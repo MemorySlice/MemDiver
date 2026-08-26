@@ -1,0 +1,29 @@
+{
+  "name": "memdiver-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "tests/e2e"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "build": "npm run build --workspace frontend",
+    "test:run": "npm run test:run --workspace frontend",
+    "typecheck": "tsc -b frontend",
+    "e2e": "npm run test --workspace tests/e2e",
+    "lint:no-hex": "node scripts/check-no-hex-literals.mjs",
+    "lint:colour-literals": "node scripts/check-no-tailwind-colour-literals.mjs",
+    "lint:colour-literals:update": "node scripts/check-no-tailwind-colour-literals.mjs update",
+    "lint:store-selectors": "node scripts/check-store-selectors.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.57.0"
+  }
+}

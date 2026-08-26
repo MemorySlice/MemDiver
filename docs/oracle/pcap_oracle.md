@@ -17,14 +17,11 @@ untrusted-oracle sandbox — the capture is only ever parsed as data, never
 executed.
 
 :::{note}
-The pcap oracle needs the optional `pcap` extra (the `dpkt` parser):
+The pcap oracle's `dpkt` parser ships in the default `pip install memdiver`, so no
+extra is needed. (`memdiver[pcap]` still resolves as a no-op alias.)
 
-```bash
-pip install "memdiver[pcap]"
-```
-
-Without it, the arm/validate step returns an `INVALID_INPUT` capability error and
-pcap runs are unavailable.
+If `dpkt` is force-uninstalled, the arm/validate step returns an `INVALID_INPUT`
+capability error and pcap runs are unavailable.
 :::
 
 ## The two steps: arm, then run

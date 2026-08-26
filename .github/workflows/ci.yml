@@ -117,9 +117,7 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: |
-            frontend/package-lock.json
-            tests/e2e/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Install memdiver with dev + all interface extras
         run: |
           python -m pip install --upgrade pip setuptools
@@ -130,18 +128,13 @@ jobs:
         run: bandit -c pyproject.toml -r . -x run.py -b .bandit-baseline.json
       - name: pip-audit (installed dependency tree)
         run: pip-audit
-      - name: Install frontend deps
-        working-directory: frontend
+      # ONE hoisted install covering both npm workspaces (frontend +
+      # tests/e2e), against the single root package-lock.json. The audit now
+      # sees the deduped tree, so a shared transitive is reported once rather
+      # than twice.
+      - name: Install JS deps (root workspace install)
         run: npm ci
-      - name: npm audit -- frontend (advisory)
-        working-directory: frontend
-        continue-on-error: true
-        run: npm audit --audit-level=high
-      - name: Install e2e deps
-        working-directory: tests/e2e
-        run: npm ci
-      - name: npm audit -- tests/e2e (advisory)
-        working-directory: tests/e2e
+      - name: npm audit (advisory)
         continue-on-error: true
         run: npm audit --audit-level=high
 
@@ -179,19 +172,46 @@ jobs:
           /tmp/wheelenv/bin/python -c "import memdiver; assert 'site-packages' in memdiver.__file__, memdiver.__file__; print('memdiver', memdiver.__version__, memdiver.__file__)"
           /tmp/wheelenv/bin/python -c "import memdiver.msl.importer, memdiver.core.dump_sources.gcore, memdiver.core.dump_sources.gdb_raw, memdiver.core.dump_sources.lldb_raw, memdiver.core.binary_formats.minidump_reader; print('deep + dump_sources imports ok')"
           /tmp/wheelenv/bin/python -c "import memdiver; [getattr(memdiver, n) for n in memdiver.__all__]; print('public API symbols ok:', len(memdiver.__all__))"
-          # O-4 guarantee: a library-only install must NOT drag in the web/MCP/UI stack.
+          # FULL-BY-DEFAULT guarantee (reverses the old O-4 lean-core assertion):
+          # `pip install memdiver` must ship every interface AND the dump-collection
+          # and post-quantum stacks. Marimo must still be ABSENT -- it is the one
+          # opt-in extra, costing ~164 MB, more than four times everything else.
+          #
+          # find_spec, NOT __import__, on purpose: importing `oqs` makes
+          # liboqs-python cmake-BUILD the liboqs C library into ~/_oqs, which
+          # would turn this assertion into a multi-minute native build.
           /tmp/wheelenv/bin/python -c "
           import importlib.util as u
-          heavy = [m for m in ('fastapi', 'uvicorn', 'mcp', 'marimo') if u.find_spec(m) is not None]
-          assert not heavy, ('base install unexpectedly pulled: ' + repr(heavy))
-          print('lean core install ok: web/mcp/ui deps absent')
+          need = ('fastapi', 'uvicorn', 'mcp', 'dpkt', 'multipart', 'frida', 'frida_tools', 'memslicer', 'oqs')
+          missing = [m for m in need if u.find_spec(m) is None]
+          assert not missing, ('default install is missing: ' + repr(missing))
+          assert u.find_spec('marimo') is None, 'marimo must stay an opt-in extra'
+          print('full default install ok:', len(need), 'stacks present, marimo absent')
           "
       - name: CLI entrypoint smoke (core)
         run: /tmp/wheelenv/bin/memdiver --help > /dev/null && echo "memdiver CLI entrypoint ok"
-      - name: Install the api + mcp extras into the same venv
+      # The web app must BUILD from the BARE wheel, not merely import. This is
+      # the python-multipart regression guard: the four UploadFile/Form routers
+      # (dumps, consensus, oracles, pcaps) make FastAPI raise at ROUTER IMPORT
+      # time, so a missing python-multipart kills `memdiver web` at startup
+      # rather than on first upload. It must run in the bare venv -- mcp and
+      # marimo both pull python-multipart transitively and would mask it.
+      - name: Default-install smoke -- the web app must BUILD, not just import
+        working-directory: /tmp
+        run: |
+          /tmp/wheelenv/bin/python -c "
+          import memdiver.api.main as m
+          app = m.create_app()   # raises if python-multipart is missing
+          print('default-install app builds ok:', len(app.routes), 'routes')
+          "
+      # api/mcp/pcap are now empty BACK-COMPAT ALIASES (their deps moved into
+      # the base install). Installing through them must still resolve, so that
+      # existing READMEs / Dockerfiles / requirements.txt pinning
+      # `memdiver[api]` keep working rather than erroring on an unknown extra.
+      - name: Back-compat -- the no-op aliases must still resolve
         run: |
           WHEEL=$(ls dist/*.whl)
-          /tmp/wheelenv/bin/python -m pip install "${WHEEL}[api,mcp]"
+          /tmp/wheelenv/bin/python -m pip install "${WHEEL}[api,mcp,pcap,experiment,crypto]"
       - name: API + MCP smoke (with extras)
         working-directory: /tmp
         run: |
@@ -250,7 +270,7 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Install memdiver + Playwright (Python)
         run: |
           python -m pip install -e '.[dev,all]'
@@ -258,10 +278,9 @@ jobs:
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
       - name: Build the frontend (served by the live backend)
-        working-directory: frontend
         run: |
           npm ci
-          npm run build
+          npm run build -w frontend
       - name: Run browser e2e tests
         # `-m e2e` overrides the default `-m 'not e2e'` in pyproject addopts
         # (the browser suite is deselected everywhere else because Playwright's
@@ -281,21 +300,34 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend deps
-        working-directory: frontend
+          cache-dependency-path: package-lock.json
+      - name: Install JS deps (root workspace install)
         run: npm ci
+      # Guard against the #1 post-migration footgun: `npm install` inside a
+      # workspace regenerates a nested node_modules with a SECOND copy of react.
+      # The app symptom is "Invalid hook call"; the vitest/eslint symptom is two
+      # module instances and inexplicable identity failures. Note we assert on
+      # the identity-sensitive packages, NOT on "zero nested node_modules" --
+      # npm legitimately nests a build plugin now and then.
+      - name: Assert one hoisted copy of react
+        run: |
+          set -euo pipefail
+          for pkg in react react-dom; do
+            n=$(find . -type d -path "*/node_modules/$pkg" \
+                  -not -path '*/node_modules/*/node_modules/*' \
+                  -not -path './.git/*' | wc -l)
+            test "$n" -eq 1 || { echo "::error::expected 1 copy of $pkg, found $n (run \`npm ci\` at the repo ROOT)"; exit 1; }
+          done
       - name: Typecheck
-        working-directory: frontend
-        # Must be `tsc -b`: the root tsconfig is references-only with `files: []`,
-        # so plain `tsc --noEmit` compiles zero files and always passes. `-b`
-        # walks the project references (matches `make fe-typecheck` + the build).
-        run: npx tsc -b
+        # Must be `tsc -b`: frontend/tsconfig.json is references-only with
+        # `files: []`, so plain `tsc --noEmit` compiles zero files and always
+        # passes. `-b` walks the project references -- app, node, and TEST, the
+        # last of which is the only thing typechecking <repo>/tests/frontend/
+        # now that the suite lives outside the app program.
+        run: npx tsc -b frontend
       - name: Unit tests (vitest)
-        working-directory: frontend
         run: npm run test:run
       - name: eslint (advisory)
-        working-directory: frontend
         run: npm run lint
         continue-on-error: true
       - name: Colour-literal lint (baseline-locked)
@@ -317,7 +349,11 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
+              - 'tests/frontend/**'
               - 'tests/e2e/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'eslint.config.mjs'
               - '.github/workflows/ci.yml'
 
   a11y:
@@ -337,21 +373,14 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: |
-            frontend/package-lock.json
-            tests/e2e/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Install memdiver
         # a11y specs drive the live FastAPI backend, so the `api` extra
         # (fastapi/uvicorn) is required now that it is no longer a base dep.
         run: python -m pip install -e '.[dev,api]'
-      - name: Install frontend deps
-        working-directory: frontend
-        run: npm ci
-      - name: Install e2e deps
-        working-directory: tests/e2e
+      - name: Install JS deps (root workspace install -- frontend + tests/e2e)
         run: npm ci
       - name: Install Playwright Chromium
-        working-directory: tests/e2e
         run: npx playwright install --with-deps chromium
       - name: Run a11y specs (baseline assertion)
         working-directory: tests/e2e

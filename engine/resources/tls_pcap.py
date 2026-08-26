@@ -30,9 +30,10 @@ from ``DerivationContext.seq_num``):
     sequence numbers ``[max(0, n - _TLS13_SEQ_WINDOW), n]`` per record. The
     oracle confirms if any lands, so a wider net only costs a few extra tries.
 
-Optional dependency: parsing needs ``dpkt`` (the ``[pcap]`` extra). When it is
-absent the class imports fine but :meth:`TlsPcapResource.challenges` raises a
-clear, actionable error (mirrors the availability model in ``msl/crypto.py``).
+Dependency: parsing needs ``dpkt``, which ships in the base install. When it is
+absent — a force-uninstall or a broken environment — the class still imports
+but :meth:`TlsPcapResource.challenges` raises a clear, actionable error
+(mirrors the availability model in ``msl/crypto.py``).
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
+from memdiver.core.install_hints import missing_package_message
 from memdiver.core.kdf_tls import (
     TLS12_CIPHER_SUITES,
     TLS13_CIPHER_SUITES,
@@ -62,10 +64,7 @@ except ImportError:
     HAS_PCAP = False
     _DpktError = ()  # empty tuple → an ``except`` that matches nothing
 
-_PCAP_MISSING = (
-    "dpkt not installed; install the pcap extra to parse captures: "
-    "pip install memdiver[pcap]"
-)
+_PCAP_MISSING = missing_package_message("dpkt (capture parsing)")
 
 # TLS record content types (RFC 5246 / RFC 8446).
 _CT_CHANGE_CIPHER_SPEC = 20

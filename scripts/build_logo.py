@@ -9,7 +9,7 @@ Usage:
     python scripts/build_logo.py          # rebuild everything
     python scripts/build_logo.py --check  # exit non-zero if outputs stale
 
-Dependencies (install via `pip install memdiver[docs]`):
+Dependencies (install via `pip install "memdiver[docs]"`):
     cairosvg>=2.7
     pillow>=10.4
 """

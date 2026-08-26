@@ -573,8 +573,10 @@ def create_server():
     ) -> str:
         """Run the full spawn→dump→consensus→verify→emit experiment.
 
-        Requires local dump tools (frida-tools / memslicer / lldb); returns a
-        ``missing_backend`` CapabilityError when none are available.
+        Requires a usable local dump tool. frida-tools and memslicer ship in
+        the base install; LLDB comes from the OS. Returns a
+        ``missing_backend`` CapabilityError, carrying the per-tool remedy,
+        when none are available.
         """
         from memdiver.app.key_material import key_material_kwargs
         return json.dumps(experiment_orchestration.experiment_result(

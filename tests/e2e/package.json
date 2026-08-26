@@ -1,5 +1,6 @@
 {
   "name": "memdiver-e2e",
+  "version": "0.0.0",
   "private": true,
   "devDependencies": {
     "@axe-core/playwright": "^4.9.1",

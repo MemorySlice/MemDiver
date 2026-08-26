@@ -26,6 +26,11 @@
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.{test,spec}.{ts,tsx}", "src/test/**"]
+  // Tests are NOT here: they live at <repo>/tests/frontend/ and are typechecked by
+  // tsconfig.test.json. No `exclude` is needed -- and note the one that used to
+  // sit here, "src/**/*.{test,spec}.{ts,tsx}", never actually worked, because
+  // TypeScript's include/exclude globs do not support brace expansion. It
+  // silently matched nothing, so every test file was in this program by
+  // accident. Do not reintroduce a braced pattern here expecting it to filter.
+  "include": ["src"]
 }

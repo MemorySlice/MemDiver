@@ -21,6 +21,9 @@ import logging
 import os
 from typing import Optional, Tuple
 
+from memdiver.core.install_hints import (missing_package_message,
+                                        native_runtime_message)
+
 from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
                     ARGON2ID_MIN_TIME, CIPHER_NONCE_LEN, KEM_CIPHERTEXT_LEN,
                     MSL_CEK_INFO, EncAlgo, KdfType, KeyEncap)
@@ -30,9 +33,12 @@ logger = logging.getLogger("memdiver.msl.crypto")
 
 CEK_SIZE = 32  # all cipher suites use a 256-bit content-encryption key
 
-_ARGON2_MISSING = "argon2-cffi not installed; install with: pip install memdiver"
-_LIBOQS_MISSING = ("liboqs-python not installed; install the post-quantum "
-                   "extra: pip install memdiver[crypto]")
+_ARGON2_MISSING = missing_package_message("argon2-cffi (the Argon2id KDF)")
+# ML-KEM fails on the NATIVE half far more often than on the Python half:
+# liboqs-python is a base dependency, so the wheel is there, but the liboqs C
+# library behind it is not — hence an OS-level action, never a pip command.
+_LIBOQS_MISSING = native_runtime_message(
+    "liboqs", "ML-KEM / hybrid key encapsulation is unavailable")
 
 # ML-KEM key/ciphertext sizes (FIPS 203). Used to slice hybrid blobs.
 _MLKEM_PARAMS = {
@@ -45,10 +51,23 @@ _X25519_KEY_LEN = 32
 # ---------------------------------------------------------------- availability
 
 def _have(module: str) -> bool:
+    """Probe a backend by importing it, treating ANY import failure as absence.
+
+    The catch is deliberately wider than ``ImportError``: liboqs-python (now a
+    base dependency, so every user has the wheel) downloads and cmake-builds
+    the liboqs C library into ``~/_oqs`` on first import, and on a machine
+    without cmake/git/a compiler that build blows up with a build- or
+    link-level exception, not an ``ImportError``. Narrowing this back would
+    turn graceful ML-KEM degradation into a crash in every caller that treats
+    ``kem_is_available()`` as a plain predicate.
+
+    The probe stays lazy — importing ``memdiver`` never reaches here, only an
+    explicit capability check does.
+    """
     try:
         __import__(module)
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -78,6 +97,21 @@ def kem_is_available(mech: KeyEncap) -> bool:
     if mech == KeyEncap.X25519_ML_KEM_768:
         return _have("cryptography") and _have("oqs")
     return False
+
+
+def kem_unavailable_hint(mech: KeyEncap) -> str:
+    """Return the actionable message for a mechanism ``kem_is_available`` rejects.
+
+    The two halves fail for different reasons and so need different remedies:
+    X25519 needs only the base ``cryptography`` package, while ML-KEM needs the
+    liboqs *C* library behind the (also base-installed) liboqs-python wheel —
+    an OS-level fix that no pip command can deliver.
+    """
+    if mech in (KeyEncap.ML_KEM_768, KeyEncap.ML_KEM_1024):
+        return _LIBOQS_MISSING
+    if mech == KeyEncap.X25519_ML_KEM_768 and not _have("oqs"):
+        return _LIBOQS_MISSING
+    return missing_package_message("cryptography (X25519 key encapsulation)")
 
 
 # ---------------------------------------------------------------------- AEAD
@@ -202,11 +236,17 @@ def _x25519_decapsulate(recipient_private: bytes, kem_ct: bytes) -> bytes:
 
 
 def _import_oqs():
-    """Import liboqs-python or raise the actionable install hint."""
+    """Import liboqs-python or raise the actionable install hint.
+
+    Catches every exception for the same reason as :func:`_have`: the failure
+    that actually reaches users is liboqs-python's import-time native build,
+    which does not surface as ``ImportError``. The original error is chained so
+    the build log stays reachable behind the actionable message.
+    """
     try:
         import oqs
-    except ImportError:
-        raise MslCryptoError(_LIBOQS_MISSING)
+    except Exception as exc:
+        raise MslCryptoError(_LIBOQS_MISSING) from exc
     return oqs
 
 

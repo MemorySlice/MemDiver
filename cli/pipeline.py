@@ -424,7 +424,7 @@ def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
     concatenation of the X25519 and ML-KEM-768 halves.
     """
     from memdiver.msl.crypto import (MslCryptoError, kem_generate_keypair,
-                            kem_is_available)
+                            kem_is_available, kem_unavailable_hint)
     from memdiver.msl.enums import KeyEncap
 
     mechanisms = {
@@ -435,8 +435,10 @@ def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
     }
     mech = mechanisms[args.mechanism]
     if not kem_is_available(mech):
-        print(f"memdiver: {args.mechanism} unavailable; install the post-quantum "
-              f"extra: pip install memdiver[crypto]", file=sys.stderr)
+        # The remedy is mechanism-specific (base package vs native liboqs), so
+        # let msl.crypto — which owns the probe — also own the wording.
+        print(f"memdiver: {args.mechanism} unavailable; "
+              f"{kem_unavailable_hint(mech)}", file=sys.stderr)
         return 1
     try:
         public_key, private_key = kem_generate_keypair(mech)

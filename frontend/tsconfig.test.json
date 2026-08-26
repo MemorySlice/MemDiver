@@ -1,0 +1,44 @@
+{
+  // Typecheck project for the test suite.
+  //
+  // The tests deliberately live OUTSIDE tsconfig.app.json's program: that
+  // project is what `vite build` compiles, and shipping code should not be
+  // typechecked together with its tests. But they must still be checked --
+  // `tsc -b` builds every referenced project, so this one keeps them covered.
+  //
+  // The suite itself now lives at <repo>/tests/frontend/, one level ABOVE this
+  // file. That is why this project is deliberately NOT `composite`: composite
+  // with no explicit rootDir pins rootDir to the config file's own directory
+  // (TypeScript's getCommonSourceDirectory) and then runs
+  // checkSourceFilesBelongToPath, which would reject every file under
+  // ../tests/frontend with TS6059. Non-composite lets rootDir be inferred as
+  // the common ancestor and skips that check entirely.
+  //
+  // Nothing is lost by dropping it: TS6306 ("must have composite: true") and
+  // TS6310 ("may not disable emit") are gated on the PARENT's rootNames, and
+  // frontend/tsconfig.json is `"files": []` -- zero root names -- so neither can
+  // fire. That is exactly how tsconfig.app.json and tsconfig.node.json already
+  // get away with being non-composite + noEmit while referenced.
+  //
+  // Historical note: tsconfig.app.json used to carry
+  //   "exclude": ["src/**/*.{test,spec}.{ts,tsx}", ...]
+  // which never worked. TypeScript's include/exclude globs do NOT support
+  // brace expansion, so that pattern matched nothing and all 23 test files sat
+  // inside the app program by accident.
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // `vite/client` supplies the `*?raw` module declaration that
+    // ../tests/frontend/stores/hex-store.test.ts relies on.
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@tests/*": ["../tests/frontend/*"]
+    }
+  },
+  // `src` stays in the program: the app project is noEmit, so it publishes no
+  // .d.ts for a project reference to consume.
+  "include": ["src", "../tests/frontend"]
+}

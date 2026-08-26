@@ -10,7 +10,7 @@ Most subcommands accept:
 - `-v`, `--verbose` — enable DEBUG logging.
 - `-o PATH`, `--output PATH` — write JSON results to *PATH*.
 
-The `experiment` subcommand additionally requires the optional `memdiver[experiment]` extra (pulls in `frida-tools` + `memslicer`). The LLDB backend is installed via your OS package manager.
+The `experiment` subcommand's Python dependencies (`frida-tools` + `memslicer`) ship in the default `pip install memdiver`. What pip cannot provide is the runtime side: Frida needs an attachable target process, and the LLDB backend is installed via your OS package manager.
 ```
 
 ```{eval-rst}

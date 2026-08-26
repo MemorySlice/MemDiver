@@ -14,7 +14,7 @@
  * zustand v5 removed the second `equalityFn` argument, so an object-returning
  * selector WITHOUT `useShallow` re-renders infinitely inside
  * `useSyncExternalStore` — this linter does not catch that (see the mount
- * smoke tests in `frontend/src/components/store-selector-mount.test.tsx`), it
+ * smoke tests in `tests/frontend/components/store-selector-mount.test.tsx`), it
  * only catches the unscoped whole-store read.
  */
 import { readFileSync } from "node:fs";

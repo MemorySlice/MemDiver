@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(prog="memdiver", description="MemDiver — Memory dump analysis platform")
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("ui", help="Launch interactive Marimo UI (needs memdiver[marimo])").add_argument("extra_args", nargs="*", default=[])
+    sub.add_parser("ui", help='Launch interactive Marimo UI (needs: pip install "memdiver[marimo]")').add_argument("extra_args", nargs="*", default=[])
     az = sub.add_parser("analyze", help="Analyze library directories")
     az.add_argument("library_dirs", nargs="+", help="Library directory paths")
     az.add_argument("--phase", required=True, help="Lifecycle phase")
@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sc.add_argument("-o", "--output", help="Output JSON file")
     sc.add_argument("-v", "--verbose", action="store_true")
     # mcp
-    mc = sub.add_parser("mcp", help="Start MCP server for AI integration (needs memdiver[mcp])")
+    mc = sub.add_parser("mcp", help="Start MCP server for AI integration (included in the base install)")
     mc.add_argument("--sse", action="store_true", help="Use SSE transport instead of stdio")
     mc.add_argument("--port", type=int, default=8080, help="SSE port (default: 8080)")
     mc.add_argument("-v", "--verbose", action="store_true")
@@ -87,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Output format (overrides config); default: from config or 'json'")
     bt.add_argument("-v", "--verbose", action="store_true")
     # web (FastAPI + React — also the default when no command given)
-    wp = sub.add_parser("web", help="Launch FastAPI + React web application (needs memdiver[api])")
+    wp = sub.add_parser("web", help="Launch FastAPI + React web application (included in the base install)")
     wp.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
     # consensus
     cs = sub.add_parser("consensus", help="Build consensus matrix from dumps",

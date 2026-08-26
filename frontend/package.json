@@ -9,13 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
     "test": "vitest",
     "test:run": "vitest run",
-    "lint:no-hex": "node ../scripts/check-no-hex-literals.mjs",
-    "lint:colour-literals": "node ../scripts/check-no-tailwind-colour-literals.mjs",
-    "lint:colour-literals:update": "node ../scripts/check-no-tailwind-colour-literals.mjs update",
-    "lint:store-selectors": "node ../scripts/check-store-selectors.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -34,7 +29,6 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.12.0",
@@ -42,13 +36,8 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-plotly.js": "^2.6.4",
     "@vitejs/plugin-react": "^6.0.1",
-    "eslint": "^9.39.4",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.4.0",
     "jsdom": "^29.1.1",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.57.0",
     "vite": "^8.0.1",
     "vitest": "^4.1.10"
   }

@@ -6,9 +6,9 @@ The experiment harness spawns a target process, lets it reach a known state, and
 
 | Backend | Output | Install |
 |---|---|---|
-| `memslicer` | `.msl` | `pip install memdiver[experiment]` (ships `memslicer` binary) |
+| `memslicer` | `.msl` | ships in the default `pip install memdiver` |
 | `lldb` | `.dump` | OS package (see below) |
-| `fridump` | `.dump` | `pip install memdiver[experiment]` (pulls `frida-tools`) |
+| `fridump` | `.dump` | ships in the default install (`frida-tools`); needs an attachable target |
 
 ### LLDB install per OS
 
@@ -29,7 +29,7 @@ sudo dnf install lldb
 
 ## First experiment
 
-1. `pip install "memdiver[experiment]"` — installs `frida-tools` + `memslicer`. Optionally `brew install --cask` Xcode CLT or `apt install lldb` for the LLDB backend.
+1. `pip install memdiver` — `frida-tools` + `memslicer` are part of the default install. Optionally `brew install --cask` Xcode CLT or `apt install lldb` for the LLDB backend.
 2. Write a target script that prints `MEMDIVER_PID=<pid>`, `MEMDIVER_KEY=<hex>`, `MEMDIVER_IV=<hex>`, `MEMDIVER_READY=1` on stdout, then idles with the key in memory.
 3. Run:
 

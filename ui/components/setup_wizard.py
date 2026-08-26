@@ -48,10 +48,16 @@ def should_show_wizard() -> bool:
 
 
 def _run_install() -> tuple[bool, str]:
-    """Run pip install and return (success, output)."""
+    """Run pip install and return (success, output).
+
+    Reinstalls forcibly, and runs the same command ``install_hint()`` shows: the
+    wizard only fires when a BASE dependency (DuckDB/Ibis) is absent, and a
+    plain ``pip install memdiver`` would report "already satisfied" and repair
+    nothing.
+    """
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "memdiver"],
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "memdiver"],
             capture_output=True,
             text=True,
             timeout=120,
