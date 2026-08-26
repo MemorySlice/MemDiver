@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { Panel, Group, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -67,7 +68,8 @@ function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal"
 
 function Toolbar() {
   const { t } = useTranslation("layout");
-  const { mode, resetWizard } = useAppStore();
+  const mode = useAppStore((s) => s.mode);
+  const resetWizard = useAppStore((s) => s.resetWizard);
   const [notebookAvailable, setNotebookAvailable] = useState(false);
   useEffect(() => {
     getNotebookStatus().then((d) => setNotebookAvailable(d.available)).catch(() => {});
@@ -120,7 +122,13 @@ function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
-  const { bookmarks, addBookmark, removeBookmark } = useHexStore();
+  const { bookmarks, addBookmark, removeBookmark } = useHexStore(
+    useShallow((s) => ({
+      bookmarks: s.bookmarks,
+      addBookmark: s.addBookmark,
+      removeBookmark: s.removeBookmark,
+    })),
+  );
   const cursorOffset = useHexStore((s) => s.cursorOffset);
 
   return (
@@ -223,7 +231,7 @@ function Sidebar() {
 function HexFocusBridge() {
   const hexFocus = useAppStore((s) => s.hexFocus);
   const setHexFocus = useAppStore((s) => s.setHexFocus);
-  const { scrollToOffset } = useHexStore();
+  const scrollToOffset = useHexStore((s) => s.scrollToOffset);
 
   useEffect(() => {
     if (hexFocus) {
@@ -246,7 +254,13 @@ const RUNS_PAGE = 50;
 
 function DatasetOverview({ path }: { path: string }) {
   const { t } = useTranslation("layout");
-  const { inputMode, pathInfo, setInputMode } = useAppStore();
+  const { inputMode, pathInfo, setInputMode } = useAppStore(
+    useShallow((s) => ({
+      inputMode: s.inputMode,
+      pathInfo: s.pathInfo,
+      setInputMode: s.setInputMode,
+    })),
+  );
   const addDump = useDumpStore((s) => s.addDump);
   const setActiveDump = useDumpStore((s) => s.setActiveDump);
   const [runs, setRuns] = useState<DatasetRun[]>([]);
@@ -391,8 +405,15 @@ function DatasetOverview({ path }: { path: string }) {
 
 function MainContent() {
   const { t } = useTranslation("layout");
-  const { inputMode, inputPath } = useAppStore();
-  const { viewMode, comparisonDumpIds, dumps } = useDumpStore();
+  const inputMode = useAppStore((s) => s.inputMode);
+  const inputPath = useAppStore((s) => s.inputPath);
+  const { viewMode, comparisonDumpIds, dumps } = useDumpStore(
+    useShallow((s) => ({
+      viewMode: s.viewMode,
+      comparisonDumpIds: s.comparisonDumpIds,
+      dumps: s.dumps,
+    })),
+  );
   const activeDump = useActiveDump();
   const path = inputPath;
 
@@ -661,7 +682,7 @@ function BottomTabs() {
 }
 
 export function Workspace() {
-  const { resetWizard } = useAppStore();
+  const resetWizard = useAppStore((s) => s.resetWizard);
   const sidebarRef = useRef<PanelImperativeHandle>(null);
 
   const toggleSidebar = useCallback(() => {

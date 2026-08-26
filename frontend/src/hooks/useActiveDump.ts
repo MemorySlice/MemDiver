@@ -1,3 +1,5 @@
+import { useShallow } from "zustand/react/shallow";
+
 import { useAppStore } from "@/stores/app-store";
 import { useDumpStore } from "@/stores/dump-store";
 
@@ -8,8 +10,15 @@ export interface ActiveDump {
 }
 
 export function useActiveDump(): ActiveDump | null {
-  const { inputMode, inputPath, pathInfo } = useAppStore();
-  const { dumps, activeDumpId } = useDumpStore();
+  const { inputMode, inputPath, pathInfo } = useAppStore(
+    useShallow((s) => ({
+      inputMode: s.inputMode,
+      inputPath: s.inputPath,
+      pathInfo: s.pathInfo,
+    })),
+  );
+  const dumps = useDumpStore((s) => s.dumps);
+  const activeDumpId = useDumpStore((s) => s.activeDumpId);
 
   if (inputMode !== "file") return null;
 

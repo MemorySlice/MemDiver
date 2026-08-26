@@ -119,6 +119,11 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
             f"0 verified; top-{len(payload.get('top_k', []))} written to {args.output}",
             file=sys.stderr,
         )
+    # A partial-coverage warning turns "0 verified" from an ambiguous silence
+    # into an actionable finding; the producer decides when one applies, the CLI
+    # only relays it. hits.json already carries the same numbers.
+    for warning in result.get("warnings", []):
+        print(f"memdiver: warning: {warning['message']}", file=sys.stderr)
     return result["exit_code"]
 
 

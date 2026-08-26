@@ -78,12 +78,25 @@ export function FileUpload() {
         )}
       </div>
 
-      {error && <p style={{ color: "var(--md-accent-red)" }}>{error}</p>}
+      {error && (
+        <p className="break-words" style={{ color: "var(--md-accent-red)" }}>{error}</p>
+      )}
 
       {result && (
-        <div className="md-panel p-2 space-y-1">
+        <div className="md-panel p-2 space-y-1 min-w-0">
           <p style={{ color: "var(--md-accent-green)" }}>{t("upload.importSuccessful")}</p>
-          <p>{t("upload.output")} <span className="font-mono">{result.output}</span></p>
+          {/*
+           * Import output is a temp path (e.g. /var/folders/.../tmpXXXX.msl) —
+           * one long unbreakable token. Without break-all it overflows the
+           * panel horizontally instead of wrapping. `title` keeps the full
+           * path reachable on hover even when the panel is narrow.
+           */}
+          <p className="min-w-0">
+            {t("upload.output")}{" "}
+            <span className="font-mono break-all" title={result.output}>
+              {result.output}
+            </span>
+          </p>
           <p>{t("upload.regionsSize", { regions: result.regions_written, size: (result.total_bytes / 1024).toFixed(1) })}</p>
         </div>
       )}

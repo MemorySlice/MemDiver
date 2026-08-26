@@ -174,6 +174,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // 0..N — this effect would not re-fire on the indices alone and the new
   // dump's bytes would stay stuck on the "loading" placeholder. Re-running on
   // dumpPath guarantees the first chunk loads for the new dump.
+  //
+  // `viewMode` and `format` are SEMANTIC dependencies: neither is read in
+  // this effect's body, so eslint's exhaustive-deps rule can neither add nor
+  // validate them — but both change what `ensureChunksLoaded` will do, since
+  // it reads the live viewMode via getState() (hex-store.ensureChunksLoaded)
+  // and both `setViewMode` and a format-changing `setDumpPath` clear the
+  // chunk cache. At windowStartRow 0 / scrollTop 0 the visible indices do not
+  // move when the user flips the Raw/VAS/VA toggle, so without these deps the
+  // effect never re-runs, `chunks` stays empty forever, and every byte cell
+  // renders the "--" placeholder permanently. DO NOT "clean up" these two as
+  // unused — they are the re-fetch trigger. Covered by hex-store.test.ts.
   useEffect(() => {
     if (firstVisibleIndex < 0) return;
     // Pass ABSOLUTE rows — the store multiplies startRow*16 internally.
@@ -181,7 +192,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
       .getState()
       .ensureChunksLoaded(absRow(firstVisibleIndex), absRow(lastVisibleIndex));
 
-  }, [firstVisibleIndex, lastVisibleIndex, dumpPath, absRow]);
+  }, [firstVisibleIndex, lastVisibleIndex, dumpPath, absRow, viewMode, format]);
 
   // Fetch per-byte consensus classifications for the currently visible
   // rows whenever the overlay is on and a row's range is not yet cached.

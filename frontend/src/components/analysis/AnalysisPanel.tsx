@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { runAnalysis, runFileAnalysis, listPhases, listProtocols, listPatterns } from "@/api/client";
 import { fetchAnalysisResult } from "@/api/analysis";
@@ -50,7 +51,28 @@ export function AnalysisPanel() {
   const analysisApproach = useAppStore((s) => s.analysisApproach);
   const setAnalysisApproach = useAppStore((s) => s.setAnalysisApproach);
   const mode = useAppStore((s) => s.mode);
-  const { isRunning, result, error, message, taskId, startAnalysis, setTaskId, setProgress, setResult, setError, reset } = useAnalysisStore();
+  // NOTE: `message` changes on every progress tick (setProgress writes a fresh
+  // string), so this selector still re-renders per tick — useShallow only stops
+  // re-renders from the store's *other* fields. Fixing the per-tick storm needs
+  // `message` split out into a leaf component; deliberately out of scope here.
+  const {
+    isRunning, result, error, message, taskId,
+    startAnalysis, setTaskId, setProgress, setResult, setError, reset,
+  } = useAnalysisStore(
+    useShallow((s) => ({
+      isRunning: s.isRunning,
+      result: s.result,
+      error: s.error,
+      message: s.message,
+      taskId: s.taskId,
+      startAnalysis: s.startAnalysis,
+      setTaskId: s.setTaskId,
+      setProgress: s.setProgress,
+      setResult: s.setResult,
+      setError: s.setError,
+      reset: s.reset,
+    })),
+  );
 
   const [availablePhases, setAvailablePhases] = useState<string[]>([]);
   const [availableProtocols, setAvailableProtocols] = useState<string[]>([]);

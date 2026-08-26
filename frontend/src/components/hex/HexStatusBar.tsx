@@ -18,7 +18,19 @@ export function HexStatusBar() {
   const viewMode = useHexStore((s) => s.viewMode);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const setWindowStart = useHexStore((s) => s.setWindowStart);
+  const chunkError = useHexStore((s) => s.chunkError);
   const offsetLabel = format === "msl" && viewMode === "vas" ? t("statusBar.offsetLabelVas") : t("statusBar.offsetLabelOffset");
+
+  // All three MSL view modes need a distinct label. Collapsing "va" into the
+  // "raw" branch (as a `viewMode === "vas" ? … : "raw"` ternary does) makes the
+  // status bar actively lie about which byte stream is on screen, which is the
+  // one place a forensic user checks when the viewer looks wrong.
+  const viewModeLabel =
+    viewMode === "vas"
+      ? t("statusBar.viewModeVas")
+      : viewMode === "va"
+        ? t("statusBar.viewModeVa")
+        : t("statusBar.viewModeRaw");
 
   const selStart = selection
     ? Math.min(selection.anchor, selection.active)
@@ -62,6 +74,11 @@ export function HexStatusBar() {
             })()}
           </span>
         )}
+        {chunkError && (
+          <span className="md-text-error" role="status">
+            {t("statusBar.chunkError", { error: chunkError })}
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3">
         {windowed && (
@@ -93,7 +110,7 @@ export function HexStatusBar() {
         )}
         <span>
           {format.toUpperCase()}
-          {format === "msl" ? ` · ${viewMode === "vas" ? "VAS" : "raw"}` : ""}
+          {format === "msl" ? ` · ${viewModeLabel}` : ""}
           {" | "}{t("statusBar.fileInfo", { size: (fileSize / 1024).toFixed(1), rows: totalRows })}
         </span>
       </div>

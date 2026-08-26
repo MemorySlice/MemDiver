@@ -164,6 +164,32 @@ def test_brute_force_emits_progress_and_hit():
     hit_evs = [e for e in collector.events if e.stage == "brute_force:hit"]
     assert hit_evs[0].extra["offset"] == 0
 
+    # --- contract lock: brute_force:progress carries tried + total ---------
+    #
+    # The web UI derives the live candidates/sec rate and the ETA purely from
+    # these two counters (frontend/src/stores/pipeline-store.ts). Nothing else
+    # asserts them, so an engine refactor that renamed or dropped either field
+    # would silently blank the readout. A progress event only fires every
+    # _PROGRESS_EVERY (256) candidates, so this needs a region large enough to
+    # cross that threshold -- the 2x64-byte regions above yield only 66.
+    reference, regions, target = _make_brute_force_inputs(
+        num_regions=1, region_size=512,
+    )
+    wide_collector = _Collector()
+    brute_force_with_oracle(
+        regions, reference, oracle,
+        progress_callback=wide_collector,
+    )
+    progress_evs = [
+        e for e in wide_collector.events if e.stage == "brute_force:progress"
+    ]
+    assert progress_evs, "brute_force must emit progress events"
+    for ev in progress_evs:
+        assert isinstance(ev.extra["tried"], int)
+        assert isinstance(ev.extra["total"], int)
+        assert ev.extra["total"] > 0
+        assert 0 < ev.extra["tried"] <= ev.extra["total"]
+
 
 def test_brute_force_cancel_event_interrupts():
     # Build a 2000-candidate region so we have enough work to interleave a cancel.

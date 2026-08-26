@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -17,7 +18,14 @@ const CLASS_INFO: { key: string; labelKey: string; color: string; descKey: strin
 
 export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: ConsensusChartProps = {}) {
   const { t } = useTranslation("charts");
-  const { available, size, numDumps, counts } = useConsensusStore();
+  const { available, size, numDumps, counts } = useConsensusStore(
+    useShallow((s) => ({
+      available: s.available,
+      size: s.size,
+      numDumps: s.numDumps,
+      counts: s.counts,
+    })),
+  );
 
   if (!available || !counts || size === 0) {
     return (

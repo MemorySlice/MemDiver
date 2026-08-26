@@ -91,6 +91,75 @@ record key:
 
 A TLS 1.2 run left at the default `32` will never find its 48-byte master secret.
 
+## Choosing `--stride` (the alignment trap)
+
+`--stride` is the offset step of the candidate grid, and the grid is **absolute**:
+at `--stride N` only offsets that are multiples of N are ever handed to the
+oracle. A secret that does not happen to be N-aligned is therefore never tested,
+and the run still ends *successfully* with `verified_count: 0` — which looks
+exactly like "the key is not in this dump".
+
+Because a silent false negative is worse than a slow run in a forensic setting,
+the default is **`--stride 1` — full coverage**. Every offset inside every
+surviving region is tested, so a no-hit means what it says.
+
+Measured on a real corpus dump (25,932 surviving regions, `--key-sizes 32`),
+where the true TLS traffic secret sits at offset `585148` (and `585148 % 8 == 4`):
+
+| `--stride` | Candidates tested | Coverage | Secret reachable? |
+|---|---|---|---|
+| `8` | 110,326 | 15.7 % | **no** — 585148 is not 8-aligned |
+| `4` | 194,720 | 27.8 % | yes |
+| `1` (default) | 701,084 | 100 % | yes |
+
+Note that `--stride` and `--alignment` are **two different grids**, and only one
+of them can cost you the key.
+
+`--stride` is the candidate **enumeration** step: at `--stride N` only offsets
+that are multiples of N are handed to the oracle, so any stride > 1 can skip the
+key entirely and still report a clean no-hit. Hence the full-coverage default
+of `1`.
+
+`--alignment` never discards a byte for being unaligned. It is the scan step of
+the block-density gate (`engine/candidate_pipeline._aligned_mask`, defaults
+`alignment=8` / `density_threshold=0.5`), which keeps *whole blocks* whose
+candidate density reaches the threshold. That is why the secret at offset
+`585148` — with `585148 % 8 == 4` — passes the gate fine, and is missed only by
+`--stride 8` above.
+
+So `--alignment` coarsens **where** MemDiver looks; `--stride 1` then tests
+**every** offset inside what it found. Leaving `--alignment` at `8` costs no
+coverage; raising `--stride` does.
+
+Raising the stride is an **opt-in speed tradeoff**: `--stride 8` hands roughly
+6× fewer candidates to the oracle on that dump, and finishes correspondingly
+faster — but it is exactly the setting that misses the key in the table above.
+Raise it only when you can afford that risk, and never conclude "no key" from a
+run that was not at full coverage.
+
+Coverage is **not** simply `1 / stride`: regions are short and the grid snaps up
+to the first absolute multiple of the stride inside each region, so MemDiver
+counts it rather than deriving it. Every run reports the real numbers —
+`candidates_tested`, `candidates_possible`, `stride` and `coverage_fraction` are
+written into `hits.json` and shown on the web pipeline's brute-force stage. Read
+them even on a *successful* run: one hit out of 15.7 % coverage does not mean
+exactly one key is present.
+
+When a run confirms nothing **and** coverage is below 100 %, MemDiver emits a
+`brute_force.partial_coverage` warning (stderr on the CLI, `warnings[]` in the
+producer result) telling you exactly that, with the numbers. At the default
+stride `coverage_fraction` is `1.0`, so on defaults the warning correctly never
+fires — it appears only when you deliberately raised the stride. The remedy is
+to go back to full coverage:
+
+```bash
+memdiver brute-force … --pcap traffic.pcap --key-sizes 32 --stride 1 -o hits.json
+```
+
+One deliberate exception: the **Replicate gocryptfs DFRWS** recipe in the web
+UI still pins `stride 8`, because the published result was produced at that
+setting and the recipe exists to reproduce it.
+
 ## Restricting to one session
 
 A capture with several TLS sessions tries every session by default. To confirm

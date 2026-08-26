@@ -136,3 +136,96 @@ def test_search_performance():
     elapsed = time.perf_counter() - start
 
     assert elapsed < 1.0, f"Search 1MB with 20 secrets took {elapsed:.2f}s"
+
+
+# --- Auto-floor candidate-enumeration cost (item B4) ---
+#
+# Pins the numbers measured by tools/bench_auto_floor_memory.py so the three
+# cost fixes it justified cannot silently regress. Marked `slow` (this file is
+# already excluded from CI by default; the marker keeps it out of an explicit
+# `pytest tests/test_benchmarks.py` sweep too unless asked for).
+#
+# Ceilings are expressed PER CANDIDATE so they hold at any --candidates size,
+# and each sits roughly halfway between the measured "after" value and the
+# pre-fix value it replaced -- tight enough to catch a revert, loose enough not
+# to flake on a slower box:
+#
+#   term                          pre-fix   post-fix   ceiling
+#   step-3 peak (2nd enum pass)   235 B/c    57 B/c    120 B/c
+#   step-4 live (default_set)     160 B/c    33 B/c     80 B/c
+#   sweep live peak (`seen`)      267 B/c   132 B/c    200 B/c
+#
+# Measured 2026-08-25 on macOS/arm64, CPython 3.11, at 700k candidates.
+
+_B4_CANDIDATES = 150_000
+_B4_MAX_SECOND_PASS_PEAK_BYTES = 120
+_B4_MAX_DEFAULT_SET_LIVE_BYTES = 80
+_B4_MAX_SWEEP_LIVE_BYTES = 200
+# Untraced, null-oracle enumeration budget. ~0.5 us/candidate was measured; the
+# 5x headroom guards against an algorithmic regression (e.g. a re-materialised
+# candidate list or a per-candidate rescan), not against a slow CI box.
+_B4_MAX_ENUMERATION_US_PER_CANDIDATE = 2.5
+
+
+def _b4_bench():
+    """Import the bench module from tools/ (not a package) by file path."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    name = "bench_auto_floor_memory"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = Path(__file__).resolve().parent.parent / "tools" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec: the bench uses `from __future__ import annotations`,
+    # so @dataclass resolves its string annotations via sys.modules[__module__].
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.slow
+def test_auto_floor_enumeration_memory_ceiling():
+    """The enumeration terms stay lean at scale (tracemalloc, Python objects)."""
+    bench = _b4_bench()
+    case = bench.build_case(_B4_CANDIDATES)
+    result = bench.measure(case, traced=True)
+
+    assert result.maximal > _B4_CANDIDATES * 0.99, (
+        f"synthetic case degenerated: {result.maximal} candidates")
+    assert result.tried == result.maximal, "the sweep must be exhaustive"
+    per_candidate = 1024.0 * 1024.0 / result.maximal
+
+    second_pass = result.step("3_enumerate_maximal_dflt").traced_peak_mb * per_candidate
+    assert second_pass < _B4_MAX_SECOND_PASS_PEAK_BYTES, (
+        f"second enumerate_maximal pass peaked at {second_pass:.0f} B/candidate "
+        f"(ceiling {_B4_MAX_SECOND_PASS_PEAK_BYTES}); did the streaming "
+        f"np.fromiter path or the shared entropy_cache regress?")
+
+    default_set = result.step("4_default_set").traced_current_mb * per_candidate
+    assert default_set < _B4_MAX_DEFAULT_SET_LIVE_BYTES, (
+        f"default_set is live at {default_set:.0f} B/candidate (ceiling "
+        f"{_B4_MAX_DEFAULT_SET_LIVE_BYTES}); did it revert to set(zip(...))?")
+
+    sweep = result.sweep_live_peak_mb * per_candidate
+    assert sweep < _B4_MAX_SWEEP_LIVE_BYTES, (
+        f"sweep held {sweep:.0f} B/candidate (ceiling {_B4_MAX_SWEEP_LIVE_BYTES}); "
+        f"`seen` alone should account for ~132 B/candidate")
+
+
+@pytest.mark.slow
+def test_auto_floor_enumeration_time_ceiling():
+    """Enumeration stays roughly linear in the candidate count."""
+    bench = _b4_bench()
+    case = bench.build_case(_B4_CANDIDATES)
+    # traced=False: tracemalloc taxes every allocation and would make an
+    # allocation-dense enumeration look ~5x slower than it runs in production.
+    result = bench.measure(case, traced=False)
+
+    us_per_candidate = result.enumeration_ms() * 1000.0 / result.maximal
+    assert us_per_candidate < _B4_MAX_ENUMERATION_US_PER_CANDIDATE, (
+        f"enumeration cost {us_per_candidate:.2f} us/candidate (ceiling "
+        f"{_B4_MAX_ENUMERATION_US_PER_CANDIDATE}) over "
+        f"{result.maximal} candidates")

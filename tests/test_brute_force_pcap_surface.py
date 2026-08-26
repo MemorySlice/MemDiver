@@ -161,3 +161,19 @@ def test_pipeline_runner_brute_force_stage_forwards_pcap():
     assert captured["pcap_path"] == "/c/session.pcap"
     assert captured["tls_client_random"] == "cd" * 32
     assert captured["oracle_path"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Library surface
+# --------------------------------------------------------------------------- #
+
+
+def test_library_surface_exports_inspect_pcap():
+    """``memdiver.services`` is the documented library surface for the pcap
+    "arm" step (docs/oracle/pcap_oracle.md), so ``inspect_pcap`` must be
+    re-exported there — and be the very same producer object, not a copy."""
+    import memdiver.services as services
+    from memdiver.app import tools_pipeline
+
+    assert services.inspect_pcap is tools_pipeline.inspect_pcap
+    assert "inspect_pcap" in services.__all__

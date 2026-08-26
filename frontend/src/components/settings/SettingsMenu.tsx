@@ -83,6 +83,9 @@ export function SettingsMenu() {
   const { t } = useTranslation("misc");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // intentional: whole-store read. This menu renders every settings field,
+  // so there is nothing to narrow — a useShallow wrapper over the full state
+  // is a no-op that only adds a per-render object allocation and comparison.
   const settings = useSettingsStore();
   const { setTheme, toggleHighContrast: toggleHC } = useTheme();
   const { startTour } = useTourController();

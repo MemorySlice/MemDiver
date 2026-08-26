@@ -368,6 +368,78 @@ def test_brute_force_green_writes_hits(tmp_path, consensus_artifacts, oracle_pat
     assert "brute_force" in col.stages("stage_end")
 
 
+def test_brute_force_cancels_inside_the_sweep(
+    tmp_path, consensus_artifacts, never_match_oracle
+):
+    """A cancel raised mid-grid must stop the sweep, not run it to completion.
+
+    Regression guard for the web/MCP brute-force being uncancellable: the
+    producer used to pass only ``progress_callback`` to ``run_brute_force`` and
+    consult ``is_cancelled`` exactly once, BEFORE the first candidate. That made
+    ``engine.progress.check_cancel`` in the hot loop dead code on those
+    surfaces, so a cancel was ignored for the whole run -- at the stride-1
+    default, a ~700k-candidate grid.
+
+    ``never_match_oracle`` guarantees the sweep would otherwise run to
+    exhaustion, so reaching the cancel proves the token was observed in-flight
+    rather than at the stage boundary.
+    """
+    out = tmp_path / "out"
+    reduction = _reduce(out, consensus_artifacts)
+    col = _Collector()
+
+    # Stay False for the boundary check, flip True once the sweep is under way.
+    calls = {"n": 0}
+
+    def _is_cancelled() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    with pytest.raises(CapabilityError) as exc:
+        tp.brute_force(
+            candidates_path=reduction["candidates_path"],
+            reference_path=str(consensus_artifacts["reference"]),
+            oracle_path=str(never_match_oracle),
+            output_dir=str(out),
+            key_sizes=(32,), stride=1, jobs=1, exhaustive=True,
+            on_progress=col,
+            is_cancelled=_is_cancelled,
+        )
+
+    # The canonical app-layer cancel signal -- pipeline_runner._run_producer
+    # keys on code="cancelled" to raise _CancelledByContext.
+    assert exc.value.code == "cancelled"
+    assert exc.value.category == ErrorCategory.PRECONDITION
+    # Observed in-flight, not at the boundary: the predicate was polled by the
+    # engine hot loop after the producer's own single pre-sweep check.
+    assert calls["n"] > 1
+    # No hits.json: the run aborted before the persist step.
+    assert not (out / "hits.json").exists()
+
+
+def test_brute_force_uncancelled_run_is_unaffected(
+    tmp_path, consensus_artifacts, oracle_path
+):
+    """Threading the cancel token must not change a normal run's outcome.
+
+    ``is_cancelled`` that never fires has to behave exactly like the ``None``
+    the CLI and MCP pass.
+    """
+    out = tmp_path / "out"
+    reduction = _reduce(out, consensus_artifacts)
+    result = tp.brute_force(
+        candidates_path=reduction["candidates_path"],
+        reference_path=str(consensus_artifacts["reference"]),
+        oracle_path=str(oracle_path),
+        output_dir=str(out),
+        key_sizes=(32,), stride=8, jobs=1, exhaustive=True,
+        is_cancelled=lambda: False,
+    )
+    assert result["verified_count"] >= 1
+    payload = json.loads(Path(result["hits_path"]).read_text())
+    assert any(h["offset"] == KEY_OFFSET for h in payload["hits"])
+
+
 def test_brute_force_missing_reference_raises_not_found(tmp_path, oracle_path):
     cand = tmp_path / "candidates.json"
     cand.write_text(json.dumps({"regions": []}))

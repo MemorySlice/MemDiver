@@ -1,4 +1,6 @@
 import { useEffect, useCallback, type RefObject } from "react";
+import { useShallow } from "zustand/react/shallow";
+
 import { useHexStore } from "@/stores/hex-store";
 
 const BYTES_PER_ROW = 16;
@@ -18,7 +20,20 @@ export function useHexKeyboard(
     clearSelection,
     setFocusColumn,
     scrollToOffset,
-  } = useHexStore();
+  } = useHexStore(
+    useShallow((s) => ({
+      cursorOffset: s.cursorOffset,
+      fileSize: s.fileSize,
+      selection: s.selection,
+      focusColumn: s.focusColumn,
+      setCursor: s.setCursor,
+      startSelection: s.startSelection,
+      extendSelection: s.extendSelection,
+      clearSelection: s.clearSelection,
+      setFocusColumn: s.setFocusColumn,
+      scrollToOffset: s.scrollToOffset,
+    })),
+  );
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

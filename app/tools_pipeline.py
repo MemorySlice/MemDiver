@@ -33,9 +33,15 @@ from memdiver.core.service_errors import (
     ErrorCategory,
     FileNotFoundServiceError,
 )
-from memdiver.core.service_result import KeyStatus
+from memdiver.core.service_result import Diagnostic, KeyStatus, Severity
 
-from ._progress import _emit, _experiment_check_cancelled, _progress_bridge
+from ._progress import (
+    _cancel_bridge,
+    _emit,
+    _experiment_check_cancelled,
+    _progress_bridge,
+    _raise_cancelled,
+)
 from .artifact_cache import cache_reference_bytes, mmapped_variance
 from .key_material import has_key_material, key_material_kwargs
 
@@ -254,6 +260,69 @@ def _persist_ground_truth_hits(
         db.close()
 
 
+PARTIAL_COVERAGE_CODE = "brute_force.partial_coverage"
+
+
+def _window_label(key_sizes: Sequence[int]) -> str:
+    """Human phrase for the window widths a run tested ("32-byte", "32/48-byte")."""
+    sizes = sorted({int(k) for k in key_sizes})
+    if not sizes:
+        return "candidate"
+    return "/".join(str(k) for k in sizes) + "-byte"
+
+
+def _smaller_stride_hint(stride: int) -> str:
+    """Suggest only strides strictly SMALLER than the current one.
+
+    The remedy for partial coverage is a finer grid, so a hardcoded example is
+    wrong as soon as the user picked an unusual stride: at ``stride=3``,
+    "try --stride 4" is coarser, not finer. Offer the halved stride (when that
+    is still above 1) and always 1, which is full coverage by definition.
+    """
+    halved = stride // 2
+    if halved > 1:
+        return f"--stride {halved} or 1"
+    return "--stride 1"
+
+
+def _partial_coverage_diagnostic(
+    *,
+    candidates_tested: int,
+    candidates_possible: int,
+    stride: int,
+    coverage_fraction: float,
+    key_sizes: Sequence[int],
+) -> Diagnostic:
+    """Explain a zero-hit run that only examined part of the candidate space.
+
+    A stride-``s`` grid tests only offsets that are multiples of ``s``, so a
+    secret that is not ``s``-aligned is never handed to the oracle at all. That
+    run still ends "succeeded" with zero hits, which is indistinguishable from
+    "the key is not in this dump" unless we say so — this diagnostic is that
+    difference.
+    """
+    return Diagnostic(
+        code=PARTIAL_COVERAGE_CODE,
+        message=(
+            f"No candidate was confirmed. The search tested "
+            f"{candidates_tested:,} of {candidates_possible:,} possible "
+            f"{_window_label(key_sizes)} windows ({coverage_fraction * 100:.1f}%): "
+            f"stride={stride} only tests offsets that are multiples of {stride}, "
+            f"so a secret that is not {stride}-aligned cannot be found at this "
+            f"setting. Re-run with a smaller stride (e.g. "
+            f"{_smaller_stride_hint(stride)}) to widen coverage."
+        ),
+        severity=Severity.WARNING,
+        details={
+            "candidates_tested": int(candidates_tested),
+            "candidates_possible": int(candidates_possible),
+            "stride": int(stride),
+            "coverage_fraction": float(coverage_fraction),
+            "key_sizes": [int(k) for k in key_sizes],
+        },
+    )
+
+
 def brute_force(
     *,
     candidates_path: str,
@@ -265,8 +334,8 @@ def brute_force(
     tls_client_random: Optional[str] = None,
     persist_ground_truth: bool = False,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
-    jobs: int = 1,
+    stride: int = 1,
+    jobs: int = 0,
     exhaustive: bool = True,
     state_path: Optional[str] = None,
     top_k: int = 10,
@@ -282,6 +351,7 @@ def brute_force(
 
     Two oracle sources are supported, mutually exclusive:
       * ``oracle_path`` — a user-supplied BYO decryption oracle script (sandboxed).
+        Hits it confirms are labelled ``confirmed_by="oracle"``.
       * ``pcap_path`` — a pcap/pcapng of the same TLS session; MemDiver's
         first-party pcap oracle proves a recovered key decrypts the real captured
         records (TLS 1.3, TLS 1.2 GCM, and older CBC suites). ``tls_client_random``
@@ -298,6 +368,7 @@ def brute_force(
     optional surface hooks; unset they are no-ops.
     """
     from memdiver.engine.brute_force import run_brute_force
+    from memdiver.engine.progress import Cancelled
     from memdiver.engine.resources.tls_pcap import PcapParseError
     from memdiver.engine.vol3_emit import resolve_variance_threshold
 
@@ -334,6 +405,14 @@ def brute_force(
         pcb = _progress_bridge(on_progress, "brute_force")
         if pcb is not None:
             bf_extra["progress_callback"] = pcb
+        # Cancellation has to reach INSIDE the sweep. The check above fires only
+        # once, before any candidate is tested; at the stride-1 default the grid
+        # holds ~700k windows, so without this the brute-force stage ignores a
+        # cancel for the entire run and ``check_cancel`` in the engine hot-loop
+        # is dead code on the web and MCP surfaces.
+        cev = _cancel_bridge(is_cancelled)
+        if cev is not None:
+            bf_extra["cancel_event"] = cev
         result = run_brute_force(
             Path(candidates_path),
             reference,
@@ -347,6 +426,13 @@ def brute_force(
             **bf_oracle_kwargs,
             **bf_extra,
         )
+    except Cancelled:
+        # The sweep observed the cancel token mid-grid. Re-express it as the app
+        # layer's canonical cancel signal so it is indistinguishable from one
+        # caught at a stage boundary — this must NOT fall through to the
+        # INVALID_INPUT funnel below and be reported to the user as a bad input.
+        _raise_cancelled(on_progress)
+        raise  # pragma: no cover - _raise_cancelled always raises
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
     except (OSError, ValueError, PcapParseError) as exc:
@@ -359,12 +445,17 @@ def brute_force(
     out = _ensure_dir(Path(output_dir))
     hits_path = out / "hits.json"
     result_dict = result.to_dict()
-    # A pcap-oracle hit is a proven decryption of real captured traffic — mark it
-    # confirmed so the persistence layer (W5) can record it as ground truth.
-    if pcap_path:
-        for hit in result_dict.get("hits", []):
-            hit["verified"] = True
-            hit["confirmed_by"] = "pcap"
+    # Every hit that reaches here was confirmed by *something*: ``run_brute_force``
+    # only records a candidate once the oracle returned truthy for it (both the
+    # serial and the parallel path append on ``ok``), so a hit can never be an
+    # unconfirmed candidate. A pcap hit is a proven decryption of real captured
+    # traffic; a BYO-oracle hit is the user's own oracle vouching for it. Stamp
+    # both with their provenance — the single ``hit_source`` below is also what
+    # the ground-truth ledger records, so the two labels cannot drift.
+    hit_source = "pcap" if pcap_path else "oracle"
+    for hit in result_dict.get("hits", []):
+        hit["verified"] = True
+        hit["confirmed_by"] = hit_source
     _dump_json(result_dict, hits_path)
     # Opt-in: file the oracle-confirmed hits into the ground-truth ledger. This
     # is the bridge from the oracle path (which owns confirmed hits but no DB
@@ -374,19 +465,41 @@ def brute_force(
     if persist_ground_truth and result_dict.get("hits"):
         ground_truth_run_id = _persist_ground_truth_hits(
             result_dict["hits"],
-            confirmed_by="pcap" if pcap_path else "oracle",
+            confirmed_by=hit_source,
             project_name=Path(reference_path).stem or "oracle-run",
         )
     # Resolve the static/dynamic variance cutoff to a concrete value (never
     # ``None``) so the web reducer can seed its convergence preview from the
     # exact threshold the emit stage will use instead of hardcoding the default.
     resolved_vt = resolve_variance_threshold(variance_threshold)
+    # Coverage rides EVERY run, hit or miss: a forensics reader needs to know how
+    # much of the candidate space was never examined before reading "1 hit" as
+    # "exactly one key present". Only the WARNING is conditional on zero hits.
+    coverage = {
+        "candidates_tested": result.candidates_tested,
+        "candidates_possible": result.candidates_possible,
+        "stride": result.stride,
+        "coverage_fraction": result.coverage_fraction,
+    }
+    warnings: List[Dict[str, Any]] = []
+    if result.verified_count == 0 and result.coverage_fraction < 1.0:
+        warnings.append(
+            _partial_coverage_diagnostic(
+                candidates_tested=result.candidates_tested,
+                candidates_possible=result.candidates_possible,
+                stride=result.stride,
+                coverage_fraction=result.coverage_fraction,
+                key_sizes=key_sizes,
+            ).to_dict()
+        )
     _emit(on_progress, "stage_end", stage="brute_force", pct=1.0,
           msg=f"{result.verified_count} hits / {result.total_candidates} candidates",
           extra={"verified_count": result.verified_count,
                  "total_candidates": result.total_candidates,
                  "variance_threshold": resolved_vt,
-                 "hits": result_dict.get("hits", [])})
+                 "hits": result_dict.get("hits", []),
+                 **coverage,
+                 "warnings": warnings})
     return {
         "hits_path": str(hits_path),
         "verified_count": result.verified_count,
@@ -394,6 +507,8 @@ def brute_force(
         "exit_code": result.exit_code,
         "hits": result_dict.get("hits", []),
         "ground_truth_run_id": ground_truth_run_id,
+        **coverage,
+        "warnings": warnings,
     }
 
 
@@ -410,7 +525,7 @@ def n_sweep(
     n_values: List[int],
     reduce_kwargs: Optional[Dict[str, Any]] = None,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
+    stride: int = 1,
     exhaustive: bool = True,
     oracle_config_path: Optional[str] = None,
     key_file: Optional[str] = None,
@@ -842,7 +957,7 @@ def auto_floor(
     num_dumps: int,
     oracle_config_path: Optional[str] = None,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
+    stride: int = 1,
     reduce_kwargs: Optional[Dict[str, Any]] = None,
     coverage: Optional[float] = None,
     correspondence: Optional[float] = None,

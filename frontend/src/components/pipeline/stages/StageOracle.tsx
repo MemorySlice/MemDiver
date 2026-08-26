@@ -23,6 +23,7 @@ import { OracleExamplePicker } from "@/components/pipeline/oracle/OracleExampleP
 import { OracleShapeExplainer } from "@/components/pipeline/oracle/OracleShapeExplainer";
 import { OracleUpload } from "@/components/pipeline/oracle/OracleUpload";
 import { PcapUpload } from "@/components/pipeline/oracle/PcapUpload";
+import { usePcapArm } from "@/components/pipeline/oracle/use-pcap-arm";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { useOracleStore } from "@/stores/oracle-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
@@ -51,12 +52,15 @@ export function StageOracle({ onAdvance }: Props) {
   const tlsClientRandom = usePipelineStore((s) => s.form.tlsClientRandom);
   const updateForm = usePipelineStore((s) => s.updateForm);
   const uploaded = useOracleStore((s) => s.uploaded);
+  // Same validate/arm flow the dropzone uses, driven here from a typed path.
+  const { arm, isArming, error: armError } = usePcapArm();
   const [tab, setTab] = useState<OracleTab>("upload");
   const [exampleHint, setExampleHint] = useState<string | null>(null);
 
   const activeEntry = uploaded.find((o) => o.id === oracleId) ?? null;
   const hasArmedOracle = !!activeEntry && activeEntry.armed && !!oracleSha256;
   const hasPcap = !!pcapPath && pcapPath.trim().length > 0;
+  const canArmPcap = hasPcap && !isArming;
   // Either oracle source unlocks the next stage; the run request sends whichever
   // is set (a pcap takes precedence when both happen to be filled).
   const canAdvance = hasArmedOracle || hasPcap;
@@ -131,16 +135,58 @@ export function StageOracle({ onAdvance }: Props) {
       <div className="md-panel p-3 space-y-2" data-tour-id="pipeline-oracle-pcap">
         <p className="text-xs md-text-muted">{t("stages.oracle.pcap.hint")}</p>
         <PcapUpload />
-        <label className="block text-xs md-text-secondary">
-          {t("stages.oracle.pcap.pathLabel")}
-          <input
-            type="text"
-            value={pcapPath ?? ""}
-            onChange={(e) => updateForm({ pcapPath: e.target.value })}
-            placeholder={t("stages.oracle.pcap.pathPlaceholder")}
-            className="mt-1 w-full text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-primary border border-[var(--md-border)]"
-          />
-        </label>
+        {/*
+          A typed path (or one restored from a reload -- ``form.pcapPath`` is
+          persisted while ``pcapSessions`` is not) is inert until it has been
+          validated: without arming, the session picker and the key-log
+          composer's client_random prefill stay silently empty even though the
+          run looks armed. The button beside the field runs that validation.
+        */}
+        <div className="space-y-1">
+          <label
+            htmlFor="pcap-path-input"
+            className="block text-xs md-text-secondary"
+          >
+            {t("stages.oracle.pcap.pathLabel")}
+          </label>
+          <div className="flex gap-2 items-start">
+            <input
+              id="pcap-path-input"
+              type="text"
+              value={pcapPath ?? ""}
+              onChange={(e) => updateForm({ pcapPath: e.target.value })}
+              placeholder={t("stages.oracle.pcap.pathPlaceholder")}
+              className="flex-1 min-w-0 text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-primary border border-[var(--md-border)]"
+            />
+            <button
+              type="button"
+              data-testid="pcap-arm-btn"
+              disabled={!canArmPcap}
+              aria-busy={isArming}
+              onClick={() =>
+                void arm((pcapPath ?? "").trim(), { clearPathOnFailure: false })
+              }
+              className="shrink-0 text-xs px-3 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+            >
+              {isArming
+                ? t("stages.oracle.pcap.arming")
+                : t("stages.oracle.pcap.arm")}
+            </button>
+          </div>
+          <p className="text-[10px] md-text-muted">
+            {t("stages.oracle.pcap.armHint")}
+          </p>
+          {isArming && (
+            <div data-testid="pcap-arm-status" className="text-xs md-text-muted">
+              {t("stages.oracle.pcap.validating")}
+            </div>
+          )}
+          {armError && (
+            <div data-testid="pcap-arm-error" className="text-xs md-text-error">
+              {t("stages.oracle.pcap.armError", { error: armError })}
+            </div>
+          )}
+        </div>
         <label className="block text-xs md-text-secondary">
           {t("stages.oracle.pcap.clientRandomLabel")}
           <input

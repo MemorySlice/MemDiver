@@ -1,10 +1,5 @@
 """Integration tests for SSH protocol support (Phase 12)."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import pytest
 
 from memdiver.core.protocols import REGISTRY
@@ -132,6 +127,13 @@ class TestSSHPipeline:
     def test_constraint_validator_ssh_dispatch(self):
         from memdiver.algorithms.base import AnalysisContext, Match
 
+        # NOTE: this guard is inert and kept only as a belt-and-braces import
+        # fence. The "parent dir shadow" it names predates tests/conftest.py,
+        # which now puts the repo root on sys.path before any test module is
+        # imported (see conftest _REPO_ROOT), as does pyproject's
+        # ``pythonpath = ["."]``. The import resolves and this test runs; the
+        # skip has not fired in a long time. Do not read it as "SSH dispatch is
+        # untested".
         try:
             from memdiver.algorithms.unknown_key.constraint_validator import ConstraintValidatorAlgorithm
         except ImportError:

@@ -145,11 +145,23 @@ def validate_pcap(
     body: ValidatePcapRequest,
     settings: Settings = Depends(get_api_settings),
 ):
-    """Arm/validate a persisted capture: summarise the TLS sessions it holds.
+    """Arm/validate a capture: summarise the TLS sessions it holds.
 
-    The pcap verification flow's arm step. ``pcap_path`` must point inside
-    ``settings.upload_dir`` (a previously :func:`upload_pcap`-persisted file);
-    a path escaping that directory or a non-existent file is rejected with 400.
+    The pcap verification flow's arm step. ``pcap_path`` is a READ of a capture
+    the operator chose — either one previously persisted by :func:`upload_pcap`
+    or a server-side path they typed, which ``docs/oracle/pcap_oracle.md``
+    documents as a supported alternative to uploading. It is therefore checked
+    for existence only, matching ``POST /api/pipeline/run``, which runs the very
+    same parameter through the pcap oracle.
+
+    This deliberately does NOT contain the path to ``settings.upload_dir``.
+    Doing so used to break the documented type-a-path flow: the UI's manual
+    "Arm / re-validate" control routes through here, so an out-of-tree capture
+    could not be armed even though ``/api/pipeline/run`` would happily run it.
+    Read paths on this localhost API are an accepted, documented risk (see
+    ``api/main.py`` and handoff item O-15); writes are not — cf. the containment
+    on ``output_path`` in ``POST /api/analysis/export-keylog``.
+
     The parse itself is delegated to the shared
     :func:`memdiver.app.tools_pipeline.inspect_pcap` producer, so a missing
     ``pcap`` extra or an unreadable capture surfaces as its ``CapabilityError``
@@ -157,19 +169,8 @@ def validate_pcap(
     """
     from memdiver.app.tools_pipeline import inspect_pcap
 
-    try:
-        pcap_path = ensure_within(settings.upload_dir, Path(body.pcap_path))
-    except ValueError as exc:
-        # Do not echo the resolved absolute upload_dir (the ValueError message
-        # embeds it) — that would disclose the server's on-disk layout.
-        raise HTTPException(
-            status_code=400,
-            detail="pcap_path escapes the upload directory",
-        ) from exc
+    pcap_path = Path(body.pcap_path).expanduser()
     if not pcap_path.is_file():
-        raise HTTPException(
-            status_code=400,
-            detail="capture not found under the upload directory",
-        )
+        raise HTTPException(status_code=400, detail="capture not found")
 
     return inspect_pcap(pcap_path=str(pcap_path))

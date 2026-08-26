@@ -98,6 +98,10 @@
   "statusBar": {
     "offsetLabelVas": "VAS",
     "offsetLabelOffset": "Offset",
+    "viewModeRaw": "raw",
+    "viewModeVas": "VAS",
+    "viewModeVa": "VA",
+    "chunkError": "Could not load bytes: {{error}}",
     "cursor": "{{label}}: 0x{{offset}}",
     "selection": "Sel: 0x{{start}}–0x{{end}} ({{length}} bytes)",
     "byte": "Byte: {{value}}",

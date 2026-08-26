@@ -205,17 +205,18 @@ export function StageThresholds({ onAdvance }: Props) {
           <NumericField
             label={t("stages.thresholds.fields.stride")}
             help={t("stages.thresholds.fields.strideHelp")}
-            value={form.bruteForce.stride ?? 8}
+            value={form.bruteForce.stride ?? 1}
             step={1}
             min={1}
             onChange={(v) => patchBrute({ stride: v })}
           />
+          {/* min={0} so the "auto" sentinel is reachable from the spinner. */}
           <NumericField
             label={t("stages.thresholds.fields.jobs")}
             help={t("stages.thresholds.fields.jobsHelp")}
-            value={form.bruteForce.jobs ?? 1}
+            value={form.bruteForce.jobs ?? 0}
             step={1}
-            min={1}
+            min={0}
             onChange={(v) => patchBrute({ jobs: v })}
           />
           <NumericField

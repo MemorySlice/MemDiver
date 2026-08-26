@@ -4,6 +4,7 @@ Uses synthetic consensus vectors + a synthetic reference dump with a planted
 32-byte "key" and a matching in-process oracle, so no real captures are needed.
 """
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -25,11 +26,16 @@ from memdiver.engine.auto_floor import (  # noqa: E402
     oracle_self_test,
     recall_lower_bound,
     run_auto_floor,
+    _absence_assumptions,
     _enumerate_candidates,
     _sigma_k2_interior,
 )
 from memdiver.app.reports import write_auto_floor_artifacts  # noqa: E402
-from memdiver.engine.candidate_pipeline import CandidateRegion  # noqa: E402
+from memdiver.engine.candidate_pipeline import (  # noqa: E402
+    DEFAULT_ALIGNMENT,
+    CandidateRegion,
+    reduce_search_space,
+)
 
 REDUCE_KWARGS = dict(
     alignment=8, block_size=32, density_threshold=0.5,
@@ -388,3 +394,74 @@ def test_hit_still_recovers_under_gates():
                        coverage=1.0, managed_region=True, alignment_quality=0.1)
     assert r.verdict in (VERDICT_RECOVERED, VERDICT_FLOOR_TOO_HIGH)
     assert bytes.fromhex(r.key_hex) == key
+
+
+# ── Regression: verdict-envelope alignment must not echo --stride ─────
+# The envelope is a forensic claim written into verdict.json / report.md.
+# Its ``alignment`` fallback used to be ``stride``, which only ever agreed by
+# coincidence — both knobs defaulted to 8. Once --stride's default became 1 the
+# envelope reported "alignment: 1" for runs that had in fact filtered on 8.
+REDUCE_KWARGS_NO_ALIGNMENT = {k: v for k, v in REDUCE_KWARGS.items()
+                              if k != "alignment"}
+
+
+def test_envelope_alignment_falls_back_to_reduce_default_not_stride():
+    """REGRESSION: envelope reported alignment=stride (=1) when reduce_kwargs
+    omitted 'alignment' — the live MCP and pipeline paths both do. It must name
+    reduce_search_space's own default (8), the value that actually ran."""
+    var, ref, _key, oracle = _fixture(4000.0)
+    r = run_auto_floor(var, ref, 20, oracle,
+                       reduce_kwargs=REDUCE_KWARGS_NO_ALIGNMENT, stride=1,
+                       coverage=1.0)
+    assert r.envelope["stride"] == 1
+    assert r.envelope["alignment"] == DEFAULT_ALIGNMENT == 8
+
+
+def test_envelope_echoes_explicit_alignment():
+    """REGRESSION: an explicitly-passed alignment must still reach the envelope
+    verbatim — the DEFAULT_ALIGNMENT fallback may not shadow a caller override."""
+    var, ref, _key, oracle = _fixture(4000.0)
+    kwargs = {**REDUCE_KWARGS, "alignment": 16}
+    r = run_auto_floor(var, ref, 20, oracle, reduce_kwargs=kwargs, stride=1,
+                       coverage=1.0)
+    assert r.envelope["alignment"] == 16
+
+
+def test_reduce_search_space_alignment_default_matches_constant():
+    """DRIFT GUARD: the envelope fallback is only truthful while
+    reduce_search_space's own 'alignment' default IS DEFAULT_ALIGNMENT. If the
+    signature default is edited to a literal again, the envelope starts lying."""
+    default = inspect.signature(reduce_search_space).parameters["alignment"].default
+    assert default == DEFAULT_ALIGNMENT
+
+
+# ── Regression: the stride assumption is vacuous at stride=1 ─────────
+def test_absence_assumptions_omits_vacuous_stride_caveat_at_stride_one():
+    """REGRESSION: the 'key aligned to the stride=1 grid' caveat was emitted
+    unconditionally. At stride 1 every offset was enumerated, so it is a
+    non-caveat that dilutes the real preconditions of an ABSENT verdict."""
+    assumptions = _absence_assumptions(stride=1, coverage=1.0,
+                                       entropy_threshold=4.5)
+    assert not any("stride=" in a for a in assumptions)
+    # …while every genuine precondition survives.
+    assert any("resident in all N captures" in a for a in assumptions)
+    assert any("entropy>=" in a for a in assumptions)
+    assert any("C_intersection=" in a for a in assumptions)
+
+
+def test_absence_assumptions_keeps_stride_caveat_above_one():
+    """REGRESSION: suppressing the vacuous stride=1 case must not suppress the
+    real one — at stride>1 the grid genuinely can skip the key."""
+    assumptions = _absence_assumptions(stride=8, coverage=1.0,
+                                       entropy_threshold=4.5)
+    assert any("stride=8 grid" in a for a in assumptions)
+
+
+def test_absent_verdict_at_stride_one_carries_no_stride_assumption():
+    """REGRESSION (end-to-end): a real ABSENT verdict produced at the default
+    stride 1 must not ship the vacuous grid caveat in verdict.json/report.md."""
+    var, ref, _key = _block_fixture()
+    r = run_auto_floor(var, ref, 20, lambda c: False,
+                       reduce_kwargs=REDUCE_KWARGS, stride=1, coverage=1.0)
+    assert r.verdict == VERDICT_ABSENT
+    assert r.assumptions and not any("stride=" in a for a in r.assumptions)

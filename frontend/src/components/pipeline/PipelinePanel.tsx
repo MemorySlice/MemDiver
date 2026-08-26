@@ -20,7 +20,7 @@ import { useTranslation } from "react-i18next";
 import { cancelPipelineRun, getPipelineRun } from "@/api/pipeline";
 import { useFtueStore } from "@/ftue/store";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
-import { PipelineRunDashboard } from "@/components/pipeline/run/PipelineRunDashboard";
+import { HitsList, PipelineRunDashboard, RunDiagnostics } from "@/components/pipeline/run/PipelineRunDashboard";
 import { ArtifactsTabs } from "@/components/pipeline/results/ArtifactsTabs";
 import { RefinePanel } from "@/components/pipeline/results/RefinePanel";
 import { SurvivorCurve } from "@/components/pipeline/results/SurvivorCurve";
@@ -139,6 +139,7 @@ function HeaderBar() {
       {(status === "running" || status === "pending") && taskId && (
         <button
           type="button"
+          data-testid="pipeline-cancel-btn"
           disabled={cancelling}
           onClick={() => {
             setCancelling(true);
@@ -172,7 +173,10 @@ function ResumingBanner() {
   if (!taskId) return null;
   if (status !== "pending" && status !== "running") return null;
   return (
-    <div className="mx-3 mt-3 p-2 text-xs rounded border border-[var(--md-accent-blue)] bg-[var(--md-bg-hover)] md-text-accent">
+    <div
+      className="mx-3 mt-3 p-2 text-xs rounded border border-[var(--md-accent-blue)] bg-[var(--md-bg-hover)] md-text-accent"
+      data-testid="pipeline-resuming-banner"
+    >
       {t("panel.resuming")}{" "}
       <span className="font-mono">{taskId.slice(0, 12)}…</span>{" "}
       {t("panel.resumingTail", { stage })}
@@ -183,6 +187,23 @@ function ResumingBanner() {
 function ResultsView() {
   return (
     <div className="p-4 space-y-4">
+      {/*
+       * The verified hits are the run's headline result -- a key proven against
+       * a real capture shows here as "Verified via pcap capture". `HitsList`
+       * is also mounted by the run dashboard while `stage === "running"`; the
+       * two stages are mutually exclusive, so the list never renders twice.
+       * It self-hides when there are no hits.
+       */}
+      <HitsList />
+      {/*
+       * ...and the diagnostics say what that hit list is worth. `HitsList`
+       * renders nothing on a zero-hit run, which used to leave this screen
+       * completely silent: a secret at a non-stride-aligned offset was never
+       * tested, yet the run still reported "succeeded". `RunDiagnostics`
+       * shows the search coverage (on every run, hit or not) and any backend
+       * warning such as `brute_force.partial_coverage`.
+       */}
+      <RunDiagnostics />
       <SurvivorCurve />
       <RefinePanel />
       <ArtifactsTabs />
@@ -234,6 +255,13 @@ export default function PipelinePanel() {
   // has since gone and deleted the backend task (or restarted the
   // server), fetch the canonical record once to sync our local status.
   //
+  // The record is folded in unconditionally, terminal or not. A reload
+  // DURING a long run used to restore nothing at all — the old early-out
+  // below skipped every non-terminal record, leaving status, artifacts and
+  // the stage history blank while the run ground on. The WebSocket ring
+  // cannot fill that in either (it holds 512 events; a stride-1 brute-force
+  // run emits thousands), so this record is the only mechanism there is.
+  //
   // When the task is already terminal on load (e.g. the user was away,
   // came back after completion), the WebSocket backfill won't fire — so
   // we manually replay the saved `record.stages` as synthetic
@@ -246,6 +274,9 @@ export default function PipelinePanel() {
     void getPipelineRun(taskId)
       .then((record) => {
         if (cancelled) return;
+        // Repaint from the canonical record first. Safe for a live run
+        // because it never touches `lastSeq` — see hydrateFromRecord's note.
+        usePipelineStore.getState().hydrateFromRecord(record);
         const isTerminal =
           record.status === "succeeded" ||
           record.status === "failed" ||

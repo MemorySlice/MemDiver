@@ -30,6 +30,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from memdiver.engine import floor_policy
+from memdiver.engine.candidate_pipeline import DEFAULT_ALIGNMENT
 # Re-exported so callers/tests keep importing ``_enumerate_candidates`` from
 # here after the region->pairs helper moved into floor_policy (Phase 4).
 from memdiver.engine.floor_policy import enumerate_candidates as _enumerate_candidates
@@ -450,16 +451,17 @@ def _maximal_candidates(
     reduce_kwargs: dict,
     key_sizes: Sequence[int],
     stride: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, set]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, floor_policy.PairMembership]:
     """Return (offsets, sizes, window_variance, default_set).
 
     A thin composition over :func:`floor_policy.enumerate_maximal` (the single
     shared enumeration core). The maximal set is entropy+alignment only
     (variance floor disabled), i.e. every candidate the oracle could ever be
     asked about; window_variance is the mean per-byte variance over each window
-    (used only to RANK). ``default_set`` is the (offset,size) set the SHIPPED
-    default floor (search-reduce at DEFAULT_FLOOR, incl. its density gate) would
-    test — used to decide RECOVERED vs FLOOR_WAS_TOO_HIGH. Kept as a SECOND
+    (used only to RANK). ``default_set`` is the (offset,size) membership set
+    (a :class:`floor_policy.PairMembership`, set-equivalent for ``in``) the
+    SHIPPED default floor (search-reduce at DEFAULT_FLOOR, incl. its density
+    gate) would test — used to decide RECOVERED vs FLOOR_WAS_TOO_HIGH. Kept as a SECOND
     enumeration at DEFAULT_FLOOR for bit-exact parity with the default's
     nonlinear density gate (a wvar>=DEFAULT_FLOOR threshold would drift the
     verdict label at density-gated region edges).
@@ -470,15 +472,25 @@ def _maximal_candidates(
     alignment/density filter and region extraction MUST re-run at DEFAULT_FLOOR
     regardless -- they cannot be recovered from the min_variance=0.0 output. The
     only cost the two passes share is enumeration over the in-memory variance
-    array (plus the min_variance-independent entropy profile), not I/O.
+    array, not I/O -- and the min_variance-independent entropy profile is now
+    computed ONCE and reused by the second pass via ``entropy_cache``.
     """
+    # ONE entropy profile for BOTH passes: it is a pure function of
+    # reference_data + entropy_window + alignment, none of which change with
+    # min_variance, so the DEFAULT_FLOOR pass reuses the phi=0 pass's profile.
+    # Purely a cost saving -- the reduced region sets stay byte-identical.
+    shared_kwargs = {**reduce_kwargs, "entropy_cache": {}}
     offsets, sizes, wvar = floor_policy.enumerate_maximal(
-        variance, reference_data, num_dumps, reduce_kwargs, key_sizes, stride,
+        variance, reference_data, num_dumps, shared_kwargs, key_sizes, stride,
         min_variance=0.0)
     d_off, d_sz, _ = floor_policy.enumerate_maximal(
-        variance, reference_data, num_dumps, reduce_kwargs, key_sizes, stride,
+        variance, reference_data, num_dumps, shared_kwargs, key_sizes, stride,
         min_variance=DEFAULT_FLOOR, compute_wvar=False)
-    default_set = set(zip(d_off.tolist(), d_sz.tolist()))
+    # PairMembership, not set(zip(...)): identical ``(off, size) in ...``
+    # answers (lossless integer encoding + searchsorted, nothing hashed or
+    # bounded) at ~1/16 the memory -- the tuple set cost ~90 MB at the 700k
+    # candidates a stride-1 sweep reaches. See tools/bench_auto_floor_memory.py.
+    default_set = floor_policy.PairMembership(d_off, d_sz)
     return offsets, sizes, wvar, default_set
 
 
@@ -491,16 +503,24 @@ def _absence_assumptions(*, stride: int, coverage: Optional[float],
     headers, derive-on-use, uncaptured regions) are named here.
     """
     cov = "unverified" if coverage is None else f"{coverage:.3f}"
-    return [
+    assumptions = [
         "target process resident in all N captures",
         "key stored contiguously (not secret-shared / boolean-masked)",
         "key materialized in memory (not derived-on-use / wiped before capture)",
-        f"key aligned to the stride={stride} grid (off-grid keys, e.g. behind "
-        f"object headers, are not enumerated)",
+    ]
+    # At stride=1 every offset inside the maximal set was enumerated, so there is
+    # no grid to miss the key: stating the caveat anyway would pad the strongest
+    # verdict this tool emits with a non-caveat and dilute the real ones.
+    if stride > 1:
+        assumptions.append(
+            f"key aligned to the stride={stride} grid (off-grid keys, e.g. behind "
+            f"object headers, are not enumerated)")
+    assumptions += [
         f"key window passes entropy>= {entropy_threshold} + alignment/density gates",
         f"key lies within captured coverage (C_intersection={cov})",
         "offset correspondence established across captures",
     ]
+    return assumptions
 
 
 def _sweep_curve(wvar: np.ndarray, phi0: float, hit_phi: Optional[float],
@@ -527,7 +547,7 @@ def run_auto_floor(
     *,
     reduce_kwargs: Optional[dict] = None,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
+    stride: int = 1,
     coverage: Optional[float] = None,
     correspondence: Optional[float] = None,
     filter_recall: Optional[float] = None,
@@ -641,7 +661,12 @@ def run_auto_floor(
 
     envelope = {
         "entropy_threshold": reduce_kwargs.get("entropy_threshold", 4.5),
-        "alignment": reduce_kwargs.get("alignment", stride),
+        # Fall back to reduce_search_space's OWN default, not ``stride``: the
+        # old ``stride`` fallback only coincided while both defaulted to 8.
+        # With --stride now defaulting to 1, it recorded "alignment: 1" for a
+        # run that in fact filtered on 8 (reduce_kwargs legitimately omits
+        # "alignment" on the MCP and pipeline paths, which pass no overrides).
+        "alignment": reduce_kwargs.get("alignment", DEFAULT_ALIGNMENT),
         "phi_min": 0.0, "stride": stride, "key_sizes": list(key_sizes),
     }
 

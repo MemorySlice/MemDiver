@@ -35,6 +35,16 @@
     "verified": "Verified",
     "failedTitle": "Decryption failed",
     "failed": "Failed",
-    "notVerifiedTitle": "Not verified"
+    "notVerifiedTitle": "Not verified",
+    "provenance": {
+      "pcap": "Verified via pcap capture",
+      "oracle": "Verified via oracle script",
+      "verifier": "Verified by cipher verifier"
+    },
+    "provenanceTitle": {
+      "pcap": "This key decrypted real records from the captured TLS session",
+      "oracle": "Your decryption oracle script accepted this key",
+      "verifier": "This key decrypted MemDiver's built-in cipher test vector"
+    }
   }
 }

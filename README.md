@@ -39,6 +39,7 @@ It combines known-key search, entropy scanning, change-point detection, structur
 - **Headless use** — the same engine via non-interactive CLI subcommands (no separate mode or flag) for CI/CD, batch processing, and forensic pipelines
 - **Python library** — `import memdiver` to open dumps, convert to `.msl`, parse containers, and run analysis programmatically (see [library quickstart](docs/quickstart/library.md))
 - **Analysis engine** — Known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis
+- **Pcap verification oracle** — prove a recovered TLS secret by decrypting records from a real packet capture (first-party, built in), then export it as a Wireshark-loadable NSS key log
 
 
 ## Install
@@ -47,7 +48,8 @@ It combines known-key search, entropy scanning, change-point detection, structur
 pip install memdiver                 # lean core: CLI + Python library (import memdiver)
 pip install "memdiver[api]"          # + FastAPI/uvicorn web UI & REST API (memdiver web)
 pip install "memdiver[mcp]"          # + MCP server for AI agents (memdiver mcp)
-pip install "memdiver[all]"          # every interface (api + mcp + marimo)
+pip install "memdiver[pcap]"         # + dpkt parser for the pcap verification oracle
+pip install "memdiver[all]"          # every interface (api + mcp + marimo + pcap)
 pip install "memdiver[experiment]"   # + frida-tools, memslicer for dump collection
 pip install "memdiver[docs]"         # + Sphinx toolchain for building the docs site
 pip install "memdiver[dev]"          # + pytest and contributor tooling
@@ -77,6 +79,52 @@ memdiver experiment --target path/to/target.py --num-runs 10
 # 5. Marimo research sandbox (houses the 5 deeper visualization views)
 memdiver ui
 ```
+
+## Verify against a real capture
+
+The strongest proof that a recovered byte range *is* a TLS key: derive record
+keys from the candidate and AEAD-decrypt records from a **real packet capture**.
+This is a first-party, trusted oracle (TLS 1.3, TLS 1.2 GCM, TLS 1.2 CBC) — the
+capture is only ever parsed as data, never executed, so it runs without the
+untrusted-oracle sandbox that bring-your-own oracle scripts need.
+
+It works in two steps: **arm** the capture — enumerate the TLS sessions it holds
+and their `client_random` values — then **run** brute-force against it, which
+answers whether any candidate actually decrypts those records.
+
+```bash
+# 1. Arm — which TLS sessions does this capture hold?
+memdiver inspect-pcap /abs/path/to/traffic.pcap
+
+# 2. Run — confirm a candidate decrypts real captured records
+memdiver brute-force --candidates candidates.json --dump reference.msl \
+    --pcap /abs/path/to/traffic.pcap --key-sizes 32 -o hits.json
+
+# 3. Export the confirmed secret as a Wireshark-loadable NSS key log
+memdiver export-keylog --secrets secrets.json -o session.keylog
+```
+
+| Surface | Arm (inspect) | Run (confirm) |
+|---|---|---|
+| **CLI** | `memdiver inspect-pcap <capture>` | `memdiver brute-force --pcap …` |
+| **Web** | `POST /api/pcaps/upload` → `POST /api/pcaps/validate` | `POST /api/pipeline/run` (`pcap_path`, `tls_client_random`) |
+| **MCP** | `inspect_pcap` tool | `brute_force` tool (`pcap_path`) |
+| **Library** | `memdiver.services.inspect_pcap(pcap_path=…)` | `memdiver.services.brute_force(pcap_path=…)` |
+
+Needs the optional parser — `pip install "memdiver[pcap]"`; without it the arm
+step returns an `INVALID_INPUT` capability error and pcap runs are unavailable.
+
+**The `--key-sizes` trap:** the oracle recovers the *secret* and derives record
+keys from it, so the candidate length must match the secret, not the record key
+— `32` for a TLS 1.3 traffic secret (the default), **`48` for a TLS 1.2 master
+secret**. A TLS 1.2 run left at the default `32` will never find its key.
+
+A hit confirmed this way is recorded with `confirmed_by: "pcap"` and shown in
+the web UI as *"Verified via pcap capture"*.
+
+Full walkthrough — the `--stride` coverage trap, restricting to a single
+session, the web uploader, and `--persist-ground-truth` — in
+[docs/oracle/pcap_oracle.md](docs/oracle/pcap_oracle.md).
 
 ## API authentication
 
@@ -114,9 +162,9 @@ network with zero auth is refused outright. Set a token, or override with
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
-| CLI subcommands | **22** | [`cli/`](cli/) |
-| FastAPI routers | **12** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **15** | [`mcp_server/`](mcp_server/) |
+| CLI subcommands | **24** | [`cli/`](cli/) |
+| FastAPI routers | **15** + WebSocket | [`api/routers/`](api/routers/) |
+| MCP tools | **34** | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
 | Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
 | Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
@@ -135,15 +183,15 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 15 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 34 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
-All 22 subcommands exposed by [`cli/`](cli/):
+All 24 subcommands exposed by [`cli/`](cli/):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Format conversion | Runtime shells |
 |---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` · `inspect` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
+| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -175,7 +223,7 @@ Switch via **Settings → Display → Chart backend**. The preference persists p
 ## Architecture
 
 ```
-api/            FastAPI backend — 12 routers + WebSocket, OpenAPI docs at /docs
+api/            FastAPI backend — 15 routers + WebSocket, OpenAPI docs at /docs
 frontend/       React + Vite SPA (TypeScript, Tailwind, Zustand) — dockable workspace
 core/           Stdlib-only data layer (models, discovery, parsing, entropy, KDF, variance, ASLR alignment)
 engine/         Differential Engine — ConsensusVector (Welford), SearchCorrelator, DiffStore,
@@ -184,7 +232,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 15 tools exposed to AI assistants
+mcp_server/     MCP server — 34 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

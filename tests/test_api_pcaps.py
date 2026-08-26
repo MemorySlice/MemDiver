@@ -257,14 +257,38 @@ def test_validate_pcap_happy_path(client, isolated_env):
     assert len(body["sessions"][0]["client_random"]) == 64
 
 
-def test_validate_pcap_outside_upload_dir_is_400(client, tmp_path):
-    """A pcap_path escaping upload_dir is rejected with 400 (containment)."""
+def test_validate_pcap_accepts_a_server_side_path_outside_upload_dir(client, tmp_path):
+    """Arming a typed server-side capture must not be blocked by containment.
+
+    ``docs/oracle/pcap_oracle.md`` documents typing a server-side path as an
+    alternative to uploading, and the UI's manual "Arm / re-validate" control
+    routes through this endpoint. While it contained ``pcap_path`` to
+    ``upload_dir``, that documented flow was broken: an out-of-tree capture
+    could not be armed even though ``POST /api/pipeline/run`` -- the same
+    parameter, the same capture -- would happily run it.
+
+    Regression guard for that asymmetry. A read of an operator-chosen path is
+    the accepted, documented risk class for this localhost API (api/main.py,
+    handoff O-15); the write on ``POST /api/analysis/export-keylog`` is the
+    thing that IS contained. The capture here is deliberately not valid pcap,
+    so anything past the containment gate is fine -- what must NOT come back is
+    a containment rejection.
+    """
     outside = tmp_path / "outside.pcap"
     outside.write_bytes(b"\xd4\xc3\xb2\xa1payload")
 
     r = client.post("/api/pcaps/validate", json={"pcap_path": str(outside)})
+    assert "escapes" not in r.text.lower()
+    assert r.status_code != 404, r.text
+
+
+def test_validate_pcap_missing_file_is_400(client, tmp_path):
+    """A path that does not exist is still rejected, with no layout disclosure."""
+    missing = tmp_path / "nope.pcap"
+
+    r = client.post("/api/pcaps/validate", json={"pcap_path": str(missing)})
     assert r.status_code == 400, r.text
-    assert "escapes" in r.json()["detail"].lower()
+    assert "not found" in r.json()["detail"].lower()
 
 
 def test_validate_pcap_truncated_capture_is_400(client, isolated_env):
@@ -286,14 +310,15 @@ def test_validate_pcap_truncated_capture_is_400(client, isolated_env):
     assert r.status_code == 400, r.text
 
 
-def test_validate_pcap_error_detail_does_not_leak_absolute_base(client, tmp_path):
-    """The escape-rejection detail must not echo the resolved absolute base."""
-    outside = tmp_path / "outside.pcap"
-    outside.write_bytes(b"\xd4\xc3\xb2\xa1payload")
+def test_validate_pcap_error_detail_does_not_leak_server_layout(client, tmp_path):
+    """A rejection must not echo resolved absolute server paths.
 
-    r = client.post("/api/pcaps/validate", json={"pcap_path": str(outside)})
+    The detail string is the one thing an unauthenticated caller always sees,
+    so it must stay free of on-disk layout regardless of which rejection fired.
+    """
+    missing = tmp_path / "nope.pcap"
+
+    r = client.post("/api/pcaps/validate", json={"pcap_path": str(missing)})
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
-    assert "escapes" in detail.lower()
-    # The upload_dir absolute base lives under tmp_path; it must not be disclosed.
     assert str(tmp_path) not in detail

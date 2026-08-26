@@ -32,7 +32,13 @@ const GOCRYPTFS_RECIPE = {
   },
   bruteForce: {
     key_sizes: [32],
+    // Deliberately pinned: the product default is stride 1 (full coverage),
+    // but the published DFRWS gocryptfs result was produced at stride 8, so
+    // this recipe keeps 8 in order to keep reproducing that paper.
     stride: 8,
+    // Pinned alongside the stride above for the same reason: the published
+    // result was produced by a single-threaded sweep, so this recipe stays
+    // serial rather than following the product default of 0 (auto-parallel).
     jobs: 1,
     exhaustive: true,
     top_k: 10,

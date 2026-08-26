@@ -1,16 +1,19 @@
 /**
  * Pipeline run dashboard — active-stage bar, reduction funnel, stage
- * timings, live oracle log, and a hits list with "Open in hex" that
- * auto-loads the first consensus source on a cold pipeline tab.
+ * timings, live oracle log, a hits list with "Open in hex" that
+ * auto-loads the first consensus source on a cold pipeline tab, and the
+ * run diagnostics (search coverage + backend warnings).
  */
 
 import { useState, type JSX } from "react";
 import { useTranslation } from "react-i18next";
 
 import { inferFields } from "@/api/pipeline";
+import { VerificationBadge } from "@/components/results/VerificationBadge";
 import { useAppStore } from "@/stores/app-store";
 import { useHexStore } from "@/stores/hex-store";
-import { usePipelineStore, type HitRecord } from "@/stores/pipeline-store";
+import { usePipelineStore, type HitRecord, type Throughput } from "@/stores/pipeline-store";
+import { splitDuration } from "@/utils/duration";
 import { notifyError } from "@/utils/errorNotifier";
 
 import { FunnelChart } from "./FunnelChart";
@@ -55,7 +58,7 @@ async function openHitInHex(
   }
 }
 
-function HitsList(): JSX.Element | null {
+export function HitsList(): JSX.Element | null {
   const { t } = useTranslation("pipeline");
   const hits = usePipelineStore((s) => s.hits);
   const sources = usePipelineStore((s) => s.form.sourcePaths);
@@ -95,10 +98,15 @@ function HitsList(): JSX.Element | null {
           <li
             key={`${h.offset}-${i}`}
             className="flex items-center justify-between gap-2 text-xs"
+            data-testid="pipeline-hit-row"
+            data-hit-offset={h.offset}
           >
-            <span className="font-mono md-text-secondary">
-              0x{h.offset.toString(16).padStart(8, "0")}
-              <span className="md-text-muted ml-1">{t("run.dashboard.hitSize", { size: h.size })}</span>
+            <span className="flex items-center gap-2 min-w-0">
+              <span className="font-mono md-text-secondary">
+                0x{h.offset.toString(16).padStart(8, "0")}
+                <span className="md-text-muted ml-1">{t("run.dashboard.hitSize", { size: h.size })}</span>
+              </span>
+              <VerificationBadge verified={h.verified ?? null} confirmedBy={h.confirmedBy} />
             </span>
             <button
               type="button"
@@ -116,6 +124,142 @@ function HitsList(): JSX.Element | null {
   );
 }
 
+/**
+ * Search coverage + non-fatal backend warnings for the finished (or
+ * in-flight) brute-force stage.
+ *
+ * The brute-force stage walks an *absolute* stride grid: at stride=N only
+ * offsets that are multiples of N are ever tested. The default is stride=1
+ * (full coverage), but a user who raises the stride for speed can no longer
+ * reach an unaligned secret at all -- and without
+ * this block the run reports "succeeded, 0 hits" and looks identical to a
+ * dump that genuinely holds no key. ``HitsList`` self-hides on an empty run,
+ * so this is the only thing standing between the user and a silent screen.
+ *
+ * The coverage line renders on successful runs too, deliberately: a hit
+ * found inside a 16%-covered space is a lower bound, never a total.
+ */
+export function RunDiagnostics(): JSX.Element | null {
+  const { t } = useTranslation("pipeline");
+  const coverage = usePipelineStore((s) => s.coverage);
+  const warnings = usePipelineStore((s) => s.warnings);
+
+  if (!coverage && warnings.length === 0) return null;
+  const isExhaustive = coverage !== null && coverage.fraction >= 1;
+
+  return (
+    <div className="space-y-2" data-testid="pipeline-diagnostics">
+      {coverage && (
+        <div
+          className="md-panel p-3 space-y-1"
+          data-testid="pipeline-coverage"
+          data-coverage-fraction={coverage.fraction}
+        >
+          <div className="text-xs md-text-accent font-semibold">
+            {t("run.diagnostics.coverageTitle")}
+          </div>
+          <div className="text-xs md-text-secondary">
+            {t("run.diagnostics.coverageLine", {
+              // Pinned to en-US rather than the ambient locale: the UI is
+              // English-only, and these two counts also appear inside the
+              // backend-composed warning sentence right below, which groups
+              // with commas. A host locale of de-DE would otherwise print
+              // "110.326" here and "110,326" there for the same number.
+              tested: coverage.tested.toLocaleString("en-US"),
+              possible: coverage.possible.toLocaleString("en-US"),
+              percent: (coverage.fraction * 100).toFixed(1),
+              stride: coverage.stride,
+            })}
+          </div>
+          <div className="h-1.5 rounded bg-[var(--md-bg-hover)] overflow-hidden">
+            <div
+              className={`h-full ${
+                isExhaustive
+                  ? "bg-[var(--md-accent-green)]"
+                  : "bg-[var(--md-accent-orange)]"
+              }`}
+              style={{
+                width: `${Math.max(0, Math.min(1, coverage.fraction)) * 100}%`,
+              }}
+            />
+          </div>
+          <div className="text-xs md-text-muted">
+            {isExhaustive
+              ? t("run.diagnostics.coverageExhaustive")
+              : t("run.diagnostics.coveragePartial", { stride: coverage.stride })}
+          </div>
+        </div>
+      )}
+
+      {warnings.map((w, i) => (
+        <div
+          key={`${w.code}-${i}`}
+          role="status"
+          className="md-panel p-3 space-y-1 border md-border-warning md-text-warning"
+          data-testid="pipeline-warning"
+          data-warning-code={w.code}
+        >
+          <div className="text-xs font-semibold">
+            {t("run.diagnostics.warningTitle")}
+          </div>
+          {/*
+           * `w.message` is a complete English sentence composed by the
+           * backend (numbers, stride, and the remediation hint already
+           * folded in). It is rendered verbatim -- only the heading above
+           * is translated.
+           */}
+          <div className="text-xs">{w.message}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Live candidates/sec + ETA for the brute-force stage.
+ *
+ * A stride-1 run enumerates ~701k candidates where the old stride-8 default
+ * enumerated ~110k, so the stage now runs ~6.4x longer and a bare percentage
+ * bar leaves the user with no idea whether "12%" means one more minute or one
+ * more hour. Both numbers are derived in the store from counters the engine
+ * already emits; this row only formats them.
+ *
+ * Self-hides until a rate exists: the first progress sample has nothing to
+ * divide by, and showing "0 candidates/sec" would read as a stalled run.
+ */
+function ThroughputRow({ throughput }: { throughput: Throughput }): JSX.Element {
+  const { t } = useTranslation("pipeline");
+  const { h, m, s } = splitDuration(throughput.etaSeconds ?? 0);
+
+  // Pinned to en-US for the same reason the coverage counts are: the UI is
+  // English-only and a host locale of de-DE would print "1.024" for 1024.
+  const rate = t("run.dashboard.rate", {
+    rate: Math.round(throughput.perSec).toLocaleString("en-US"),
+  });
+
+  let eta: string;
+  if (throughput.etaSeconds === null) {
+    eta = t("run.dashboard.etaUnknown");
+  } else if (h > 0) {
+    eta = t("run.dashboard.etaHours", { h, m });
+  } else if (m > 0) {
+    eta = t("run.dashboard.etaMinutes", { m, s });
+  } else {
+    eta = t("run.dashboard.etaSeconds", { s });
+  }
+
+  return (
+    <div
+      className="flex justify-between text-xs md-text-muted"
+      data-testid="pipeline-throughput"
+      data-eta-seconds={throughput.etaSeconds ?? ""}
+    >
+      <span>{rate}</span>
+      <span>{eta}</span>
+    </div>
+  );
+}
+
 export function PipelineRunDashboard(): JSX.Element {
   const { t } = useTranslation("pipeline");
   const status = usePipelineStore((s) => s.status);
@@ -123,6 +267,7 @@ export function PipelineRunDashboard(): JSX.Element {
   const activeStage = usePipelineStore((s) => s.activeStage);
   const activeStagePct = usePipelineStore((s) => s.activeStagePct);
   const activeStageMsg = usePipelineStore((s) => s.activeStageMsg);
+  const throughput = usePipelineStore((s) => s.throughput);
 
   const isRunning = status === "running" || status === "pending";
   const pctClamped = Math.max(0, Math.min(1, activeStagePct));
@@ -164,6 +309,9 @@ export function PipelineRunDashboard(): JSX.Element {
               style={{ width: `${pctClamped * 100}%` }}
             />
           </div>
+          {throughput && throughput.perSec > 0 && (
+            <ThroughputRow throughput={throughput} />
+          )}
           {activeStageMsg && (
             <div className="text-xs md-text-muted truncate">
               {activeStageMsg}
@@ -178,6 +326,8 @@ export function PipelineRunDashboard(): JSX.Element {
         <StageTimingTable />
         <LiveOracleLog />
       </div>
+
+      <RunDiagnostics />
 
       <HitsList />
     </div>

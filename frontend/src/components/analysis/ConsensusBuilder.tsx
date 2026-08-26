@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { useConsensusIncrementalStore } from "@/stores/consensus-incremental-store";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -53,7 +54,22 @@ export function ConsensusBuilder() {
     addFile,
     finalize,
     reset,
-  } = useConsensusIncrementalStore();
+  } = useConsensusIncrementalStore(
+    useShallow((s) => ({
+      sessionId: s.sessionId,
+      size: s.size,
+      numDumps: s.numDumps,
+      status: s.status,
+      liveStats: s.liveStats,
+      history: s.history,
+      finalResult: s.finalResult,
+      error: s.error,
+      begin: s.begin,
+      addFile: s.addFile,
+      finalize: s.finalize,
+      reset: s.reset,
+    })),
+  );
 
   const [sizeInput, setSizeInput] = useState<string>("1048576");
   const fileInputRef = useRef<HTMLInputElement>(null);

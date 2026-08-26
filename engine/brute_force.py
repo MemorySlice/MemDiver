@@ -6,16 +6,19 @@ oracle, and reports hits. On first hit it materializes the neighborhood
 variance slice from the stored Welford state so ``emit-plugin`` can
 build a vol3 anchor without re-reading the consensus matrix.
 
-Parallelism: when ``jobs > 1`` dispatches via a spawn-based
-ProcessPoolExecutor. Workers re-import the user oracle from its absolute
-path because importlib spec modules don't survive pickling. Serial mode
-(``jobs=1``) keeps the oracle in-process so tracebacks are readable.
+Parallelism: when the resolved job count is > 1 this dispatches via a
+spawn-based ProcessPoolExecutor, batching ``_CHUNK`` candidates per
+submission. Workers re-import the user oracle from its absolute path because
+importlib spec modules don't survive pickling. Serial mode (``jobs=1``) keeps
+the oracle in-process so tracebacks are readable. ``jobs=0`` means auto — see
+:func:`resolve_jobs`, which stays serial for small or first-hit sweeps.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from multiprocessing import get_context
@@ -24,7 +27,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from memdiver.engine.candidate_grid import iter_region_grid
+from memdiver.engine.candidate_grid import count_region_grid, iter_region_grid
 from memdiver.engine.oracle import (
     OracleFn,
     load_oracle,
@@ -44,11 +47,82 @@ logger = logging.getLogger("memdiver.engine.brute_force")
 
 _PROGRESS_EVERY = 256
 
+# How many candidates travel per pool submission on the parallel path.
+#
+# IPC amortisation: one Future per candidate means one pickle round-trip
+# (task envelope + the candidate's own bytes + the result tuple) for a unit of
+# work whose oracle call can be of comparable cost. At the stride-1 default a
+# single region window already yields ~700k candidates, so per-candidate
+# dispatch spends most of its wall-clock in the queue machinery rather than in
+# the oracle — a naive jobs>1 run can end up SLOWER than serial. Batching
+# amortises that fixed overhead over ``_CHUNK`` candidates, which is large
+# enough to make dispatch cost negligible yet small enough that the in-flight
+# window stays a fine-grained back-pressure valve (see ``max_in_flight``).
+# Purely a throughput knob: it must never change which hits are found.
+#
+# 1024 is measured, not guessed. Against the first-party tls-pcap oracle
+# (173.4 us/candidate, timed on tests/e2e/fixtures/pcap/session_tls13.pcap)
+# over 700k candidates at jobs=4: chunk=1 is 337x SLOWER than serial, chunk=256
+# is 2.74x faster, chunk=1024 is 3.53x. See tools/bench_brute_force_parallel.py.
+# The cost of a larger batch is bounded and small: peak resident candidate bytes
+# are jobs*4*chunk*key_size (~512 KiB at defaults), and cancellation is observed
+# per completed batch rather than per candidate — ~177 ms at this oracle cost.
+_CHUNK = 1024
+
 EXIT_HIT = 0
 EXIT_CRASH = 1
 EXIT_NO_HIT = 2
 
 NEIGHBORHOOD_PAD = 64
+
+#: Below this many candidates ``resolve_jobs`` auto-selects serial. Spawning a
+#: pool costs a process launch plus one oracle import per worker (the
+#: first-party pcap oracle re-parses the whole capture in each), which a short
+#: sweep never earns back.
+PARALLEL_MIN_CANDIDATES = 20_000
+
+#: Upper bound on auto-selected workers. Measured (see
+#: ``tools/bench_brute_force_parallel.py``) the chunked pool saturates well
+#: before this on a realistic oracle, and capping it leaves headroom for the
+#: rest of the machine.
+PARALLEL_MAX_JOBS = 4
+
+
+def resolve_jobs(jobs: int, total_candidates: int, *, exhaustive: bool) -> int:
+    """Resolve a ``jobs`` setting into an actual worker count.
+
+    ``jobs`` semantics:
+
+    * any explicit positive value is honoured **verbatim** — a user who asked
+      for ``--jobs 1`` gets serial, and ``--jobs 16`` gets 16, no second-guessing;
+    * ``0`` (and any non-positive value) means *auto*, resolved as below.
+
+    Auto returns 1 (serial) when either:
+
+    * ``exhaustive`` is False, or
+    * ``total_candidates < PARALLEL_MIN_CANDIDATES``;
+
+    otherwise ``max(1, min(PARALLEL_MAX_JOBS, cpu_count - 1))``.
+
+    **Auto must never return > 1 for a non-exhaustive run.** This is a
+    correctness constraint, not a performance one. ``_run_parallel`` reacts to
+    the first hit by ceasing to feed new candidates and then *draining* the
+    in-flight window, so how many candidates were consumed before the run
+    stopped depends on worker scheduling — it is timing-dependent. That number
+    is not internal: it lands in ``hits.json`` as ``total_candidates``,
+    ``candidates_tested`` and ``coverage_fraction``. A first-hit run must
+    therefore stay serial so the emitted artifact is byte-for-byte reproducible
+    across runs. A user who explicitly passes ``--jobs N`` with ``--first-hit``
+    is knowingly trading that reproducibility away; auto never makes that
+    trade on their behalf.
+    """
+    if jobs > 0:
+        return int(jobs)
+    if not exhaustive:
+        return 1
+    if total_candidates < PARALLEL_MIN_CANDIDATES:
+        return 1
+    return max(1, min(PARALLEL_MAX_JOBS, (os.cpu_count() or 2) - 1))
 
 
 @dataclass
@@ -94,10 +168,32 @@ class BruteForceResult:
     verified_count: int = 0
     exhaustive: bool = True
     top_k: List[TopKEntry] = field(default_factory=list)
+    #: Windows a stride-1 grid would have tested over the same regions and key
+    #: sizes — the denominator of :attr:`coverage_fraction`. ``0`` means "not
+    #: computed", which reads as full coverage.
+    candidates_possible: int = 0
+    #: The stride the grid actually stepped by. ``1`` is exhaustive.
+    stride: int = 1
 
     @property
     def exit_code(self) -> int:
         return EXIT_HIT if self.hits else EXIT_NO_HIT
+
+    @property
+    def candidates_tested(self) -> int:
+        """Alias for :attr:`total_candidates`, named against ``candidates_possible``."""
+        return self.total_candidates
+
+    @property
+    def coverage_fraction(self) -> float:
+        """Fraction of the stride-1 candidate space this run actually tested.
+
+        ``1.0`` when nothing was countable (``candidates_possible == 0``), so an
+        un-instrumented result never reads as a partial search.
+        """
+        if self.candidates_possible <= 0:
+            return 1.0
+        return self.total_candidates / self.candidates_possible
 
     def to_dict(self) -> dict:
         return {
@@ -106,6 +202,10 @@ class BruteForceResult:
             "verified_count": self.verified_count,
             "exhaustive": self.exhaustive,
             "top_k": [t.to_dict() for t in self.top_k],
+            "candidates_tested": self.candidates_tested,
+            "candidates_possible": int(self.candidates_possible),
+            "stride": int(self.stride),
+            "coverage_fraction": self.coverage_fraction,
         }
 
 
@@ -145,12 +245,22 @@ def count_candidate_slices(
     key_sizes: Sequence[int],
     stride: int,
 ) -> int:
-    """Count candidates without materialising their bytes.
+    """Count candidates without materialising — or even enumerating — them.
 
-    Equivalent to ``sum(1 for _ in iter_candidate_slices(...))`` but iterates
-    the (offset, size) grid directly via :func:`iter_region_grid`, skipping the
-    per-candidate ``reference_data`` slice. Used for the progress-total
-    precomputation pass so counting never allocates candidate byte-strings.
+    Exactly ``sum(1 for _ in iter_candidate_slices(...))``, but O(regions *
+    key_sizes) instead of O(candidates): every region delegates to the
+    closed-form :func:`count_region_grid` rather than stepping the grid.
+
+    Why that matters: this runs once before every sweep purely to produce the
+    progress denominator, and at the ``stride=1`` default a real corpus grid
+    holds on the order of 700,000 windows. Counting them by iteration meant a
+    full discard pass over the whole candidate space — hundreds of thousands of
+    generator steps whose only product was a single integer — before the oracle
+    saw its first candidate. The closed form returns the same integer for free.
+
+    ``count_region_grid`` and ``iter_region_grid`` agree for every input this
+    function can reach; they diverge only for ``stride < 0``, which the guard
+    below rejects on the same terms :func:`iter_candidate_slices` does.
     """
     if stride <= 0:
         raise ValueError("stride must be positive")
@@ -159,10 +269,27 @@ def count_candidate_slices(
     for region in regions:
         r_start = int(region["offset"])
         r_end = r_start + int(region["length"])
-        total += sum(
-            1 for _ in iter_region_grid(r_start, r_end, key_sizes, stride, dump_len)
-        )
+        total += count_region_grid(r_start, r_end, key_sizes, stride, dump_len)
     return total
+
+
+def count_possible_candidates(
+    regions: Sequence[dict],
+    reference_data: bytes,
+    key_sizes: Sequence[int],
+) -> int:
+    """Count the windows a fully exhaustive (stride-1) grid would test.
+
+    The denominator for ``coverage_fraction``: how many ``(offset, size)``
+    windows exist at all over these regions and key sizes. Coverage is NOT
+    ``1 / stride`` — regions are short and the grid snaps to absolute multiples
+    of the stride — so the honest ratio has to be counted, not derived.
+
+    Delegates to :func:`count_candidate_slices` at ``stride=1`` so the
+    denominator is produced by the very function that produces the numerator:
+    the two can never drift apart under a future change to the grid math.
+    """
+    return count_candidate_slices(regions, reference_data, key_sizes, 1)
 
 
 def _load_neighborhood_variance(
@@ -231,6 +358,39 @@ def _worker_verify(job: Tuple[int, int, int, bytes]) -> Tuple[int, int, int, boo
     return ridx, offset, size, ok
 
 
+def _worker_verify_chunk(
+    jobs: List[Tuple[int, int, int, bytes]],
+) -> List[Tuple[int, int, int, bool]]:
+    """Verify a batch of candidates in one pool round-trip.
+
+    Semantically identical to calling ``_worker_verify`` once per element —
+    same per-candidate try/except -> ``ok = False`` fallback, same debug log —
+    it only amortises the IPC cost over the batch. Results are returned in
+    submission order so the caller can emit hits/progress deterministically.
+    """
+    results: List[Tuple[int, int, int, bool]] = []
+    for ridx, offset, size, candidate in jobs:
+        try:
+            ok = bool(_WORKER_ORACLE(candidate))  # type: ignore[misc]
+        except Exception as exc:  # user oracle must not kill the worker pool
+            logger.debug("oracle raised at offset 0x%x: %s", offset, exc)
+            ok = False
+        results.append((ridx, offset, size, ok))
+    return results
+
+
+def _take_chunk(
+    jobs_iter: Iterator[Tuple[int, int, int, bytes]], chunk: int
+) -> List[Tuple[int, int, int, bytes]]:
+    """Pull at most ``chunk`` candidates off the generator (lazily, no drain)."""
+    batch: List[Tuple[int, int, int, bytes]] = []
+    for job in jobs_iter:
+        batch.append(job)
+        if len(batch) >= chunk:
+            break
+    return batch
+
+
 def _run_serial(
     jobs: Iterator[Tuple[int, int, int, bytes]],
     oracle: OracleFn,
@@ -290,6 +450,7 @@ def _run_parallel(
     total_estimate: int = 0,
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
+    chunk: int = _CHUNK,
 ) -> Tuple[List[Tuple[int, int, int]], int]:
     """Stream candidates through a process pool with bounded back-pressure.
 
@@ -297,19 +458,28 @@ def _run_parallel(
     pickle the entire candidate space — each job carries its candidate
     bytes — into the pool at once), this keeps at most ``max_in_flight``
     Futures outstanding: it primes the window, then submits the next
-    candidate only as an earlier one completes. Memory therefore stays
+    batch only as an earlier one completes. Memory therefore stays
     bounded like the serial path. ``total_estimate`` is only used for the
     progress percentage. Hit *ordering* is normalized by the caller (sorted by
     offset), so the non-deterministic completion order no longer leaks into the
     result; on the first non-exhaustive hit this path stops feeding new
     candidates and drains the current in-flight window (rather than cancelling
     immediately), so the caller can pick the lowest-offset hit deterministically.
+
+    ``chunk`` candidates travel per Future (see ``_CHUNK``). It is a pure
+    throughput knob: batching changes neither the set of candidates verified in
+    exhaustive mode nor the sorted hit list the caller produces.
     """
     hits: List[Tuple[int, int, int]] = []
     completed = 0
     total = total_estimate
+    chunk = max(1, int(chunk))
     # A small multiple of the worker count keeps every worker fed while
-    # capping how many candidate-byte payloads are resident at once.
+    # capping how many candidate-byte payloads are resident at once. NOTE: the
+    # window now counts CHUNKS, not candidates, so peak resident candidate bytes
+    # are jobs * 4 * chunk * key_size — larger than the pre-chunking
+    # jobs * 4 * key_size, but still a constant bound independent of the
+    # candidate-space size (e.g. 4 jobs * 4 * 256 * 32B ≈ 128 KiB).
     max_in_flight = max(1, jobs * 4)
     ctx = get_context("spawn")
     with ProcessPoolExecutor(
@@ -321,19 +491,25 @@ def _run_parallel(
         in_flight = set()
         draining = False  # set on the first non-exhaustive hit
         try:
-            # Prime the in-flight window.
-            for job in jobs_iter:
-                in_flight.add(pool.submit(_worker_verify, job))
-                if len(in_flight) >= max_in_flight:
+            # Prime the in-flight window, one batch per slot.
+            while len(in_flight) < max_in_flight:
+                batch = _take_chunk(jobs_iter, chunk)
+                if not batch:
                     break
+                in_flight.add(pool.submit(_worker_verify_chunk, batch))
 
             while in_flight:
                 done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                 for fut in done:
                     check_cancel(cancel_event)
-                    completed += 1
-                    ridx, offset, size, ok = fut.result()
-                    if ok:
+                    results = fut.result()
+                    completed += len(results)
+                    # Walk the batch in submission order so hit and progress
+                    # events keep the same sequence a per-candidate dispatch
+                    # would have produced within the batch.
+                    for ridx, offset, size, ok in results:
+                        if not ok:
+                            continue
                         hits.append((ridx, offset, size))
                         safe_emit(
                             progress_callback,
@@ -351,7 +527,7 @@ def _run_parallel(
                         # whichever future happened to complete first.
                         if not exhaustive:
                             draining = True
-                    if completed % _PROGRESS_EVERY == 0:
+                    if completed % _PROGRESS_EVERY < len(results):
                         pct = (completed / total) if total > 0 else -1.0
                         safe_emit(
                             progress_callback,
@@ -364,12 +540,13 @@ def _run_parallel(
                             ),
                         )
                 if not draining:
-                    # Refill the window: submit one new candidate per slot freed
+                    # Refill the window: submit one new batch per slot freed
                     # by the just-completed Futures.
-                    for job in jobs_iter:
-                        in_flight.add(pool.submit(_worker_verify, job))
-                        if len(in_flight) >= max_in_flight:
+                    while len(in_flight) < max_in_flight:
+                        batch = _take_chunk(jobs_iter, chunk)
+                        if not batch:
                             break
+                        in_flight.add(pool.submit(_worker_verify_chunk, batch))
         except Cancelled:
             for pending in in_flight:
                 pending.cancel()
@@ -387,7 +564,7 @@ def brute_force_with_oracle(
     oracle: OracleFn,
     *,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
+    stride: int = 1,
     exhaustive: bool = True,
     top_k: int = 10,
     progress_callback: ProgressFn = noop_progress,
@@ -399,10 +576,10 @@ def brute_force_with_oracle(
     N values. Does NOT attach neighborhood variance — callers that
     need it should invoke ``_load_neighborhood_variance`` themselves.
     """
-    # Count candidates without holding the whole list resident: the generator
-    # is memory-bounded, so a discard-count pass keeps peak memory O(1) while
-    # still reporting the exact total upfront. The oracle (the expensive part)
-    # still runs exactly once per candidate, on a fresh generator.
+    # The exact candidate total, from the closed-form grid count — no pass over
+    # the candidate space at all, so the ~700k-window stride-1 grid costs nothing
+    # to size up front. The oracle (the expensive part) then runs exactly once
+    # per candidate, on a fresh generator.
     total_estimate = count_candidate_slices(regions, reference_data, key_sizes, stride)
     safe_emit(
         progress_callback,
@@ -439,6 +616,10 @@ def brute_force_with_oracle(
         total_candidates=total,
         verified_count=len(hits),
         exhaustive=exhaustive,
+        candidates_possible=count_possible_candidates(
+            regions, reference_data, key_sizes
+        ),
+        stride=stride,
     )
     if not hits:
         result.top_k = _build_top_k(regions, top_k)
@@ -454,8 +635,8 @@ def run_brute_force(
     oracle_config: Optional[dict] = None,
     oracle_trusted: bool = False,
     key_sizes: Sequence[int] = (32,),
-    stride: int = 8,
-    jobs: int = 1,
+    stride: int = 1,
+    jobs: int = 0,
     exhaustive: bool = True,
     state_path: Optional[Path] = None,
     top_k: int = 10,
@@ -463,6 +644,10 @@ def run_brute_force(
     cancel_event: Optional[object] = None,
 ) -> BruteForceResult:
     """Iterate candidates through ``--oracle`` and return a BruteForceResult.
+
+    ``jobs`` defaults to ``0`` = auto: :func:`resolve_jobs` picks serial for a
+    small or non-exhaustive sweep and a small worker pool for a large exhaustive
+    one. Any explicit positive value is honoured verbatim.
 
     ``oracle_config`` may be passed in-process to bypass the TOML load (used by
     the first-party builtin resource oracles — e.g. the pcap oracle — whose spec
@@ -491,26 +676,30 @@ def run_brute_force(
     if not oracle_trusted:
         validate_oracle_sandboxed(oracle_path, oracle_config)
 
-    # Count candidates via a slice-free grid pass instead of holding the full
-    # materialized list; the dispatch below then streams a fresh generator
-    # (serial iterates it directly; the parallel path keeps its bounded
-    # in-flight window). Count matches the run exactly because both derive from
-    # the same pure iter_region_grid over identical inputs.
+    # The exact candidate total, from the closed-form grid count — computed in
+    # O(regions * key_sizes) rather than by walking the grid. The dispatch below
+    # then streams a fresh generator (serial iterates it directly; the parallel
+    # path keeps its bounded in-flight window). Count matches the run exactly
+    # because count_region_grid is the proven closed form of iter_region_grid,
+    # and both sides see identical inputs.
     total_estimate = count_candidate_slices(regions, reference_data, key_sizes, stride)
+    # Resolve auto (jobs=0) now that the exact candidate total is known; an
+    # explicit positive jobs passes through untouched.
+    resolved_jobs = resolve_jobs(jobs, total_estimate, exhaustive=exhaustive)
     safe_emit(
         progress_callback,
         ProgressEvent(
             stage="brute_force:start",
             pct=0.0,
-            msg=f"candidates={total_estimate} jobs={jobs}",
-            extra={"total": total_estimate, "jobs": jobs},
+            msg=f"candidates={total_estimate} jobs={resolved_jobs}",
+            extra={"total": total_estimate, "jobs": resolved_jobs},
         ),
     )
 
     job_iter = iter_candidate_slices(regions, reference_data, key_sizes, stride)
-    if jobs > 1 and total_estimate > 1:
+    if resolved_jobs > 1 and total_estimate > 1:
         raw_hits, total = _run_parallel(
-            job_iter, oracle_path, oracle_config, jobs, exhaustive,
+            job_iter, oracle_path, oracle_config, resolved_jobs, exhaustive,
             total_estimate=total_estimate,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
@@ -558,6 +747,10 @@ def run_brute_force(
         total_candidates=total,
         verified_count=len(hits),
         exhaustive=exhaustive,
+        candidates_possible=count_possible_candidates(
+            regions, reference_data, key_sizes
+        ),
+        stride=stride,
     )
     if not hits:
         result.top_k = _build_top_k(regions, top_k)

@@ -27,6 +27,7 @@ export type {
   ProgressArtifact,
   TaskProgressEvent,
   ProgressStageExtra,
+  HitConfirmedBy,
   BruteForceHitPayload,
   BruteForceStageEndExtra,
   ConsensusStageEndExtra,

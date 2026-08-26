@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { FileBrowser } from "@/components/wizard/FileBrowser";
@@ -52,7 +53,13 @@ function StepIndicator({ steps, current }: { steps: string[]; current: number })
 
 function StepSelectData({ error }: { error: string | null }) {
   const { t } = useTranslation("wizard");
-  const { inputPath, setInputPath, keylogFilename } = useAppStore();
+  const { inputPath, setInputPath, keylogFilename } = useAppStore(
+    useShallow((s) => ({
+      inputPath: s.inputPath,
+      setInputPath: s.setInputPath,
+      keylogFilename: s.keylogFilename,
+    })),
+  );
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
 
@@ -126,7 +133,13 @@ function StepSelectData({ error }: { error: string | null }) {
 
 function StepDirectoryType() {
   const { t } = useTranslation("wizard");
-  const { inputMode, setInputMode, pathInfo } = useAppStore();
+  const { inputMode, setInputMode, pathInfo } = useAppStore(
+    useShallow((s) => ({
+      inputMode: s.inputMode,
+      setInputMode: s.setInputMode,
+      pathInfo: s.pathInfo,
+    })),
+  );
   const detectedMode = pathInfo?.detected_mode;
 
   // Auto-select on mount based on backend detection
@@ -191,7 +204,17 @@ function StepAnalysis() {
     analysisApproach, setAnalysisApproach,
     selectedAlgorithms, toggleAlgorithm,
     pathInfo, inputMode, keylogFilename,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      analysisApproach: s.analysisApproach,
+      setAnalysisApproach: s.setAnalysisApproach,
+      selectedAlgorithms: s.selectedAlgorithms,
+      toggleAlgorithm: s.toggleAlgorithm,
+      pathInfo: s.pathInfo,
+      inputMode: s.inputMode,
+      keylogFilename: s.keylogFilename,
+    })),
+  );
 
   const isSingleFile = inputMode === "file";
 
@@ -319,7 +342,15 @@ function StepAnalysis() {
 
 export function Wizard() {
   const { t } = useTranslation("wizard");
-  const { wizardStep, setWizardStep, completeWizard, pathInfo, inputPath } = useAppStore();
+  const { wizardStep, setWizardStep, completeWizard, pathInfo, inputPath } = useAppStore(
+    useShallow((s) => ({
+      wizardStep: s.wizardStep,
+      setWizardStep: s.setWizardStep,
+      completeWizard: s.completeWizard,
+      pathInfo: s.pathInfo,
+      inputPath: s.inputPath,
+    })),
+  );
   const [pathError, setPathError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
 

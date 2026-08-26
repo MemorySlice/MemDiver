@@ -44,6 +44,17 @@ test.describe("dump import + hex viewer", () => {
     const base = (await outputPath.innerText()).trim().split(/[\\/]/).pop()!;
     expect(base).toMatch(/\.msl$/);
 
+    // The output is a long temp path (/var/folders/.../tmpXXXX.msl) — one
+    // unbreakable token. It used to overflow the success panel horizontally
+    // instead of wrapping, clipping the path mid-string. Assert the panel does
+    // not scroll horizontally, and that the full path stays reachable on hover.
+    const successPanel = page.locator(".md-panel", { hasText: "Import successful" }).first();
+    const overflow = await successPanel.evaluate(
+      (el) => el.scrollWidth - el.clientWidth,
+    );
+    expect(overflow, "import success panel must not overflow horizontally").toBeLessThanOrEqual(1);
+    await expect(outputPath).toHaveAttribute("title", /\.msl$/);
+
     // The imported dump must now appear in the Dumps list (the fix): before
     // the fix, upload was a dead end and nothing showed here.
     await page.locator(tab("dumps")).first().click();

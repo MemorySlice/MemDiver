@@ -80,9 +80,12 @@ managed/moving-GC heap (`regime`). Never a false ABSENT.
 :class: note
 A negative is only trustworthy if the key *could* have been seen. Auto-floor
 returns `ABSENT` only when the maximal set was fully swept under established
-preconditions (resident in all captures, contiguous, materialized,
-stride-aligned, within coverage, offset correspondence established). If a
-budget ran out, alignment was poor, or the target is a managed heap, the
+preconditions (resident in all captures, contiguous, materialized, within
+coverage, offset correspondence established). The grid caveat is
+*stride-dependent*: at the default `--stride 1` every offset in the maximal set
+was enumerated, so no grid caveat is listed; raise the stride and
+"key aligned to the stride=N grid" is added to what the verdict is conditioned
+on. If a budget ran out, alignment was poor, or the target is a managed heap, the
 verdict downgrades to `INCONCLUSIVE` with a reason rather than claiming absence.
 ```
 
@@ -156,11 +159,33 @@ many candidates precede it in the oracle queue.
 | Flag | Default | Principle |
 |---|---|---|
 | `--key-sizes` | `32` | Comma-separated key widths to enumerate. |
-| `--stride` / `--alignment` | `8` | Candidate grid step / expected key alignment in memory. |
+| `--stride` | `1` | Candidate grid step. The grid is absolute, so at stride N only offsets that are multiples of N are enumerated; the default `1` enumerates every offset (full coverage). Raising it is an opt-in speed tradeoff that can skip the key. |
+| `--alignment` | `8` | Scan step of the block-density gate: the stride at which `block_size`-wide blocks are tested for candidate density (and the sampling step of the entropy profile). It never discards a byte for being unaligned — candidate windows are enumerated on the `--stride` grid, not this one. |
 | `--block-size` | `32` | Region-formation block granularity. |
 | `--entropy-window` / `--entropy-threshold` | `32` / `4.5` | High-entropy gate: windows below the bits/byte threshold are not key-like and never enter the maximal set. |
 | `--density-threshold` | `0.5` | Minimum high-entropy density for a region to survive. |
 | `--min-region` | `16` | Smallest region size retained. |
+
+```{admonition} `--stride` and `--alignment` are two different grids
+:class: important
+The table lists `1` and `8` adjacently; they do not mean the same thing, and
+only one of them can cost you the key.
+
+**`--stride` is the candidate *enumeration* step.** At `--stride N` only offsets
+that are multiples of N are handed to the oracle, so any stride > 1 can skip the
+key entirely and still report a clean no-hit. That is why the default is `1` —
+full coverage.
+
+**`--alignment` never discards a byte for being unaligned.** It is the scan step
+of the block-density gate (`engine/candidate_pipeline._aligned_mask`, defaults
+`alignment=8` / `density_threshold=0.5`), which keeps *whole blocks* whose
+candidate density reaches the threshold. A byte at offset `585148`
+(`585148 % 8 == 4`) therefore passes fine.
+
+In short: `--alignment` coarsens **where** MemDiver looks; `--stride 1` then
+tests **every** offset inside what it found. Leaving `--alignment` at `8` costs
+no coverage — raising `--stride` does.
+```
 
 ### Oracle & verdict gating
 

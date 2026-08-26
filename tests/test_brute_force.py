@@ -2,6 +2,7 @@
 
 import json
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -256,10 +257,15 @@ def test_run_parallel_streams_with_bounded_window(tmp_path):
         {},
         2,
         exhaustive=False,
+        # Explicit small chunk so the bound below stays tight: the in-flight
+        # window counts CHUNKS, so the most the generator can ever be pulled by
+        # is jobs*4 windows * chunk + one trailing refill batch.
+        chunk=4,
     )
     assert len(raw_hits) == 1
     assert raw_hits[0] == (0, 0, 32)
-    # Window is jobs*4 == 8; we must never have pulled the whole stream.
+    # Window is jobs*4 == 8 chunks of 4 == 32 candidates resident; we must
+    # never have pulled the whole stream.
     assert pulled["count"] < 1000
 
 
@@ -284,6 +290,43 @@ def test_run_parallel_exhaustive_finds_all_hits(tmp_path):
     assert total == 40
     assert len(raw_hits) == 20
     assert {h[1] for h in raw_hits} == {i for i in range(40) if i % 2 == 0}
+
+
+def test_run_parallel_chunk_size_is_throughput_only(tmp_path):
+    """``chunk`` batches IPC; it must never change the result.
+
+    Sizes below, at, and above the candidate count must all yield an identical
+    hit set and identical total. Batch size is a throughput knob, so a
+    regression that let it alter coverage (e.g. a dropped trailing batch) would
+    silently shrink an exhaustive sweep.
+    """
+    oracle = _write_oracle(
+        tmp_path,
+        "def verify(c): return c[:1] == b'\\xaa'\n",
+    )
+    jobs_list = [
+        (0, i, 1, (b"\xaa" if i % 7 == 0 else b"\xbb"))
+        for i in range(300)
+    ]
+    expected_hits = sorted(h[1] for h in jobs_list if h[3] == b"\xaa")
+
+    seen = {}
+    for chunk in (1, 16, 256):
+        raw_hits, total = _run_parallel(
+            iter(list(jobs_list)),
+            oracle,
+            {},
+            2,
+            exhaustive=True,
+            total_estimate=len(jobs_list),
+            chunk=chunk,
+        )
+        seen[chunk] = (total, sorted(h[1] for h in raw_hits))
+
+    for chunk, (total, offsets) in seen.items():
+        assert total == 300, chunk
+        assert offsets == expected_hits, chunk
+    assert seen[1] == seen[16] == seen[256]
 
 
 def test_neighborhood_variance_attached_from_state(tmp_path):
@@ -330,3 +373,82 @@ def test_write_result_round_trip(tmp_path):
     reloaded = json.loads(out.read_text())
     assert reloaded["hits"][0]["key_hex"] == target.hex()
     assert reloaded["total_candidates"] == result.total_candidates
+
+
+def test_auto_jobs_result_is_identical_to_serial(tmp_path):
+    """``jobs=0`` (auto) must produce a byte-identical result to ``jobs=1``.
+
+    Auto is a throughput decision only. Whether it resolved to serial or to a
+    worker pool, the whole emitted artifact — hit list, offsets, key material,
+    candidate totals and coverage fraction — must match the serial run exactly,
+    because ``hits.json`` is the record a reader reproduces from.
+    """
+    np.random.seed(29)
+    ref = bytearray(np.random.randint(0, 256, 8192, dtype=np.uint8).tobytes())
+    target = bytes(range(32))
+    for off in (1024, 96, 4096, 2048):  # several planted keys, out of order
+        ref[off:off + 32] = target
+    ref = bytes(ref)
+    cand_path = tmp_path / "cands.json"
+    cand_path.write_text(json.dumps({"regions": [{"offset": 0, "length": 8192}]}))
+    oracle = _write_oracle(
+        tmp_path,
+        "TARGET = bytes(range(32))\n"
+        "def verify(c): return c == TARGET\n",
+    )
+
+    import memdiver.engine.brute_force as bf
+
+    def _run(jobs):
+        return run_brute_force(
+            candidates_path=cand_path, reference_data=ref,
+            oracle_path=oracle, jobs=jobs, stride=1, exhaustive=True,
+        )
+
+    serial = _run(1)
+
+    # Drop the threshold and pin the cpu count so auto genuinely resolves to a
+    # pool here — otherwise this 8k-candidate fixture would take the serial
+    # branch and the comparison would prove nothing.
+    took_parallel = {"n": 0}
+    real_parallel = bf._run_parallel
+
+    def _spy(*a, **k):
+        took_parallel["n"] += 1
+        return real_parallel(*a, **k)
+
+    with patch.object(bf, "PARALLEL_MIN_CANDIDATES", 1), \
+            patch.object(bf.os, "cpu_count", return_value=8), \
+            patch.object(bf, "_run_parallel", _spy):
+        auto = _run(0)
+
+    assert took_parallel["n"] == 1, "auto did not take the parallel branch"
+    assert [h.offset for h in serial.hits] == [96, 1024, 2048, 4096]
+    assert auto.to_dict() == serial.to_dict()
+
+
+def test_auto_jobs_stays_serial_for_a_first_hit_run(tmp_path):
+    """A non-exhaustive run must never be auto-parallelised.
+
+    The parallel path's post-hit drain makes ``total_candidates`` scheduling
+    dependent, so a first-hit sweep at ``jobs=0`` must take the serial branch —
+    asserted here by proving ``_run_parallel`` is never reached.
+    """
+    import memdiver.engine.brute_force as bf
+
+    ref, target, cand_path, _ = _synth_setup(tmp_path)
+    oracle = _write_oracle(
+        tmp_path,
+        "TARGET = bytes(range(32))\ndef verify(c): return c == TARGET\n",
+    )
+
+    def _boom(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError("auto parallelised a non-exhaustive run")
+
+    with patch.object(bf, "_run_parallel", _boom), \
+            patch.object(bf, "PARALLEL_MIN_CANDIDATES", 1):
+        result = run_brute_force(
+            candidates_path=cand_path, reference_data=ref,
+            oracle_path=oracle, jobs=0, stride=1, exhaustive=False,
+        )
+    assert result.hits

@@ -9,9 +9,14 @@
  *
  * State that should survive a tab-switch re-mount (form values,
  * stage, taskId, lastSeq) is persisted to localStorage via Zustand's
- * ``persist`` middleware; live event state (funnel, timings, hits)
- * is rehydrated from the WebSocket ring buffer on reconnect and does
- * not need to persist.
+ * ``persist`` middleware; live event state (funnel, timings, hits) is
+ * not persisted and is recovered on reconnect by two complementary
+ * mechanisms. The WebSocket ring buffer replays the last 512 events,
+ * which covers a SHORT gap (a tab switch, a blip). It does not cover a
+ * long one: a stride-1 brute-force run emits thousands of progress
+ * events, so anything older has already been evicted. For that case the
+ * canonical ``TaskRecord`` is the source of truth, folded in by
+ * ``hydrateFromRecord``.
  *
  * The ``ingestEvent`` reducer translates backend TaskProgressEvents into
  * state deltas. The hook ``useTaskProgress`` wires events into this
@@ -28,6 +33,8 @@ import type {
   NSweepParams,
   PcapSession,
   ReduceParams,
+  StageRecord,
+  TaskRecord,
   TaskStatus,
 } from "@/api/pipeline";
 import {
@@ -35,9 +42,28 @@ import {
   isConsensusStageEnd,
   isEmitPluginStageEnd,
 } from "@/api/websocket";
-import type { TaskProgressEvent } from "@/api/websocket";
+import type {
+  BruteForceHitPayload,
+  OracleHitExtra,
+  TaskProgressEvent,
+} from "@/api/websocket";
+// ``StageDiagnostic`` is only declared in the wire-schema module and is not
+// part of the ``@/api/websocket`` re-export surface, so it is imported from
+// its defining module rather than redeclared here.
+import type { StageDiagnostic } from "@/api/progress-events";
 
-const PIPELINE_STORE_VERSION = 1;
+// v1 -> v2: the brute-force stride default changed 8 -> 1 (full coverage).
+// v2 -> v3: the brute-force jobs default changed 1 -> 0 (auto-parallel).
+// The bump is REQUIRED for `migrate` to run at all -- zustand only invokes it
+// when the stored version differs from this one, so a migration shipped under
+// the previous version would never fire for the very blobs it needs to fix.
+const PIPELINE_STORE_VERSION = 3;
+
+/** The brute-force stride default that shipped with schema v1. */
+const STALE_V1_STRIDE = 8;
+
+/** The brute-force jobs default that shipped with schema v1 and v2. */
+const STALE_V2_JOBS = 1;
 
 export type WizardStage =
   | "recipe"
@@ -80,6 +106,56 @@ export interface NSweepPoint {
   timing_ms: Partial<StageTimings>;
 }
 
+/**
+ * How much of the brute-force search space the run actually examined.
+ *
+ * The stage tests candidate offsets on an absolute ``stride`` grid: at
+ * stride=N only offsets that are multiples of N are ever handed to the
+ * oracle. A secret sitting at an unaligned offset is therefore invisible to
+ * the run -- and a zero-hit result is indistinguishable from "the key is not
+ * in this dump" unless the coverage is surfaced. The default is stride=1
+ * (full coverage) precisely so that never happens silently, but the user can
+ * raise the stride to trade coverage for speed. Reported on every run, not
+ * just failing ones: "1 hit" out of a 16%-covered space is a very different
+ * forensic claim from "1 hit" out of an exhaustive one.
+ */
+export interface BruteForceCoverage {
+  /** Windows actually tested (same number the backend calls total_candidates). */
+  tested: number;
+  /** Windows a stride-1 grid would have tested. */
+  possible: number;
+  /** The offset step the grid used. */
+  stride: number;
+  /** ``tested / possible``; 1.0 when the search was exhaustive. */
+  fraction: number;
+}
+
+/**
+ * Live candidates/sec rate and remaining-time estimate for the brute-force
+ * stage, derived entirely in the frontend from the `tried` / `total`
+ * counters the engine already puts on every `brute_force:progress` event.
+ *
+ * Deliberately NOT computed server-side: no non-web surface consumes
+ * progress events, so an engine-side ETA would be discarded on three of the
+ * four surfaces, and a server-stamped ETA goes stale the moment it sits in
+ * the replay ring waiting for a reconnect.
+ *
+ * ``lastTs`` / ``lastTried`` are the previous sample, kept so the next event
+ * can form a delta. ``lastTs`` is the SERVER clock (``event.ts``), never
+ * ``Date.now()``: a reconnect replays up to 512 ring events back-to-back, and
+ * wall-clock deltas across that burst would report a fictitious rate.
+ */
+export interface Throughput {
+  /** Smoothed candidates per second (EWMA); 0 until a second sample lands. */
+  perSec: number;
+  /** Seconds of work left, or ``null`` while it cannot yet be estimated. */
+  etaSeconds: number | null;
+  /** ``event.ts`` of the sample this was computed from (server seconds). */
+  lastTs: number;
+  /** ``extra.tried`` of that same sample. */
+  lastTried: number;
+}
+
 export interface HitRecord {
   offset: number;
   size: number;
@@ -87,6 +163,44 @@ export interface HitRecord {
   key_hex: string;
   neighborhood_start: number;
   neighborhood_variance: number[];
+  /** True when the backend proved this key (vs. merely scoring it). */
+  verified?: boolean;
+  /**
+   * How the key was proven ("pcap" / "oracle" / "verifier" / ...), or
+   * ``null`` when the emitter said nothing. Kept a plain ``string`` so an
+   * unrecognised backend label degrades to a UI fallback rather than a
+   * type error -- see the note on ``BruteForceHitPayload.confirmed_by``.
+   */
+  confirmedBy?: string | null;
+}
+
+/**
+ * The union of the two wire shapes that carry a hit: brute-force
+ * ``stage_end`` payloads and ``oracle_hit`` extras. They overlap on
+ * everything except the size key (``length`` vs. ``size``), so one
+ * intersection type covers both call sites.
+ */
+type WireHitPayload = BruteForceHitPayload & OracleHitExtra;
+
+/**
+ * Normalize one wire hit payload into a ``HitRecord``. Pure; shared by
+ * the brute-force ``stage_end`` and ``oracle_hit`` branches of the
+ * reducer so the two mappings can't drift apart.
+ */
+export function toHitRecord(h: WireHitPayload): HitRecord {
+  return {
+    offset: Number(h.offset ?? 0),
+    // The two emitters disagree on the size key: a brute-force stage_end
+    // hit carries ``length`` while ``oracle_hit`` carries ``size``. Read
+    // both, or one of the two paths silently normalizes every hit to 0.
+    size: Number(h.length ?? h.size ?? 0),
+    region_index: Number(h.region_index ?? 0),
+    key_hex: String(h.key_hex ?? ""),
+    neighborhood_start: Number(h.neighborhood_start ?? 0),
+    neighborhood_variance: Array.isArray(h.neighborhood_variance) ? h.neighborhood_variance : [],
+    verified: h.verified,
+    confirmedBy: typeof h.confirmed_by === "string" ? h.confirmed_by : null,
+  };
 }
 
 export interface InferredField {
@@ -123,7 +237,8 @@ export interface PipelineState {
   // "prefill client_random from pcap" synergy. NOT persisted: it would
   // re-serialize on every WS progress tick (a hot path) and would go stale
   // after a server restart, so the list simply re-populates when the user
-  // re-validates ``form.pcapPath`` (which is persisted).
+  // re-validates ``form.pcapPath`` (which is persisted) with the Oracle
+  // stage's "Arm / re-validate" button (``data-testid="pcap-arm-btn"``).
   pcapSessions: PcapSession[];
 
   // ephemeral (rebuilt from the WS replay on reconnect)
@@ -132,6 +247,25 @@ export interface PipelineState {
   nsweepPoints: NSweepPoint[];
   timings: StageTimings;
   hits: HitRecord[];
+  /**
+   * Search-space coverage reported by the brute_force stage, or ``null``
+   * when the run has not reached that stage yet (or ran against an older
+   * backend that does not report it).
+   */
+  coverage: BruteForceCoverage | null;
+  /**
+   * Live candidates/sec + ETA for the in-flight brute_force stage, or
+   * ``null`` outside it. Deliberately NOT persisted: it updates on every
+   * progress tick, and writing it through ``partialize`` would re-serialize
+   * localStorage thousands of times per run.
+   */
+  throughput: Throughput | null;
+  /**
+   * Non-fatal notes the brute_force stage attached to its result, e.g.
+   * ``brute_force.partial_coverage``. Each ``message`` is a complete English
+   * sentence composed by the backend and is rendered verbatim.
+   */
+  warnings: StageDiagnostic[];
   inferredFields: InferredField[];
   artifacts: ArtifactSpec[];
   activeStage: string | null;
@@ -150,6 +284,7 @@ export interface PipelineState {
   setPcapSessions: (sessions: PcapSession[]) => void;
   setTaskId: (taskId: string | null) => void;
   ingestEvent: (event: TaskProgressEvent) => void;
+  hydrateFromRecord: (record: TaskRecord) => void;
   resetRun: () => void;
   addConvergencePoint: (point: ConvergencePoint) => void;
   setRefineLoading: (loading: boolean) => void;
@@ -172,8 +307,11 @@ const DEFAULT_FORM: PipelineFormValues = {
   },
   bruteForce: {
     key_sizes: [32],
-    stride: 8,
-    jobs: 1,
+    stride: 1,
+    // 0 = auto: the backend (engine.brute_force.resolve_jobs) stays serial for
+    // a small or first-hit sweep and uses a small worker pool for a large
+    // exhaustive one. Any explicit value the user picks is used verbatim.
+    jobs: 0,
     exhaustive: true,
     top_k: 10,
   },
@@ -203,6 +341,9 @@ function baseRunState(): Pick<
   | "nsweepPoints"
   | "timings"
   | "hits"
+  | "coverage"
+  | "throughput"
+  | "warnings"
   | "inferredFields"
   | "artifacts"
   | "activeStage"
@@ -219,6 +360,9 @@ function baseRunState(): Pick<
     nsweepPoints: [],
     timings: { ...DEFAULT_TIMINGS },
     hits: [],
+    coverage: null,
+    throughput: null,
+    warnings: [],
     inferredFields: [],
     artifacts: [],
     activeStage: null,
@@ -229,6 +373,86 @@ function baseRunState(): Pick<
     refineLoading: false,
     consensusNumDumps: 0,
   };
+}
+
+/**
+ * Maps a ``TaskRecord`` stage name onto its ``StageTimings`` slot. Only the
+ * three stages the timing table renders are listed; ``escalate`` / ``nsweep``
+ * / ``emit_plugin`` have no row of their own and are skipped.
+ */
+const RECORD_STAGE_TO_TIMING: Record<string, keyof StageTimings> = {
+  consensus: "consensus_ms",
+  search_reduce: "reduce_ms",
+  brute_force: "brute_force_ms",
+};
+
+/**
+ * Wall-clock stage durations, rebuilt from the record's per-stage
+ * ``started_at`` / ``ended_at`` timestamps (server seconds -> ms).
+ *
+ * A stage that is still mid-flight has no ``ended_at`` and contributes
+ * nothing: a half-finished duration would understate the run and then jump.
+ */
+function deriveTimings(stages: StageRecord[]): StageTimings {
+  const timings: StageTimings = { ...DEFAULT_TIMINGS };
+  for (const stage of stages) {
+    const slot = RECORD_STAGE_TO_TIMING[stage.name];
+    if (!slot) continue;
+    if (stage.started_at == null || stage.ended_at == null) continue;
+    timings[slot] = Math.max(0, (stage.ended_at - stage.started_at) * 1000);
+  }
+  return timings;
+}
+
+/**
+ * The stage whose progress bar the run dashboard should show: the one still
+ * running, or -- when the record was fetched between stages -- the last one
+ * that finished, so the panel never blanks out mid-run.
+ */
+function pickActiveStage(stages: StageRecord[]): StageRecord | null {
+  const running = [...stages].reverse().find((s) => s.status === "running");
+  if (running) return running;
+  const succeeded = [...stages].reverse().find((s) => s.status === "succeeded");
+  return succeeded ?? null;
+}
+
+/** Weight given to the newest instantaneous rate by the EWMA smoother. */
+const THROUGHPUT_SMOOTHING = 0.2;
+
+/**
+ * Fold one ``brute_force:progress`` sample into the running throughput
+ * estimate, or return ``null`` when the sample carries no usable delta.
+ *
+ * The first sample of a stage only seeds the baseline: there is nothing to
+ * divide by yet, so it reports ``perSec: 0`` rather than inventing a rate.
+ * A later sample is only usable when BOTH clocks moved forward. A replayed
+ * ring burst arrives with identical ``ts`` values (dt === 0) and a rewound
+ * ``tried`` can arrive out of order (dTried <= 0); either would divide by
+ * zero or go negative, so such a sample is dropped and the caller keeps the
+ * previous estimate untouched.
+ */
+function nextThroughput(
+  prev: Throughput | null,
+  tried: number,
+  total: number | undefined,
+  ts: number,
+): Throughput | null {
+  if (prev === null) {
+    return { perSec: 0, etaSeconds: null, lastTs: ts, lastTried: tried };
+  }
+  const dt = ts - prev.lastTs;
+  const dTried = tried - prev.lastTried;
+  if (dt <= 0 || dTried <= 0) {
+    return null;
+  }
+  const inst = dTried / dt;
+  const perSec =
+    prev.perSec > 0
+      ? THROUGHPUT_SMOOTHING * inst + (1 - THROUGHPUT_SMOOTHING) * prev.perSec
+      : inst;
+  const etaSeconds =
+    perSec > 0 && total != null && total > tried ? (total - tried) / perSec : null;
+  return { perSec, etaSeconds, lastTs: ts, lastTried: tried };
 }
 
 /**
@@ -290,6 +514,25 @@ export function reducePipelineEvent(
         }
         patch.funnel = next;
       }
+      // The brute_force sub-stage carries candidate counters instead, which
+      // is everything needed to derive a live rate + ETA client-side.
+      if (
+        event.stage?.startsWith("brute_force") &&
+        extra &&
+        typeof extra.tried === "number"
+      ) {
+        const throughput = nextThroughput(
+          state.throughput,
+          extra.tried,
+          extra.total,
+          event.ts,
+        );
+        // ``null`` means the sample had no usable delta (replayed burst, or
+        // a non-advancing counter); leave the previous estimate standing.
+        if (throughput !== null) {
+          patch.throughput = throughput;
+        }
+      }
       break;
     }
     case "stage_end": {
@@ -299,6 +542,12 @@ export function reducePipelineEvent(
         patch.activeStageMsg = event.msg ?? "";
       }
       // brute_force stage_end carries the verified count + hits.
+      if (isBruteForceStageEnd(event)) {
+        // The stage is over, so the rate/ETA readout has nothing left to
+        // describe. Cleared here rather than left frozen on its last sample,
+        // which would keep claiming work remained.
+        patch.throughput = null;
+      }
       if (isBruteForceStageEnd(event) && event.extra) {
         const extra = event.extra;
         if (typeof extra.verified_count === "number") {
@@ -308,14 +557,7 @@ export function reducePipelineEvent(
           };
         }
         if (Array.isArray(extra.hits)) {
-          const mappedHits = extra.hits.map((h) => ({
-            offset: Number(h.offset ?? 0),
-            size: Number(h.length ?? 0),
-            region_index: Number(h.region_index ?? 0),
-            key_hex: String(h.key_hex ?? ""),
-            neighborhood_start: Number(h.neighborhood_start ?? 0),
-            neighborhood_variance: Array.isArray(h.neighborhood_variance) ? h.neighborhood_variance : [],
-          }));
+          const mappedHits = extra.hits.map(toHitRecord);
           patch.hits = mappedHits;
           // Seed the initial convergence point from the first hit's neighborhood
           if (mappedHits.length > 0 && mappedHits[0].neighborhood_variance.length > 0) {
@@ -327,6 +569,34 @@ export function reducePipelineEvent(
             const numDumps = state.consensusNumDumps || 0;
             patch.convergenceHistory = [{ n: numDumps, staticCount: sc, dynamicCount: nbv.length - sc }];
           }
+        }
+        // How much of the offset grid the search actually examined. Both
+        // counters are required before ``coverage`` is written at all: a
+        // pre-upgrade backend omits every field here, and inventing a
+        // 0-of-0 search would put a false "0% covered" claim on screen.
+        if (
+          typeof extra.candidates_tested === "number" &&
+          typeof extra.candidates_possible === "number"
+        ) {
+          const tested = extra.candidates_tested;
+          const possible = extra.candidates_possible;
+          patch.coverage = {
+            tested,
+            possible,
+            // A missing stride means the grid was walked byte-by-byte.
+            stride: typeof extra.stride === "number" ? extra.stride : 1,
+            // Prefer the backend's own ratio; recompute only when it is
+            // absent, and never divide by an empty search space.
+            fraction:
+              typeof extra.coverage_fraction === "number"
+                ? extra.coverage_fraction
+                : possible > 0
+                  ? tested / possible
+                  : 0,
+          };
+        }
+        if (Array.isArray(extra.warnings)) {
+          patch.warnings = extra.warnings;
         }
       }
       // consensus stage_end carries total_bytes so we can seed the funnel's
@@ -381,17 +651,7 @@ export function reducePipelineEvent(
       if (event.extra) {
         const extra = event.extra;
         if (typeof extra.offset === "number") {
-          patch.hits = [
-            ...state.hits,
-            {
-              offset: extra.offset,
-              size: Number(extra.size ?? 0),
-              region_index: Number(extra.region_index ?? 0),
-              key_hex: String(extra.key_hex ?? ""),
-              neighborhood_start: Number(extra.neighborhood_start ?? 0),
-              neighborhood_variance: Array.isArray(extra.neighborhood_variance) ? extra.neighborhood_variance : [],
-            },
-          ];
+          patch.hits = [...state.hits, toHitRecord(extra)];
         }
       }
       break;
@@ -413,6 +673,7 @@ export function reducePipelineEvent(
     case "done": {
       patch.status = "succeeded";
       patch.activeStagePct = 1;
+      patch.throughput = null;
       break;
     }
     case "error": {
@@ -425,10 +686,71 @@ export function reducePipelineEvent(
         patch.status = "failed";
         patch.error = event.error ?? "unknown error";
       }
+      patch.throughput = null;
       break;
     }
   }
   return patch;
+}
+
+/** The persisted slice -- exactly the shape ``partialize`` writes. */
+export type PersistedPipelineState = Pick<
+  PipelineState,
+  "stage" | "form" | "taskId" | "lastSeq"
+>;
+
+/**
+ * v1 -> v2: reset a stale brute-force stride, keep everything else.
+ *
+ * Schema v1 shipped ``bruteForce.stride: 8``, which enumerates only 8-aligned
+ * offsets. On a real corpus dump that is 15.7% coverage: a TLS traffic secret
+ * at offset 585148 (585148 % 8 === 4) is never handed to the oracle and the
+ * run still reports "succeeded, 0 hits" -- indistinguishable from "the key is
+ * not in this dump". A browser that had already persisted the form would
+ * replay that forever, because ``DEFAULT_FORM`` only applies to a profile with
+ * no stored blob. So the one stale value is rewritten in place.
+ *
+ * Only the exact old default is touched. A hand-picked 2/4/16 was typed
+ * deliberately and survives, as does every other saved field: selected dumps,
+ * armed oracle/pcap, reduce thresholds, wizard stage, in-flight task id.
+ *
+ * The spreads over ``DEFAULT_FORM`` also backfill fields added to
+ * ``PipelineFormValues`` after a blob was written -- ``partialize`` stores
+ * ``form`` wholesale and zustand's default merge is shallow, so without this
+ * a newly added nested field rehydrates as ``undefined``.
+ */
+export function migratePipelineState(
+  persisted: unknown,
+  version: number,
+): PersistedPipelineState {
+  const state = (persisted ?? {}) as Partial<PersistedPipelineState>;
+  const form = (state.form ?? {}) as Partial<PipelineFormValues>;
+  const bruteForce = { ...DEFAULT_FORM.bruteForce, ...(form.bruteForce ?? {}) };
+
+  if (version < 2 && bruteForce.stride === STALE_V1_STRIDE) {
+    bruteForce.stride = DEFAULT_FORM.bruteForce.stride;
+  }
+
+  // Same failure mode as the stride reset above: a browser that has ever run
+  // the pipeline holds jobs=1 in local storage, so without this every existing
+  // client would stay pinned to the single-threaded sweep forever and never
+  // see the auto-parallel default. Only the exact stale default is rewritten;
+  // a user who deliberately picked another worker count keeps it.
+  if (version < 3 && bruteForce.jobs === STALE_V2_JOBS) {
+    bruteForce.jobs = DEFAULT_FORM.bruteForce.jobs;
+  }
+
+  return {
+    stage: state.stage ?? "recipe",
+    taskId: state.taskId ?? null,
+    lastSeq: state.lastSeq ?? 0,
+    form: {
+      ...DEFAULT_FORM,
+      ...form,
+      reduce: { ...DEFAULT_FORM.reduce, ...(form.reduce ?? {}) },
+      bruteForce,
+    },
+  };
 }
 
 export const usePipelineStore = create<PipelineState>()(
@@ -461,6 +783,36 @@ export const usePipelineStore = create<PipelineState>()(
           set(patch);
         }
       },
+      /**
+       * Restore what a mid-run reload cannot recover from the event stream.
+       *
+       * The WebSocket ring holds only the last 512 events; a stride-1
+       * brute-force run emits roughly 2,740 progress events on its own, so by
+       * the time the user reloads the funnel/stage history has long fallen out
+       * of the ring. The persisted ``TaskRecord`` is the only surviving record
+       * of what already happened, so it -- not the replay -- repaints status,
+       * artifacts, the active stage and the stage timings.
+       *
+       * DELIBERATELY DOES NOT READ OR WRITE ``lastSeq``. That cursor belongs
+       * to the progress bus: ``reducePipelineEvent`` drops any event whose
+       * ``seq <= lastSeq``, so advancing it here (the record carries no seq
+       * numbers to advance it *to*) would silently swallow every real event
+       * that arrives afterwards. Hydration is also kept out of ``ingestEvent``
+       * for the same reason -- the reducer stays pure and seq-driven.
+       */
+      hydrateFromRecord: (record) => {
+        const stages = record.stages ?? [];
+        const active = pickActiveStage(stages);
+        set({
+          status: record.status,
+          error: record.error ?? null,
+          artifacts: record.artifacts ?? [],
+          activeStage: active?.name ?? null,
+          activeStagePct: active?.pct ?? 0,
+          activeStageMsg: active?.msg ?? "",
+          timings: deriveTimings(stages),
+        });
+      },
       resetRun: () =>
         set({
           taskId: null,
@@ -483,14 +835,57 @@ export const usePipelineStore = create<PipelineState>()(
         taskId: state.taskId,
         lastSeq: state.lastSeq,
       }),
+      migrate: migratePipelineState,
+      // A persisted taskId means a run was in flight when this tab was
+      // closed/reloaded. ``partialize`` does not persist ``status``, so the
+      // initializer's ``baseRunState()`` would leave it at "idle" -- and the
+      // only idle -> running transition is a ``stage_start`` event, which does
+      // not arrive for MINUTES during a deep brute-force stage. For that whole
+      // window the Cancel button and the "resuming" banner (both gated on
+      // pending/running) would be invisible and the run would look dead.
+      // "pending" is the honest state here: we know a task exists, we have not
+      // heard from it yet. If the backend has actually forgotten the task, the
+      // record fetch in PipelinePanel fails and its ``.catch`` calls
+      // ``resetRun()``, which puts the status back to "idle".
+      onRehydrateStorage: () => (state) => {
+        if (state?.taskId) {
+          state.status = "pending";
+        }
+      },
+      // Deep-merge persisted form sections over the defaults. ``migrate`` only
+      // runs when the stored version differs, so blobs already at v2 need the
+      // same backfill for fields added later -- the same reason
+      // settings-store.ts carries a custom merge.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<PipelineState>;
+        const form = (p.form ?? {}) as Partial<PipelineFormValues>;
+        return {
+          ...current,
+          ...p,
+          form: {
+            ...current.form,
+            ...form,
+            reduce: { ...current.form.reduce, ...(form.reduce ?? {}) },
+            bruteForce: {
+              ...current.form.bruteForce,
+              ...(form.bruteForce ?? {}),
+            },
+          },
+        };
+      },
     },
   ),
 );
 
 /**
- * Non-hook convenience used by Workspace.tsx's auto-switch guard.
- * Reads the current status without subscribing, so the
- * component it's called from doesn't re-render on every event.
+ * Non-hook "is a run in flight?" probe. Reads the current status without
+ * subscribing, so a caller does not re-render on every progress event.
+ *
+ * Currently has NO call sites -- it was written for a Workspace.tsx
+ * auto-switch guard that never landed (`grep -rn "isPipelineRunning"
+ * frontend/src/` finds only this definition). Kept as the intended
+ * non-subscribing entry point for that check; read the store directly via
+ * ``usePipelineStore.getState()`` only if you need more than the status.
  */
 export function isPipelineRunning(): boolean {
   const status = usePipelineStore.getState().status;

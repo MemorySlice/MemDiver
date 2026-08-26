@@ -17,10 +17,13 @@ import { enterWorkspaceWithMsl } from "../fixtures/workspace";
  * Drives the whole wizard: load the committed matched.msl, upload the matching
  * session_tls13.pcap as the oracle, run the pipeline, poll the header to a
  * terminal ``succeeded`` state, and prove a ``confirmed_by == "pcap"`` hit whose
- * ``key_hex`` equals the embedded secret. The confirmed_by/key_hex assertion
- * reads the backend event stream (the frontend HitRecord drops ``confirmed_by``,
- * and the dashboard's hits list unmounts the instant the run flips to
- * ``results``), while the rendered header proves the browser reached terminal.
+ * ``key_hex`` equals the embedded secret.
+ *
+ * The proof is asserted twice, on purpose. First from the DOM: the results view
+ * renders each hit with a provenance badge reading "Verified via pcap capture",
+ * which is the user-visible Phase-1 claim. Then from the backend event stream,
+ * which remains authoritative for ``key_hex``/``offset`` because those exact
+ * bytes are never rendered in the hits list.
  *
  * Why two source paths: the web pipeline's consensus stage requires >= 2 dumps
  * ("Need at least 2 dumps"), whereas the fixture is a single (N=1) MSL. Folding
@@ -160,6 +163,16 @@ test.describe("Pcap-oracle pipeline run", { tag: "@requires-pcap" }, () => {
 
     // Rendered terminal success.
     await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+
+    // The Phase-1 proof is visible in the app, not merely on the wire: the
+    // results view keeps the hits list mounted after the run flips terminal,
+    // and each hit carries the provenance badge for whatever confirmed it.
+    const hitRow = page.getByTestId("pipeline-hit-row").first();
+    await expect(hitRow).toBeVisible({ timeout: 15_000 });
+    await expect(hitRow).toHaveAttribute("data-hit-offset", String(MANIFEST.offset));
+    const badge = hitRow.getByTestId("verification-badge");
+    await expect(badge).toHaveAttribute("data-confirmed-by", "pcap");
+    await expect(badge).toHaveText(/Verified via pcap capture/);
 
     // Authoritative check: read the backend event stream for the brute_force
     // stage_end and assert a pcap-confirmed hit whose key == the embedded secret.

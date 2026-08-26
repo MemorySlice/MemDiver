@@ -38,3 +38,32 @@ def iter_region_grid(
             if end > r_end or end > dump_len:
                 continue
             yield offset, size
+
+
+def count_region_grid(
+    r_start: int,
+    r_end: int,
+    key_sizes: Sequence[int],
+    stride: int,
+    dump_len: int,
+) -> int:
+    """Closed-form count of the pairs :func:`iter_region_grid` would yield.
+
+    Exactly equivalent to ``sum(1 for _ in iter_region_grid(...))`` but O(len(
+    key_sizes)) instead of O(candidates), so a stride-1 "how many windows exist
+    at all" count over a whole region set stays cheap even when that number runs
+    into the millions. The equivalence is pinned by a test.
+    """
+    first_offset = ((r_start + stride - 1) // stride) * stride
+    if first_offset >= r_end:
+        return 0
+    limit = min(r_end, dump_len)
+    total = 0
+    for size in key_sizes:
+        # ``iter_region_grid`` yields ``offset`` while ``offset < r_end`` and
+        # ``offset + size <= min(r_end, dump_len)``; both bounds apply.
+        last_offset = min(limit - size, r_end - 1)
+        if last_offset < first_offset:
+            continue
+        total += (last_offset - first_offset) // stride + 1
+    return total

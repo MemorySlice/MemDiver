@@ -6,6 +6,7 @@ import "@/i18n";
 import App from "./App";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useConsensusStore } from "@/stores/consensus-store";
+import { useHexStore } from "@/stores/hex-store";
 
 // Dev-only store hooks for Playwright / browser-console experiments.
 // Gated on import.meta.env.DEV so these globals never leak into a
@@ -17,6 +18,8 @@ if (import.meta.env.DEV) {
   (window as any).__usePipelineStore = usePipelineStore;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__useConsensusStore = useConsensusStore;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__useHexStore = useHexStore;
 }
 
 createRoot(document.getElementById("root")!).render(

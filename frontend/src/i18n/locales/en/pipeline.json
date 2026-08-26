@@ -73,7 +73,11 @@
         "matchAny": "Match any session (do not restrict by client_random)",
         "noSessions": "No TLS sessions were found in this capture.",
         "noAppRecords": "(no application data — cannot verify)",
-        "dpktMissing": "The server cannot parse pcaps because the optional 'dpkt' dependency is not installed."
+        "dpktMissing": "The server cannot parse pcaps because the optional 'dpkt' dependency is not installed.",
+        "arm": "Arm / re-validate",
+        "arming": "Arming…",
+        "armHint": "Validates the path above and re-populates the session picker — use it after typing a server-side path by hand, or after a page reload (the path is remembered, the parsed sessions are not).",
+        "armError": "Could not arm this pcap: {{error}}"
       },
       "back": "← Back",
       "next": "Next: Thresholds →",
@@ -109,9 +113,9 @@
         "minRegion": "min region",
         "minRegionHelp": "Smallest contiguous region the reducer will emit. Regions shorter than this are dropped before brute-force.",
         "stride": "stride",
-        "strideHelp": "Candidate iteration step. Default = alignment. At stride=1 the hot loop wastes most oracle calls on misaligned offsets.",
+        "strideHelp": "Candidate iteration step. Defaults to 1, which walks every offset for full coverage. Raising it is faster but only tests offsets that are multiples of the stride, so an unaligned secret can never be found.",
         "jobs": "jobs",
-        "jobsHelp": "Inner worker count for the brute-force ProcessPool. 1 = serial (easiest debugging); >1 = parallel. Memdiver v1 caps concurrent pipelines at 1, so jobs × 1 is the CPU footprint.",
+        "jobsHelp": "Worker processes for the brute-force sweep. 0 (the default) auto-selects: a large exhaustive sweep runs on a small pool, while a short sweep or a first-hit run stays serial so the reported candidate count stays reproducible. Set 1 to force serial (easiest debugging), or any higher number to pin the worker count. MemDiver v1 caps concurrent pipelines at 1, so the chosen count is the whole CPU footprint.",
         "topK": "top K",
         "topKHelp": "When no hit is found, how many highest-variance regions to report. Zero to disable the fallback."
       }
@@ -215,7 +219,19 @@
       "openInHex": "Open in hex",
       "opening": "Opening…",
       "openInHexTitle": "Jump to this offset in the hex viewer",
-      "openFailed": "Failed to open hit in hex viewer: {{error}}"
+      "openFailed": "Failed to open hit in hex viewer: {{error}}",
+      "rate": "{{rate}} candidates/sec",
+      "etaUnknown": "estimating time remaining…",
+      "etaHours": "{{h}}h {{m}}m remaining",
+      "etaMinutes": "{{m}}m {{s}}s remaining",
+      "etaSeconds": "{{s}}s remaining"
+    },
+    "diagnostics": {
+      "coverageTitle": "Search coverage",
+      "coverageLine": "Tested {{tested}} of {{possible}} candidate windows ({{percent}}%) at stride {{stride}}.",
+      "coverageExhaustive": "The search was exhaustive: every offset in range was tested.",
+      "coveragePartial": "Offsets that are not multiples of {{stride}} were never tested, so a hit count is a lower bound, not a total.",
+      "warningTitle": "Coverage warning"
     }
   },
   "results": {

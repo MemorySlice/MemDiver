@@ -267,6 +267,78 @@ def test_producer_persists_confirmed_hit_as_ground_truth(tmp_path, monkeypatch):
     assert rows[0]["confirmed_by"] == "pcap"
     assert rows[0]["key_hex"] == MASTER_SECRET.hex()
     assert rows[0]["offset"] == SECRET_OFFSET
+    # The pcap-confirmed hit carries its provenance on the wire too.
+    assert result["hits"][0]["verified"] is True
+    assert result["hits"][0]["confirmed_by"] == "pcap"
+
+
+# A minimal BYO oracle: the sandboxed, user-supplied counterpart to the
+# first-party pcap oracle. It vouches for exactly the planted secret.
+BYO_ORACLE_SRC = (
+    "TARGET = bytes(range(1, 49))\n"
+    "def verify(candidate):\n"
+    "    return candidate == TARGET\n"
+)
+
+
+def test_producer_stamps_byo_oracle_hit_as_confirmed(tmp_path, monkeypatch):
+    """A BYO-oracle (non-pcap) hit is stamped ``confirmed_by="oracle"`` on the
+    returned hits, in the ``stage_end`` event, and in the ground-truth ledger —
+    the same single label at every site, so they cannot drift."""
+    pytest.importorskip("duckdb")
+    pytest.importorskip("ibis")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    oracle_path = tmp_path / "byo_oracle.py"
+    oracle_path.write_text(BYO_ORACLE_SRC)
+    reference = b"\x11" * SECRET_OFFSET + MASTER_SECRET + b"\x22" * SECRET_OFFSET
+    ref_path = tmp_path / "reference.bin"
+    ref_path.write_bytes(reference)
+    cand_path = tmp_path / "candidates.json"
+    cand_path.write_text(json.dumps({"regions": [{"offset": 0, "length": len(reference)}]}))
+
+    events = []
+
+    from memdiver.app.tools_pipeline import brute_force
+    result = brute_force(
+        candidates_path=str(cand_path),
+        reference_path=str(ref_path),
+        output_dir=str(tmp_path / "out"),
+        oracle_path=str(oracle_path),
+        persist_ground_truth=True,
+        key_sizes=(48,),
+        stride=8,
+        on_progress=lambda event, **fields: events.append((event, fields)),
+    )
+    assert result["verified_count"] == 1
+    hit = result["hits"][0]
+    assert hit["verified"] is True
+    assert hit["confirmed_by"] == "oracle"
+    assert hit["offset"] == SECRET_OFFSET
+
+    # Same stamped dicts reach the wire via the stage_end event.
+    stage_end = [f for e, f in events if e == "stage_end" and f.get("stage") == "brute_force"]
+    assert len(stage_end) == 1
+    assert stage_end[0]["extra"]["hits"][0]["confirmed_by"] == "oracle"
+
+    # ...and the persisted hits.json holds the same provenance.
+    on_disk = json.loads(Path(result["hits_path"]).read_text())
+    assert on_disk["hits"][0]["confirmed_by"] == "oracle"
+
+    run_id = result["ground_truth_run_id"]
+    assert run_id
+
+    from memdiver.app.composition import resolve_project_db
+    db = resolve_project_db()
+    assert db is not None
+    try:
+        rows = db.list_ground_truth(run_id)
+    finally:
+        db.close()
+    assert len(rows) == 1
+    assert rows[0]["confirmed_by"] == "oracle"
+    assert rows[0]["key_hex"] == MASTER_SECRET.hex()
+    assert rows[0]["offset"] == SECRET_OFFSET
 
 
 # --------------------------------------------------------------------------- #

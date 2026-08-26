@@ -176,8 +176,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Record confirmed hits in the project ground-truth ledger "
                     "(opt-in; no-op if the DuckDB backend is unavailable)")
     bf.add_argument("--key-sizes", default="32", help="Comma-separated key sizes in bytes")
-    bf.add_argument("--stride", type=int, default=8)
-    bf.add_argument("--jobs", type=int, default=1)
+    bf.add_argument("--stride", type=int, default=1,
+                    help="Candidate offset step in bytes. Only offsets that are multiples of the stride are tested, so a secret that is not stride-aligned is never reached; the default 1 walks every offset (full coverage). Raise it to trade coverage for speed (default: 1)")
+    bf.add_argument("--jobs", type=int, default=0,
+                    help="Brute-force worker processes. 0 (default) auto-selects: serial for a small or --first-hit sweep, otherwise a small pool. Any explicit value is used verbatim; 1 forces serial (default: 0)")
     bf.add_argument("--first-hit", action="store_true",
                     help="Stop at the first verified candidate (default: exhaustive)")
     bf.add_argument("--state", help="Consensus state path (attaches neighborhood variance)")
@@ -203,7 +205,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--oracle", required=True, help="Path to user oracle script")
     ns.add_argument("--oracle-config", help="Optional TOML config")
     ns.add_argument("--key-sizes", default="32")
-    ns.add_argument("--stride", type=int, default=8)
+    ns.add_argument("--stride", type=int, default=1,
+                    help="Candidate offset step in bytes. Only offsets that are multiples of the stride are tested, so a secret that is not stride-aligned is never reached; the default 1 walks every offset (full coverage). Raise it to trade coverage for speed (default: 1)")
     ns.add_argument("--first-hit", action="store_true")
     ns.add_argument("--escalate", action="store_true",
                     help="If no checkpoint finds a hit, run a floor-free "
@@ -226,7 +229,8 @@ def _build_parser() -> argparse.ArgumentParser:
     af.add_argument("--oracle", required=True, help="Path to user Python oracle script")
     af.add_argument("--oracle-config", help="Optional TOML config passed to build_oracle")
     af.add_argument("--key-sizes", default="32", help="Comma-separated key sizes in bytes")
-    af.add_argument("--stride", type=int, default=8)
+    af.add_argument("--stride", type=int, default=1,
+                    help="Candidate offset step in bytes. The default 1 walks every offset (full coverage); raise it to trade coverage for speed (default: 1)")
     af.add_argument("--alignment", type=int, default=8)
     af.add_argument("--block-size", type=int, default=32)
     af.add_argument("--density-threshold", type=float, default=0.5)

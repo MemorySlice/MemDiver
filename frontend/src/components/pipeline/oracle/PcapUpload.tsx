@@ -19,16 +19,14 @@
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { ApiError } from "@/api/client";
-import { uploadPcap, validatePcap, type PcapSession } from "@/api/pipeline";
+import { uploadPcap, type PcapSession } from "@/api/pipeline";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { pcapSessionSummary, sessionHasAppRecords } from "./pcap-session";
+import { pcapErrorMessage, usePcapArm } from "./use-pcap-arm";
 
-type UploadPhase = "idle" | "uploading" | "validating";
-
-function isDpktMissing(message: string): boolean {
-  return /dpkt/i.test(message);
-}
+// Only the upload half is tracked here; the validate half's progress comes
+// from ``usePcapArm().isArming``.
+type UploadPhase = "idle" | "uploading";
 
 export function PcapUpload() {
   const { t } = useTranslation("pipeline");
@@ -38,20 +36,26 @@ export function PcapUpload() {
   const updateForm = usePipelineStore((s) => s.updateForm);
   const setPcapSessions = usePipelineStore((s) => s.setPcapSessions);
 
+  // The validate/arm half is shared with StageOracle's manual-path button.
+  const { arm, isArming, error: armError, reset: resetArmError } = usePcapArm();
+
   const [phase, setPhase] = useState<UploadPhase>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Concurrency guard: a second file dropped while an upload/validate is in
   // flight would interleave ``updateForm({pcapPath})`` (capture A) with
   // ``setPcapSessions`` (capture B), arming a run against the wrong capture.
   // A ref (not ``phase``) avoids a stale-closure race between rapid drops.
+  // ``usePcapArm`` has its own guard, but it only covers the validate half —
+  // this one spans the whole upload-then-arm flow.
   const inFlightRef = useRef(false);
 
   const handleFile = useCallback(
     async (file: File): Promise<void> => {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
-      setError(null);
+      setUploadError(null);
+      resetArmError();
       setPcapSessions([]);
       // Drop any session selected from a previous capture so it cannot silently
       // restrict the new run to a client_random that isn't in this capture.
@@ -60,24 +64,19 @@ export function PcapUpload() {
       try {
         const uploaded = await uploadPcap(file);
         updateForm({ pcapPath: uploaded.pcap_path });
-        setPhase("validating");
-        const validated = await validatePcap(uploaded.pcap_path);
-        setPcapSessions(validated.sessions);
+        setPhase("idle");
+        await arm(uploaded.pcap_path);
       } catch (e) {
         // Never leave a usable ``pcapPath`` behind on failure: a set-but-broken
         // path would let StageOracle unlock "Next" with no valid oracle.
         updateForm({ pcapPath: null });
-        const message =
-          e instanceof ApiError || e instanceof Error
-            ? e.message
-            : String(e);
-        setError(isDpktMissing(message) ? t("stages.oracle.pcap.dpktMissing") : message);
+        setUploadError(pcapErrorMessage(e, t("stages.oracle.pcap.dpktMissing")));
       } finally {
         setPhase("idle");
         inFlightRef.current = false;
       }
     },
-    [setPcapSessions, updateForm, t],
+    [arm, resetArmError, setPcapSessions, updateForm, t],
   );
 
   const openFilePicker = useCallback((): void => {
@@ -99,7 +98,10 @@ export function PcapUpload() {
   };
 
   const hasClientRandom = !!tlsClientRandom && tlsClientRandom.trim().length > 0;
-  const busy = phase !== "idle";
+  // The upload half's own error wins while it is set; otherwise show the
+  // shared arm hook's. Both are cleared at the start of every drop.
+  const error = uploadError ?? armError;
+  const busy = phase !== "idle" || isArming;
 
   return (
     <div className="space-y-2">
@@ -138,7 +140,7 @@ export function PcapUpload() {
         <div className="md-text-muted">{t("stages.oracle.pcap.uploadHint")}</div>
       </div>
 
-      {phase !== "idle" && (
+      {busy && (
         <div data-testid="pcap-upload-status" className="text-xs md-text-muted">
           {phase === "uploading"
             ? t("stages.oracle.pcap.uploading")
@@ -221,7 +223,7 @@ export function PcapUpload() {
         </div>
       )}
 
-      {pcapPath && sessions.length === 0 && phase === "idle" && !error && (
+      {pcapPath && sessions.length === 0 && !busy && !error && (
         <div className="text-xs md-text-muted">
           {t("stages.oracle.pcap.noSessions")}
         </div>

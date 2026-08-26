@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation, Trans } from "react-i18next";
 import { verifyKey, exportKeylog } from "@/api/client";
 import { downloadTextFile } from "@/utils/download";
@@ -70,7 +71,29 @@ export function KeyVerificationPanel() {
     setResult,
     setError,
     reset,
-  } = useVerificationStore();
+  } = useVerificationStore(
+    useShallow((s) => ({
+      ciphertextHex: s.ciphertextHex,
+      ivHex: s.ivHex,
+      nonceHex: s.nonceHex,
+      aadHex: s.aadHex,
+      tagHex: s.tagHex,
+      cipher: s.cipher,
+      isVerifying: s.isVerifying,
+      result: s.result,
+      error: s.error,
+      setCiphertextHex: s.setCiphertextHex,
+      setIvHex: s.setIvHex,
+      setNonceHex: s.setNonceHex,
+      setAadHex: s.setAadHex,
+      setTagHex: s.setTagHex,
+      setCipher: s.setCipher,
+      startVerify: s.startVerify,
+      setResult: s.setResult,
+      setError: s.setError,
+      reset: s.reset,
+    })),
+  );
 
   const { prefillOffset, prefillLength } = useMemo(() => {
     if (selection) {

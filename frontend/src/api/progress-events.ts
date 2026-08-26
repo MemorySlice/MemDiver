@@ -73,11 +73,34 @@ interface ProgressEventBase {
 
 // ---- per-type `extra` payload shapes --------------------------------------
 
-/** `progress` events for the search_reduce sub-stages carry funnel counts. */
+/**
+ * `progress` events for the search_reduce sub-stages carry funnel counts;
+ * the `brute_force:progress` sub-stage carries candidate counters instead.
+ *
+ * Producer for `tried` / `hits` / `total`: `engine/brute_force.py:319-321`
+ * (serial loop) and the mirrored emit at `:411-412` (parallel loop). Both
+ * counters are what the frontend divides to derive a candidates/sec rate and
+ * an ETA -- see `Throughput` in `stores/pipeline-store.ts`.
+ */
 export interface ProgressStageExtra {
   survivor_bytes?: number;
   input_bytes?: number;
+  /** Candidate windows handed to the oracle so far, monotonically increasing. */
+  tried?: number;
+  /** Candidate windows the whole stage will test (the ETA denominator). */
+  total?: number;
+  /** Verified hits found so far in this stage. */
+  hits?: number;
 }
+
+/**
+ * The label naming *how* a hit was proven, as the UI knows it. Mirrors
+ * ProjectDB's ``ground_truth.confirmed_by`` column. Exported for UI
+ * consumers that want to switch on the three labels they render
+ * specially -- NOT used to type the wire field itself (see the note on
+ * ``BruteForceHitPayload.confirmed_by``).
+ */
+export type HitConfirmedBy = "pcap" | "oracle" | "verifier";
 
 /** One verified brute-force hit, as attached to a `stage_end` payload. */
 export interface BruteForceHitPayload {
@@ -87,14 +110,51 @@ export interface BruteForceHitPayload {
   key_hex?: string;
   neighborhood_start?: number;
   neighborhood_variance?: number[];
+  /** True when the backend proved this key rather than merely scoring it. */
+  verified?: boolean;
+  /**
+   * How the key was proven, e.g. "pcap" / "oracle" / "verifier".
+   *
+   * Deliberately a plain ``string`` and NOT a string-literal union: the
+   * backend already emits labels outside the trio above (e.g.
+   * "manual_review", see tests/test_project_db_ground_truth.py). Do not
+   * "tighten" this to ``HitConfirmedBy`` -- that would turn any future
+   * backend label into a compile error instead of letting the UI fall
+   * back gracefully on an unrecognised one.
+   */
+  confirmed_by?: string;
 }
 
-/** `stage_end` for stage === "brute_force": verified hits + threshold. */
+/**
+ * A structured note qualifying a stage result (backend `core.service_result.Diagnostic`).
+ *
+ * `severity` is a plain `string`, not a literal union, for the same reason
+ * `confirmed_by` is: a new backend severity must degrade gracefully in the UI
+ * rather than break the build.
+ */
+export interface StageDiagnostic {
+  code: string;
+  message: string;
+  severity?: string;
+  details?: Record<string, unknown>;
+}
+
+/** `stage_end` for stage === "brute_force": verified hits + threshold + coverage. */
 export interface BruteForceStageEndExtra {
   verified_count?: number;
   total_candidates?: number;
   variance_threshold?: number;
   hits?: BruteForceHitPayload[];
+  /** Windows actually handed to the oracle (same number as `total_candidates`). */
+  candidates_tested?: number;
+  /** Windows a stride-1 grid would have tested — the coverage denominator. */
+  candidates_possible?: number;
+  /** Offset step the grid used; only multiples of it were tested. */
+  stride?: number;
+  /** `candidates_tested / candidates_possible`, 1.0 when fully exhaustive. */
+  coverage_fraction?: number;
+  /** Non-fatal notes, e.g. `brute_force.partial_coverage` on a zero-hit partial run. */
+  warnings?: StageDiagnostic[];
 }
 
 /** `stage_end` for stage === "consensus": bytes folded + dump count. */
@@ -126,6 +186,19 @@ export interface OracleHitExtra {
   key_hex?: string;
   neighborhood_start?: number;
   neighborhood_variance?: number[];
+  /** True when the backend proved this key rather than merely scoring it. */
+  verified?: boolean;
+  /**
+   * How the key was proven, e.g. "pcap" / "oracle" / "verifier".
+   *
+   * Deliberately a plain ``string`` and NOT a string-literal union: the
+   * backend already emits labels outside the trio above (e.g.
+   * "manual_review", see tests/test_project_db_ground_truth.py). Do not
+   * "tighten" this to ``HitConfirmedBy`` -- that would turn any future
+   * backend label into a compile error instead of letting the UI fall
+   * back gracefully on an unrecognised one.
+   */
+  confirmed_by?: string;
 }
 
 // ---- per-type event variants -----------------------------------------------

@@ -103,6 +103,14 @@ interface HexState {
   // moves when chunks load in the background).
   chunkVersion: number;
 
+  // Last byte-fetch failure, or null when the most recent chunk load
+  // succeeded. Without this a 4xx/5xx from /api/inspect/hex-raw is visually
+  // identical to "not loaded yet" (both render the "--" placeholder), which
+  // makes an entire class of viewer bug undiagnosable. Surfaced as a short
+  // inline note in HexStatusBar — deliberately NOT a toast or a retry, since
+  // rapid scrolling can legitimately abort in-flight fetches.
+  chunkError: string | null;
+
   cursorOffset: number | null;
   selection: ByteSelection | null;
   focusColumn: "hex" | "ascii";
@@ -272,6 +280,7 @@ export const useHexStore = create<HexState>((set, get) => ({
   chunks: new Map(),
   pendingFetches: new Set(),
   chunkVersion: 0,
+  chunkError: null,
 
   cursorOffset: null,
   selection: null,
@@ -332,6 +341,8 @@ export const useHexStore = create<HexState>((set, get) => ({
         chunks: new Map(),
         pendingFetches: new Set(),
         chunkVersion: 0,
+        // A failure belonged to the previous dump; the new one starts clean.
+        chunkError: null,
         cursorOffset: null,
         selection: null,
         highlightedRegions: [],
@@ -381,9 +392,17 @@ export const useHexStore = create<HexState>((set, get) => ({
         viewMode: mode,
         fileSize: size || state.fileSize,
         // Flipping views changes what every byte means — nuke chunks.
+        //
+        // NOTE: clearing `chunks` here is only half the job. Nothing in the
+        // store re-fetches; the refill comes from HexViewer's visible-range
+        // effect, which therefore MUST list `viewMode` in its dependency
+        // array (see the comment there). Without it the viewer sits at
+        // scrollTop 0 with an empty chunk map and every cell renders "--".
         chunks: new Map(),
         pendingFetches: new Set(),
         chunkVersion: state.chunkVersion + 1,
+        // The failure (if any) described bytes in the outgoing view.
+        chunkError: null,
         cursorOffset: null,
         selection: null,
         scrollTarget: null,
@@ -460,6 +479,7 @@ export const useHexStore = create<HexState>((set, get) => ({
       chunks: new Map(),
       pendingFetches: new Set(),
       chunkVersion: 0,
+      chunkError: null,
       cursorOffset: null,
       selection: null,
       focusColumn: "hex",
@@ -510,8 +530,14 @@ export const useHexStore = create<HexState>((set, get) => ({
       const length = Math.min(CHUNK_SIZE, state.fileSize - chunkOffset);
       fetchChunkData(dumpPath, chunkOffset, length, view)
         .then((data) => {
-          // Ignore stale fetches from a previous view mode.
-          if (useHexStore.getState().viewMode !== view) {
+          // Ignore stale fetches from a previous view mode OR a previous
+          // dump. Dropping the dumpPath half of this guard would let a
+          // chunk requested for dump A land in dump B's freshly-cleared
+          // chunk map after setDumpPath(B) — the viewer would then render
+          // A's bytes while every label claims B. Mirrors the same-dump
+          // guard in fetchPageStates.
+          const live = useHexStore.getState();
+          if (live.viewMode !== view || live.dumpPath !== dumpPath) {
             set((prev) => {
               const pending = new Set(prev.pendingFetches);
               pending.delete(chunkOffset);
@@ -535,14 +561,18 @@ export const useHexStore = create<HexState>((set, get) => ({
               chunks: evicted,
               pendingFetches: pending,
               chunkVersion: prev.chunkVersion + 1,
+              // Bytes arrived, so whatever failed before is no longer the
+              // current state of the viewer.
+              chunkError: null,
             };
           });
         })
-        .catch(() => {
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
           set((prev) => {
             const pending = new Set(prev.pendingFetches);
             pending.delete(chunkOffset);
-            return { pendingFetches: pending };
+            return { pendingFetches: pending, chunkError: message };
           });
         });
     }

@@ -113,7 +113,11 @@ handshake_hash_hex = "aabbcc..."
 - **Do not hold global state across runs.** Each `memdiver brute-force`
   invocation loads the module fresh; if you use Shape 2 with
   `--jobs > 1`, each worker process re-imports and re-runs
-  `build_oracle`, so any caching must live in instance state.
+  `build_oracle`, so any caching must live in instance state. Note that
+  `--jobs` defaults to `0` = auto, which resolves to a small worker pool
+  for a large exhaustive sweep — so a multi-worker run is now the default
+  path, not an opt-in. Keep `build_oracle` cheap; it runs once per worker.
+  Pass `--jobs 1` to force the single-process path.
 - **The oracle has no visibility into which offset is being tested.**
   This is by design — memdiver owns the offset bookkeeping so the hit
   metadata (offset, neighborhood variance, vol3 anchor) stays

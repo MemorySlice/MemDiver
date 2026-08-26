@@ -29,6 +29,9 @@ from memdiver.api.services.consensus_session import (
     ConsensusSessionManager,
     get_consensus_manager,
 )
+from memdiver.api.config import Settings
+from memdiver.api.dependencies import get_api_settings
+from memdiver.api.path_safety import ensure_within
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
 from memdiver.engine.consensus_service import build_consensus
@@ -406,7 +409,10 @@ def auto_export(req: AutoExportRequest):
 
 
 @router.post("/export-keylog")
-def export_keylog(req: ExportKeylogRequest):
+def export_keylog(
+    req: ExportKeylogRequest,
+    settings: Settings = Depends(get_api_settings),
+):
     """Emit a Wireshark-loadable NSS key log from recovered TLS secrets.
 
     Thin HTTP adapter over the ``app`` producer
@@ -420,10 +426,34 @@ def export_keylog(req: ExportKeylogRequest):
     """
     from memdiver.app.tools_pipeline import keylog_result
 
+    # ``output_path`` is a WRITE, so it is contained even though this API's
+    # localhost path parameters are otherwise an accepted, documented risk.
+    # That exemption (see api/main.py) is scoped in writing to READS — the
+    # operator deliberately points inspect/analysis at arbitrary local dump
+    # files. An unvalidated write is a different class: ``keylog_result`` does
+    # ``Path(output_path).write_text(...)``, so an out-of-tree path could land
+    # on ~/.ssh/authorized_keys, a shell rc, or a .pth in site-packages.
+    # Containment lives here, at the HTTP boundary, and NOT in the producer:
+    # the CLI ``export-keylog`` command and the MCP tool legitimately write
+    # wherever the operator's own shell can.
+    resolved_output: str | None = None
+    if req.output_path is not None:
+        try:
+            resolved_output = str(
+                ensure_within(settings.upload_dir, Path(req.output_path))
+            )
+        except ValueError as exc:
+            # Do not echo the resolved upload_dir — the ValueError message
+            # embeds it, which would disclose the server's on-disk layout.
+            raise HTTPException(
+                status_code=400,
+                detail="output_path escapes the upload directory",
+            ) from exc
+
     try:
         return keylog_result(
             secrets=list(req.secrets),
-            output_path=req.output_path,
+            output_path=resolved_output,
         )
     except CapabilityError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc

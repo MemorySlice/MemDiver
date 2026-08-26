@@ -134,7 +134,7 @@ def run_nsweep(
     reduce_kwargs: dict,
     oracle: Callable[[bytes], bool],
     key_sizes=(32,),
-    stride: int = 8,
+    stride: int = 1,
     exhaustive: bool = True,
     escalate: bool = False,
     escalate_oracle_budget: Optional[int] = None,

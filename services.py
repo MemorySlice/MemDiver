@@ -80,6 +80,7 @@ from memdiver.app.tools_pipeline import (
     consensus,
     emit_plugin,
     export_pattern,
+    inspect_pcap,
     keylog_result,
     n_sweep,
     search_reduce,
@@ -132,6 +133,7 @@ __all__ = [
     "emit_plugin",
     "export_pattern",
     "keylog_result",
+    "inspect_pcap",
     # verify / experiment
     "verify_key_result",
     "experiment_result",

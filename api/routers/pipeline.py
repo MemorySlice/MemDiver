@@ -63,8 +63,10 @@ class ReduceParams(BaseModel):
 
 class BruteForceParams(BaseModel):
     key_sizes: List[int] = Field(default_factory=lambda: [32])
-    stride: int = 8
-    jobs: int = 1
+    stride: int = 1
+    # 0 = auto (engine.brute_force.resolve_jobs): serial for a small or
+    # first-hit sweep, a small pool for a large exhaustive one. Explicit >0 wins.
+    jobs: int = 0
     exhaustive: bool = True
     top_k: int = 10
 
@@ -73,7 +75,7 @@ class NSweepParams(BaseModel):
     n_values: List[int]
     reduce_kwargs: Optional[ReduceParams] = None
     key_sizes: List[int] = Field(default_factory=lambda: [32])
-    stride: int = 8
+    stride: int = 1
     exhaustive: bool = True
 
 
@@ -143,7 +145,7 @@ class AutoFloorRunRequest(BaseModel):
     num_dumps: int = Field(..., ge=1)
     reduce: ReduceParams = Field(default_factory=ReduceParams)
     key_sizes: List[int] = Field(default_factory=lambda: [32])
-    stride: int = 8
+    stride: int = 1
     coverage: Optional[float] = None
     correspondence: Optional[float] = None
     filter_recall: Optional[float] = None
@@ -296,6 +298,14 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
     oracle_path: Optional[Path] = None
     oracle_sha256: Optional[str] = None
     if request.pcap_path:
+        # Existence check only, deliberately. This is a READ of a capture the
+        # operator chose, which is the accepted, documented risk class for this
+        # localhost API (api/main.py, handoff O-15) — and
+        # docs/oracle/pcap_oracle.md documents typing a server-side path as an
+        # alternative to uploading. POST /api/pcaps/validate applies the same
+        # rule so the arm step and the run step cannot disagree about which
+        # captures are usable. Do NOT add upload_dir containment here without
+        # also changing /validate and that doc.
         if not Path(request.pcap_path).is_file():
             raise HTTPException(
                 status_code=400,

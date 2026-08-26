@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { runAnalysisAndWait } from "@/api/analysis";
 import { useResultsStore, type SortField } from "@/stores/results-store";
@@ -16,7 +17,21 @@ function hexOffset(offset: number): string {
 
 export function ScanResultsPanel() {
   const { t } = useTranslation("results");
-  const { algorithmResults, filterAlgorithm, sortField, sortDirection, setFilter, setSort, getFilteredHits, getTotalHitCount } = useResultsStore();
+  const {
+    algorithmResults, filterAlgorithm, sortField, sortDirection,
+    setFilter, setSort, getFilteredHits, getTotalHitCount,
+  } = useResultsStore(
+    useShallow((s) => ({
+      algorithmResults: s.algorithmResults,
+      filterAlgorithm: s.filterAlgorithm,
+      sortField: s.sortField,
+      sortDirection: s.sortDirection,
+      setFilter: s.setFilter,
+      setSort: s.setSort,
+      getFilteredHits: s.getFilteredHits,
+      getTotalHitCount: s.getTotalHitCount,
+    })),
+  );
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const algos = Object.keys(algorithmResults);
