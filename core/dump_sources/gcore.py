@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from memdiver.core.binary_formats.elf_core_reader import ElfCoreReader, PtLoadSegment
 
@@ -31,6 +31,13 @@ class GCoreDumpSource:
     """Freestanding DumpSource for ``gcore.core`` files (ELF64 ET_CORE)."""
 
     format_name = "gcore"
+
+    #: The PT_LOAD table is a real virtual-address map, so cross-dump
+    #: consensus can align these captures by VA
+    #: (:mod:`memdiver.engine.consensus_va`) instead of falling back to flat
+    #: file offsets. Declared rather than sniffed — see
+    #: ``consensus_va.supports_va_alignment``.
+    supports_va_alignment = True
 
     def __init__(self, path: Path):
         self._path = Path(path)
@@ -216,6 +223,55 @@ class GCoreDumpSource:
                 start = at + 1
         return hits
 
+    def find_first(self, needle: bytes, view: str = "raw") -> Optional[int]:
+        """First offset of ``needle`` in the chosen view, or ``None``.
+
+        The presence-only companion to :meth:`find_all`: it agrees with
+        ``find_all(needle, view)[0]`` but early-exits on the first hit instead
+        of scanning the whole core, which is what a corpus-scale
+        "is this secret present?" sweep needs.
+        """
+        self._ensure_open()
+        if view == "raw":
+            return _find_first_in_bytes(self._reader_raw_bytes(), needle)
+        if view != "vas":
+            raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
+        return self._find_first_vas(needle)
+
+    def _find_first_vas(self, needle: bytes) -> Optional[int]:
+        """First occurrence in the flattened VAS stream (overlap-tolerant).
+
+        Same segment walk and same boundary-stitching window as
+        :meth:`_find_all_vas` - each PT_LOAD is searched together with up to
+        ``len(needle) - 1`` following VAS bytes so a straddling needle is
+        found - but it returns as soon as a match *begins* inside a segment.
+        A first window match that starts in the stitched tail is skipped here
+        exactly as :meth:`_find_all_vas` skips it: the segment that owns those
+        bytes reports it on the next iteration.
+        """
+        if not needle or not self._vas_segments:
+            return None
+        mm = self._reader._mmap  # noqa: SLF001
+        if mm is None:
+            return None
+        overlap = len(needle) - 1
+        for idx, seg in enumerate(self._vas_segments):
+            seg_bytes = mm[seg.file_offset:seg.file_offset + seg.filesz]
+            vas_base = self._vas_cum[idx]
+            window = seg_bytes
+            if overlap > 0:
+                tail = self._read_vas_range(vas_base + seg.filesz, overlap)
+                if tail:
+                    window = seg_bytes + tail
+            # ``window`` is a bytes slice (or a concatenation), so it carries
+            # no position -- but the start is passed explicitly anyway so every
+            # ``find`` in this file reads the same way and none can regress into
+            # the mmap-position trap documented in ``_find_first_in_bytes``.
+            at = window.find(needle, 0)
+            if at != -1 and at < seg.filesz:
+                return vas_base + at
+        return None
+
     # -- VA translation -----------------------------------------------------
 
     def va_to_file_offset(self, va: int) -> "int | None":
@@ -268,3 +324,22 @@ def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
         offsets.append(idx)
         start = idx + 1
     return offsets
+
+
+def _find_first_in_bytes(data: bytes, needle: bytes) -> Optional[int]:
+    """Presence-only search; ``None`` when absent.
+
+    Empty-needle handling matches :func:`_find_all_in_bytes` above (which
+    returns no hits rather than one per byte), so ``find_first`` stays in
+    agreement with ``find_all[0]`` for every needle.
+    """
+    if not needle:
+        return None
+    # Explicit start required: despite the ``_in_bytes`` name, the raw-view
+    # caller passes the LIVE mmap from ``_reader_raw_bytes()`` (documented there
+    # as deliberate, to avoid copying a multi-GB core). ``mmap.find(sub)``
+    # defaults to the mapping's current position, so without the 0 this returns
+    # "absent" for a present needle after any read that moved it. See
+    # ``core.dump_io.find_first_offset`` for the full reasoning.
+    idx = data.find(needle, 0)
+    return None if idx == -1 else idx

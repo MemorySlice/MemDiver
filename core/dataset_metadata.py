@@ -54,6 +54,19 @@ class DatasetMeta:
     aslr_base: int
     pid: int
     dumps: Dict[str, DumpRef] = field(default_factory=dict)
+    # Optional ``capture`` key naming the run's packet capture, relative to the
+    # run directory. Forward-compatibility only: no corpus emits it yet, so an
+    # absent key stays ``None`` rather than raising.
+    capture: Optional[str] = None
+    # Optional ``library_version`` naming the BUILD of the library under test
+    # (e.g. "3.0.13"). Forward-compatibility only: today's corpus holds each
+    # library at a single build, so no run emits it and every axes record
+    # resolves to "unknown". ``core.corpus_axes`` reads this field to decide
+    # whether the varied dimension is the protocol version or the library
+    # build, and without it that documented hook could never fire -- it read an
+    # attribute that did not exist, so a future multi-build corpus would have
+    # silently collapsed every build into "unknown".
+    library_version: Optional[str] = None
     source_path: Path = field(default_factory=Path)
 
     def dump(self, kind: str) -> Optional[DumpRef]:
@@ -104,6 +117,10 @@ def _build_meta(
     aslr_base = _parse_int(payload.get("aslr_base", 0))
     pid = int(payload.get("pid", 0))
     dumps = _parse_dumps(payload.get("dumps", {}), run_dir)
+    capture = payload.get("capture")
+    capture = str(capture) if capture else None
+    library_version = payload.get("library_version")
+    library_version = str(library_version) if library_version else None
 
     return DatasetMeta(
         run_id=run_id,
@@ -114,6 +131,8 @@ def _build_meta(
         aslr_base=aslr_base,
         pid=pid,
         dumps=dumps,
+        capture=capture,
+        library_version=library_version,
         source_path=source_path,
     )
 

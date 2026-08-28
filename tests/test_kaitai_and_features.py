@@ -362,11 +362,24 @@ class TestArchitectEndpoints:
         assert resp.status_code == 400
 
     def test_export_yara(self, client):
+        """The exported rule must actually COMPILE, not merely return 200.
+
+        This test previously posted ``wildcard_hex``/``byte_length`` -- key names
+        that exist nowhere in the product (``PatternGenerator.generate`` emits
+        ``wildcard_pattern`` and ``length``, which is what the frontend reads).
+        The exporter therefore saw no byte string and emitted ``$key = {  }``:
+        an UNCOMPILABLE rule that this test passed anyway, because asserting
+        ``status_code == 200`` and ``"content" in data`` cannot tell a valid
+        detector from an empty one. Compiling the result is the assertion that
+        makes the endpoint's output meaningful.
+        """
+        import yara
+
         pattern = {
             "name": "test_pat",
-            "wildcard_hex": "7f 45 4c 46 ?? ?? 01",
-            "byte_length": 7,
-            "static_count": 5,
+            "wildcard_pattern": "7f 45 4c 46 ?? ?? 01",
+            "length": 7,
+            "static_ratio": 0.71,
         }
         resp = client.post(
             "/api/architect/export",
@@ -375,7 +388,27 @@ class TestArchitectEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["format"] == "yara"
-        assert "content" in data
+        rules = yara.compile(source=data["content"])
+        # And it detects the bytes it was generated from.
+        assert rules.match(data=b"\x7fELF\xAA\xBB\x01")
+
+    def test_export_yara_rejects_a_malformed_pattern(self, client):
+        """A client-supplied pattern with no usable byte string is a 400.
+
+        Not a 500 (the dict comes from the request body, so this is the caller's
+        error) and not a 200 carrying a broken rule -- which is what happened
+        before the exporter validated its input.
+        """
+        resp = client.post(
+            "/api/architect/export",
+            json={
+                "pattern": {"name": "p", "wildcard_hex": "7f 45"},
+                "format": "yara",
+                "rule_name": "test_rule",
+            },
+        )
+        assert resp.status_code == 400
+        assert "wildcard_pattern" in resp.json()["detail"]
 
 
 class TestPatternsEndpoint:

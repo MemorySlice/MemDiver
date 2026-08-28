@@ -127,6 +127,13 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("pipeline.export_pattern", "memdiver.app.tools_pipeline.export_pattern",
          ("library", "cli", "web", "mcp")),
+    # -- pcap arm/validate (the pcap verification oracle's first step) -------
+    # Wired on all four surfaces since Phase 1 (services.py, CLI `inspect-pcap`,
+    # POST /api/pcaps/validate, MCP `inspect_pcap`) but never registered here, so
+    # the parity ratchet had a blind spot over it. Registering it is a pure
+    # tightening: no KNOWN_PARITY_GAPS entry is needed.
+    _cap("pcap.inspect", "memdiver.app.tools_pipeline.inspect_pcap",
+         ("library", "cli", "web", "mcp")),
     # -- export: Wireshark NSS key log (the mission's headline artifact) -----
     _cap("export.keylog", "memdiver.app.tools_pipeline.keylog_result",
          ("library", "cli", "web", "mcp")),
@@ -146,6 +153,13 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "web", "mcp")),
     _cap("analysis.analyze_library", "memdiver.app.tools.analyze_library",
          ("library", "web", "mcp")),
+    # -- the exploratory differential path (A4) -----------------------------
+    # N dumps in, ranked candidates out, with NO oracle and no capture. Wired
+    # on all four surfaces from the start: the whole point of the capability is
+    # that the analyst who cannot yet confirm a key still reaches a candidate
+    # list, and a headless/agent-driven analyst is exactly that analyst.
+    _cap("analysis.candidates", "memdiver.app.tools_pipeline.analyze_candidates",
+         ("library", "cli", "web", "mcp")),
     # -- frontend-serving producers (Phase 9) -------------------------------
     # Field inference + algorithm-availability gating were duplicated in the
     # React frontend; they now originate here. Both are wired on the library

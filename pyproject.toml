@@ -90,6 +90,11 @@ dependencies = [
     #     (`TlsPcapResource`): prove a memory-recovered key decrypts real
     #     captured records. ---
     "dpkt>=1.9.8",
+    # --- YARA rule compilation + scanning for detector evaluation
+    #     (engine/yara_scan.py): compile a MemDiver-emitted pattern rule and
+    #     measure it against the corpus. Base, not an extra: an emitted detector
+    #     you cannot scan with is a detector you cannot evaluate. ---
+    "yara-python>=4.5.4",
     # --- Dump collection (`memdiver experiment`). Needs a live, attachable
     #     target at runtime; the LLDB backend is installed via the OS (Xcode
     #     Command Line Tools on macOS, `apt install lldb` on Debian/Ubuntu). ---
@@ -215,11 +220,26 @@ pythonpath = ["."]
 # run in their own invocation: ``pytest -m e2e`` locally, or the dedicated ``test-e2e``
 # CI job. A plain ``pytest`` shows them as "deselected" (visible, not silently skipped)
 # and stays green; nothing is skipped.
-addopts = "--import-mode=importlib -m 'not e2e'"
+# ``slow`` is deselected here too: those tests either walk the real
+# machine-local corpus (~170 GB / 18,917 dumps) or run cost benchmarks, so a
+# plain ``pytest`` must not pull them in. They are NOT orphaned by this: the
+# ``test`` job in .github/workflows/ci.yml runs ``pytest -m slow`` as its own
+# step (and ``make test-slow`` does the same locally), so the auto-floor cost
+# ratchets in tests/test_benchmarks.py keep gating every push. Before this
+# deselection they ran in the default sweep only by accident, because
+# ``-m 'not e2e'`` never excluded ``slow``.
+addopts = "--import-mode=importlib -m 'not e2e and not slow'"
 testpaths = ["tests"]
 markers = [
     "e2e: browser end-to-end tests (Playwright + live backend); run with `-m e2e`",
     "slow: heavy tests over real machine-local corpora (large dumps); run explicitly",
+    # `requires_dataset` is NOT deselected by addopts: it is a *conditional* gate,
+    # not a cost gate. tests/conftest.py skips these items when
+    # tests/_paths.py::dataset_root() resolves nothing, so a developer without the
+    # corpus gets clean skips and a developer WITH it gets real coverage from a
+    # plain `pytest`. Only the one FULL-corpus pass carries `slow` on top; the
+    # bounded slices stay in the default run on purpose -- see `make test-corpus`.
+    "requires_dataset: needs the machine-local corpus (MEMDIVER_DATASET_ROOT / MEMDIVER_TLS_DUMPS_DIR / --dataset-root); auto-skips when absent",
 ]
 
 # ---------------------------------------------------------------------------
@@ -323,6 +343,19 @@ files = [
     "engine/results.py",
     "engine/envelope_serializer.py",
     "app/tools_fields.py",
+    # Wave 5 -- Phase 2 corpus-scale modules. All written typed from the start,
+    # so they join the island on arrival rather than being back-filled later.
+    "core/corpus_axes.py",
+    "engine/sweep_plan.py",
+    "engine/truth_labels.py",
+    "engine/survival_scan.py",
+    "engine/detector_metrics.py",
+    "engine/yara_scan.py",
+    "engine/corpus_proof.py",
+    "app/pipeline/corpus_pcap_runner.py",
+    # The durable on-disk contract: the largest module in the change set
+    # and the only one whose bugs survive the process that wrote them.
+    "engine/project_db.py",
 ]
 
 # ---------------------------------------------------------------------------
@@ -411,7 +444,12 @@ exclude_lines = [
 #   bandit -c pyproject.toml -r . -x run.py -f json -o .bandit-baseline.json
 # ---------------------------------------------------------------------------
 [tool.bandit]
-exclude_dirs = ["tests", "docs", "scripts", "tools", "frontend", "build", "misc"]
+exclude_dirs = ["tests", "docs", "scripts", "tools", "frontend", "build", "misc",
+                "env", "venv", ".venv", "node_modules"]
+# The four virtualenv/dependency dirs are git-ignored but bandit does not read
+# .gitignore, so without them a local `make security` scans pip's vendored code
+# and reports ~450 findings from site-packages -- none of them MemDiver's. A
+# gate that always fails is a gate nobody reads, which is worse than no gate.
 # run.py isn't a directory so exclude_dirs can't catch it; -x/--exclude in the
 # CI invocation (and locally) adds it as a glob-matched path exclusion.
 

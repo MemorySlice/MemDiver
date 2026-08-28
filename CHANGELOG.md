@@ -84,6 +84,298 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Install-hint messages in `memdiver web` / `app` / `mcp` / `ui` now point at
   the specific extra (`memdiver[api]` / `[mcp]` / `[marimo]`) when
   the corresponding dependency is not installed.
+- **YARA rule names, tags and meta strings are now unconditionally sanitized —
+  a caller-supplied `rule_name` can change.** `YaraExporter.export` used to
+  sanitize the name only on the branch where `rule_name` was `None` (it read
+  `rule_name or _sanitize_identifier(pattern["name"])`), so a name the *caller*
+  supplied went into the rule verbatim. YARA's grammar wants an identifier
+  there, so a name containing a hyphen, a dot, a space, or one that happens to
+  be a reserved word (`filesize`, `condition`, `ascii`, …) produced a rule that
+  **does not compile** — and nothing in the tree ever compiled the emitted rule,
+  so the breakage only showed up when the operator fed the `.yar` to
+  `yara`/`yara-python` themselves. `POST /api/architect/export` passes
+  `rule_name` straight from the request body, so that endpoint could emit an
+  unusable rule for any name a user typed. Now every caller-supplied string is
+  normalised on the way in: the name becomes an identifier (ASCII
+  `[A-Za-z0-9_]`, never leading-digit, never a reserved word, capped at
+  libyara's 128-character identifier limit), each tag is put through the same
+  filter, and `description` / `static_ratio` are escaped for a double-quoted
+  meta string (backslashes doubled first, then quotes escaped, then every
+  control or line-breaking character collapsed to a space) so a quote or a
+  newline can no longer terminate the literal early. **The visible consequence
+  is that a name like `my-rule.v2` is silently rewritten to `my_rule_v2`**, so
+  a downstream tool matching on the exact rule name must expect the sanitized
+  form. Two deliberate asymmetries are worth knowing: a reserved word in the
+  *name* position is **rescued** with an `r_` prefix (`filesize` → `r_filesize`)
+  because a rule must have some name, whereas a reserved-word *tag* is
+  **dropped** entirely — a tag is decorative, and silently renaming it to
+  `r_ascii` would be more surprising than losing it. Blank and duplicate tags
+  are dropped for the same reason. The keyword list was verified against
+  yara-python 4.5.4 rather than copied from the docs.
+- **`yara-python` is now a base dependency**, so `pip install memdiver` grows a
+  compiled C extension (libyara). It is deliberately *not* an extra: MemDiver
+  has been able to emit YARA rules since the architect layer landed but never to
+  run one, and an emitted detector you cannot scan with is a detector you cannot
+  evaluate — the new `engine/yara_scan.py` closes that loop, and it is useless
+  behind an install flag the evaluation path cannot assume. This also keeps the
+  install contract intact: `pip install memdiver` ships everything, with
+  `marimo` the only genuinely optional component.
+- YARA rules gained optional `key_offset` / `key_length` metas, locating the key
+  bytes *within* the matched pattern window. This matters because
+  `PatternGenerator` builds `wildcard_pattern` as one flat wildcarded byte
+  string spanning a whole region, so libyara reports the start of the *window
+  that contains* the key, not the key's own offset — without the metas a
+  detector's positional claim cannot be scored at all (see
+  `engine/detector_metrics.py`). **Scope, honestly:** the metas are emitted only
+  when a caller actually knows the locator. The three paths that compute it from
+  the hit pass it directly — `engine/vol3_emit.py::emit_plugin_for_hit`
+  (exact, the hit defined the window), `app/export_service.py`'s auto export
+  (`best.start - offset`) and manual export (`0`, because there the caller's
+  offset *is* the key start), and `app/experiment_orchestration.py`'s plugin
+  emit (`best.start - exp_offset`). The two remaining paths —
+  `Volatility3Exporter.export`'s own YARA fallback and
+  `POST /api/architect/export` — hold only a finished pattern dict, so they
+  recover the locator from it via the new `key_locator_from_pattern()` and emit
+  nothing when the dict does not carry one. A pattern that came from
+  `POST /api/architect/generate-pattern` does not carry one, and there the metas
+  are correctly omitted rather than invented; a non-integral value arriving in
+  an HTTP body is coerced to `None` for the same reason.
+- **A plain `pytest` no longer runs `slow`-marked tests.** The default
+  `addopts` moved from `-m 'not e2e'` to `-m 'not e2e and not slow'`, because
+  the `slow` tests either walk the machine-local corpus (~170 GB / 18,917
+  dumps, `tests/test_pcap_oracle_real_dump.py`) or run cost benchmarks. They are
+  **not** orphaned: the `test` job in `.github/workflows/ci.yml` now runs
+  `pytest -m slow` as its own step, and `make test-slow` does the same locally.
+  This is load-bearing because `tests/test_benchmarks.py` holds the auto-floor
+  **cost ratchets** — the per-candidate memory and time ceilings that three
+  optimisations were justified by. Before the addopts change those ran in the
+  default sweep only *by accident*, since `-m 'not e2e'` never excluded `slow`;
+  had the marker been deselected without adding the CI step, the ratchets would
+  have stopped gating pushes silently. (The corpus-backed slow tests self-skip
+  in CI — no runner has the dump tree.) Run `make test-slow` before touching
+  `engine/auto_floor.py` or `engine/brute_force.py`.
+- `DatasetScanner._has_capture` now counts a capture only when it is a
+  **non-empty regular file**, so the fast scan agrees with
+  `RunDiscovery._find_capture`'s three-state verdict. A zero-byte capture is
+  `"unreadable"` there, and counting it as present here inflated
+  `DatasetInfo.runs_with_capture` above the number of runs that can actually be
+  proven against their capture — i.e. it overstated the corpus denominator,
+  which is precisely what the three-state status exists to prevent. `stat()`
+  costs the same syscall as `is_file()`, so the agreement is free.
+- Two parity ratchets were tightened over work that was already shipped:
+  `app/capabilities.py` registers the `pcap.inspect` capability, and
+  `tests/test_architecture_invariants.py` adds `inspect_pcap` to
+  `_MCP_TOOL_PRODUCERS`. The pcap arm/validate step has been wired on all four
+  surfaces since Phase 1 (library `services.inspect_pcap`, CLI
+  `memdiver inspect-pcap`, `POST /api/pcaps/validate`, MCP `inspect_pcap`) but
+  was tracked by neither, so its four-surface parity and its MCP signature were
+  both unguarded. Both additions are pure tightenings — neither needs a
+  `KNOWN_PARITY_GAPS` or `_MCP_ALLOWED_OMISSIONS` entry.
+- The unsupported-cipher-suite path in `engine/resources/tls_pcap.py` was
+  promoted from `DEBUG` to `INFO`. Dropping a suite outside MemDiver's KDF/AEAD
+  table discards an entire TLS session, which at default log levels used to
+  leave no trace whatsoever. The same event is now also reported structurally —
+  see `skipped_sessions` under *Added*.
+- `ResourceOracle` logs at `INFO` when `max_challenges` actually truncates
+  (`max_challenges=N truncated M challenges to N`), so a capped run's
+  "0 confirmed" can never be read as full coverage.
+- **`records_returned` / `records_truncated` now count coverage through the same
+  gate the challenge emitter uses.** They were derived from the raw
+  application-data record totals, so a TLS 1.2 capture whose ChangeCipherSpec
+  is missing — a truncated capture start, a dropped packet, a CCS seen on only
+  one direction — reported *full* coverage while the oracle verified **zero**
+  records. TLS 1.2 record keys only take effect after their direction's CCS, so
+  that application data is not decryptable at all; the raw total was counting
+  ciphertext no challenge could ever reach. That is a false `false` on the one
+  field whose entire purpose is to stop a corpus number silently understating
+  itself, which makes it worse than no field. `TlsPcapResource` now has exactly
+  one gate per protocol version (`_tls12_gated` / `_tls13_gated`), shared by the
+  emitter and by `describe_capture`'s accounting, so the two cannot drift: the
+  report walks the same iterator the challenges come out of and counts what it
+  yields. The coverage number therefore also reflects the record cap *and* an
+  exhausted challenge budget, which is why `records_truncated` is now documented
+  as "some session returned fewer records than it saw, whatever the cause"
+  rather than as a statement about `max_records_per_direction`.
+  **Measured across all 2,598 real captures in the corpus the numbers are
+  unchanged** — every one carries a ChangeCipherSpec in both directions — so no
+  published figure was ever wrong. It was a latent hazard, and it now surfaces
+  as `records_returned: 0` plus an explained `skipped` entry instead of a
+  confident lie.
+- **`caps` now reports `max_challenges` as well, and the capture report gained
+  `challenges_available` / `challenges_returned` / `challenges_truncated`.**
+  Reporting only `max_records_per_direction` meant the *other* cap — the one
+  that truncates across sessions and can therefore starve a whole session — was
+  invisible in the arm step's own output: a run with `max_challenges=1` reported
+  full coverage. The key is always present and is `null` when uncapped, so
+  "uncapped" can never be read as "unreported". **This is a payload SHAPE
+  change** on `POST /api/pcaps/validate`, the CLI `inspect-pcap` command and the
+  MCP `inspect_pcap` tool: strictly additive, but a caller pinning the exact key
+  set of `caps` (or of the capture report) will see new keys.
+  The challenge counts are reported *separately from* the record counts, not
+  derived from them, because the two units do not convert: a TLS 1.3 record is
+  probed over a sequence-number window of up to 9 candidates
+  (`_TLS13_SEQ_WINDOW = 8`, plus the record's own index), so one record yields
+  several challenges. Across the corpus that works out at roughly **3.9
+  challenges per record** (48,546 challenges for 12,463 records) — unintuitive
+  enough to be worth a number, because it means a `pcap_max_challenges` of 50
+  buys only about **13 records** of verification, not 50. That ratio is exactly
+  why `challenges_available` had to be published: without it an operator sizing
+  a cap has no way to know what fraction of the capture the cap actually buys.
+- **Documented-reason correction: `inspect_pcap`'s `skipped_sessions` no longer
+  advertises `no_cipher_suite` and `short_random` as expected outcomes.** The
+  bundled dpkt cannot produce either: `TLSServerHello.unpack` falls back to
+  `get_unknown_ciphersuite` rather than leaving the suite unreadable (so the
+  code is always an int), and a ServerHello with a short random is rejected
+  outright during unpacking, surfacing as `no_server_hello`. Both checks
+  **remain in place** as defence against a different dpkt build — a caller
+  should still tolerate the two values, and they stay in the frontend's closed
+  `PcapSkipReason` union — but a UI or a corpus aggregate must not present them
+  as reasons it expects to see, and no test can produce one to pin.
+- **`RawDumpSource` now validates its `view` argument** on `size_for`,
+  `read_all`, `read_range`, `find_all` and `find_first`. `"vas"` and `"va"` are
+  accepted as aliases of `"raw"`, because a flat dump has no region table and
+  its raw and virtual views genuinely coincide; anything else raises
+  `ValueError`, as it already did on the MSL, gcore and regioned-raw sources.
+  Previously this one source accepted a **typo** silently and served raw-view
+  results, while the very same typo was a loud `ValueError` everywhere else — so
+  a corpus sweep mixing formats got silently format-dependent behaviour out of
+  one argument, and `RawDumpSource` backs every plain `.dump`/`.bin` in the
+  corpus. A caller that was passing a misspelled view and getting away with it
+  will now see the error it should always have seen.
+- **Capture classification gained a readability probe.** `stat()` succeeds on a
+  file the process cannot `open()` — mode `000`, a restrictive ACL, some
+  read-only mount quirks — so a capture nobody can read reported `"present"` and
+  inflated the corpus denominator, which is the exact overstatement the
+  three-state `capture_status` exists to prevent. Both
+  `RunDiscovery._find_capture` and `DatasetScanner._has_capture` now add one
+  `os.access(..., os.R_OK)` check, so the slow per-run resolution and the
+  stat-only fast scan still agree on every candidate; the fast scan's budget is
+  preserved (one extra syscall per candidate).
+
+- **The project database is now versioned, and an existing project file is
+  migrated in place (schema v1 -> v3).** A `.duckdb` written by any earlier
+  MemDiver carries no version marker at all, so `ProjectDB.open()` now creates
+  a `schema_meta` key/value table, reads `schema_version` out of it (a file
+  *without* that row is by definition v1), and brings the file forward to
+  `_SCHEMA_VERSION = 3` before it hands back a connection. **This rewrites the
+  user's own project file**, so it is worth stating exactly what it does. Whole
+  new tables arrive through `CREATE TABLE IF NOT EXISTS`: `schema_meta`;
+  `expected_secrets`, the *denominator* ledger holding one row per corpus run
+  and secret type the run's key log declares; `survival`, the *observation*
+  ledger at one row per dump and secret type; and `sweeps` / `sweep_units`, the
+  resume watermark for a corpus-scale sweep and the single documented exception
+  to this class's otherwise append-only rule (a unit row is updated in place as
+  it moves `pending` -> `running` -> `done`). New columns arrive through
+  `ALTER TABLE ... ADD COLUMN`: the corpus axes (`library`, `protocol_version`,
+  `library_version`, `version_axis`, `scenario`, `protocol`) on `projects`;
+  `phase`, `canonical_phase`, `run_number`, `library` and `run_id` on `dumps`;
+  those plus `protocol_version`, `library_version`, `scenario`, `run_dir`,
+  `keylog_path` and `pcap_path` on `analysis_runs`; `secret_type`, `kind`,
+  `method`, `dump_path`, `phase`, `canonical_phase`, `library`, `run_number`
+  and a deliberately **three-valued** `verified` (`NULL` = never verified,
+  `FALSE` = a verifier rejected it, `TRUE` = confirmed) on `findings`; and
+  `phase`, `canonical_phase`, `dump_id`, `dump_path`, `library_version`,
+  `scenario`, `run_number`, `method` and `value_hex` on `ground_truth`. A
+  migrated file ends up with the same column *order* as a freshly created one,
+  because both are generated from the same table description rather than
+  spelled out twice. Every added column is nullable or defaulted, which is what
+  makes the two compatibility decisions below defensible rather than merely
+  convenient:
+  - **The migration probes `duckdb_columns()`** for the columns a table already
+    has and emits an `ALTER TABLE` only for the ones genuinely missing, instead
+    of leaning on `ADD COLUMN IF NOT EXISTS`. That clause is not available
+    across the whole supported DuckDB range (`duckdb>=1.0.0`), so the shorter
+    spelling would have made the migration itself silently DuckDB-version
+    dependent — and the probe additionally gives the migration test something
+    to assert against, which `IF NOT EXISTS` does not.
+  - **A file written by a *newer* MemDiver warns and is used anyway**, for
+    reads *and* writes, with the newer columns ignored rather than dropped;
+    the stored version is left alone. Raising would lock an operator out of
+    their own project file over a difference that the nullable/defaulted rule
+    above already makes tolerable, and silently rewriting the version marker
+    downward would lose information the newer build put there.
+- **`survival` records an absence as a positive fact, and a missing row as "we
+  never looked" — and that distinction must not be optimised away.** The table
+  exists because `findings` structurally cannot express it: `findings` holds
+  what was found, so reading "no row" as "the secret was gone" turns every dump
+  nobody has scanned yet into a *confirmed* zeroization, which is precisely the
+  claim a survival analysis is supposed to earn. The contract is three-state:
+  `present = TRUE` means we looked and found it; `present = FALSE` means we
+  opened this dump, searched for this secret and it was gone; **no row at all**
+  means the cell was never attempted. `present` is therefore nullable with no
+  default, and a companion `status` column guards it — only
+  `status = 'searched'` requires a non-`NULL` `present` and only `'searched'`
+  counts toward `runs_attempted`; `'unreadable'` leaves `present` `NULL` (a
+  dump we could not open was not an observation), and `'error'` writes no row
+  at all. A `NULL` `present` is excluded by both `WHERE present` and
+  `WHERE NOT present`, so it can never quietly land on either side of a
+  published fraction.
+- **Both ledgers now have deterministic row identity, so a re-run or a resume
+  corrects a cell instead of duplicating it.** `survival` and
+  `expected_secrets` previously took a fresh uuid per row with no unique
+  constraint behind it, which meant a second pass over the same corpus wrote a
+  complete second copy of every observation *and* every denominator row. That
+  failure is invisible to the obvious sanity check: the invariant
+  `runs_found <= runs_attempted <= runs_expected` still holds with both sides
+  doubled, so the published fractions look untouched while the counts under
+  them are inflated. Row ids are now derived — blake3 over the
+  length-prefixed identity parts, matching the repo-wide hashing convention
+  rather than md5, because a collision here silently overwrites one
+  observation with another — and backed by real unique indexes
+  (`survival(sweep_id, dump_path, secret_type)` and
+  `sweep_units(sweep_id, unit_key)`). Writes upsert with
+  `ON CONFLICT ... DO UPDATE` rather than `DO NOTHING`, which is the
+  behavioural half of the change: a resume that *corrects* an observation —
+  a cell first written `present = FALSE` from a truncated read and then found
+  present — now wins, where `DO NOTHING` would have counted the corrected
+  write and discarded it. Only the observation columns are in the update list;
+  identity and axis columns never are, so an upsert can never move a row to a
+  different cell. If an index cannot be created the failure is recorded rather
+  than swallowed: `degraded_indexes()` reports it, the survival writer falls
+  back to a primary-key conflict target (naming an index that does not exist
+  as the arbiter is a bind error), and a non-empty result means the counts
+  behind the fractions are not publishable.
+  - **`add_survival_batch` now rejects an empty `dump_path` outright**
+    (`CapabilityError`, `INVALID_INPUT`), and this one is not theoretical.
+    `dump_path` is part of the cell's identity, so with it blank every row in a
+    batch hashes to the same handful of ids and the unique index collapses
+    them: a real corpus pass of **63,481 cells left 6 rows** in the table while
+    the writer cheerfully reported 63,481 written. A missing `sweep_id` is
+    rejected the same way and for the same reason. Both are new writer-level
+    rejections — a caller that was passing either as `""` and appearing to
+    succeed will now see an error, which is the point.
+- **`method` is a closed vocabulary, validated at every writer.** The permitted
+  values are `keylog_substring`, `consensus_search`, `brute_force` and
+  `oracle`, in increasing order of evidential strength, and they apply to
+  `findings.method`, `ground_truth.method` and `survival.method` alike. The
+  empty string is the only exemption and means "unclassified"; anything else,
+  including a non-string such as `None` or `0`, is rejected as a typed
+  `CapabilityError`. `add_findings_batch` validates the whole batch *before*
+  writing any row, so a bad method in the tail cannot leave a half-written
+  batch behind. This is a new rejection at the writers, so a caller that was
+  inventing its own method spelling will now be told.
+  - **A corpus survival pass may never claim decryption-backed provenance.**
+    The survival scan proves exactly one thing — that these key-log bytes are
+    or are not present in this dump — and it runs no decryption at all, so
+    labelling its rows `confirmed_by = 'pcap'` or `'oracle'` would pad the
+    proof ledger with claims nothing verified. The rule is enforced
+    structurally rather than by review: `survival` has no `confirmed_by`
+    column, and `add_survival_batch` restricts `method` to
+    `keylog_substring` alone. The two decryption-backed labels stay the
+    exclusive property of `record_ground_truth_run` and the pcap oracle path,
+    which is also why that method deriving its own value from `confirmed_by`
+    is not an oversight.
+- **`ProjectDB.persist_report` now files ground-truth labels by default
+  (`persist_ground_truth_labels` flipped from `False` to `True`) — a
+  behaviour change for every existing caller.** As opt-in, and with nothing in
+  the tree passing it, the W5 proof ledger was permanently empty in production:
+  a table whose entire purpose is to accumulate confirmed recoveries had no way
+  to accumulate anything. The flip is safe because only hits that already carry
+  `verified` or `confirmed` are written, so the ordinary run — no verifier, no
+  oracle, no capture — still adds exactly zero rows and the change is invisible
+  to it. What *does* change is that a verified run now writes to
+  `ground_truth` without being asked. The parameter is kept, so a caller that
+  genuinely wants a report persisted without its labels can still say so.
 
 ### Security
 - **`POST /api/analysis/export-keylog` contains `output_path` to the upload
@@ -106,6 +398,96 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/validate`, the "type a server-side path instead of uploading" flow
   documented in `docs/oracle/pcap_oracle.md` was broken: the capture could be
   run but never armed. Both endpoints now apply the same existence check.
+- **`build_oracle` rejected nothing and mis-read `max_challenges: 0` as
+  "uncapped".** The cap was read as `int(raw_cap) if raw_cap else None`, a
+  *truthiness* test, so a config asking for `0` challenges got the exact
+  opposite of the request — an unlimited run — while a negative value sailed
+  through into `challenges[:max_challenges]`, i.e. `challenges[:-1]`, silently
+  dropping the tail of the challenge list and logging the nonsense
+  `max_challenges=-1 truncated 37 challenges to -1`. The test is now
+  `is not None`, and a cap below 1 raises `ValueError` (matching the
+  unknown-`resource_type` raise beside it) rather than being reinterpreted: a
+  cap below 1 verifies nothing, so it could only ever turn a real recovered key
+  into an unexplained "0 confirmed". `app/tools_pipeline.brute_force`
+  additionally rejects both pcap caps as a typed `CapabilityError`
+  (`INVALID_INPUT`) so every surface reports it identically, but `build_oracle`
+  is the oracle-loader entry point and must not depend on that guard. Reachable
+  before only through a builtin-resource-oracle config, which is why it went
+  unnoticed.
+  The rejection now has tests of its own, which it shipped without:
+  `tests/test_resource_oracle.py` parametrises `0` and `-1` over
+  `test_build_oracle_rejects_a_challenge_cap_below_one` (asserting the raise
+  *and* that the message names the offending value), and
+  `test_build_oracle_distinguishes_an_absent_cap_from_a_cap_of_zero` pins the
+  actual behavioural difference against a throwaway registered resource type —
+  three challenges uncapped, one at `max_challenges=1` — because that is the
+  distinction the old truthiness test destroyed.
+- **`find_first` could report `None` for a needle that IS present.**
+  `mmap.find(sub)` defaults its start to the mapping's **current file
+  position**, not `0` — unlike `bytes.find`, which has no position at all — so
+  after anything that advances the mapping (`read_all()` is the common one) a
+  bare `buf.find(needle)` searches only the tail and returns `-1` for a needle
+  sitting before it. Reproduced on a real corpus dump: a TLS 1.3 traffic secret
+  at offset `585148` was found by `find_all` and reported **missing** by
+  `find_first` once `read_all()` had run — the worst possible failure for a
+  presence query whose whole job is to answer "is this secret in this dump at
+  all?" over ~170 GB. `find_all_offsets` was immune because it always passed an
+  explicit `start`; every `find_first` site now does the same
+  (`core/dump_io.py::find_first_offset` and
+  `core/dump_sources/gcore.py::_find_first_in_bytes`, the latter reading the
+  live mmap deliberately to avoid copying a multi-GB core, plus the explicit
+  `0` in gcore's VAS window walk). Every existing test opened a fresh source, so
+  the position was always `0` and the bug was invisible — the regression tests
+  now read the source first.
+- **`find_all_offsets(mmap, b"")` looped forever.** `mmap.find(b"", start)`
+  **clamps** an out-of-range `start` to the buffer length instead of returning
+  `-1` (on a 300-byte mapping, `mm.find(b"", 999)` is `300`), so the
+  `start = idx + 1` cursor can never escape the buffer and the loop appends the
+  same offset until memory runs out. `bytes.find` happens to terminate on the
+  same input, so the hang reproduced only on the mmap-backed sources
+  (`DumpReader`, and through it `RawDumpSource` / `MslDumpSource`) — precisely
+  the ones a corpus sweep uses. An empty needle now returns `[]`, and
+  `find_first_offset` returns `None` for the same input so the two can be
+  swapped freely: searching for nothing is a caller error, not a query with a
+  degenerate every-offset answer, and reporting offset `0` would let an empty
+  secret masquerade as a hit at the start of every dump in the corpus.
+- **`POST /api/architect/export` returned 200 with an uncompilable rule.** A
+  client-supplied `pattern` dict using the wrong key names produced
+  `$key = {  }` — an empty YARA hex string, which libyara rejects — and the
+  endpoint happily served it with HTTP 200, so the breakage only appeared when
+  the analyst fed the `.yar` to `yara`. The exporter's pattern validation now
+  surfaces as **400** (mirroring the 400 `/architect/generate-pattern` raises
+  for an unusable pattern), because `req.pattern` is free-form client input and
+  a malformed one is a bad request, not a server fault. The endpoint's tests
+  asserted only HTTP 200 — never that the rule they got back was usable — which
+  is why the empty hex string went unnoticed for so long; the export tests now
+  run every emitted rule through `yara.compile()`, and the new
+  `tests/test_yara_exporter_compiles.py` does the same for the exporter itself.
+
+- **Canonical phase labels could be assigned in the wrong chronological
+  order.** `PhaseNormalizer.normalize_run` sorted a run's dumps by the raw
+  timestamp *string* before handing out its generic canonical suffixes, and the
+  suffixes are handed out **positionally** — first dump gets the first label,
+  and so on. The timestamp's trailing microsecond field is captured by
+  `core.discovery.DUMP_PATTERN` as `\d+`, i.e. **variable width, not
+  zero-padded**, so a five-digit field sorts as text against a six-digit one
+  and lands in the wrong place: `..._90000_pre_abort` (0.090 s) sorts *after*
+  `..._606711_pre_shutdown` (0.607 s), because `"9" > "6"`. The consequence
+  would not have been cosmetic — `canonical_phase` is what corpus consumers
+  filter and group by, so a mis-ordered run would report one dump's survival
+  numbers under another dump's lifecycle phase. The sort key is now
+  `parse_phase_timestamp`, which splits the timestamp into a numeric
+  `(date, time, microseconds)` tuple and returns a sentinel `(-1, -1, -1)`
+  rather than raising for a shape it cannot parse — placing non-phased dataset
+  dumps (`gcore.core`, `gdb_raw.bin`) first, which is where the old string
+  ordering put their empty timestamp anyway. **This is a latent-correctness
+  fix, not a corrected result:** all 18,917 dumps in the measured corpus carry
+  six microsecond digits, so lexicographic and chronological order agree on
+  every one of them and no shipped figure changes. The parse now lives in
+  `core.phase_normalizer` and is re-exported by `engine.sweep_plan` (along with
+  the sentinel) so labelling order and emission order cannot drift apart — the
+  previous copy in `engine` documented a fix it could not deliver, because the
+  normalizer went on sorting by the raw string.
 
 ### Added
 - **PCAP verification oracle** — a first-party *trusted* oracle that proves a
@@ -215,6 +597,349 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README overhaul — accurate capability counts (8 algorithms, 20 CLI
   subcommands, 12 FastAPI routers, 15 MCP tools), Apache-2.0 badge, MCP
   one-line wiring snippet, thumbnail gallery linking into the docs site.
+- **`brute_force` gained `pcap_max_records` / `pcap_max_challenges`, wired on
+  all four surfaces** — library
+  `tools_pipeline.brute_force(pcap_max_records=…, pcap_max_challenges=…)`, CLI
+  `--pcap-max-records` / `--pcap-max-challenges`, `POST /api/pipeline/run`
+  (both validated `>= 1`), and the MCP `brute_force` tool. `None` on every
+  surface preserves today's behaviour exactly: 16 application-data records per
+  direction, no total challenge cap. These two knobs already existed inside
+  `TlsPcapResource` (`max_records_per_direction`) and the builtin resource
+  oracle's config schema (`max_challenges`), but **no surface could reach
+  them**: the pcap branch of `brute_force` built its `oracle_config` dict from
+  scratch with only `resource_type` / `pcap` / `client_random`, and the pcap
+  branch ignores `oracle_config_path` entirely, so there was not even a TOML
+  back door. The consequence was a capture that could be silently under-read
+  with no way to widen it — a chatty session contributing only its first 16
+  records per direction, and a `verified_count: 0` that said nothing about the
+  rest of the capture. Only a cap the caller actually supplied is forwarded, so
+  an unset knob leaves the resource and oracle defaults untouched rather than
+  re-asserting them. **A challenge cap truncates *across* sessions, not per
+  session** (`TlsPcapResource.challenges()` yields session-by-session and
+  `ResourceOracle` keeps the first N of the flattened sequence), so a small cap
+  on a multi-session capture can be consumed entirely by the first session in
+  parse order — pair it with `--tls-client-random` when you want a bounded run
+  that still targets a chosen session. Documented in
+  `docs/oracle/pcap_oracle.md`.
+- **`inspect_pcap` (and therefore `POST /api/pcaps/validate`, which returns the
+  producer's payload verbatim) now also reports what the parse *dropped*:**
+  `skipped_sessions`, `flow_count`, `caps` and `records_truncated`, plus
+  `app_records_seen` / `records_returned` on each kept session. All are purely
+  additive — every key the producer returned before is unchanged, including a
+  zero-session capture's `session_count: 0`. The motivation is that a TLS
+  session negotiating a cipher suite outside MemDiver's KDF/AEAD table used to
+  vanish with nothing but a `DEBUG` log line, so at corpus scale a "0 confirmed"
+  result was indistinguishable from "we never looked at 40 % of the capture".
+  Each `skipped_sessions` entry carries a machine-readable `reason` —
+  `no_client_hello`, `no_server_hello`, `no_cipher_suite`, `short_random`, or
+  `unsupported_cipher_suite`, plus the two added below
+  (`no_change_cipher_spec`, `client_random_mismatch`); see *Changed* for why
+  `no_cipher_suite` and `short_random` are defensive guards rather than
+  expected outcomes — the directional `flow` it was seen on, and
+  reason-specific context (the IANA `cipher_suite` code, or the two random
+  lengths). `flow_count` gives `session_count` a denominator, so "1 session out
+  of 40 flows" is no longer reported the same way as "1 out of 2".
+  `records_truncated` is true when `caps.max_records_per_direction` clipped a
+  direction, i.e. some session's `records_returned` is below its
+  `app_records_seen` — widened before release to fire on *every* cause of
+  under-coverage, not the record cap alone; see *Changed*.
+  The accounting lives on the new
+  `TlsPcapResource.describe_capture()`, built *around* the frozen
+  `describe_sessions()` (which the web router and the React frontend read)
+  rather than by widening it, and it is reset on every `_parse_sessions()` call
+  so a drop log always describes exactly one pass.
+- **Two further `skipped` reasons, neither of which drops a whole session.**
+  `no_change_cipher_spec` reports a TLS 1.2 direction whose application data no
+  ChangeCipherSpec unlocks, carrying `direction` and that direction's own
+  `app_records_seen`; the session is **kept**, but its records are uncoverable,
+  so this is what turns a bare `records_returned: 0` into an explained one.
+  `client_random_mismatch` closed a real gap rather than adding polish:
+  `TlsPcapResource.challenges()` skips every session that fails the
+  `client_random` filter, while `describe_capture` counted those same sessions
+  as fully covered — and `builtin_oracle` passes that filter through today, so
+  the inconsistency was reachable from a real run. The entry carries the hex
+  `client_random` of the session that was passed over, so the report says
+  *which* one. Both are emitted from the shared session filter
+  (`_excluded_by_filter`), which is now the single place that decides whether a
+  session is in scope, so the stream and the report cannot disagree about it.
+- `DatasetMeta.library_version` — an optional `library_version` key in a run's
+  `meta.json`, naming the **build** of the library under test (e.g. `"3.0.13"`).
+  Forward-compatibility only: today's corpus holds each library at one build, so
+  no run emits it and every axes record resolves to `"unknown"`. It is
+  load-bearing anyway, because `core/corpus_axes.py` reads exactly this
+  attribute to decide which dimension the corpus varies (`version_axis`), and
+  the attribute **did not exist** — so the documented generic-version-axis hook
+  could never fire, and a future multi-build corpus would have silently
+  collapsed every build into `"unknown"` instead of splitting on it. That is a
+  statistics-merging bug rather than a missing feature, which is why the field
+  is added now rather than when the second build appears.
+- The dataset scan reports a packet-capture inventory: `runs_with_capture` (how
+  many runs own a capture) and `captures` (per-`"ver/scenario/library"` counts)
+  ride the existing `scan_dataset` payload via
+  `serialize_dataset_info`, so there is no new producer and no new capability.
+  Per-run, `RunDirectory` gained `capture_path` and a **three-state**
+  `capture_status` (`"present"` / `"absent"` / `"unreadable"`), resolved by the
+  new `RunDiscovery._find_capture` and surfaced on
+  `GET /api/dataset/runs` as `capture: {path, status}`. Three states rather than
+  an `Optional[Path]` because a zero-byte or un-stat-able capture must not be
+  counted as present: it is a corpus defect, and folding it into "absent" hides
+  it while folding it into "present" overstates the number of runs that can
+  actually be proven against their own capture. Resolution prefers a `capture`
+  relative path declared in the run's `meta.json` (new, forward-compatible
+  field — no corpus emits it yet) over the hardcoded `run_data/traffic.{pcap,
+  pcapng,cap}` probe; a declared path that is absolute or escapes the run
+  directory is logged and ignored, since `meta.json` is corpus-authored data and
+  must not be able to point the scanner at an arbitrary file. Like
+  `load_run_meta`, the probe never raises — scan paths have to tolerate partial
+  datasets.
+- `find_first_offset()` (`core/dump_io.py`), `DumpReader.find_first()`, a
+  `find_first()` on every built-in dump source (raw, `.msl`, gcore, the
+  regioned base) and the tolerant module-level `find_first_in()`
+  (`core/dump_source.py`) — presence-only byte search with an early exit, for
+  the corpus-scale question "is this secret in this dump at all?" over ~170 GB
+  of dumps, where `find_all`'s scan-to-EOF is pure waste. **Design rationale,
+  recorded here and not only in a code comment: `find_first` is deliberately
+  NOT a member of the `DumpSource` Protocol.** That Protocol is
+  `runtime_checkable`, and such a check verifies method *presence*, so adding a
+  member would instantly make every duck-typed or third-party source registered
+  via `register_dump_source()` fail `isinstance(obj, DumpSource)` — a silent
+  break in third-party code that never changed. A default body would not help
+  either: Protocol defaults are inherited only by explicit subclasses, and the
+  isinstance check still only looks at attribute presence. Callers therefore go
+  through `find_first_in(source, needle, view=…)`, which uses the source's own
+  `find_first` when present and otherwise falls back to the first element of
+  `find_all`. `view` is forwarded only when the caller supplies one, so each
+  implementation keeps its own default (`"raw"` for raw/regioned sources,
+  `"vas"` for `.msl`). The `.msl` implementation mirrors `find_all`'s
+  per-captured-run semantics exactly, including the existing limitation that a
+  needle straddling two captured runs is reported by neither.
+- `core/corpus_axes.py` — the canonical corpus-axis vocabulary: the frozen
+  `CorpusAxes` record plus `axes_from_run_dir()`, `axes_from_dump_path()` and
+  `with_canonical_phase()`. Every corpus-scale consumer needs to agree on what a
+  dump is an instance of (protocol, protocol version, library, library build,
+  scenario, run, lifecycle phase); historically each one re-derived that from
+  the path with its own regex and its own spelling of the field names, so this
+  module derives it exactly once and nothing invents a second spelling.
+  Resolution walks *up* from the run directory and cross-checks the version
+  encoded in the run directory name against the protocol directory prefix in
+  `core.protocols.REGISTRY`; a path that does not conform returns `None` rather
+  than raising, which callers read as "not a corpus run". Two design points are
+  recorded in the module: every record carries both a `library_version` and a
+  `version_axis` label naming *which* dimension the corpus varies (today always
+  `protocol_version`, since each library is held at one build), so a future
+  multi-build corpus needs no consumer change; and `canonical_phase` is
+  deliberately left **empty** by both path parsers, because it is not a property
+  of a single path — `PhaseNormalizer` derives it from the set of *sibling*
+  dumps in the run, so guessing it from a filename would make it a mutating
+  identity key that silently splits or merges corpus statistics when an
+  unrelated sibling appears. Only a caller that has already run the normalizer
+  over the whole run may set it, via `with_canonical_phase()`.
+- `engine/yara_scan.py` — compiles a MemDiver-emitted YARA rule and scans a dump
+  source with it, closing the emit-but-never-run loop (the only `yara.compile`
+  in the tree previously lived inside the *generated* Volatility3 plugin
+  template and was never executed in-process). Exposes `compile_rules()` with a
+  content-addressed rule cache, `scan_source()` / `scan_chunked()`,
+  `rule_names()`, `max_pattern_length()` and `RuleMatch` / `ScanResult` records
+  that lift the `key_offset` / `key_length` metas onto every hit. Two scan
+  strategies are chosen by dump format: a plain raw dump is scanned by handing
+  libyara the file path (for a raw dump the file offset *is* the default view
+  offset, so libyara's own zero-copy mapping is both correct and fastest), while
+  every other format (`.msl`, gcore, regioned raw) is scanned chunk-by-chunk
+  through `read_range` because those bytes must be decrypted and/or
+  VAS-projected first — for a gcore core the file offset is not the VAS offset,
+  and for an encrypted `.msl` the on-disk bytes are not the plaintext at all.
+  The module does no scoring of its own.
+- `engine/truth_labels.py` — the truth-label locators, keeping the two available
+  truth sources explicit and visibly distinct via `TruthInterval.source`.
+  `locate_keylog_truth()` is the **authoritative** set: every corpus run ships a
+  `keylog.csv` listing every secret that existed in that TLS session, so the
+  true byte offsets are computable exactly by substring search and the truth set
+  is complete by construction — a detector that misses a key is genuinely
+  charged a false negative. `ledger_truth()` reads the DuckDB `ground_truth`
+  table and is **corroboration only**: it is opt-in and therefore sparse, and it
+  only ever contains offsets some earlier sweep already visited, so it is
+  stride-dependent and recall measured against it is silently *inflated*. Both
+  functions are pure compute — reading the keylog and opening the dump stay the
+  caller's job. Written rather than reusing `DumpSearcher.search_secrets()`
+  because that helper is `DumpReader`-based and only ever sees the *raw* byte
+  view, which would mis-locate truth for the `.msl` VAS projections scanners
+  actually run against.
+  - **A ledger truth interval whose extent nothing attests is dropped, and a
+    length the key bytes refute loses to the key.** This is not tidiness: a
+    zero-length truth is actively corrupting, because
+    `engine.detector_metrics`'s containment test
+    (`start <= t_start and t_start + length <= end`) is satisfied for
+    `length == 0` by *any* match window covering the start — so one junk row
+    counts as a covered truth **and** promotes the match to a true positive,
+    inflating recall and precision to 1.0 at once. `ledger_truth()` therefore
+    drops rows with no offset and rows resolving to a non-positive length, and
+    reports the drop count at `WARNING` rather than quietly shrinking the
+    truth set. Where a row carries key bytes, those bytes decide the extent:
+    an absent `length` becomes the key width, and a `length` that disagrees
+    with it is overridden — the row's `length` is bookkeeping, the key it
+    carries is evidence. An explicit `length = 0` beside a real key is
+    recovered at key width rather than discarded. Only a row that has neither
+    key bytes nor a usable `length` is dropped. This matters downstream
+    because corroboration keys on `(start, length)`: a `length = 48` row
+    wrapped around a 32-byte key could never match the key log's
+    `(start, 32)` interval, so the corroboration was silently lost and the
+    ledger-only truth count correspondingly inflated.
+- `engine/detector_metrics.py` — interval-based precision/recall for an emitted
+  detector, scoring match *windows* against known-true key *intervals* under
+  three criteria (`containment`, `key_offset` with a byte tolerance, and `exact`
+  = zero tolerance, whose relation is a subset of `key_offset`'s). Deliberately
+  a new metric type rather than a widening of `engine/convergence.py`'s
+  `DetectionMetrics`, which would be wrong three ways: it is an exact set
+  intersection over individual byte offsets, so it scores `tp=0` on every
+  genuine window match; its byte-set semantics makes precision a property of
+  how much padding the emitted window carries rather than of whether the key was
+  found; and it is frozen into a `ConvergencePoint` the web surface reads.
+  Because the match/truth relation is genuinely many-to-many, precision is
+  match-indexed and recall is truth-indexed — both bounded by 1.0 by
+  construction, and not recombinable into a single confusion matrix — with
+  `max_matches_per_truth` (fan-in) and `max_truths_per_match` (fan-out)
+  published alongside so a recall of 1.0 reached by one enormous window cannot
+  be laundered into a flattering score. A match carrying no `key_offset` meta
+  makes no positional claim and is excluded from the positional criteria rather
+  than charged as a false positive.
+- `engine/sweep_plan.py` — the work units and idempotency digests for a
+  **resumable** full-corpus sweep (2,600 runs / 18,917 dumps / ~170 GB cannot be
+  one non-restartable process). Provides a lazy `enumerate_units()`, a cheap
+  separate `count_units()` for a progress denominator, and the three digests
+  that make skip-if-already-done *correct* rather than merely plausible:
+  `unit_key()`, `inputs_digest()` (notices the inputs changed) and
+  `config_digest()` (notices the settings changed). The unit is **one dump
+  file** — the granularity at which a scan result exists is the granularity at
+  which work can be skipped. Two identity decisions are documented at length:
+  `canonical_phase` is **not** part of the unit key, because `PhaseNormalizer`
+  derives it positionally from a run's *sibling* dumps, so adding one unrelated
+  file would silently re-key every already-scanned dump in that run and leave
+  orphan ledger rows (the `dump_filename` used instead already carries the raw
+  phase plus a microsecond timestamp and depends on nothing but that one file);
+  and `corpus_id` is a *label* (`Path(root).name`) rather than a path or a
+  realpath hash, so copying the corpus to another drive or mounting it elsewhere
+  does not invalidate all 18,917 units for bytes that never changed — the
+  absolute root is still recorded, as informational data.
+  - The unit-key format is `u2`: `library_version` joined the key, between
+    `library` and `run_number`, because a future multi-build corpus varies the
+    build *within* a library and `openssl_run_13_1` compiled against two
+    OpenSSL releases would otherwise collide on one key and one ledger row.
+    Every run in today's corpus resolves to the unknown-version sentinel, so
+    the collision cannot occur yet — which is exactly why the bump is free
+    now and would be a ledger migration once 18,917 rows exist under `u1`.
+  - `normalize` is folded into `config_digest` alongside `expand_keys`,
+    `algorithms`, `keylog_filename`, `template_name`, `min_secret_len`, the
+    MemDiver version and the sweep schema version. It has to be: it
+    re-resolves a run's dumps through the phase normalizer before scanning, so
+    it changes *which* dump a phase request lands on and therefore what the
+    sweep finds — and it is deliberately not in the unit key, since the key
+    names a concrete dump file rather than a phase request. Absent from both,
+    flipping it would have left a resumed sweep skipping every unit as
+    "already done" against results produced under the other setting. Purely
+    operational knobs (`workers`, `use_processes`, `max_inflight`,
+    `fsync_policy`, `output_dir`) are ignored by name rather than by accident,
+    so changing the worker count does not invalidate a half-finished sweep;
+    an unrecognised key is ignored with a warning.
+  - `count_units()` is genuinely cheap now: a directory listing per run plus
+    one `RunDiscovery.dump_file_for` call per filename, and that seam reads no
+    file. No `load_run_directory`, no key-log parse, no `meta.json` probe, no
+    capture probe — the axis resolution it used to do reached the filesystem
+    twice per run, roughly 5,200 syscalls over the measured corpus, to recover
+    a `library_version` that is unknown for every run in it and a keylog path
+    a count cannot use. An unrecognised protocol directory drops its whole
+    subtree unlisted. A `canonical_phases` filter is the one case needing more
+    than a filename, and it runs the normalizer over the names already in
+    hand — pure CPU, still no extra I/O.
+  - The count and the enumeration are admitted by the **same** rule, through
+    the public `RunDiscovery.dump_file_for` seam, and share one directory
+    walk whose only parameter is how a run directory becomes its axes. They
+    previously disagreed: the counter kept a local copy of the rule that
+    tested `name.endswith(suffix)` over `DATASET_DUMP_SUFFIXES`, whose entries
+    carry a **leading dot**, while discovery matches without one — so a bare
+    `gdb_raw.bin` / `lldb_raw.bin` was enumerated but never counted. Unfiltered
+    that merely under-counts; under a `canonical_phases` filter the drift
+    *inverts*, because the filter re-parses the short name list and the
+    denominator then promises units the enumeration never yields.
+- `frontend/src/api/pipeline.ts` — the typed client now carries the fields the
+  backend added, so the operator can actually see an under-read capture in the
+  Arm / re-validate UI, which is the one place it matters: `PcapValidateResult`
+  gained `skipped_sessions` (typed by a closed `PcapSkipReason` union),
+  `flow_count`, `caps` and `records_truncated`; `PcapSession` gained
+  `app_records_seen` / `records_returned`; and `PipelineRunRequest` gained
+  `pcap_max_records` / `pcap_max_challenges`. All new fields are optional, so
+  nothing that already built a request or read a response breaks.
+  - Caught up with the accounting changes above: `PcapCaps` gained
+    `max_challenges` (`number | null`), `PcapSkipReason` gained
+    `no_change_cipher_spec` and `client_random_mismatch`, `PcapSkippedSession`
+    gained the reason-specific `direction` / `app_records_seen` /
+    `client_random` context, `PcapSession` gained `challenges_available` /
+    `challenges_returned`, and `PcapValidateResult` gained the capture-level
+    `challenges_available` / `challenges_returned` / `challenges_truncated`.
+    Runtime was never affected — extra JSON keys are simply ignored — but a
+    field the client has no type for is a field the operator-facing UI cannot
+    render, and a **closed** union missing two live backend values is worse
+    than that: narrowing on `reason` would silently fail to match the two rows
+    that explain a `records_returned: 0`. The doc comments say which reasons are
+    reachable from the arm response at all (`client_random_mismatch` needs a
+    pinned resource, which the arm producer does not do) and which two are
+    defensive guards, so the optionality is informative rather than a blanket
+    hedge. `tests/frontend/api/pipeline.test.ts` pins the seven reason
+    literals against the Python call sites and asserts a representative payload
+    for the missing-ChangeCipherSpec and challenge-capped cases.
+
+- `parse_keylog_with_status()` in `core/keylog.py` — the same parse as
+  `KeylogParser.parse`, reporting *why* the result looks the way it does.
+  `parse` swallows every failure and returns a possibly-empty list, which makes
+  an unreadable key log indistinguishable from a session that genuinely logged
+  nothing — and downstream that difference is load-bearing, because a survival
+  sweep renders "zero secrets available" as *not observed*, the same cell a
+  real post-KeyUpdate gap produces. A wholly corrupted key log therefore used
+  to report clean. The new `KeylogParseResult` carries a status from a closed
+  four-value vocabulary in increasing severity order — `ok` (read end to end,
+  every secret row well formed), `partial` (secrets recovered but content was
+  lost: a malformed row, or an error part-way through), `unreadable` (present
+  but nothing recoverable — no CSV header, no `line` column, or a failure
+  before the first secret), `missing` (no such file) — alongside `rows_read`,
+  `rows_malformed` and `secrets_available`. Two details are deliberate. **An
+  unknown secret type is malformed, not filtered:** the type token is checked
+  against the whole protocol registry, never against the caller's template, so
+  a type the registry does not know is a row nothing can ever read and is
+  counted as damage, while a type the registry knows but the caller's template
+  excludes was filtered on purpose and leaves the status `ok`. And an abort
+  part-way through the file charges the row in flight, so `rows_malformed` is
+  never a reassuring `0` beside a truncated file; both counters are documented
+  as lower bounds. **`KeylogParser.parse` is unchanged for its existing
+  callers** — it delegates here and returns `.secrets` — including its exact
+  log surface: it passes `log_structure_warnings=False` so the new structural
+  diagnostics stay at `DEBUG` on that path and only the two historical
+  `WARNING`s remain. That matters because `parse` runs once per run over a
+  multi-thousand-run corpus, where a systematically headerless corpus would
+  otherwise emit one new warning per run from a path that was always quiet.
+  The status is still returned either way. On the measured corpus the parse is
+  clean (2,598/2,598 headers exactly `id,line`, 7,790/7,790 secret lines
+  exactly three fields, zero malformed rows), so this costs nothing today — it
+  is what keeps that true.
+- `core/artifact_util.atomic_write_text()` — the `unique tmp + os.replace`
+  primitive lifted out of `api.services.task_manager.TaskManager._persist`, so
+  the task manager and the sweep ledger share one implementation instead of
+  growing a second copy. It lives in `core/` rather than `api/` specifically
+  because `app/` — where the sweep ledger writes its `manifest.json` — must not
+  import `api/`. Three properties are load-bearing and documented as such: the
+  tmp name is unique **per write** (a shared `<name>.tmp` let two writers
+  interleave into torn output, or made the second `os.replace` raise
+  `FileNotFoundError` because the tmp had already been moved), `os.replace`
+  onto the final path is atomic on POSIX and Windows so a reader sees the old
+  file or the new one and never a partial one, and cleanup catches
+  `BaseException` rather than `Exception` so a `KeyboardInterrupt` or a worker
+  cancellation mid-write leaves no stray tmp behind. It deliberately does
+  **not** `fsync`, matching the original: it guards against a *torn* file, not
+  against power loss, and fsyncing every record write would serialise the hot
+  progress-drain path on disk latency. It is equally deliberately not for large
+  append-only files — it rewrites the whole file every call, so appending to a
+  growing `results.jsonl` this way would be O(n^2) and push roughly 450 GB of
+  writes over a 30,000-line sweep. `TaskManager.load_from_disk`'s startup sweep
+  now removes both the legacy fixed `record.json.tmp` and the per-write
+  `record.json.<hex>.tmp` spelling.
 
 ### Deferred follow-ups
 - **`user_regex` confidence calibration** —

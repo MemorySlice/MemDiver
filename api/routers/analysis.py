@@ -14,6 +14,7 @@ from memdiver.api.dependencies import (
     task_manager_or_503 as _task_manager_or_503,
 )
 from memdiver.api.models import (
+    AnalysisCandidatesRequest,
     AnalysisRunResponse,
     AnalyzeFileRequest,
     AnalyzeRequestAPI,
@@ -124,6 +125,49 @@ def run_consensus(
     }
 
 
+@router.post("/candidates")
+def analysis_candidates(req: AnalysisCandidatesRequest):
+    """Rank candidate regions across N dumps — with NO oracle and no capture.
+
+    The exploratory path the web UI previously could not reach at all: the only
+    filter form lived inside the Pipeline wizard, which hard-refuses to run
+    without an oracle or a pcap (``POST /api/pipeline/run``). That guard is
+    correct for *that* flow, which exists to drive a brute force, so this is a
+    separate route rather than a loosening of it — an analyst who cannot yet
+    confirm a key still gets a ranked list to look at.
+
+    Thin HTTP adapter over :func:`memdiver.app.tools_pipeline.analyze_candidates`,
+    the same producer the CLI ``analyze-candidates`` command and the MCP
+    ``analyze_candidates`` tool route through. Synchronous, like ``POST
+    /consensus`` beside it and for the same reason: the result is a region list
+    a human is waiting to read, not a long-running sweep with artifacts.
+
+    Deliberately NO ``try/except``: a ``CapabilityError`` out of the producer is
+    translated by the app's single global handler (``api.main``), which is what
+    keeps the error contract identical to every other producer-backed route.
+    """
+    from memdiver.app.tools_pipeline import analyze_candidates
+
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
+    return analyze_candidates(
+        dump_paths=list(req.dump_paths),
+        classes=req.classes,
+        min_variance=req.min_variance,
+        min_region=req.min_region,
+        max_region=req.max_region,
+        alignment=req.alignment,
+        block_size=req.block_size,
+        density_threshold=req.density_threshold,
+        entropy_window=req.entropy_window,
+        entropy_threshold=req.entropy_threshold,
+        order=req.order,
+        max_returned=req.max_returned,
+        normalize=req.normalize,
+        project_id=req.project_id,
+        key_material=km,
+    )
+
+
 @router.get("/consensus/range")
 def consensus_range(
     consensus_id: str,
@@ -165,7 +209,7 @@ def consensus_va_range(
 ):
     """Per-byte 4-state classifications for one dump's virtual-address window.
 
-    For native-MSL consensus the variance/classification arrays live in an
+    For an ALIGNED consensus the variance/classification arrays live in an
     aligned-slab coordinate, not a viewable offset. This maps a dump's VA
     window (``va``..``va+length``) back to those slab indices so the hex
     viewer's ``va`` view can paint the overlay on the correct bytes. Entries
@@ -178,7 +222,11 @@ def consensus_va_range(
     if cm.msl_layout is None:
         raise HTTPException(
             status_code=400,
-            detail="VA range is only available for native-MSL consensus",
+            detail=(
+                "VA range is only available for an aligned consensus "
+                "(module-offset or virtual-address). This build used raw file "
+                "offsets, which carry no virtual addresses to range over."
+            ),
         )
     dump_index = cm.dump_index_for_path(dump_path)
     if dump_index < 0:
@@ -199,7 +247,7 @@ def consensus_va_overview(
 
     Feeds the variance minimap: per-bin fraction of *changing* bytes
     (class > invariant) and *high*-variance bytes (key-candidate), plus the
-    peak class level. Only meaningful for native-MSL consensus.
+    peak class level. Only meaningful for an ALIGNED consensus.
     """
     built = manager.get(consensus_id)
     if built is None:
@@ -208,7 +256,11 @@ def consensus_va_overview(
     if cm.msl_layout is None:
         raise HTTPException(
             status_code=400,
-            detail="VA overview is only available for native-MSL consensus",
+            detail=(
+                "VA overview is only available for an aligned consensus "
+                "(module-offset or virtual-address). This build used raw file "
+                "offsets, which carry no virtual addresses to range over."
+            ),
         )
     dump_index = cm.dump_index_for_path(dump_path)
     if dump_index < 0:

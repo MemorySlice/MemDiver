@@ -1,12 +1,14 @@
 """RunDiscovery and DatasetScanner - navigate directory structure to find runs and dumps."""
 
 import logging
+import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
-from .dataset_metadata import load_run_meta
+from .dataset_metadata import DatasetMeta, load_run_meta
 from .models import DumpFile, RunDirectory
 from .keylog import KeylogParser
 from .phase_normalizer import PhaseNormalizer
@@ -39,6 +41,15 @@ DATASET_DUMP_SUFFIXES = (
 RUN_DIR_PATTERN = re.compile(
     r"^(.+?)_run_(\d+)_(\d+)$"
 )
+
+# A corpus run owns its own packet capture, stored in a sibling subdirectory of
+# the dumps. ``load_run_directory`` only iterates *files*, so the capture is
+# invisible to dump discovery and is probed explicitly by ``_find_capture``.
+CAPTURE_SUBDIR = "run_data"
+
+# Ordered candidates: a tuple (not a set) so the first match is deterministic
+# when a run happens to carry more than one capture flavour.
+CAPTURE_FILENAMES = ("traffic.pcap", "traffic.pcapng", "traffic.cap")
 
 
 def _infer_dump_kind(path: Path) -> str:
@@ -181,15 +192,159 @@ class RunDiscovery:
                         run.secret_source = "msl_hints"
 
         # Attach per-run meta.json (None when absent — legacy runs are ok).
-        run.meta = load_run_meta(run_path)
+        # Loaded BEFORE the capture probe: a corpus may declare its capture
+        # location in meta.json, and ``_find_capture`` prefers that declaration
+        # over the hardcoded filename probe.
+        #
+        # load_run_meta downgrades a malformed meta.json to None but starts with
+        # ``Path.is_file()``, which only swallows ENOENT/ENOTDIR/EBADF/ELOOP --
+        # EACCES (a mode-000 run dir) and ENAMETOOLONG still propagate. A single
+        # unreadable run must be skipped, not abort a whole corpus sweep.
+        try:
+            run.meta = load_run_meta(run_path)
+        except OSError as exc:
+            logger.warning("Failed to read meta.json for run %s: %s", run_path, exc)
+            run.meta = None
+
+        # Attach the run's own packet capture (three-state; never raises).
+        run.capture_path, run.capture_status = RunDiscovery._find_capture(
+            run_path, run.meta
+        )
 
         logger.debug("Loaded run %s: %d dumps, %d secrets (%s)", run_path.name, len(run.dumps), len(run.secrets), run.secret_source)
 
         return run
 
     @staticmethod
+    def _find_capture(
+        run_path: Path, meta: Optional[DatasetMeta] = None
+    ) -> Tuple[Optional[Path], str]:
+        """Locate the run's packet capture.
+
+        A ``meta.json`` that declares a ``capture`` relative path is tried
+        first, so a corpus can name a capture this module has never heard of;
+        the hardcoded ``CAPTURE_SUBDIR`` x ``CAPTURE_FILENAMES`` probe follows.
+
+        Returns ``(path, status)`` where status is one of ``"present"``,
+        ``"absent"`` or ``"unreadable"``. A zero-byte or un-stat-able capture
+        reports ``"unreadable"`` (with its path) rather than ``"absent"`` so a
+        corpus denominator is never silently deflated.
+
+        A ``"present"`` candidate ALWAYS wins over an earlier unusable one:
+        every candidate is examined, and an ``"unreadable"`` verdict is only
+        returned when no candidate is usable. Returning on the first non-absent
+        verdict instead would let a zero-byte ``traffic.pcap`` both discard a
+        perfectly good ``traffic.pcapng`` and desynchronise this function from
+        :meth:`DatasetScanner._has_capture` (which skips the empty file and
+        counts the run), inflating ``DatasetInfo.runs_with_capture`` above the
+        number of runs that can actually be proven against their own traffic.
+
+        Never raises: like :func:`core.dataset_metadata.load_run_meta`, scan
+        paths must tolerate partial datasets, so an :class:`OSError` is logged
+        and downgraded.
+
+        NOTE: :meth:`DatasetScanner._has_capture` intentionally knows only the
+        hardcoded probe -- the fast scan is stat-only and must not read a
+        ``meta.json`` per run across thousands of runs. The two therefore agree
+        on every corpus that uses the conventional layout, and a corpus that
+        relocates its capture via ``meta.capture`` is found by the per-run load
+        (which every consumer of ``capture_path`` goes through) while the fast
+        scan's ``runs_with_capture`` counter under-counts it.
+        """
+        capture_dir = run_path / CAPTURE_SUBDIR
+        declared = RunDiscovery._declared_capture_path(run_path, meta)
+        candidates = [capture_dir / name for name in CAPTURE_FILENAMES]
+        if declared is not None:
+            candidates.insert(0, declared)
+
+        unusable: Optional[Tuple[Path, str]] = None
+        for candidate in candidates:
+            status = RunDiscovery._classify_capture(candidate)
+            if status == "present":
+                return candidate, status
+            if status is not None and unusable is None:
+                # Remember the first unusable capture but keep looking: a later
+                # candidate may be a capture we can actually read.
+                unusable = (candidate, status)
+        if unusable is not None:
+            return unusable
+        return None, "absent"
+
+    @staticmethod
+    def _declared_capture_path(
+        run_path: Path, meta: Optional[DatasetMeta]
+    ) -> Optional[Path]:
+        """Resolve ``meta.capture`` against the run dir, or ``None``.
+
+        The declaration is corpus-authored data, so an absolute path or one
+        escaping the run directory is rejected (logged, then ignored) instead of
+        letting a meta.json point the scanner at an arbitrary file.
+        """
+        if meta is None or not meta.capture:
+            return None
+        relative = Path(meta.capture)
+        if relative.is_absolute() or ".." in relative.parts:
+            logger.warning(
+                "Ignoring non-relative capture %r declared by %s",
+                meta.capture,
+                run_path / "meta.json",
+            )
+            return None
+        return run_path / relative
+
+    @staticmethod
+    def _classify_capture(candidate: Path) -> Optional[str]:
+        """Classify one capture candidate, or ``None`` to keep searching.
+
+        ``None`` means "not a capture here" (missing, or not a regular file);
+        the caller then tries the next candidate. Never raises.
+        """
+        try:
+            info = candidate.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as exc:
+            logger.warning("Failed to stat capture at %s: %s", candidate, exc)
+            return "unreadable"
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_size == 0:
+            logger.warning("Zero-byte capture at %s", candidate)
+            return "unreadable"
+        if not os.access(candidate, os.R_OK):
+            # ``stat()`` succeeds on a file the process cannot OPEN (mode 000,
+            # a restrictive ACL, a read-only mount quirk), so without this a
+            # capture nobody can read reported ``"present"`` -- overstating the
+            # corpus denominator, which is precisely what the three-state status
+            # exists to prevent. One extra syscall, so the stat-only fast-scan
+            # budget is preserved.
+            logger.warning("Capture at %s is not readable", candidate)
+            return "unreadable"
+        return "present"
+
+    @staticmethod
+    def dump_file_for(path: Path) -> Optional[DumpFile]:
+        """Public seam for the file -> :class:`DumpFile` admission rule.
+
+        Returns the :class:`DumpFile` ``load_run_directory`` would build for
+        ``path``, or ``None`` when the filename is not a recognised dump.
+
+        This exists because the admission rule ("is this filename a dump, and
+        what phase does it carry?") is genuinely useful outside this class -
+        ``engine.sweep_plan`` counts a corpus by applying exactly this rule to
+        already-listed filenames, and any second implementation of it would be
+        free to drift out of agreement with discovery. It delegates to the
+        private :meth:`_dump_file_for`, which stays in place for the internal
+        call sites.
+        """
+        return RunDiscovery._dump_file_for(path)
+
+    @staticmethod
     def _dump_file_for(path: Path) -> Optional[DumpFile]:
-        """Dispatch a single file to legacy or dataset-style parsing."""
+        """Dispatch a single file to legacy or dataset-style parsing.
+
+        Public callers should use :meth:`dump_file_for`.
+        """
         legacy = RunDiscovery.parse_dump_filename(path.name)
         if legacy is not None:
             legacy.path = path
@@ -259,6 +414,8 @@ class DatasetInfo:
     phases: Dict[str, List[str]] = field(default_factory=dict)     # library_key -> phase names
     normalized_phases: Dict[str, List[str]] = field(default_factory=dict)  # lib_key -> canonical phase names
     total_runs: int = 0
+    runs_with_capture: int = 0                                      # runs owning a packet capture
+    captures: Dict[str, int] = field(default_factory=dict)          # library_key -> capture count
     protocols_info: Dict[str, Set[str]] = field(default_factory=dict)
     root: Path = field(default_factory=Path)
 
@@ -339,6 +496,9 @@ class DatasetScanner:
             if parsed:
                 info.total_runs += 1
                 lib_key = f"{ver}/{scenario_name}/{lib_name}"
+                if self._has_capture(run_dir):
+                    info.runs_with_capture += 1
+                    info.captures[lib_key] = info.captures.get(lib_key, 0) + 1
                 if lib_key not in info.phases:
                     dumps = []
                     for f in sorted(run_dir.iterdir()):
@@ -361,6 +521,34 @@ class DatasetScanner:
                         info.normalized_phases[lib_key] = sorted(set(
                             m.canonical_phase for m in mappings.values()
                         ))
+
+    @staticmethod
+    def _has_capture(run_dir: Path) -> bool:
+        """Stat-only capture probe for the fast scan.
+
+        Deliberately does NOT call :meth:`RunDiscovery.load_run_directory`,
+        which would open the keylog and every dump; this stays at a handful of
+        stat calls per run so a 2600-run corpus scan keeps its current cost.
+
+        Counts a capture only when it is a NON-EMPTY regular file, so this
+        agrees with :meth:`RunDiscovery._find_capture`'s three-state verdict.
+        A zero-byte capture is ``"unreadable"`` there, and counting it as
+        present here would inflate ``DatasetInfo.runs_with_capture`` above the
+        number of runs that can actually be proven against their capture --
+        i.e. it would overstate the corpus denominator, which is the opposite
+        of the reason the three-state status exists. ``stat()`` costs the same
+        as ``is_file()`` (one syscall), so the agreement is free.
+        """
+        capture_dir = run_dir / CAPTURE_SUBDIR
+        for name in CAPTURE_FILENAMES:
+            try:
+                st = (capture_dir / name).stat()
+            except OSError:
+                continue
+            if (stat.S_ISREG(st.st_mode) and st.st_size > 0
+                    and os.access(capture_dir / name, os.R_OK)):
+                return True
+        return False
 
     def fast_scan(self, protocols: Optional[List[str]] = None) -> DatasetInfo:
         """Quick scan: enumerate versions, scenarios, libraries, phases without reading dumps.

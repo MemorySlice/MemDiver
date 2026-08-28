@@ -5,11 +5,52 @@ These tests exercise the full pipeline against actual memory dumps from the
 keylog parsing, analysis, key expansion, serialization, entropy, and the
 FastAPI API layer using real data rather than synthetic fixtures.
 
-All tests are guarded by ``REAL_DUMPS_AVAILABLE`` so they skip gracefully
-on machines where the dataset is not present.
+
+Which tree do these tests read? — the INTENDED DEFAULT is the REAL corpus
+---------------------------------------------------------------------------
+``tests/_paths.dataset_file()`` is a *hybrid*: it prefers the real corpus and
+falls back to the synthetic fixtures, and it does so SILENTLY. For this module
+that silence was a real hazard: every assertion below is corpus-shaped
+(``total_runs >= 100``, ``num_runs == 2``, "EXPORTER_SECRET survives the
+abort", "the dump is MB-sized ELF"), so the same 27 green test ids could be
+proving two different things on two machines with nothing in the output saying
+which.
+
+The resolution chosen here is (a) — **the real corpus is the intended data
+source, and the synthetic tree is the DEGRADED FALLBACK** — rather than (b)
+"synthetic unless explicitly opted in". Three reasons:
+
+1. The module is named ``test_e2e_real_dumps`` and its whole reason to exist is
+   evidence about real BoringSSL process memory. Making the real corpus the
+   opt-in would leave the file permanently exercising fixtures that were
+   reverse-engineered *from* these very assertions — a tautology wearing the
+   name of an end-to-end test.
+2. ``dataset_file()`` was deliberately designed as a hybrid that always returns
+   an existing path, precisely so corpus-less machines run instead of skipping.
+   Forcing synthetic here would fight that design for one file.
+3. Anyone who has the corpus has it because they want to test against it; the
+   corpus-less developer still gets a clean, meaningful, fully-green run from
+   the synthetic tree.
+
+What (a) *costs* is exactly the hazard above, so it is paid for explicitly:
+
+* Every path below is resolved ONCE, through ``resolve_dataset_file()``, which
+  reports its provenance. ``DATA_SOURCE`` is that provenance.
+* ``TestDataSourceProvenance`` (below, ungated) pins it: it asserts which tree
+  the module bound to, that every path came from the SAME tree, and that a
+  present corpus is actually preferred. Its test id carries ``[real]`` or
+  ``[synthetic]``, and ``conftest.pytest_report_header`` prints the resolved
+  root at the top of every run — so no reader of a green log has to guess.
+* ``MEMDIVER_REQUIRE_REAL_DUMPS=1`` turns the degraded fallback into a hard
+  failure, for runs (CI jobs, thesis measurements) that must not silently
+  settle for fixtures.
+* The handful of assertions that are true *by construction* against the
+  synthetic tree — and therefore only carry evidence against real dumps — are
+  gated with ``@real_only`` instead of being silently dual-mode.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,21 +58,30 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from tests._paths import dataset_file, SKIP_REASON
-
-# ---------------------------------------------------------------------------
-# Paths to data — hybrid resolution via ``dataset_file`` (see tests/_paths.py):
-# the real capture is used where present, else a synthetic BoringSSL TLS 1.3
-# tree is materialised on demand under tests/fixtures/dataset. Either way the
-# paths below now always exist, so these tests run instead of skipping.
-# ---------------------------------------------------------------------------
-
-BORINGSSL_DIR = dataset_file(
-    "TLS13/100_iterations_Abort_KeyUpdate/boringssl"
+from tests._paths import (
+    DATASET_SOURCE_REAL,
+    DATASET_SOURCE_SYNTHETIC,
+    SKIP_REASON,
+    resolve_dataset_file,
 )
-# The dataset root is the parent of the ``TLS13/`` protocol dir, so
-# ``DatasetScanner(DATASET_ROOT)`` scans at dataset level.
-DATASET_ROOT = dataset_file("TLS13").parent
+
+# ---------------------------------------------------------------------------
+# Paths to data — resolved ONCE, with provenance, so the whole module is bound
+# to a single tree and can say which one. See the module docstring.
+# ---------------------------------------------------------------------------
+
+_BORINGSSL = resolve_dataset_file("TLS13/100_iterations_Abort_KeyUpdate/boringssl")
+
+BORINGSSL_DIR = _BORINGSSL.path
+#: ``"real"`` or ``"synthetic"`` — which tree produced every byte read below.
+DATA_SOURCE = _BORINGSSL.source
+#: The tree ``BORINGSSL_DIR`` came from. It is the parent of the ``TLS13/``
+#: protocol dir, so ``DatasetScanner(DATASET_ROOT)`` scans at dataset level.
+#: Taken from the SAME resolution as ``BORINGSSL_DIR`` (rather than resolved
+#: independently) so the module can never straddle two trees.
+DATASET_ROOT = _BORINGSSL.root
+USING_REAL_DUMPS = DATA_SOURCE == DATASET_SOURCE_REAL
+
 RUN1_DIR = BORINGSSL_DIR / "boringssl_run_13_1"
 RUN2_DIR = BORINGSSL_DIR / "boringssl_run_13_2"
 
@@ -40,6 +90,110 @@ REAL_DUMPS_AVAILABLE = BORINGSSL_DIR.is_dir()
 real_dumps = pytest.mark.skipif(
     not REAL_DUMPS_AVAILABLE, reason=SKIP_REASON
 )
+
+#: Opt-in strictness: refuse the degraded synthetic fallback outright.
+REQUIRE_REAL_DUMPS = os.environ.get(
+    "MEMDIVER_REQUIRE_REAL_DUMPS", ""
+).strip().lower() not in ("", "0", "false", "no")
+
+_SYNTHETIC_TAUTOLOGY_REASON = (
+    "Assertion carries evidence only against the real corpus: the synthetic "
+    f"fixtures satisfy it by construction (bound tree: {DATA_SOURCE}). Point "
+    "MEMDIVER_DATASET_ROOT at the real dumps to exercise it."
+)
+
+#: For assertions whose CLAIM is about real BoringSSL process memory and which
+#: the synthetic builder was written to satisfy on purpose. Gating them beats
+#: letting them look like evidence they cannot supply.
+real_only = pytest.mark.skipif(
+    not USING_REAL_DUMPS, reason=_SYNTHETIC_TAUTOLOGY_REASON
+)
+
+
+# ===================================================================
+# 0. Data-source provenance — which bytes did this file actually read?
+# ===================================================================
+
+
+class TestDataSourceProvenance:
+    """Pin (and announce) the tree this module bound to.
+
+    Ungated on purpose: it must run and report in BOTH modes.
+    """
+
+    # The parametrization is a reporting device: it stamps the resolved source
+    # into the node id, so `-v` output and JUnit XML read
+    # `test_module_is_bound_to_a_known_tree[real]` (or `[synthetic]`).
+    @pytest.mark.parametrize("bound_source", [DATA_SOURCE])
+    def test_module_is_bound_to_a_known_tree(self, bound_source):
+        from tests.fixtures.synth_dataset import SYNTH_DATASET_ROOT
+
+        print(
+            f"\n[test_e2e_real_dumps] data source = {bound_source.upper()}\n"
+            f"[test_e2e_real_dumps] dataset root  = {DATASET_ROOT}\n"
+            f"[test_e2e_real_dumps] boringssl dir = {BORINGSSL_DIR}"
+        )
+        assert bound_source in (DATASET_SOURCE_REAL, DATASET_SOURCE_SYNTHETIC)
+        assert bound_source == DATA_SOURCE
+
+        if bound_source == DATASET_SOURCE_SYNTHETIC:
+            assert DATASET_ROOT == SYNTH_DATASET_ROOT, (
+                "synthetic mode must read the committed fixture tree"
+            )
+            assert REAL_DUMPS_AVAILABLE, (
+                "the synthetic fallback must still materialise a usable tree"
+            )
+        else:
+            from tests._paths import dataset_root
+
+            assert DATASET_ROOT == dataset_root()
+            assert DATASET_ROOT != SYNTH_DATASET_ROOT
+
+        if REQUIRE_REAL_DUMPS:
+            assert USING_REAL_DUMPS, (
+                "MEMDIVER_REQUIRE_REAL_DUMPS is set, but this run resolved the "
+                f"SYNTHETIC fixtures at {DATASET_ROOT}. Set "
+                "MEMDIVER_DATASET_ROOT (or --dataset-root) to the real corpus."
+            )
+
+    def test_every_path_in_this_module_comes_from_one_tree(self):
+        """No straddling: one resolution feeds dataset/library/run paths."""
+        from tests._paths import dataset_file
+
+        for path in (BORINGSSL_DIR, RUN1_DIR, RUN2_DIR):
+            assert DATASET_ROOT in path.parents, (
+                f"{path} does not live under the bound tree {DATASET_ROOT}"
+            )
+        # Cross-check against the historical spelling of DATASET_ROOT
+        # (``dataset_file("TLS13").parent``): if the protocol dir ever resolved
+        # to a different tree than the library dir, this module would be
+        # reading two corpora at once.
+        assert dataset_file("TLS13").parent == DATASET_ROOT
+
+    def test_the_real_corpus_is_used_when_it_is_available(self):
+        """The option-(a) default: a present real corpus always wins.
+
+        Guards against a future change quietly re-pointing this file at the
+        fixtures while the corpus sits right there.
+        """
+        from tests._paths import dataset_root
+
+        root = dataset_root()
+        corpus_has_it = (
+            root is not None
+            and (root / "TLS13/100_iterations_Abort_KeyUpdate/boringssl").is_dir()
+        )
+        if not corpus_has_it:
+            assert not USING_REAL_DUMPS
+            pytest.skip(
+                "No real corpus on this machine — running the degraded "
+                "synthetic fallback, as designed."
+            )
+        assert USING_REAL_DUMPS, (
+            f"Real corpus present at {root} but this module bound to "
+            f"{DATASET_ROOT}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Imports (always importable even without real data)
@@ -168,6 +322,12 @@ class TestAnalysisPipelinePreAbort:
             f"EXPORTER_SECRET not found. Found: {hit_types}"
         )
 
+    # REAL-ONLY: the claim is "BoringSSL zeroes its handshake secrets after
+    # use", which is a fact about real process memory. The synthetic builder
+    # simply never embeds those two secret values in the pre_abort dump, so
+    # against fixtures this asserts the absence of something we chose not to
+    # write — no evidence at all.
+    @real_only
     def test_handshake_secrets_absent_pre_abort(self):
         pipeline = AnalysisPipeline()
         report = pipeline.analyze_library(
@@ -269,7 +429,15 @@ class TestKeyExpansion:
 
 @real_dumps
 class TestCrossRunKeyUniqueness:
-    """Keys from run_13_1 should NOT appear in run_13_2 dumps."""
+    """Keys from run_13_1 should NOT appear in run_13_2 dumps.
+
+    Deliberately NOT ``@real_only``, though it is the weaker of the two modes
+    against fixtures: the synthetic builder XORs a per-run delta into every
+    secret, so disjointness is guaranteed by construction. It still exercises a
+    genuine byte-search over a 1.5 MB dump (a false positive here would be a
+    real defect), so it keeps its value in both modes — but only the real
+    corpus makes it a statement about TLS session key material.
+    """
 
     def test_run1_keys_absent_from_run2(self):
         # Parse run1 secrets
@@ -308,6 +476,11 @@ class TestHexInspection:
             f"Expected ELF magic, got {data[:4].hex()}"
         )
 
+    # REAL-ONLY: "real dumps are typically in the MB range" is a property of
+    # captured process memory. The synthetic pre_abort dump is 1.5 MB because
+    # tests/fixtures/synth_boringssl.py sized it to land inside these very
+    # bounds, so in synthetic mode the assertion can only ever pass.
+    @real_only
     def test_dump_size_reasonable(self):
         dump_path = next(RUN1_DIR.glob("*pre_abort.dump"))
         src = RawDumpSource(dump_path)

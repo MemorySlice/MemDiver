@@ -38,12 +38,23 @@ class SearchCorrelator:
         library: str = "",
         phase: str = "",
         run_id: int = 0,
+        canonical_phase: str = "",
     ) -> List[SecretHit]:
         """Search a dump for all secrets, optionally filtering by static mask.
 
         Args:
             dump_path: A Path to a dump file, or a DumpSource-compatible
                 object with read_all() and path attributes.
+            canonical_phase: The NORMALIZED phase of this dump, when the
+                caller has run :class:`core.phase_normalizer.PhaseNormalizer`
+                over the whole run. It is a label of the dump, not something
+                this searcher can derive (a canonical phase is positional
+                across a run's sibling dumps), so it is passed in. Every hit
+                built here carries it, which is what lets a persistence layer
+                stamp `findings.canonical_phase` per DUMP instead of falling
+                back to one run-wide value. Empty -- the default, and what
+                every pre-existing caller gets -- means "not normalized",
+                matching the column default.
         """
         if hasattr(dump_path, "read_all"):
             data = dump_path.read_all()
@@ -55,6 +66,7 @@ class SearchCorrelator:
         if _HAS_AC and len(secrets) >= 2:
             return self._search_aho_corasick(
                 data, secrets, library, phase, run_id, resolved_path,
+                canonical_phase,
             )
 
         hits = []
@@ -78,6 +90,7 @@ class SearchCorrelator:
                     library=library,
                     phase=phase,
                     run_id=run_id,
+                    canonical_phase=canonical_phase,
                 ))
                 start = idx + len(needle)
 
@@ -93,6 +106,7 @@ class SearchCorrelator:
         phase: str,
         run_id: int,
         resolved_path,
+        canonical_phase: str = "",
     ) -> List[SecretHit]:
         """Single-pass multi-pattern search using Aho-Corasick automaton.
 
@@ -119,6 +133,7 @@ class SearchCorrelator:
                 library=library,
                 phase=phase,
                 run_id=run_id,
+                canonical_phase=canonical_phase,
             ))
         path_name = resolved_path.name if hasattr(resolved_path, "name") else str(resolved_path)
         logger.debug("AC search: %d hits in %s", len(hits), path_name)

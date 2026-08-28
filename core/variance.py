@@ -6,7 +6,7 @@ Uses numpy for vectorized computation (10-30x faster than pure Python loops).
 
 import array
 from enum import IntEnum
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import logging
 
@@ -27,6 +27,43 @@ class ByteClass(IntEnum):
 INVARIANT_MAX = 0.0
 STRUCTURAL_MAX = 200.0
 POINTER_MAX = 3000.0
+
+
+class VarianceThresholds(NamedTuple):
+    """The three boundaries separating the four :class:`ByteClass` bands.
+
+    A byte is INVARIANT at ``variance <= invariant_max``, STRUCTURAL up to
+    ``structural_max``, POINTER up to ``pointer_max`` and KEY_CANDIDATE above
+    it. The defaults are the module constants, so an omitted / ``None``
+    threshold set reproduces the historical hard-coded boundaries exactly.
+
+    There is no config-file path into this layer today (``core.config_schema``
+    only covers dataset/logging/analysis/ui and is read solely by ``ui.state``),
+    so overrides travel as an explicit argument from the caller.
+    """
+
+    invariant_max: float = INVARIANT_MAX
+    structural_max: float = STRUCTURAL_MAX
+    pointer_max: float = POINTER_MAX
+
+    def validate(self) -> "VarianceThresholds":
+        """Return self after checking the bands are non-negative and ordered."""
+        if self.invariant_max < 0.0:
+            raise ValueError(f"invariant_max must be >= 0, got {self.invariant_max}")
+        if not (self.invariant_max <= self.structural_max <= self.pointer_max):
+            raise ValueError(
+                "variance thresholds must be non-decreasing, got "
+                f"invariant_max={self.invariant_max}, "
+                f"structural_max={self.structural_max}, "
+                f"pointer_max={self.pointer_max}"
+            )
+        return self
+
+
+DEFAULT_THRESHOLDS = VarianceThresholds()
+
+# A single ByteClass, its raw integer code, or any iterable of either.
+ByteClassSpec = Union[ByteClass, int, Iterable[Union[ByteClass, int]]]
 
 # Chunk size for the byte-offset loop inside compute_variance. 16 MiB keeps
 # peak working set bounded at ~4 * N * CHUNK_BYTES + 4 * min_size, well inside
@@ -143,24 +180,65 @@ class WelfordVariance:
         return obj
 
 
-def classify_variance(variance: Union[np.ndarray, "array.array"]) -> np.ndarray:
+def classify_variance(
+    variance: Union[np.ndarray, "array.array"],
+    thresholds: Optional[VarianceThresholds] = None,
+) -> np.ndarray:
     """Classify every byte position by its variance value.
 
     Args:
         variance: Per-byte variance values (numpy array or stdlib array).
+        thresholds: Optional band boundaries. ``None`` uses
+            ``DEFAULT_THRESHOLDS`` (0.0 / 200.0 / 3000.0), which is what every
+            caller got before the boundaries became overridable.
 
     Returns:
         numpy.ndarray (uint8) of ByteClass integer codes.
     """
+    bands = (thresholds or DEFAULT_THRESHOLDS).validate()
     if not isinstance(variance, np.ndarray):
         variance = np.array(variance, dtype=np.float32)
     result = np.full(len(variance), ByteClass.KEY_CANDIDATE, dtype=np.uint8)
-    result[variance == 0.0] = ByteClass.INVARIANT
-    mask_structural = (variance > 0.0) & (variance <= STRUCTURAL_MAX)
+    # Variance is non-negative, so ``<= 0.0`` is exactly the historical
+    # ``== 0.0`` test at the default invariant_max.
+    result[variance <= bands.invariant_max] = ByteClass.INVARIANT
+    mask_structural = (
+        (variance > bands.invariant_max) & (variance <= bands.structural_max)
+    )
     result[mask_structural] = ByteClass.STRUCTURAL
-    mask_pointer = (variance > STRUCTURAL_MAX) & (variance <= POINTER_MAX)
+    mask_pointer = (
+        (variance > bands.structural_max) & (variance <= bands.pointer_max)
+    )
     result[mask_pointer] = ByteClass.POINTER
     return result
+
+
+def normalize_byte_classes(byte_class: ByteClassSpec) -> Tuple[ByteClass, ...]:
+    """Coerce a class query into a de-duplicated, ordered ByteClass tuple.
+
+    Accepts a single ``ByteClass`` (or its integer code) as well as any
+    iterable of them, so a caller can ask for one class or several without
+    switching call shape.
+    """
+    if isinstance(byte_class, (ByteClass, int)):
+        return (ByteClass(int(byte_class)),)
+    classes = tuple(sorted({ByteClass(int(c)) for c in byte_class}))
+    if not classes:
+        raise ValueError("at least one ByteClass is required")
+    return classes
+
+
+def class_mask(
+    classifications: Union[np.ndarray, "array.array"],
+    classes: Sequence[ByteClass],
+) -> np.ndarray:
+    """Bool mask marking every byte belonging to any of *classes*."""
+    if isinstance(classifications, np.ndarray):
+        codes = classifications
+    else:
+        codes = np.array(classifications, dtype=np.uint8)
+    wanted = np.array([int(c) for c in classes], dtype=np.uint8)
+    return np.isin(codes, wanted)
 
 
 def find_contiguous_runs(

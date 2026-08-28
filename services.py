@@ -75,6 +75,7 @@ from memdiver.app.tools_xref import (
 # --- pipeline stages + verify / experiment ----------------------------------
 from memdiver.app.experiment_orchestration import experiment_result
 from memdiver.app.tools_pipeline import (
+    analyze_candidates,
     auto_floor,
     brute_force,
     consensus,
@@ -126,6 +127,7 @@ __all__ = [
     "apply_structure_result",
     # pipeline
     "consensus",
+    "analyze_candidates",
     "search_reduce",
     "brute_force",
     "n_sweep",

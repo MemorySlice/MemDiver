@@ -51,7 +51,8 @@ export const ConsensusVarianceMinimap = memo(function ConsensusVarianceMinimap({
   useEffect(() => {
     if (!consensusId || !dumpPath) return;
     fetchVaOverview(dumpPath, BINS).catch(() => {
-      // Overview is only available for native-MSL consensus; on failure the
+      // Overview needs an aligned consensus (module-offset or virtual-address);
+      // a raw file-offset build has no VA span. On failure the
       // strip simply does not render (guarded below).
     });
   }, [consensusId, dumpPath, fetchVaOverview]);

@@ -117,6 +117,155 @@ def test_search_reduce_writes_candidates_json(tmp_path, consensus_artifacts):
 
 
 # ----------------------------------------------------------------------
+# search_reduce — inline ranked regions (A3)
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def multi_region_artifacts(tmp_path: Path) -> dict:
+    """A variance/reference pair with FOUR surviving regions of unequal rank.
+
+    Mirrors ``tests/test_candidate_pipeline._four_region_dump`` so the offsets
+    and the order they rank in are hand-derivable here too: a 512-byte
+    KEY_CANDIDATE blob at 128, a 32-byte POINTER run at 768, and two identical
+    16-byte KEY_CANDIDATE runs at 1024 and 1280 which rank first and second.
+    """
+    size = 2048
+    variance = np.zeros(size, dtype=np.float32)
+    ref = bytearray(size)
+    ref[128:640] = bytes(range(256)) * 2
+    variance[128:640] = 15000.0
+    ref[768:800] = bytes(range(200, 232))
+    variance[768:800] = 1000.0
+    ref[1024:1040] = bytes(range(16))
+    variance[1024:1040] = 15000.0
+    ref[1280:1296] = bytes(range(16))
+    variance[1280:1296] = 15000.0
+    variance_path = tmp_path / "multi_variance.npy"
+    ref_path = tmp_path / "multi_reference.bin"
+    np.save(variance_path, variance)
+    ref_path.write_bytes(bytes(ref))
+    return {"variance": variance_path, "reference": ref_path}
+
+
+def _reduce_multi(artifacts: dict, out: Path, **overrides) -> dict:
+    kwargs = dict(
+        variance_path=str(artifacts["variance"]),
+        reference_path=str(artifacts["reference"]),
+        num_dumps=5,
+        output_dir=str(out),
+        min_variance=100.0,
+        entropy_window=16,
+        entropy_threshold=3.5,
+        min_region=8,
+        alignment=8,
+        block_size=16,
+    )
+    kwargs.update(overrides)
+    return tools_pipeline.search_reduce(**kwargs)
+
+
+def test_search_reduce_returns_the_regions_inline(tmp_path, multi_region_artifacts):
+    """The whole point of A3: an MCP client cannot read ``candidates_path``
+    back, so the regions have to travel in the result."""
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out")
+    assert [r["offset"] for r in result["regions"]] == [128, 768, 1024, 1280]
+    assert result["regions_returned"] == result["num_regions"] == 4
+    assert result["regions_truncated"] is False
+    assert result["order"] == "offset"
+    # Identical to what was persisted — one list, two ways to reach it.
+    persisted = json.loads(Path(result["candidates_path"]).read_text())
+    assert persisted["regions"] == result["regions"]
+
+
+def test_search_reduce_inline_rows_carry_the_score_breakdown(
+    tmp_path, multi_region_artifacts
+):
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out")
+    weights = json.loads(
+        Path(result["candidates_path"]).read_text()
+    )["thresholds"]["score_weights"]
+    for row in result["regions"]:
+        assert row["rank"] >= 1
+        assert set(row["score_components"]) == set(weights)
+        recomputed = sum(weights[k] * v for k, v in row["score_components"].items())
+        assert row["score"] == pytest.approx(recomputed, abs=1e-12)
+        assert sum(row["class_counts"].values()) == row["length"]
+
+
+def test_search_reduce_order_rank_returns_best_first(tmp_path, multi_region_artifacts):
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out", order="rank")
+    assert [r["offset"] for r in result["regions"]] == [1024, 1280, 128, 768]
+    assert [r["rank"] for r in result["regions"]] == [1, 2, 3, 4]
+    assert result["order"] == "rank"
+
+
+def test_search_reduce_truncation_is_flagged_and_keeps_the_best_ranked(
+    tmp_path, multi_region_artifacts
+):
+    """A cap must never read as 'that is all there is', and must never drop the
+    top candidate just because it sits at a high offset."""
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out", max_returned=2)
+    assert result["regions_truncated"] is True
+    assert result["regions_returned"] == 2
+    assert result["num_regions"] == 4          # the TRUE total is still reported
+    assert result["max_returned"] == 2
+    # Ranks 1 and 2 live at the two HIGHEST offsets; a blind head of the
+    # offset-ordered list would have returned 128 and 768 instead.
+    assert [r["offset"] for r in result["regions"]] == [1024, 1280]
+    assert [r["rank"] for r in result["regions"]] == [1, 2]
+    # Nothing is lost from the artifact.
+    persisted = json.loads(Path(result["candidates_path"]).read_text())
+    assert len(persisted["regions"]) == 4
+
+
+def test_search_reduce_max_returned_zero_is_uncapped(tmp_path, multi_region_artifacts):
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out", max_returned=0)
+    assert result["regions_returned"] == 4
+    assert result["regions_truncated"] is False
+
+
+def test_search_reduce_keeps_every_pre_existing_payload_key(
+    tmp_path, multi_region_artifacts
+):
+    """A3 is additive: the four keys other code already consumes keep their
+    exact meaning."""
+    result = _reduce_multi(multi_region_artifacts, tmp_path / "out")
+    assert set(result) >= {
+        "candidates_path", "num_regions", "stages",
+        "fallback_entropy_only", "recommended_floor",
+    }
+    assert Path(result["candidates_path"]).is_file()
+    assert result["num_regions"] == 4
+    assert result["fallback_entropy_only"] is False
+    assert result["recommended_floor"] >= 0.0
+    assert set(result["stages"]) == {
+        "total_bytes", "variance", "byte_class", "aligned", "high_entropy",
+    }
+
+
+def test_search_reduce_threads_the_class_and_max_region_filters(
+    tmp_path, multi_region_artifacts
+):
+    """``classes`` reaches the engine as names, and composes with min_variance
+    exactly as the engine documents."""
+    keys_only = _reduce_multi(
+        multi_region_artifacts, tmp_path / "k", classes=["key_candidate"],
+    )
+    assert [r["offset"] for r in keys_only["regions"]] == [128, 1024, 1280]
+
+    short_only = _reduce_multi(
+        multi_region_artifacts, tmp_path / "s", max_region=32,
+    )
+    assert [r["offset"] for r in short_only["regions"]] == [768, 1024, 1280]
+
+
+def test_search_reduce_rejects_an_unknown_class_name(tmp_path, multi_region_artifacts):
+    with pytest.raises(ValueError, match="unknown byte class"):
+        _reduce_multi(multi_region_artifacts, tmp_path / "x", classes=["pointerz"])
+
+
+# ----------------------------------------------------------------------
 # brute_force
 # ----------------------------------------------------------------------
 

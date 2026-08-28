@@ -15,12 +15,14 @@ No private dataset is required and there is no e2e / requires_dataset marker.
 
 from __future__ import annotations
 
+import ast
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yara
 
 from memdiver.app import experiment_orchestration as tp
 from memdiver.core.dump_driver import ExperimentResult
@@ -41,6 +43,30 @@ from tests.fixtures.generate_realistic_fixtures import (
 
 NUM_RUNS = 24
 SEED = 42
+
+
+def _only_rule_meta(rule_source: str) -> dict:
+    """Compile a single-rule YARA source and return its meta dict.
+
+    Compiled for real (``yara`` is a declared base dependency), so a rule
+    that libyara would reject fails here rather than in the field.
+    """
+    assert rule_source
+    rules = list(yara.compile(source=rule_source))
+    assert len(rules) == 1, f"expected exactly one rule, got {len(rules)}"
+    return dict(rules[0].meta)
+
+
+def _embedded_yara_meta(plugin_source: str) -> dict:
+    """Compile the YARA_RULE embedded in a generated vol3 plugin."""
+    tree = ast.parse(plugin_source)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "YARA_RULE" in targets and isinstance(node.value, ast.Constant):
+            return _only_rule_meta(node.value.value)
+    raise AssertionError("generated plugin has no YARA_RULE string assignment")
 
 
 # ----------------------------------------------------------------------
@@ -254,6 +280,66 @@ def test_render_plugin_yara_and_unknown_formats():
     assert isinstance(yara, str) and yara
     # An unknown export format yields no rendered plugin.
     assert tp._experiment_render_plugin(pattern, "json") is None
+
+
+def _static_pattern():
+    """A 75%-static 64-byte pattern -- enough for PatternGenerator to accept."""
+    pattern = PatternGenerator.generate(
+        bytes(range(64)), [True] * 48 + [False] * 16, "p")
+    assert pattern is not None
+    return pattern
+
+
+def test_render_plugin_emits_key_locator_metas():
+    """GAP C: ``_experiment_render_plugin`` must forward the key locator.
+
+    The experiment path knows the key's position inside the exported window
+    exactly (the volatile region, padded by ``ctx_pad``), so its rule must
+    carry the same ``key_offset``/``key_length`` metas every other emission
+    path produces -- and must still compile.
+    """
+    pattern = dict(_static_pattern(), key_offset=48, key_length=16)
+    meta = _only_rule_meta(tp._experiment_render_plugin(pattern, "yara"))
+    assert meta["key_offset"] == 48
+    assert meta["key_length"] == 16
+
+
+def test_render_plugin_omits_key_locator_when_unknown():
+    """A pattern carrying no locator must yield a rule without the metas."""
+    meta = _only_rule_meta(
+        tp._experiment_render_plugin(_static_pattern(), "yara"))
+    assert "key_offset" not in meta
+    assert "key_length" not in meta
+
+
+def test_render_plugin_vol3_embeds_key_locator_metas():
+    """The volatility3 branch builds its rule inline -- it must forward too."""
+    pattern = dict(_static_pattern(), key_offset=48, key_length=16)
+    source = tp._experiment_render_plugin(pattern, "volatility3")
+    assert source is not None
+    meta = _embedded_yara_meta(source)
+    assert meta["key_offset"] == 48
+    assert meta["key_length"] == 16
+    # The rule meta and the plugin's own constants must agree -- one file may
+    # not state two different key regions.
+    assert "KEY_OFFSET = 48" in source
+    assert "KEY_LENGTH = 16" in source
+
+
+def test_emit_plugin_helper_derives_key_locator_from_volatile_region(tmp_path):
+    """End of the chain: the emitted .yar carries the locator the helper derived.
+
+    Region [32, 48) with ``ctx_pad=32`` clamps the window to slab offset 0,
+    so the key sits 32 bytes into the exported pattern and is 16 long.
+    """
+    cm = SimpleNamespace(
+        size=80, reference_bytes=bytes(80), variance=[0.0] * 80)
+    region = SimpleNamespace(start=32, end=48)
+    path = tp._experiment_emit_plugin(cm, [region], "keytool", tmp_path, "yara")
+    assert path is not None
+    meta = _only_rule_meta(path.read_text())
+    assert meta["key_offset"] == 32
+    assert meta["key_length"] == 16
 
 
 def test_emit_plugin_helper_no_volatile_returns_none():

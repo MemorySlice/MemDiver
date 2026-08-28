@@ -68,6 +68,7 @@ from .inspect import (
 )
 from .main import _build_parser, build_parser, main
 from .pipeline import (
+    _cmd_analyze_candidates,
     _cmd_auto_floor,
     _cmd_brute_force,
     _cmd_emit_plugin,
@@ -112,6 +113,7 @@ __all__ = [
     "_consensus_state_paths",
     "_load_welford_session",
     # pipeline stages
+    "_cmd_analyze_candidates",
     "_cmd_search_reduce",
     "_cmd_brute_force",
     "_cmd_n_sweep",

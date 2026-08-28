@@ -390,3 +390,50 @@ def test_get_page_states_decrypts_with_key(session, encrypted_msl):
     res = tools_inspect.get_page_states(session, msl_path, key_file=keyfile)
     assert "error" not in res, res
     assert res["captured_pages"] >= 1
+
+
+# ── A4: the exploratory path — N dumps in, ranked candidates out ──────
+@pytest.fixture
+def isolated_project_db(tmp_path, monkeypatch):
+    """``analyze_candidates`` persists by design; keep it out of the
+    developer's real ``~/.memdiver`` database."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+
+def test_analyze_candidates_returns_ranked_regions_inline(
+    aes_dumps, isolated_project_db
+):
+    """No oracle, no capture, no precomputed variance: dump paths in, ranked
+    regions out. The regions are INLINE because an MCP agent handed a
+    ``candidates_path`` has no way to read it back."""
+    res = tools_pipeline.analyze_candidates(
+        dump_paths=aes_dumps,
+        classes=["structural", "pointer", "key_candidate"],
+        min_region=8,
+    )
+    assert res["num_dumps"] == len(aes_dumps)
+    assert res["num_regions"] == len(res["regions"]) >= 1
+    assert [r["rank"] for r in res["regions"]] == list(
+        range(1, len(res["regions"]) + 1))
+    assert res["alignment"]["method"] in ("file_offset", "virtual_address",
+                                          "module_offset")
+    # The class query resolved the float floor to 0.0 rather than leaving the
+    # historical 3000.0 standing and silently re-narrowing the query.
+    assert res["thresholds"]["min_variance"] == 0.0
+
+
+def test_analyze_candidates_rejects_a_single_dump(aes_dumps, isolated_project_db):
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.analyze_candidates(dump_paths=aes_dumps[:1])
+    # PRECONDITION, matching `consensus` and the two n-sweep producers, which
+    # make the identical "need at least 2 dumps" check. Both categories map to
+    # HTTP 400 and CLI exit 2; the point is that one rule has one spelling.
+    assert excinfo.value.category is ErrorCategory.PRECONDITION
+
+
+def test_analyze_candidates_missing_dump_is_not_found(
+    aes_dumps, tmp_path, isolated_project_db
+):
+    with pytest.raises(FileNotFoundServiceError):
+        tools_pipeline.analyze_candidates(
+            dump_paths=[aes_dumps[0], str(tmp_path / "absent.dump")])

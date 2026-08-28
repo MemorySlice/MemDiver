@@ -5,13 +5,15 @@ from array import array
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from memdiver.core.variance import (
-    ByteClass, STRUCTURAL_MAX, POINTER_MAX,
-    compute_variance, classify_variance,
-    find_contiguous_runs, count_classifications,
+    ByteClass, DEFAULT_THRESHOLDS, INVARIANT_MAX, STRUCTURAL_MAX, POINTER_MAX,
+    VarianceThresholds,
+    class_mask, compute_variance, classify_variance,
+    find_contiguous_runs, count_classifications, normalize_byte_classes,
     WelfordVariance,
 )
 
@@ -154,3 +156,116 @@ def test_welford_reset_and_from_state():
     w.reset()
     assert w.num_dumps == 0
     assert np.all(w.variance() == 0)
+
+
+# ---------------------------------------------------------------------------
+# Configurable class boundaries (A2)
+# ---------------------------------------------------------------------------
+
+# One value per band plus both sides of every boundary, so a shifted threshold
+# cannot pass by accident.
+_BOUNDARY_PROBE = [0.0, 0.5, 200.0, 200.1, 3000.0, 3000.1]
+_BOUNDARY_EXPECTED = [
+    ByteClass.INVARIANT,
+    ByteClass.STRUCTURAL,
+    ByteClass.STRUCTURAL,
+    ByteClass.POINTER,
+    ByteClass.POINTER,
+    ByteClass.KEY_CANDIDATE,
+]
+
+
+def test_default_thresholds_are_todays_constants():
+    assert DEFAULT_THRESHOLDS == (INVARIANT_MAX, STRUCTURAL_MAX, POINTER_MAX)
+    assert DEFAULT_THRESHOLDS == (0.0, 200.0, 3000.0)
+
+
+def test_classify_variance_default_boundaries_unchanged():
+    """Omitted thresholds must reproduce the historical hard-coded bands."""
+    result = classify_variance(np.array(_BOUNDARY_PROBE, dtype=np.float32))
+    assert list(result) == _BOUNDARY_EXPECTED
+
+
+def test_classify_variance_explicit_defaults_match_omitted():
+    probe = np.array(_BOUNDARY_PROBE, dtype=np.float32)
+    assert np.array_equal(
+        classify_variance(probe), classify_variance(probe, DEFAULT_THRESHOLDS)
+    )
+
+
+def test_classify_variance_custom_thresholds_reclassify():
+    """Widening the bands moves bytes down a class, and only that."""
+    probe = np.array(_BOUNDARY_PROBE, dtype=np.float32)
+    wide = VarianceThresholds(invariant_max=0.5, structural_max=3000.0,
+                              pointer_max=1e9)
+    result = classify_variance(probe, wide)
+    assert list(result) == [
+        ByteClass.INVARIANT,     # 0.0   <= 0.5
+        ByteClass.INVARIANT,     # 0.5   <= 0.5
+        ByteClass.STRUCTURAL,    # 200.0 <= 3000
+        ByteClass.STRUCTURAL,
+        ByteClass.STRUCTURAL,    # 3000.0 <= 3000
+        ByteClass.POINTER,       # 3000.1 <= 1e9
+    ]
+
+
+def test_classify_variance_tight_thresholds_promote():
+    probe = np.array(_BOUNDARY_PROBE, dtype=np.float32)
+    tight = VarianceThresholds(invariant_max=0.0, structural_max=0.4,
+                               pointer_max=199.0)
+    result = classify_variance(probe, tight)
+    assert list(result) == [
+        ByteClass.INVARIANT,        # 0.0
+        ByteClass.POINTER,          # 0.5   > 0.4, <= 199
+        ByteClass.KEY_CANDIDATE,    # 200.0 > 199 — POINTER by default
+        ByteClass.KEY_CANDIDATE,
+        ByteClass.KEY_CANDIDATE,
+        ByteClass.KEY_CANDIDATE,
+    ]
+
+
+def test_thresholds_reject_unordered_bands():
+    with pytest.raises(ValueError, match="non-decreasing"):
+        classify_variance(np.zeros(4, dtype=np.float32),
+                          VarianceThresholds(0.0, 3000.0, 200.0))
+
+
+def test_thresholds_reject_negative_invariant_max():
+    with pytest.raises(ValueError, match="invariant_max"):
+        VarianceThresholds(invariant_max=-1.0).validate()
+
+
+# ---------------------------------------------------------------------------
+# Class query helpers
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_byte_classes_accepts_single_and_iterable():
+    assert normalize_byte_classes(ByteClass.POINTER) == (ByteClass.POINTER,)
+    assert normalize_byte_classes(2) == (ByteClass.POINTER,)
+    assert normalize_byte_classes([ByteClass.KEY_CANDIDATE, ByteClass.POINTER]) == (
+        ByteClass.POINTER, ByteClass.KEY_CANDIDATE,
+    )
+
+
+def test_normalize_byte_classes_dedupes_and_rejects_empty():
+    assert normalize_byte_classes([1, 1, 1]) == (ByteClass.STRUCTURAL,)
+    with pytest.raises(ValueError, match="at least one"):
+        normalize_byte_classes([])
+
+
+def test_normalize_byte_classes_rejects_unknown_code():
+    with pytest.raises(ValueError):
+        normalize_byte_classes(9)
+
+
+def test_class_mask_selects_union_of_classes():
+    codes = np.array([0, 1, 2, 3, 2], dtype=np.uint8)
+    mask = class_mask(codes, (ByteClass.POINTER, ByteClass.KEY_CANDIDATE))
+    assert list(mask) == [False, False, True, True, True]
+
+
+def test_class_mask_accepts_stdlib_array():
+    codes = array("B", [0, 3, 3, 0])
+    mask = class_mask(codes, (ByteClass.KEY_CANDIDATE,))
+    assert list(mask) == [False, True, True, False]

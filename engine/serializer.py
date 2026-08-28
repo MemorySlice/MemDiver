@@ -25,7 +25,26 @@ def _convert_value(value: Any) -> Any:
 
 
 def serialize_hit(hit) -> Dict[str, Any]:
-    """Serialize a SecretHit to a JSON-compatible dict."""
+    """Serialize a SecretHit to a JSON-compatible dict.
+
+    APPEND-ONLY. ``frontend/src/api/types.ts`` consumes this exact shape, and
+    so does :func:`engine.project_db._finding_row_from_hit`; keys may be added
+    but never reordered, renamed or dropped.
+
+    THE SERIALIZER PROMOTES, THE READER DOES NOT DIG. ``_finding_row_from_hit``
+    reads ``value_hex``, ``canonical_phase``, ``cipher`` and ``confirmed_by``
+    at the TOP LEVEL of the hit dict. ``cipher`` / ``confirmed_by`` are produced
+    by the verification path inside ``metadata``, so on the serialized path
+    (``engine/batch.py`` -> ``serialize_result`` -> ``persist_report``, which
+    is supported but dormant — see :func:`serialize_report`) the reader found
+    neither and every confirmed key persisted with an empty
+    ``value_hex`` and no confirmation marker. The fix is HERE rather than in the
+    reader: the reader is shared with hit dicts that never had a ``metadata``
+    sub-dict at all (the brute-force / oracle producers pass these keys flat),
+    so teaching it to dig would only add a second spelling. The metadata copy is
+    KEPT as well -- this mirrors, it does not move.
+    """
+    metadata = _convert_value(hit.metadata)
     return {
         "secret_type": hit.secret_type,
         "offset": hit.offset,
@@ -36,7 +55,14 @@ def serialize_hit(hit) -> Dict[str, Any]:
         "run_id": hit.run_id,
         "confidence": hit.confidence,
         "verified": hit.verified,
-        "metadata": _convert_value(hit.metadata),
+        "metadata": metadata,
+        "value_hex": hit.value_hex,
+        "canonical_phase": hit.canonical_phase,
+        # Mirrors of the two verification labels, promoted out of `metadata`
+        # so the shared findings/ground_truth reader sees them.
+        "cipher": metadata.get("cipher") if isinstance(metadata, dict) else None,
+        "confirmed_by": (metadata.get("confirmed_by")
+                         if isinstance(metadata, dict) else None),
     }
 
 
@@ -52,7 +78,29 @@ def serialize_static_region(region) -> Dict[str, Any]:
 
 
 def serialize_report(report) -> Dict[str, Any]:
-    """Serialize a LibraryReport to a JSON-compatible dict."""
+    """Serialize a LibraryReport to a JSON-compatible dict.
+
+    APPEND-ONLY, for the same reason as :func:`serialize_hit`.
+
+    The five appended keys are the corpus axes
+    :meth:`engine.project_db.ProjectDB.persist_report` reads. That writer's
+    axis columns were all default-valued because the serializer dropped the
+    keys — and, until :meth:`engine.pipeline.AnalysisPipeline.analyze_library`
+    was taught to populate them, because no production constructor set them
+    either. The tests hid both by hand-building the wide dict.
+
+    WHICH PATH IS LIVE. ``persist_report`` is SUPPORTED BUT DORMANT, not "the
+    ONLY production path into the project database" as this docstring and its
+    neighbours used to say. It has no production caller at all: it is reached
+    only from ``engine/batch.py``, and only when ``BatchRunner`` was handed a
+    ``project_db`` — which neither production construction
+    (``app/pipeline/batch_task_runner.py``, ``cli/dataset.py``) does, and
+    ``run_analysis_request`` builds its ``AnalysisPipeline`` with
+    ``project_db=None``. The writer that actually runs today is
+    ``engine.pipeline.AnalysisPipeline._persist_report``, which reads the same
+    axes straight off the :class:`engine.results.LibraryReport`. Both must
+    carry them, so this serializer stays in lockstep.
+    """
     return {
         "library": report.library,
         "protocol_version": report.protocol_version,
@@ -61,6 +109,11 @@ def serialize_report(report) -> Dict[str, Any]:
         "hits": [serialize_hit(h) for h in report.hits],
         "static_regions": [serialize_static_region(r) for r in report.static_regions],
         "metadata": _convert_value(report.metadata),
+        "canonical_phase": report.canonical_phase,
+        "library_version": report.library_version,
+        "scenario": report.scenario,
+        "protocol": report.protocol,
+        "version_axis": report.version_axis,
     }
 
 
@@ -108,7 +161,27 @@ def summarize_result(result: Union["AnalysisResult", Dict[str, Any]]) -> Dict[st
 
 
 def deserialize_hit(data: Dict[str, Any]):
-    """Deserialize a dict into a SecretHit."""
+    """Deserialize a dict into a SecretHit.
+
+    Widened in lockstep with :func:`serialize_hit` -- a key added to one and
+    not the other is silently lost on every round trip.
+
+    ``cipher`` / ``confirmed_by`` are deliberately NOT read back: they are
+    mirrors of ``metadata`` entries, which round-trip through ``metadata``
+    itself, and :class:`engine.results.SecretHit` has no field for them.
+
+    WARNING FOR ANY FUTURE CALLER — a promote-then-not-read-back round trip
+    LOSES a top-level-only label. ``serialize_hit(deserialize_hit(d))`` turns
+    ``confirmed_by="pcap"`` into ``None`` whenever the label was stamped at
+    the top level WITHOUT a matching ``metadata`` entry, because this function
+    reconstructs the labels from ``metadata`` alone — a pcap proof would come
+    back out relabelled as a plain verifier guess. That is not live today
+    (this function has no production caller), but ``app/tools_pipeline.py``
+    already stamps ``hit["confirmed_by"]`` top-level-only on brute-force hit
+    dicts, so a caller that ever routes those through here would hit it. Fix
+    it by mirroring the label INTO ``metadata`` at the producer, not by
+    inventing a ``SecretHit`` field the writers do not read.
+    """
     from .results import SecretHit
     return SecretHit(
         secret_type=data.get("secret_type", ""),
@@ -121,11 +194,18 @@ def deserialize_hit(data: Dict[str, Any]):
         confidence=data.get("confidence", 1.0),
         verified=data.get("verified"),
         metadata=data.get("metadata", {}),
+        value_hex=data.get("value_hex"),
+        canonical_phase=data.get("canonical_phase", "") or "",
     )
 
 
 def deserialize_report(data: Dict[str, Any]):
-    """Deserialize a dict into a LibraryReport."""
+    """Deserialize a dict into a LibraryReport.
+
+    Widened in lockstep with :func:`serialize_report`. Each fallback is the
+    column default, so a narrow (pre-axis) dict deserializes to exactly the
+    report it used to.
+    """
     from .results import LibraryReport
     return LibraryReport(
         library=data.get("library", ""),
@@ -135,6 +215,12 @@ def deserialize_report(data: Dict[str, Any]):
         hits=[deserialize_hit(h) for h in data.get("hits", [])],
         static_regions=[],  # StaticRegion reconstruction deferred
         metadata=data.get("metadata", {}),
+        canonical_phase=data.get("canonical_phase", "") or "",
+        library_version=data.get("library_version", "unknown") or "unknown",
+        version_axis=(data.get("version_axis", "protocol_version")
+                      or "protocol_version"),
+        scenario=data.get("scenario", "") or "",
+        protocol=data.get("protocol", "") or "",
     )
 
 
@@ -196,4 +282,6 @@ def serialize_dataset_info(info) -> Dict[str, Any]:
         "phases": _convert_value(info.phases),
         "normalized_phases": _convert_value(info.normalized_phases),
         "total_runs": info.total_runs,
+        "runs_with_capture": info.runs_with_capture,
+        "captures": _convert_value(info.captures),
     }

@@ -42,6 +42,10 @@ EXPECTED_TOOLS = {
     # Phase 1 pcap oracle: parse an uploaded capture and enumerate its TLS
     # sessions (client randoms) so a recovered key can be matched to traffic.
     "inspect_pcap",
+    # A4: the exploratory differential path — N dumps in, ranked candidates
+    # out, with no oracle and no capture. The MCP surface is the reason it
+    # returns its regions inline: an agent handed a file path cannot read it.
+    "analyze_candidates",
 }
 
 

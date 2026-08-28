@@ -116,9 +116,17 @@ def test_ground_truth_opt_in_true(tmp_path):
 
 
 @needs_duckdb
-def test_ground_truth_default_false(tmp_path):
+def test_ground_truth_opt_out(tmp_path):
+    """An explicit ``persist_ground_truth_labels=False`` still writes no labels.
+
+    ``persist_report`` now defaults the flag to True (the W5 ledger was
+    permanently empty while it was opt-in and nothing set it), so this asserts
+    the opt-out rather than the default. The new default is covered by
+    ``tests/test_project_db.py::test_persist_report_ground_truth_default_*``.
+    """
     with ProjectDB(tmp_path / "t.db") as db:
-        db.persist_report(_report([_confirmed_hit()]))
+        db.persist_report(_report([_confirmed_hit()]),
+                          persist_ground_truth_labels=False)
         assert db.list_ground_truth() == []
 
 
@@ -177,3 +185,145 @@ def test_ground_truth_noop_when_unavailable(tmp_path):
     db.persist_ground_truth("run", [_confirmed_hit()])  # no error
     assert db.list_ground_truth() == []
     assert db.list_ground_truth("run") == []
+
+
+# -- corpus axes on the brute-force wrapper --------------------------------
+#
+# The ledger's axis columns exist so the W5 proof ledger can be sliced by
+# library / protocol version / scenario / run / phase without any reader
+# re-deriving one from a path. `record_ground_truth_run` is the ONLY production
+# writer on the oracle path, so if it drops an axis the column is empty forever.
+
+#: One real corpus dump path (see core.corpus_axes for the layout). Used as a
+#: STRING only: axis resolution is pure path decomposition, so these tests need
+#: no corpus tree on disk.
+CORPUS_DUMP = (
+    "/Users/danielbaier/Desktop/tls_dumps/TLS13/"
+    "100_iterations_Abort_KeyUpdate/openssl/openssl_run_13_1/"
+    "20251020_171845_606711_pre_server_key_update.dump"
+)
+
+
+@needs_duckdb
+def test_record_ground_truth_run_round_trips_every_axis(tmp_path):
+    """Every axis keyword reaches the ground_truth row it describes."""
+    with ProjectDB(tmp_path / "t.db") as db:
+        rid = db.record_ground_truth_run(
+            [{"offset": 585148, "length": 32, "key_hex": "aa" * 32}],
+            confirmed_by="pcap",
+            project_name="openssl_13",
+            library="openssl",
+            version="13",
+            library_version="3.0.2",
+            scenario="100_iterations_Abort_KeyUpdate",
+            run_number=1,
+            phase="pre_server_key_update",
+            canonical_phase="handshake_end",
+            dump_id="dump-42",
+            dump_path=CORPUS_DUMP,
+        )
+        row = db.list_ground_truth(rid)[0]
+
+    assert row["library"] == "openssl"
+    assert row["version"] == "13"
+    assert row["library_version"] == "3.0.2"
+    assert row["scenario"] == "100_iterations_Abort_KeyUpdate"
+    assert row["run_number"] == 1
+    assert row["phase"] == "pre_server_key_update"
+    assert row["canonical_phase"] == "handshake_end"
+    assert row["dump_id"] == "dump-42"
+    assert row["dump_path"] == CORPUS_DUMP
+    # Derived, never passed in: a pcap label is the strongest evidence class.
+    assert row["method"] == "oracle"
+
+
+@needs_duckdb
+def test_record_ground_truth_run_stamps_axes_on_project_and_run(tmp_path):
+    """The axes also land on the project + analysis_runs rows it creates.
+
+    A ledger row is reachable by run_id, so a reader that starts from the run
+    (the corpus dashboard does) must see the same axes without joining back.
+    """
+    with ProjectDB(tmp_path / "t.db") as db:
+        rid = db.record_ground_truth_run(
+            [{"offset": 0, "length": 32, "key_hex": "bb" * 32}],
+            confirmed_by="oracle",
+            project_name="openssl_13",
+            library="openssl",
+            version="13",
+            library_version="3.0.2",
+            scenario="100_iterations_Abort_KeyUpdate",
+            run_number=7,
+            phase="pre_abort",
+            canonical_phase="second_event",
+            dump_id="dump-9",
+        )
+        project = db.list_projects()[0]
+        run = db.project_timeline(project["project_id"])[0]
+
+    assert project["library"] == "openssl"
+    assert project["protocol_version"] == "13"
+    assert project["library_version"] == "3.0.2"
+    assert project["scenario"] == "100_iterations_Abort_KeyUpdate"
+    assert run["run_id"] == rid
+    assert run["dump_id"] == "dump-9"
+    assert run["library"] == "openssl"
+    assert run["protocol_version"] == "13"
+    assert run["scenario"] == "100_iterations_Abort_KeyUpdate"
+    assert run["run_number"] == 7
+    assert run["phase"] == "pre_abort"
+    assert run["canonical_phase"] == "second_event"
+
+
+@needs_duckdb
+def test_record_ground_truth_run_without_axes_keeps_historical_defaults(tmp_path):
+    """An ad-hoc dump (no axes resolvable) still writes a usable row.
+
+    The axes are all optional, so the pre-existing call shape — hits +
+    confirmed_by only — must keep working and leave every axis column at its
+    documented default rather than NULL.
+    """
+    with ProjectDB(tmp_path / "t.db") as db:
+        rid = db.record_ground_truth_run(
+            [{"offset": 16, "length": 48, "key_hex": "cc" * 48}],
+            confirmed_by="oracle",
+        )
+        row = db.list_ground_truth(rid)[0]
+
+    assert row["key_hex"] == "cc" * 48
+    assert row["value_hex"] == "cc" * 48
+    assert row["confirmed_by"] == "oracle"
+    assert row["method"] == "oracle"
+    assert row["library"] == ""
+    assert row["version"] == ""
+    assert row["library_version"] == "unknown"
+    assert row["scenario"] == ""
+    assert row["run_number"] == 0
+    assert row["phase"] == ""
+    assert row["canonical_phase"] == ""
+    assert row["dump_path"] == ""
+
+
+@needs_duckdb
+def test_persist_ground_truth_hit_dump_path_beats_the_batch_default(tmp_path):
+    """A hit carrying its own ``dump_path`` wins over the per-call default.
+
+    ``dump_path`` gained a per-call default alongside the other axes; the
+    documented "a hit dict wins" precedence must survive that.
+    """
+    with ProjectDB(tmp_path / "t.db") as db:
+        pid = db.create_project("proj")
+        rid = db.start_run(pid)
+        db.persist_ground_truth(
+            rid,
+            [
+                {"offset": 0, "length": 32, "value_hex": "aa" * 32},
+                {"offset": 32, "length": 32, "value_hex": "bb" * 32,
+                 "dump_path": "/other/run/b.dump"},
+            ],
+            dump_path=CORPUS_DUMP,
+        )
+        rows = sorted(db.list_ground_truth(rid), key=lambda r: r["offset"])
+
+    assert rows[0]["dump_path"] == CORPUS_DUMP
+    assert rows[1]["dump_path"] == "/other/run/b.dump"

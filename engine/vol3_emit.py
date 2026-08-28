@@ -178,7 +178,11 @@ def emit_plugin_for_hit(
     pattern["vtypes"] = vtypes
     pattern["fields"] = fields
 
-    yara_rule = YaraExporter.export(pattern)
+    # The key locator is known exactly here (the hit is what defined the
+    # window), so the YARA rule carries it too -- not just the vol3 template.
+    yara_rule = YaraExporter.export(
+        pattern, key_offset=key_offset_in_window, key_length=key_length,
+    )
     source = Volatility3Exporter.export(
         pattern,
         plugin_name=name,

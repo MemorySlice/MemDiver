@@ -42,6 +42,8 @@ import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { NotificationStack } from "@/components/NotificationStack";
 import { ConsensusChart } from "@/components/charts/ConsensusChart";
+import { CandidatePanel } from "@/components/charts/CandidatePanel";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ArchitectPlaceholder } from "@/components/research/ArchitectPlaceholder";
 import { StringsPanel } from "@/components/strings/StringsPanel";
 import { ExperimentPanel } from "@/components/experiment/ExperimentPanel";
@@ -659,7 +661,17 @@ function BottomTabs() {
             <StringsPanel dumpPath={dumpPath} />
           )
         )}
-        {tab === "consensus" && <ConsensusChart onNavigate={setTab} />}
+        {tab === "consensus" && (
+          <div className="space-y-2">
+            <ConsensusChart onNavigate={setTab} />
+            {/* The ranked candidate list belongs under the histogram it
+                explains, not behind a new tab: the analyst who just ran a
+                consensus is already here. */}
+            <ErrorBoundary>
+              <CandidatePanel />
+            </ErrorBoundary>
+          </div>
+        )}
         {tab === "live-consensus" && <ConsensusBuilder />}
         {tab === "architect" && <ArchitectPlaceholder />}
         {tab === "experiment" && <ExperimentPanel />}

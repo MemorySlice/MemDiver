@@ -198,3 +198,33 @@ def test_find_all_vas_no_duplicate_across_overlap(tmp_path) -> None:
     with GCoreDumpSource(path) as src:
         hits = src.find_all(b"NEED", view="vas")
     assert hits == [4]
+
+
+# -- VA alignment ------------------------------------------------------------
+
+
+def test_gcore_declares_va_alignment_support() -> None:
+    """The PT_LOAD table is a VA map, so consensus may align on it."""
+    from memdiver.engine.consensus_va import supports_va_alignment
+
+    assert GCoreDumpSource.supports_va_alignment is True
+    with GCoreDumpSource(_gcore_path()) as src:
+        assert supports_va_alignment(src)
+
+
+def test_va_page_index_covers_the_whole_vas_stream() -> None:
+    """Every mapped byte is indexed exactly once, at its own address.
+
+    The page index is what cross-dump VA alignment intersects, so a page it
+    misses is a page that can never be compared.
+    """
+    from memdiver.core.region_align import build_va_page_index, captured_byte_count
+
+    with GCoreDumpSource(_gcore_path()) as src:
+        index = build_va_page_index(0, src)
+        assert captured_byte_count(index.region_map) == src.size_for("vas")
+        # Each indexed page resolves to the same file offset the source does.
+        for key, region in list(index.region_map.regions.items())[:5]:
+            assert index.file_offsets[key] == src.va_to_file_offset(
+                region.source_base_addr
+            )

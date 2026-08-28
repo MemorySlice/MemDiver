@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
 from memdiver.core.input_schemas import OUTPUT_FORMATS
 
 
@@ -47,6 +48,33 @@ class ConsensusRequest(KeyMaterialFields):
 
     dump_paths: list[str]
     normalize: bool = False
+
+
+class AnalysisCandidatesRequest(KeyMaterialFields):
+    """Request body for the exploratory candidate search (no oracle, no pcap).
+
+    Mirrors ``app.tools_pipeline.analyze_candidates`` 1:1 so the web surface
+    cannot express less than the CLI or MCP one. ``min_variance`` stays
+    ``None`` by default on purpose: the producer resolves it against
+    ``classes`` (3000 with no class named, 0 with one), and a wire default of
+    3000 here would silently re-impose the KEY_CANDIDATE floor on every
+    multi-class query the UI sends.
+    """
+
+    dump_paths: list[str]
+    classes: list[str] | None = None
+    min_variance: float | None = None
+    min_region: int = 16
+    max_region: int = 0
+    alignment: int = 8
+    block_size: int = 32
+    density_threshold: float = 0.5
+    entropy_window: int = 32
+    entropy_threshold: float = 4.5
+    order: str = "rank"
+    max_returned: int = DEFAULT_MAX_RETURNED_REGIONS
+    normalize: bool = False
+    project_id: str = ""
 
 
 class AnalyzeFileRequest(KeyMaterialFields):

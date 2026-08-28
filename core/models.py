@@ -119,6 +119,15 @@ class RunDirectory:
     secret_source: str = "none"
     phase_mappings: Dict[str, str] = field(default_factory=dict)
     meta: Optional["DatasetMeta"] = None
+    capture_path: Optional[Path] = None
+    # Three states, mirroring the ``secrets`` + ``secret_source`` pairing above:
+    #   "present"    — a capture file was found and has a non-zero size
+    #   "absent"     — no capture file exists for this run
+    #   "unreadable" — a capture file exists but is zero-byte or cannot be
+    #                  stat-ed. Reported distinctly from "absent" so a corpus
+    #                  denominator is never silently deflated by a truncated
+    #                  or permission-denied capture.
+    capture_status: str = "absent"
 
     @property
     def tls_version(self) -> str:

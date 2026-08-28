@@ -55,6 +55,13 @@ class ResourceOracle:
         self.protocol = getattr(resource, "protocol", "")
         challenges = list(resource.challenges())
         if max_challenges is not None:
+            # The cap silently discards verification work; say so at INFO so a
+            # "0 confirmed" result can never be mistaken for full coverage.
+            if len(challenges) > max_challenges:
+                logger.info(
+                    "max_challenges=%d truncated %d challenges to %d",
+                    max_challenges, len(challenges), max_challenges,
+                )
             challenges = challenges[:max_challenges]
         # Pre-group challenges by derivation signature so ``verify()`` derives the
         # (session-constant) key material ONCE per distinct session/suite per

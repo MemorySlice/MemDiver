@@ -6,7 +6,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from .yara_exporter import YaraExporter
+from .yara_exporter import YaraExporter, key_locator_from_pattern
 
 logger = logging.getLogger("memdiver.architect.volatility3_exporter")
 
@@ -281,7 +281,10 @@ class Volatility3Exporter:
                 *vtypes*, and *fields* by ``vol3_emit``.
             plugin_name: Plugin class name (defaults to CamelCase of pattern name).
             description: Human-readable description.
-            yara_rule: Pre-built YARA rule string. Generated if not provided.
+            yara_rule: Pre-built YARA rule string. Generated if not
+                provided, in which case the pattern's own
+                ``key_offset``/``key_length`` (when present) become YARA
+                metas on the generated rule.
 
         Returns:
             Complete Python source code for a Volatility3 plugin.
@@ -289,7 +292,16 @@ class Volatility3Exporter:
         raw_name = pattern.get("name", "memdiver_pattern")
         class_name = plugin_name or ("MemDiverScan" + _sanitize_class_name(raw_name))
         desc = description or f"Scan for MemDiver pattern: {raw_name}"
-        rule = yara_rule or YaraExporter.export(pattern)
+        # No caller-supplied rule: build one, carrying whatever key locator
+        # the pattern dict itself holds (vol3_emit and the experiment
+        # orchestrator enrich it; a bare PatternGenerator pattern does not,
+        # and the metas are then omitted rather than invented). Note the
+        # template's KEY_OFFSET/KEY_LENGTH below deliberately keep their
+        # 0/pattern-length fallbacks -- the substitution needs a literal.
+        meta_key_offset, meta_key_length = key_locator_from_pattern(pattern)
+        rule = yara_rule or YaraExporter.export(
+            pattern, key_offset=meta_key_offset, key_length=meta_key_length,
+        )
         fallback_hex, needle_offset = _longest_static_run(
             pattern.get("wildcard_pattern", ""),
         )

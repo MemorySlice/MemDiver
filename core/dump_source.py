@@ -11,12 +11,13 @@ from typing import (
     Iterator,
     List,
     Literal,
+    Optional,
     Protocol,
     Tuple,
     runtime_checkable,
 )
 
-from .dump_io import DumpReader, find_all_offsets
+from .dump_io import DumpReader, find_all_offsets, find_first_offset
 
 logger = logging.getLogger("memdiver.core.dump_source")
 
@@ -103,6 +104,18 @@ class DumpSource(Protocol):
         """Return all offsets of ``needle`` within *view* (may overlap)."""
         ...
 
+    # NOTE: ``find_first`` is deliberately NOT a member of this Protocol.
+    # This Protocol is ``runtime_checkable``, and such a check verifies method
+    # PRESENCE, so adding a member here would instantly make every existing
+    # duck-typed or third-party source registered via
+    # :func:`register_dump_source` fail ``isinstance(obj, DumpSource)``. (A
+    # default body would not help: Protocol defaults are only inherited by
+    # explicit subclasses, and the isinstance check still only looks at
+    # attribute presence.) Every built-in source implements ``find_first``
+    # anyway; callers must go through the tolerant module-level helper
+    # :func:`find_first_in`, which falls back to ``find_all`` for sources that
+    # predate it.
+
     def iter_ranges(self, *args: Any, **kwargs: Any) -> Iterator[Tuple[int, int, Any]]:
         """Iterate captured ranges.
 
@@ -121,6 +134,43 @@ def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
     """Overlapping-aware byte search over *data* (delegates to the shared
     :func:`core.dump_io.find_all_offsets` helper used by ``DumpReader``)."""
     return find_all_offsets(data, needle)
+
+
+def _find_first_in_bytes(data: bytes, needle: bytes) -> Optional[int]:
+    """Presence-only byte search over *data* (delegates to the shared
+    :func:`core.dump_io.find_first_offset` helper used by ``DumpReader``)."""
+    return find_first_offset(data, needle)
+
+
+def find_first_in(
+    source: Any, needle: bytes, view: "str | None" = None,
+) -> Optional[int]:
+    """Presence-only search over a dump *source*, tolerant of older sources.
+
+    Returns the first offset of ``needle`` in the requested *view*, or ``None``
+    when it does not occur. Uses the source's own ``find_first`` when it has
+    one (a single ``.find()`` with an early exit — the cheap path a
+    corpus-scale "is this secret present?" sweep needs); otherwise falls back
+    to the first element of ``find_all``, so a custom source registered via
+    :func:`register_dump_source` keeps working without implementing a new
+    method.
+
+    This fallback is the reason ``find_first`` is NOT part of the
+    :class:`DumpSource` Protocol: that Protocol is ``runtime_checkable``, so
+    widening it would break ``isinstance(obj, DumpSource)`` for every existing
+    duck-typed source. Prefer this helper over calling the method directly.
+
+    ``view`` is forwarded only when the caller supplies it, so each
+    implementation keeps its own default view (``"raw"`` for
+    :class:`RawDumpSource` and the region-table sources, ``"vas"`` for
+    :class:`MslDumpSource`).
+    """
+    kwargs = {} if view is None else {"view": view}
+    finder = getattr(source, "find_first", None)
+    if callable(finder):
+        return finder(needle, **kwargs)
+    hits = source.find_all(needle, **kwargs)
+    return hits[0] if hits else None
 
 
 class RawDumpSource:
@@ -146,7 +196,27 @@ class RawDumpSource:
     def size(self) -> int:
         return self._reader.size
 
+    @staticmethod
+    def _check_view(view: ViewMode) -> None:
+        """Reject an unknown view, as every other source already does.
+
+        A flat dump has no region table, so its raw and virtual views coincide
+        and ``"vas"``/``"va"`` are accepted as aliases of ``"raw"``. What is NOT
+        acceptable is silently treating a TYPO as the default: this class backs
+        every plain ``.dump``/``.bin`` in the corpus, so a caller that passed
+        ``view="vsa"`` used to get raw-view results here while the very same
+        typo is a loud ``ValueError`` on MSL, gcore and the regioned sources.
+        A corpus sweep that mixes formats would then get silently
+        format-dependent behaviour from one argument.
+        """
+        if view not in ("raw", "vas", "va"):
+            raise ValueError(
+                f"Unknown view: {view!r} (expected 'raw'; 'vas'/'va' are "
+                "accepted as aliases because a flat dump's views coincide)"
+            )
+
     def size_for(self, view: ViewMode = "raw") -> int:
+        self._check_view(view)
         return self._reader.size
 
     def open(self) -> None:
@@ -167,16 +237,24 @@ class RawDumpSource:
             self._reader.open()
 
     def read_all(self, view: ViewMode = "raw") -> bytes:
+        self._check_view(view)
         self._ensure_open()
         return self._reader.read_all()
 
     def read_range(self, offset: int, length: int, view: ViewMode = "raw") -> bytes:
+        self._check_view(view)
         self._ensure_open()
         return self._reader.read_range(offset, length)
 
     def find_all(self, needle: bytes, view: ViewMode = "raw") -> List[int]:
+        self._check_view(view)
         self._ensure_open()
         return self._reader.find_all(needle)
+
+    def find_first(self, needle: bytes, view: ViewMode = "raw") -> Optional[int]:
+        self._check_view(view)
+        self._ensure_open()
+        return self._reader.find_first(needle)
 
     def iter_ranges(self) -> Iterator[Tuple[int, int, bytes]]:
         data = self.read_all()
@@ -426,6 +504,29 @@ class MslDumpSource:
                 offsets.append(flat_offset + idx)
             flat_offset += len(chunk)
         return offsets
+
+    def find_first(self, needle: bytes, view: ViewMode = "vas") -> Optional[int]:
+        """First offset of ``needle`` in *view*, or ``None`` (presence query).
+
+        Mirrors :meth:`find_all` exactly, including its per-captured-run
+        semantics: each run is searched on its own, so a needle straddling the
+        boundary between two captured runs is not reported by either method.
+        The only difference is the early exit - iteration stops at the first
+        hit, so a present secret costs one partial pass rather than a full
+        VAS projection.
+        """
+        if view == "raw":
+            return self._ensure_raw_reader().find_first(needle)
+        self._require_vas(view)
+        if self._reader is None:
+            return None
+        flat_offset = 0
+        for _vaddr, _length, chunk in self.iter_ranges():
+            idx = _find_first_in_bytes(chunk, needle)
+            if idx is not None:
+                return flat_offset + idx
+            flat_offset += len(chunk)
+        return None
 
     def va_to_vas_offset(self, va: int) -> "int | None":
         """Translate a virtual address to a flat VAS offset.

@@ -20,6 +20,19 @@ from .consensus import _load_welford_session
 logger = logging.getLogger("memdiver.cli")
 
 
+def _split_classes(spec):
+    """Split a ``--classes key_candidate,pointer`` flag into class names.
+
+    ``None`` / empty stays ``None`` so the producer leaves the class gate a
+    pass-through. Unknown names are rejected downstream by
+    ``candidate_pipeline.resolve_byte_classes``, which owns the one spelling of
+    that error for every surface.
+    """
+    if not spec:
+        return None
+    return [name.strip() for name in spec.split(",") if name.strip()]
+
+
 def _cmd_search_reduce(args: argparse.Namespace) -> int:
     """Run variance → alignment → entropy reduction on a finalized session.
 
@@ -30,6 +43,11 @@ def _cmd_search_reduce(args: argparse.Namespace) -> int:
     materialises that variance into a scratch ``variance.npy`` and hands it to
     the producer, then relays the persisted ``candidates.json`` payload to the
     CLI's ``--output`` (the payload the CLI has always emitted, verbatim).
+
+    ``--classes`` / ``--max-region`` / ``--order`` reach the same producer
+    parameters. They are read with ``getattr`` defaults because this handler is
+    also driven by hand-built ``argparse.Namespace`` objects that predate the
+    flags; an omitted flag reproduces the pre-flag reduction exactly.
     """
     import tempfile
 
@@ -55,12 +73,61 @@ def _cmd_search_reduce(args: argparse.Namespace) -> int:
             entropy_window=args.entropy_window,
             entropy_threshold=args.entropy_threshold,
             min_region=args.min_region,
+            max_region=getattr(args, "max_region", 0),
+            classes=_split_classes(getattr(args, "classes", None)),
+            order=getattr(args, "order", "offset"),
             key_file=args.key_file,
             passphrase=args.passphrase,
             kem_key_file=args.kem_key_file,
             on_source=_warn_tag_status,
         )
         payload = json.loads((Path(scratch) / "candidates.json").read_text())
+    _write_output(payload, args.output)
+    return 0
+
+
+def _cmd_analyze_candidates(args: argparse.Namespace) -> int:
+    """Rank candidate regions across N dumps with no oracle and no capture.
+
+    The headless twin of the web's ``POST /api/analysis/candidates``: it routes
+    straight through ``app.tools_pipeline.analyze_candidates``, so the
+    exploratory path (consensus → class/length/entropy filters → ranking) has
+    one implementation across every surface. Unlike ``search-reduce`` it needs
+    no ``--state`` session and no precomputed variance — dump paths in, ranked
+    regions out — and unlike ``brute-force`` it confirms nothing, which is what
+    makes it reachable for an analyst who has no oracle yet.
+
+    The full payload (regions, class histogram, alignment provenance, resolved
+    thresholds, diagnostics) is written through ``_write_output``; the
+    alignment warnings and diagnostics additionally go to stderr, where an
+    operator piping the JSON onward still sees them.
+    """
+    from memdiver.app.tools_pipeline import analyze_candidates
+
+    payload = analyze_candidates(
+        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        classes=_split_classes(getattr(args, "classes", None)),
+        min_variance=args.min_variance,
+        min_region=args.min_region,
+        max_region=args.max_region,
+        alignment=args.alignment,
+        block_size=args.block_size,
+        density_threshold=args.density_threshold,
+        entropy_window=args.entropy_window,
+        entropy_threshold=args.entropy_threshold,
+        order=args.order,
+        max_returned=args.max_returned,
+        normalize=args.normalize,
+        project_id=args.project_id,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    for warning in payload["warnings"]:
+        print(f"memdiver: WARNING — {warning}", file=sys.stderr)
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
     _write_output(payload, args.output)
     return 0
 
@@ -89,6 +156,8 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
             oracle_config_path=args.oracle_config,
             pcap_path=args.pcap,
             tls_client_random=args.tls_client_random,
+            pcap_max_records=args.pcap_max_records,
+            pcap_max_challenges=args.pcap_max_challenges,
             persist_ground_truth=getattr(args, "persist_ground_truth", False),
             key_sizes=key_sizes,
             stride=args.stride,
@@ -411,7 +480,11 @@ def _cmd_inspect_pcap(args: argparse.Namespace) -> int:
     """
     from memdiver.app.tools_pipeline import inspect_pcap
 
-    result = inspect_pcap(pcap_path=args.pcap)
+    result = inspect_pcap(
+        pcap_path=args.pcap,
+        pcap_max_records=args.pcap_max_records,
+        pcap_max_challenges=args.pcap_max_challenges,
+    )
     _write_output(result, getattr(args, "output", None))
     return 0
 

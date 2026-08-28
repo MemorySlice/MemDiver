@@ -51,6 +51,12 @@ export interface PhaseInfo {
   runs: number;
 }
 
+// Mirrors `engine.serializer.serialize_hit` exactly. APPEND-ONLY, and kept in
+// lockstep by `tests/test_serializer.py`, which parses this very file and
+// fails if the serializer emits a key this interface cannot see. Everything
+// after `confidence` is optional here because a hit built by an older producer
+// (or read back from an archived JSON result) may not carry it -- not because
+// the serializer omits it: it always emits all fourteen.
 export interface SecretHit {
   secret_type: string;
   offset: number;
@@ -60,8 +66,21 @@ export interface SecretHit {
   phase: string;
   run_id: number;
   confidence?: number;
+  // `null` is a real value, not "absent": the serializer distinguishes "the
+  // producer recorded nothing" from a recorded false/empty result.
+  verified?: boolean | null;
+  metadata?: Record<string, unknown>;
+  value_hex?: string | null;
+  canonical_phase?: string;
+  // Mirrors of the two verification labels, promoted out of `metadata` by the
+  // serializer. `confirmed_by === "pcap"` is what backs the "Verified via pcap
+  // capture" provenance badge (see `components/results/provenance.ts`).
+  cipher?: string | null;
+  confirmed_by?: string | null;
 }
 
+// Mirrors `engine.serializer.serialize_report`. APPEND-ONLY, same parity guard.
+// The five trailing fields are the corpus axes both persistence paths read.
 export interface LibraryReport {
   library: string;
   protocol_version: string;
@@ -70,11 +89,20 @@ export interface LibraryReport {
   hits: SecretHit[];
   static_regions: StaticRegion[];
   metadata: Record<string, unknown>;
+  canonical_phase?: string;
+  library_version?: string;
+  scenario?: string;
+  protocol?: string;
+  version_axis?: string;
 }
 
+// Mirrors `engine.serializer.serialize_static_region`, same parity guard.
 export interface StaticRegion {
   start: number;
   end: number;
+  // Derived server-side (`end - start`); optional so a hand-built region in a
+  // test or an older archived result still type-checks.
+  length?: number;
   mean_variance: number;
   classification: string;
 }
@@ -352,10 +380,19 @@ export interface DatasetRunDump {
   phase: string | null;
 }
 
+/** Three-state verdict from RunDiscovery._find_capture. */
+export type DatasetRunCaptureStatus = 'present' | 'absent' | 'unreadable';
+
+export interface DatasetRunCapture {
+  path: string | null;
+  status: DatasetRunCaptureStatus;
+}
+
 export interface DatasetRun {
   path: string;
   meta: Record<string, unknown> | null;
   dumps: DatasetRunDump[];
+  capture: DatasetRunCapture;
 }
 
 export interface DatasetRunsResponse {

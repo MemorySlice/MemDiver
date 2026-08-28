@@ -12,7 +12,7 @@ concrete subclasses in :mod:`core.dump_sources.gdb_raw` and
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from memdiver.core.dump_io import DumpReader
 from memdiver.core.proc_maps_parser import MapRegion, parse_maps_file
@@ -30,6 +30,14 @@ class _RegionedRawSource:
 
     # Subclasses override.
     format_name: str = "regioned_raw"
+
+    #: The ``.maps`` sidecar is a real virtual-address map, so cross-dump
+    #: consensus can align these captures by VA
+    #: (:mod:`memdiver.engine.consensus_va`) instead of falling back to flat
+    #: file offsets. Same declaration as :class:`GCoreDumpSource`; both expose
+    #: ``iter_ranges`` -> ``(start_va, end_va, file_offset)``, which is the
+    #: whole contract the VA path needs.
+    supports_va_alignment: bool = True
 
     def __init__(self, bin_path: Path, maps_path: "Path | None" = None):
         self._bin_path = Path(bin_path)
@@ -227,6 +235,38 @@ class _RegionedRawSource:
         raw_hits = self._reader.find_all(needle)
         usable_end = self._cum_offsets[self._usable_region_count] if self._cum_offsets else 0
         return [h for h in raw_hits if h < usable_end]
+
+    def find_first(self, needle: bytes, view: str = "raw") -> Optional[int]:
+        """First offset of ``needle`` in *view*, or ``None`` (presence query).
+
+        Agrees with ``find_all(needle, view)[0]`` while early-exiting on the
+        first hit. An empty needle yields ``None``, matching ``find_all``'s
+        empty-list guard for the same reason (it would otherwise match at
+        every byte).
+        """
+        if not needle:
+            return None
+        self._ensure_open()
+        if view == "raw":
+            return self._reader.find_first(needle)
+        if view != "vas":
+            raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
+        return self._find_first_vas(needle)
+
+    def _find_first_vas(self, needle: bytes) -> Optional[int]:
+        """First occurrence expressed as a flat VAS offset.
+
+        The bin already stores VAS as the concatenation of captured regions
+        (see :meth:`_find_all_vas`), so the first bin hit is the first VAS hit
+        provided it lands inside the usable prefix. Bin hits are ascending, so
+        a first hit at or beyond ``usable_end`` means there is no VAS hit at
+        all - it can only sit in the trailing padding.
+        """
+        hit = self._reader.find_first(needle)
+        if hit is None:
+            return None
+        usable_end = self._cum_offsets[self._usable_region_count] if self._cum_offsets else 0
+        return hit if hit < usable_end else None
 
     # -- VA translation -----------------------------------------------------
 

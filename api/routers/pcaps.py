@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings
@@ -135,9 +136,19 @@ async def upload_pcap(
 
 
 class ValidatePcapRequest(BaseModel):
-    """Body for ``POST /api/pcaps/validate``: a path to a persisted capture."""
+    """Body for ``POST /api/pcaps/validate``: a path to a persisted capture.
+
+    The two optional caps mirror ``POST /api/pipeline/run``'s fields of the same
+    name. Pass the values the run will use so the returned ``caps`` and the
+    ``records_truncated`` / ``challenges_truncated`` flags describe the caps
+    actually in force rather than the resource defaults. ``ge=1`` matches the
+    pipeline router: a cap below 1 verifies nothing, so it could only turn a
+    real key into an unexplained "0 confirmed".
+    """
 
     pcap_path: str
+    pcap_max_records: Optional[int] = Field(default=None, ge=1)
+    pcap_max_challenges: Optional[int] = Field(default=None, ge=1)
 
 
 @router.post("/validate")
@@ -173,4 +184,8 @@ def validate_pcap(
     if not pcap_path.is_file():
         raise HTTPException(status_code=400, detail="capture not found")
 
-    return inspect_pcap(pcap_path=str(pcap_path))
+    return inspect_pcap(
+        pcap_path=str(pcap_path),
+        pcap_max_records=body.pcap_max_records,
+        pcap_max_challenges=body.pcap_max_challenges,
+    )

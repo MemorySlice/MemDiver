@@ -36,7 +36,8 @@ _XREF_PRODUCERS = [
     "apply_structure_result",
 ]
 _PIPELINE_PRODUCERS = [
-    "consensus", "search_reduce", "brute_force", "n_sweep", "auto_floor",
+    "consensus", "analyze_candidates", "search_reduce", "brute_force",
+    "n_sweep", "auto_floor",
     "emit_plugin", "export_pattern", "verify_key_result", "experiment_result",
 ]
 _DATASET_PRODUCERS = [

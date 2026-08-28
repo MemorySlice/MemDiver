@@ -386,3 +386,82 @@ def test_brute_force_bogus_client_random_is_invalid_input(tmp_path):
         )
 
     assert exc_info.value.category is ErrorCategory.INVALID_INPUT
+
+
+# --------------------------------------------------------------------------- #
+# Honesty of the coverage report on the TLS 1.3 path, where one record yields a
+# WINDOW of challenges (the undetectable handshake->application epoch change),
+# so "records" and "challenges" are not the same number and the report has to
+# say both. Uses the genuine TLS 1.3 records built above.
+# --------------------------------------------------------------------------- #
+
+
+def _tls13_capture(tmp_path, record_count, name="tls13-many.pcap"):
+    pcap = tmp_path / name
+    _write_pcap(pcap,
+                client_records=[_client_hello(CIPHER13)]
+                + [_app_data_tls13(i) for i in range(record_count)],
+                server_records=[_server_hello(CIPHER13)])
+    return pcap
+
+
+def test_tls13_challenge_accounting_matches_the_emitted_stream(tmp_path):
+    """``challenges_available`` counts the sequence-window bursts, not records."""
+    pcap = _tls13_capture(tmp_path, 12)
+
+    capture = TlsPcapResource(str(pcap)).describe_capture()
+    session = capture["sessions"][0]
+    emitted = list(TlsPcapResource(str(pcap)).challenges())
+
+    assert session["app_records_seen"] == 12
+    assert session["records_returned"] == 12
+    # 12 records, window of 8: bursts 1,2,...,9,9,9,9 -> 72 challenges.
+    assert session["challenges_available"] == len(emitted) == 72
+    assert capture["challenges_returned"] == 72
+    assert capture["challenges_truncated"] is False
+
+
+def test_tls13_challenge_cap_reports_partial_record_coverage(tmp_path):
+    """A challenge budget mid-window: fewer records covered, and it says so."""
+    pcap = _tls13_capture(tmp_path, 12, name="tls13-capped.pcap")
+
+    capture = TlsPcapResource(str(pcap), max_challenges=5).describe_capture()
+    session = capture["sessions"][0]
+
+    assert capture["caps"]["max_challenges"] == 5
+    assert session["challenges_available"] == 72
+    assert capture["challenges_returned"] == 5
+    assert capture["challenges_truncated"] is True
+    # Bursts 1 + 2 + (2 of 3) exhaust the budget, so only 3 of the 12 records
+    # are reached at all -- reporting 12 here would have claimed full coverage.
+    assert session["records_returned"] == 3
+    assert capture["records_truncated"] is True
+
+    # The oracle owns the enforcement; the report must match what it keeps.
+    assert len(ResourceOracle(TlsPcapResource(str(pcap)), max_challenges=5)) == 5
+
+
+def test_builtin_oracle_config_caps_reach_the_report(tmp_path):
+    """One config drives both the oracle's cap and the resource's report of it.
+
+    ``build_oracle`` enforces ``max_challenges`` on the flat challenge list while
+    ``build_resource`` hands the same value to the resource for reporting, so
+    ``describe_capture`` describes the run that will actually happen.
+    """
+    config = {
+        "resource_type": "tls-pcap",
+        "pcap": _pcap(tmp_path),
+        "max_records_per_direction": 4,
+        "max_challenges": 1,
+    }
+
+    from memdiver.engine.resources.builtin_oracle import build_resource
+
+    capture = build_resource(config).describe_capture()
+    assert capture["caps"] == {"max_records_per_direction": 4, "max_challenges": 1}
+
+    # The single record this capture holds is still fully covered by a cap of 1.
+    assert capture["challenges_available"] == 1
+    assert capture["challenges_returned"] == 1
+    assert capture["challenges_truncated"] is False
+    assert len(build_oracle(config)) == 1

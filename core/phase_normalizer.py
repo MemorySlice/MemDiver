@@ -29,6 +29,54 @@ CANONICAL_PHASE_ORDER: List[str] = [
 
 _GENERIC_SUFFIXES: List[str] = ["handshake_end", "second_event"]
 
+#: Sort key for a dump filename carrying no parseable timestamp (the non-phased
+#: dataset dumps: ``gcore.core``, ``gdb_raw.bin`` ...). All-negative so those
+#: sort FIRST, which is where the previous plain-string ordering put their
+#: empty timestamp too.
+UNPARSED_TIMESTAMP: Tuple[int, int, int] = (-1, -1, -1)
+
+
+def parse_phase_timestamp(timestamp: str) -> Tuple[int, int, int]:
+    r"""Parse a dump filename's timestamp prefix into a SORTABLE tuple.
+
+    ``"20251020_171845_606711"`` -> ``(20251020, 171845, 606711)``.
+
+    This lives in ``core`` because it is the ONE definition of "which of these
+    two dumps came first", and two consumers need it: :meth:`normalize_run`
+    below (which hands out the positional canonical suffixes) and
+    ``engine.sweep_plan`` (which emits units in chronological order and
+    re-exports this function). A second copy of the rule in ``engine`` would be
+    free to drift from the one that assigns the labels - and ``engine`` may
+    import ``core`` but never the reverse, so ``core`` is where it belongs.
+
+    Why not just compare the strings
+    --------------------------------
+    :data:`core.discovery.DUMP_PATTERN` captures the timestamp as
+    ``(\d{8}_\d{6}_\d+)``: the trailing microsecond field is VARIABLE WIDTH,
+    not zero-padded by the pattern. Every one of the 18,917 measured dumps
+    happens to carry six digits, so lexicographic order happens to agree with
+    chronological order today - but a single five-digit field breaks it
+    silently: ``"...171845_90000"`` (0.090 s) sorts AFTER
+    ``"...171845_606711"`` (0.607 s) as text, because ``"9" > "6"``.
+
+    Getting that order wrong is not cosmetic. :meth:`normalize_run` hands out
+    the generic canonical suffixes POSITIONALLY by timestamp, so a mis-ordered
+    run mislabels which dump is ``handshake_end`` and which is
+    ``second_event`` - and ``canonical_phase`` is what consumers filter and
+    group by.
+
+    A prefix that does not parse (an empty one, from a non-phased dataset dump)
+    yields :data:`UNPARSED_TIMESTAMP` rather than raising - ordering a corpus
+    walk must never be fatal.
+    """
+    parts = timestamp.split("_")
+    if len(parts) != 3:
+        return UNPARSED_TIMESTAMP
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return UNPARSED_TIMESTAMP
+
 
 @dataclass
 class PhaseMapping:
@@ -92,14 +140,21 @@ class PhaseNormalizer:
     def normalize_run(self, run: RunDirectory) -> Dict[str, PhaseMapping]:
         """Normalize all dump phases in a run to canonical lifecycle stages.
 
-        Sorts dumps by timestamp, groups into pre/post pairs by phase_name,
+        Sorts dumps CHRONOLOGICALLY, groups into pre/post pairs by phase_name,
         then classifies: key_update, cleanup (last pair wins), or generic
         (first -> handshake_end, second -> second_event).
+
+        The sort key is :func:`parse_phase_timestamp`, not the raw timestamp
+        string. The two agree on every dump in the measured corpus (all six
+        microsecond digits), but the generic canonical suffixes are handed out
+        POSITIONALLY here, so a single five-digit microsecond field would
+        otherwise sort ``..._90000_pre_abort`` (0.090 s) AFTER
+        ``..._606711_pre_shutdown`` (0.607 s) and label the two backwards.
         """
         if not run.dumps:
             return {}
 
-        sorted_dumps = sorted(run.dumps, key=lambda d: d.timestamp)
+        sorted_dumps = sorted(run.dumps, key=lambda d: parse_phase_timestamp(d.timestamp))
         pairs = _group_into_pairs(sorted_dumps)
         return self._classify_pairs(pairs)
 

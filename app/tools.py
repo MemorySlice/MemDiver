@@ -28,6 +28,12 @@ def scan_dataset(
 ) -> dict:
     """Scan a dataset directory for available protocols, libraries, and phases.
 
+    The payload is :func:`engine.serializer.serialize_dataset_info` applied to
+    the :class:`core.discovery.DatasetInfo` produced by the scan, so it also
+    carries the packet-capture inventory: ``runs_with_capture`` (how many runs
+    own a capture) and ``captures`` (per ``"ver/scenario/library"`` counts).
+    Both ride the existing return dict — no new producer, no new capability.
+
     ``session.set_dataset`` raises :class:`FileNotFoundServiceError` for a
     missing root; that propagates to the caller's transport funnel.
     """

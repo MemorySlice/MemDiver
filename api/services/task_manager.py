@@ -29,7 +29,6 @@ import asyncio
 import json
 import logging
 import multiprocessing as mp
-import os
 import threading
 import time
 import uuid
@@ -41,6 +40,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
 from memdiver.api.services.progress_bus import Event, ProgressBus
+from memdiver.core.artifact_util import atomic_write_text
 
 logger = logging.getLogger("memdiver.api.services.task_manager")
 
@@ -474,17 +474,16 @@ class TaskManager:
         ``FileNotFoundError`` (the tmp already moved) → a 500 out of ``cancel``.
         A per-write tmp makes each write self-contained; ``os.replace`` onto the
         final path is atomic, so concurrent writers are simply last-writer-wins.
+
+        The primitive itself now lives in :func:`core.artifact_util.
+        atomic_write_text` so ``app/`` (which may not import ``api/``) can
+        share it; this method keeps owning the directory creation and the
+        JSON encoding.
         """
         task_dir = self._task_root / record.task_id
         task_dir.mkdir(parents=True, exist_ok=True)
         final = task_dir / "record.json"
-        tmp = task_dir / f"record.json.{uuid.uuid4().hex}.tmp"
-        try:
-            tmp.write_text(json.dumps(record.to_dict(), indent=2))
-            os.replace(tmp, final)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        atomic_write_text(final, json.dumps(record.to_dict(), indent=2))
 
     def load_from_disk(self) -> None:
         """Rebuild in-memory records and mark orphan RUNNING as FAILED.

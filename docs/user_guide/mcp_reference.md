@@ -37,7 +37,7 @@ MemDiver exposes **15 tools** to MCP-speaking agents. All tools are thin wrapper
 
 | Tool | Purpose |
 |---|---|
-| `search_reduce` | Variance + alignment + entropy candidate reducer. |
+| `search_reduce` | Variance + alignment + entropy candidate reducer. Returns the ranked regions inline (`regions`, each with `rank`, `score` and its `score_components`), capped at `max_returned` and flagged with `regions_truncated`; `candidates_path` still holds them all. |
 | `brute_force` | Iterate candidates through a decryption oracle. |
 | `n_sweep` | N-curve sweep with convergence reporting. |
 | `emit_plugin` | Synthesize a Volatility3 plugin from a verified hit. |

@@ -39,7 +39,7 @@ but :meth:`TlsPcapResource.challenges` raises a clear, actionable error
 from __future__ import annotations
 
 import logging
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.kdf_tls import (
@@ -139,10 +139,43 @@ class TlsPcapResource:
         *,
         client_random: Optional[bytes] = None,
         max_records_per_direction: int = 16,
+        max_challenges: Optional[int] = None,
     ) -> None:
+        # Imported inside the constructor so the import edge stays one-way: the
+        # parser must not pull the oracle loader (and, through it,
+        # ``ResourceOracle``) in merely to be importable.
+        from memdiver.engine.resources.builtin_oracle import _require_positive_cap
+
         self.pcap_path = str(pcap_path)
         self.client_random = client_random
-        self.max_records_per_direction = max_records_per_direction
+        # Validated HERE as well as at the oracle-loader entry point, because a
+        # direct construction -- a library caller, a test, a future factory --
+        # reaches this constructor without passing through either that loader or
+        # the producer layer's ``_validate_pcap_caps``. A record cap below 1
+        # emits no challenges at all, so it reports a genuine key as
+        # "0 confirmed" from a run that looks successful. ``None`` still means
+        # "no cap supplied" and passes through untouched.
+        # ``allow_none=False``: this parameter is annotated ``int`` with a
+        # default of 16, so an explicit ``None`` is not "uncapped" -- it would
+        # reach ``emitted < self.max_records_per_direction`` below and raise an
+        # unrelated TypeError mid-emission.
+        self.max_records_per_direction = _require_positive_cap(
+            "max_records_per_direction", max_records_per_direction, allow_none=False
+        )
+        # Reported here, ENFORCED by the consumer: the total-challenge cap slices
+        # the flat challenge list (see ``ResourceOracle``), so it truncates
+        # ACROSS sessions and cannot be applied per direction. Carrying it lets
+        # :meth:`describe_capture` report the caps actually in force; without it
+        # a run with ``max_challenges=1`` reported full coverage. It is
+        # validated by the same helper where it is enforced (``build_oracle``),
+        # not here, so this stays a pure reporting copy.
+        self.max_challenges = max_challenges
+        # Parse-time accounting, refreshed on every ``_parse_sessions`` call and
+        # reported by ``describe_capture``. Without it a session the parser has
+        # to drop vanishes silently, so any corpus-wide number computed over
+        # this resource understates itself with no trace of the loss.
+        self._skipped: List[dict] = []
+        self._flow_count: int = 0
 
     @property
     def protocol(self) -> str:
@@ -161,10 +194,7 @@ class TlsPcapResource:
         emitted = False
         matched = False
         for session in sessions:
-            if (
-                self.client_random is not None
-                and session.client_random != self.client_random
-            ):
+            if self._excluded_by_filter(session):
                 continue
             matched = True
             for challenge in self._session_challenges(session):
@@ -201,34 +231,171 @@ class TlsPcapResource:
         """
         if not HAS_PCAP:
             raise PcapParseError(_PCAP_MISSING)
-        summaries: List[dict] = []
-        for session in self._parse_sessions():
-            client_app_records = _count_app_data(session.client_records)
-            server_app_records = _count_app_data(session.server_records)
-            summaries.append(
+        return [_summarise_session(s) for s in self._parse_sessions()]
+
+    def describe_capture(self) -> dict:
+        """Report the whole capture: the sessions kept AND the work dropped.
+
+        The reportable superset of :meth:`describe_sessions`, whose return shape
+        is frozen (the web router and the React frontend read it). This method is
+        built *around* that one — it reports the very same per-session dicts and
+        then adds the accounting :meth:`_parse_sessions` gathered on the side:
+        every session the parser had to drop, with a machine-readable ``reason``,
+        plus the caps that bound how much of a *kept* session is actually
+        verified.
+
+        Why it exists: a corpus sweep aggregates thousands of captures, and both
+        a silently-dropped session and a cap silently clipping verification work
+        make the aggregate understate itself with nothing in the output to say
+        so. Every drop this resource makes is reportable here.
+
+        Coverage numbers come from the *same gate the emitter uses*
+        (:meth:`_tls12_gated` / :meth:`_tls13_gated`), never from re-deriving
+        them out of the summary counts. That matters: TLS 1.2 records are only
+        decryptable *after* their direction's ChangeCipherSpec, so a capture
+        that starts mid-session (or drops the CCS packet) carries application
+        data the challenge stream cannot cover at all. Counting raw records
+        there reported full coverage for a session that verified nothing.
+
+        Returns ``{"sessions": [...], "skipped": [...], "flow_count": int,
+        "caps": {...}, "records_truncated": bool, "challenges_available": int,
+        "challenges_returned": int, "challenges_truncated": bool}``:
+
+        * ``sessions`` — each :meth:`describe_sessions` dict plus four additive
+          accounting keys: ``app_records_seen`` (application-data records the
+          parser saw across both directions), ``records_returned`` (how many of
+          those the challenge stream actually covers, after the record cap, the
+          TLS 1.2 ChangeCipherSpec gate, and whatever is left of the
+          challenge budget), ``challenges_available`` (challenges this session
+          would contribute uncapped — more than one per record for TLS 1.3,
+          which probes a small sequence window) and ``challenges_returned``.
+        * ``skipped`` — one dict per piece of work the parser could not use,
+          carrying a machine-readable ``reason``, the ``flow`` it was seen on,
+          and any reason-specific context. Reachable reasons:
+          ``"no_client_hello"``, ``"no_server_hello"``,
+          ``"unsupported_cipher_suite"`` (each drops a whole session),
+          ``"client_random_mismatch"`` (parsed, but this resource is pinned to
+          another session, so the stream skips it — it carries the session's
+          ``client_random``) and ``"no_change_cipher_spec"`` (the session is
+          kept, but one direction's application data is unreachable — it carries
+          ``direction`` and that direction's ``app_records_seen``). Two further reasons,
+          ``"no_cipher_suite"`` and ``"short_random"``, guard ServerHello shapes
+          the bundled dpkt cannot produce (it always yields a 32-byte random and
+          an int suite code, and rejects a short random outright — which
+          surfaces as ``"no_server_hello"``); they are kept as defence against
+          another dpkt version, so a caller should tolerate them but must not
+          expect them.
+        * ``flow_count`` — directional TCP flows the capture yielded.
+        * ``caps`` — the caps in force: ``max_records_per_direction`` (int) and
+          ``max_challenges`` (int, or ``None`` for no cap).
+        * ``records_truncated`` — True whenever some session returns fewer
+          records than it saw, whatever the cause (record cap, missing
+          ChangeCipherSpec, or an exhausted challenge budget).
+        * ``challenges_available`` / ``challenges_returned`` /
+          ``challenges_truncated`` — the challenge stream the oracle will see.
+          ``max_challenges`` truncates that flat stream ACROSS sessions, so
+          these are capture-level: a session whose sequence-window burst is only
+          partly emitted still counts as a returned record, and
+          ``challenges_returned < challenges_available`` is the signal that some
+          records got only part of their window.
+        """
+        if not HAS_PCAP:
+            raise PcapParseError(_PCAP_MISSING)
+        parsed = self._parse_sessions()
+        remaining = self.max_challenges
+        sessions: List[dict] = []
+        challenges_available = 0
+        challenges_returned = 0
+        records_truncated = False
+        for session in parsed:
+            summary = _summarise_session(session)
+            bursts = self._challenge_bursts(session)
+            available = sum(bursts)
+            covered, returned, remaining = _spend_challenge_budget(bursts, remaining)
+            seen = summary["client_app_records"] + summary["server_app_records"]
+            records_truncated = records_truncated or covered < seen
+            challenges_available += available
+            challenges_returned += returned
+            sessions.append(
                 {
-                    "client_random": session.client_random.hex(),
-                    "server_random": session.server_random.hex(),
-                    "version": session.version,
-                    "cipher_suite": session.cipher_code,
-                    "cipher_name": _cipher_name(session.cipher_code, session.version),
-                    "client_app_records": client_app_records,
-                    "server_app_records": server_app_records,
-                    # The oracle can only USE a session that carries encrypted
-                    # application-data records; a 0-record session is parseable
-                    # but not verifiable (the frontend disables such rows).
-                    "has_app_records": bool(
-                        client_app_records + server_app_records > 0
-                    ),
+                    **summary,
+                    "app_records_seen": seen,
+                    "records_returned": covered,
+                    "challenges_available": available,
+                    "challenges_returned": returned,
                 }
             )
-        return summaries
+        return {
+            "sessions": sessions,
+            "skipped": list(self._skipped),
+            "flow_count": self._flow_count,
+            "caps": {
+                "max_records_per_direction": self.max_records_per_direction,
+                "max_challenges": self.max_challenges,
+            },
+            "records_truncated": records_truncated,
+            "challenges_available": challenges_available,
+            "challenges_returned": challenges_returned,
+            "challenges_truncated": challenges_returned < challenges_available,
+        }
+
+    def _excluded_by_filter(self, session: _TlsSession) -> bool:
+        """True when ``client_random`` restricts this run to a different session.
+
+        THE session filter — shared by :meth:`challenges` and the honesty report
+        so a session the stream skips can never be reported as covered.
+        """
+        return (
+            self.client_random is not None
+            and session.client_random != self.client_random
+        )
+
+    def _challenge_bursts(self, session: _TlsSession) -> List[int]:
+        """How many challenges each covered record contributes, in emit order.
+
+        One entry per record the challenge stream really reaches — so
+        ``len(...)`` is the honest ``records_returned`` and ``sum(...)`` the
+        honest challenge count. Both directions are walked through the exact
+        gates :meth:`_session_challenges` emits from, which is what keeps the
+        report and the stream from drifting apart.
+        """
+        if self._excluded_by_filter(session):
+            return []  # the stream skips this session entirely
+        bursts: List[int] = []
+        for _direction, records in _directions(session):
+            if session.version == "12":
+                bursts.extend(1 for _gated in self._tls12_gated(records))
+            else:  # "13" — each record probes a small sequence window
+                bursts.extend(
+                    len(_tls13_seq_window(index))
+                    for _record, index in self._tls13_gated(records)
+                )
+        return bursts
+
+    def _note_skipped(
+        self,
+        reason: str,
+        flow_key: Tuple[str, int, str, int],
+        **context: Any,
+    ) -> None:
+        """Log one piece of dropped work for :meth:`describe_capture` to report.
+
+        Most reasons drop a whole session; ``"no_change_cipher_spec"`` keeps the
+        session but records that one direction's application data is unreachable.
+        """
+        entry: Dict[str, Any] = {"reason": reason, "flow": _flow_label(flow_key)}
+        entry.update(context)
+        self._skipped.append(entry)
 
     # -- capture -> TCP flows --------------------------------------------- #
 
     def _parse_sessions(self) -> List[_TlsSession]:
         """Read the capture, reassemble flows, and build one session per pair."""
         streams = self._read_flows()
+        # A fresh parse means fresh accounting: the drop log describes THIS pass,
+        # never an accumulation across repeated calls.
+        self._skipped = []
+        self._flow_count = len(streams)
         sessions: List[_TlsSession] = []
         seen: set = set()
         for key, segments in streams.items():
@@ -284,28 +451,47 @@ class TlsPcapResource:
         client_hello = _find_hello(forward_records, _HS_CLIENT_HELLO)
         if client_hello is not None:
             client_records, server_records = forward_records, reverse_records
+            client_key = forward_key
         else:
             client_hello = _find_hello(reverse_records, _HS_CLIENT_HELLO)
             if client_hello is None:
+                self._note_skipped("no_client_hello", forward_key)
                 return None
             client_records, server_records = reverse_records, forward_records
+            client_key = reverse_key
 
         server_hello = _find_hello(server_records, _HS_SERVER_HELLO)
         if server_hello is None:
+            self._note_skipped("no_server_hello", client_key)
             return None
 
         client_random = bytes(getattr(client_hello, "random", b""))
         server_random = bytes(getattr(server_hello, "random", b""))
         cipher_code = _server_hello_cipher_code(server_hello)
-        if len(client_random) != 32 or len(server_random) != 32 or cipher_code is None:
+        # Same three drops as before, split so each reports its own reason.
+        if cipher_code is None:
+            self._note_skipped("no_cipher_suite", client_key)
+            return None
+        if len(client_random) != 32 or len(server_random) != 32:
+            self._note_skipped(
+                "short_random",
+                client_key,
+                client_random_len=len(client_random),
+                server_random_len=len(server_random),
+            )
             return None
 
         version = _negotiated_version(server_hello, cipher_code)
         if version is None:
-            logger.debug("unsupported cipher suite 0x%04x — skipping session", cipher_code)
+            # INFO, not DEBUG: an out-of-table suite drops an entire TLS session,
+            # which at default log levels used to leave no trace at all.
+            logger.info("unsupported cipher suite 0x%04x — skipping session", cipher_code)
+            self._note_skipped(
+                "unsupported_cipher_suite", client_key, cipher_suite=cipher_code
+            )
             return None
 
-        return _TlsSession(
+        session = _TlsSession(
             client_random=client_random,
             server_random=server_random,
             cipher_code=cipher_code,
@@ -313,14 +499,57 @@ class TlsPcapResource:
             client_records=client_records,
             server_records=server_records,
         )
+        if self._excluded_by_filter(session):
+            # Parsed fine, but this run is pinned to another session, so nothing
+            # in it will be verified. Reported for the same reason every other
+            # drop is: an unexplained zero is indistinguishable from a failure.
+            self._note_skipped(
+                "client_random_mismatch",
+                client_key,
+                client_random=session.client_random.hex(),
+            )
+        else:
+            self._note_unreachable_directions(client_key, session)
+        return session
+
+    def _note_unreachable_directions(
+        self,
+        client_key: Tuple[str, int, str, int],
+        session: _TlsSession,
+    ) -> None:
+        """Report a TLS 1.2 direction whose app data no ChangeCipherSpec unlocks.
+
+        TLS 1.2 record keys only take effect *after* a direction's
+        ChangeCipherSpec, so application data with no preceding CCS in the
+        capture — a truncated capture start, a dropped packet, a one-sided CCS —
+        can never be turned into a challenge. Kept as a ``skipped`` entry so an
+        operator reading a zero-confirmation result learns *why* the session
+        verified nothing instead of seeing an unexplained zero. TLS 1.3 needs no
+        CCS (its records are protected from the handshake onward), so the check
+        applies to TLS 1.2 only.
+        """
+        if session.version != "12":
+            return
+        for direction, records in _directions(session):
+            app_records = _count_app_data(records)
+            if not app_records or _has_change_cipher_spec(records):
+                continue
+            logger.info(
+                "no ChangeCipherSpec on the %s direction — %d application-data "
+                "record(s) cannot be verified",
+                direction, app_records,
+            )
+            self._note_skipped(
+                "no_change_cipher_spec",
+                client_key,
+                direction=direction,
+                app_records_seen=app_records,
+            )
 
     # -- TLS session -> challenges ---------------------------------------- #
 
     def _session_challenges(self, session: _TlsSession) -> Iterator[DecryptionChallenge]:
-        directions = (
-            ("client", session.client_records),
-            ("server", session.server_records),
-        )
+        directions = _directions(session)
         if session.version == "12":
             suite = TLS12_CIPHER_SUITES[session.cipher_code]
             for name, records in directions:
@@ -337,6 +566,28 @@ class TlsPcapResource:
         records: list,
     ) -> Iterator[DecryptionChallenge]:
         """Emit TLS 1.2 challenges with precise post-ChangeCipherSpec sequencing."""
+        for record, seq, number in self._tls12_gated(records):
+            yield self._build_tls12(
+                session, suite, direction, bytes(record.data), seq, number
+            )
+
+    def _tls12_gated(self, records: list) -> Iterator[Tuple[Any, int, int]]:
+        """Yield ``(record, seq_num, record_number)`` for every coverable record.
+
+        THE TLS 1.2 gate — the single place that decides which application-data
+        records the challenge stream reaches, shared by the emitter
+        (:meth:`_tls12_direction`) and the honesty report
+        (:meth:`_challenge_bursts`). Keeping one gate is the point: when
+        ``describe_capture`` re-derived its counts from the raw record totals
+        instead, a capture with no ChangeCipherSpec reported full coverage while
+        the stream carried zero challenges.
+
+        Only records *after* this direction's ChangeCipherSpec are encrypted
+        under the negotiated keys; ``seq`` counts from 0 at the first such record
+        (the encrypted Finished), so an application-data record's sequence number
+        is its position in that post-CCS run, not its position among the
+        application-data records.
+        """
         seq = 0
         encrypted = False
         emitted = 0
@@ -349,9 +600,7 @@ class TlsPcapResource:
                 record.type == _CT_APPLICATION_DATA
                 and emitted < self.max_records_per_direction
             ):
-                yield self._build_tls12(
-                    session, suite, direction, bytes(record.data), seq, emitted
-                )
+                yield record, seq, emitted
                 emitted += 1
             seq += 1
 
@@ -362,15 +611,28 @@ class TlsPcapResource:
         records: list,
     ) -> Iterator[DecryptionChallenge]:
         """Emit TLS 1.3 challenges over a small sequence window (see docstring)."""
+        for record, index in self._tls13_gated(records):
+            frag = bytes(record.data)
+            for seq in _tls13_seq_window(index):
+                yield self._build_tls13(session, direction, frag, seq, index)
+
+    def _tls13_gated(self, records: list) -> Iterator[Tuple[Any, int]]:
+        """Yield ``(record, record_index)`` for every coverable record.
+
+        THE TLS 1.3 gate, shared by :meth:`_tls13_direction` and
+        :meth:`_challenge_bursts` for the same reason its TLS 1.2 sibling is.
+        Every protected TLS 1.3 record is application_data, so there is no CCS
+        condition here — only the per-direction record cap. ``index`` keeps
+        counting past the cap so a record's index still reflects its position on
+        the wire.
+        """
         index = 0
         emitted = 0
         for record in records:
             if record.type != _CT_APPLICATION_DATA:
                 continue  # ChangeCipherSpec / cleartext ServerHello are not counted
             if emitted < self.max_records_per_direction:
-                frag = bytes(record.data)
-                for seq in range(max(0, index - _TLS13_SEQ_WINDOW), index + 1):
-                    yield self._build_tls13(session, direction, frag, seq, index)
+                yield record, index
                 emitted += 1
             index += 1
 
@@ -621,9 +883,88 @@ def _negotiated_version(server_hello, cipher_code: int) -> Optional[str]:
     return None
 
 
+def _flow_label(flow_key: Tuple[str, int, str, int]) -> str:
+    """Render a directional flow key for a human-readable drop report."""
+    src, sport, dst, dport = flow_key
+    return f"{src}:{sport} -> {dst}:{dport}"
+
+
 def _count_app_data(records: list) -> int:
     """Count the application_data records in one direction's record list."""
     return sum(1 for record in records if record.type == _CT_APPLICATION_DATA)
+
+
+def _has_change_cipher_spec(records: list) -> bool:
+    """True when this direction sent a ChangeCipherSpec (TLS 1.2 key switch)."""
+    return any(record.type == _CT_CHANGE_CIPHER_SPEC for record in records)
+
+
+def _directions(session: _TlsSession) -> Tuple[Tuple[str, list], Tuple[str, list]]:
+    """The session's two directions in the exact order challenges are emitted."""
+    return (("client", session.client_records), ("server", session.server_records))
+
+
+def _tls13_seq_window(index: int) -> range:
+    """The sequence numbers a TLS 1.3 record at *index* is probed with.
+
+    The undetectable handshake->application epoch change (see the module
+    docstring) means the true sequence number is at or below the wire index, so
+    each record contributes a small window of candidates. Shared by the emitter
+    and the honesty report so ``challenges_available`` counts exactly what the
+    stream yields.
+    """
+    return range(max(0, index - _TLS13_SEQ_WINDOW), index + 1)
+
+
+def _spend_challenge_budget(
+    bursts: List[int], remaining: Optional[int]
+) -> Tuple[int, int, Optional[int]]:
+    """Apply the cross-session challenge budget to one session's record bursts.
+
+    ``ResourceOracle`` caps by slicing the *flat* challenge list, so the budget
+    is consumed session by session in emission order — that is what this walk
+    reproduces. Returns ``(records_covered, challenges_returned, remaining)``;
+    ``remaining=None`` means no cap. A record whose burst is only partially
+    emitted still counts as covered, which is why ``challenges_returned`` is
+    reported alongside it.
+    """
+    if remaining is None:
+        return len(bursts), sum(bursts), None
+    covered = 0
+    returned = 0
+    for burst in bursts:
+        if remaining <= 0:
+            break
+        taken = min(burst, remaining)
+        covered += 1
+        returned += taken
+        remaining -= taken
+    return covered, returned, remaining
+
+
+def _summarise_session(session: _TlsSession) -> dict:
+    """Render one parsed session as the frozen ``describe_sessions`` dict.
+
+    Extracted so :meth:`TlsPcapResource.describe_capture` can report the very
+    same per-session shape from an already-parsed session list — reading the
+    capture once instead of parsing it a second time — without either surface
+    being able to drift from the other.
+    """
+    client_app_records = _count_app_data(session.client_records)
+    server_app_records = _count_app_data(session.server_records)
+    return {
+        "client_random": session.client_random.hex(),
+        "server_random": session.server_random.hex(),
+        "version": session.version,
+        "cipher_suite": session.cipher_code,
+        "cipher_name": _cipher_name(session.cipher_code, session.version),
+        "client_app_records": client_app_records,
+        "server_app_records": server_app_records,
+        # The oracle can only USE a session that carries encrypted
+        # application-data records; a 0-record session is parseable but not
+        # verifiable (the frontend disables such rows).
+        "has_app_records": bool(client_app_records + server_app_records > 0),
+    }
 
 
 def _cipher_name(cipher_code: int, version: str) -> str:

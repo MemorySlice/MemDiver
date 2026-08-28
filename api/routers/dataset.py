@@ -143,6 +143,11 @@ def _load_run_entry(run_path: Path) -> Dict[str, Any] | None:
             run_number=0,
             meta=meta,
         )
+        # load_run_directory would have probed for us; this hand-built fallback
+        # has to, or the run would always report an "absent" capture.
+        run.capture_path, run.capture_status = RunDiscovery._find_capture(  # noqa: SLF001
+            run_path, meta
+        )
 
     # Prefer dump sizes already recorded in meta.json to avoid re-stat()-ing
     # every dump over a slow filesystem.
@@ -154,6 +159,20 @@ def _load_run_entry(run_path: Path) -> Dict[str, Any] | None:
         "path": str(run.path),
         "meta": _meta_to_dict(run.meta),
         "dumps": [_dump_to_dict(d, size_by_kind) for d in run.dumps],
+        "capture": _capture_to_dict(run),
+    }
+
+
+def _capture_to_dict(run: RunDirectory) -> Dict[str, Any]:
+    """Serialise the run's packet capture for the API response.
+
+    ``status`` carries the full three-state verdict, so the UI can distinguish
+    a run that has no capture ("absent") from one whose capture is there but
+    unusable ("unreadable") -- the latter is a corpus defect worth surfacing.
+    """
+    return {
+        "path": str(run.capture_path) if run.capture_path else None,
+        "status": run.capture_status,
     }
 
 

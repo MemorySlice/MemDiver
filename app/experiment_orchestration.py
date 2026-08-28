@@ -122,14 +122,32 @@ def _experiment_scan_for_key(verify: Callable, aligned: Sequence[Any],
 
 
 def _experiment_render_plugin(pattern: Any, export_format: str) -> Optional[str]:
+    """Render *pattern* in *export_format*.
+
+    A ``key_offset``/``key_length`` the pattern dict carries (see
+    :func:`_experiment_emit_plugin`) becomes a YARA meta on the emitted rule,
+    so a detector emitted by ``experiment`` locates its key exactly like one
+    emitted by ``emit-plugin`` or ``export``. A pattern without them yields a
+    rule without them -- never an invented locator.
+    """
+    from memdiver.architect.yara_exporter import (
+        YaraExporter,
+        key_locator_from_pattern,
+    )
+
+    key_offset, key_length = key_locator_from_pattern(pattern)
     if export_format in ("volatility3", "vol3"):
         from memdiver.architect.volatility3_exporter import Volatility3Exporter
-        from memdiver.architect.yara_exporter import YaraExporter
         return Volatility3Exporter.export(
-            pattern, yara_rule=YaraExporter.export(pattern))
+            pattern,
+            yara_rule=YaraExporter.export(
+                pattern, key_offset=key_offset, key_length=key_length,
+            ),
+        )
     if export_format == "yara":
-        from memdiver.architect.yara_exporter import YaraExporter
-        return YaraExporter.export(pattern)
+        return YaraExporter.export(
+            pattern, key_offset=key_offset, key_length=key_length,
+        )
     return None
 
 
@@ -161,6 +179,12 @@ def _experiment_emit_plugin(cm: Any, volatile: Sequence[Any], tool_name: str,
         reference, static_mask, f"{tool_name}_aes256_key")
     if not pattern:
         return None
+    # The volatile region *is* the key region and the window was padded around
+    # it by ``ctx_pad``, so the key's position inside the exported pattern is
+    # known exactly. Attach it the way ``vol3_emit`` does, so both the YARA
+    # meta and the vol3 template's KEY_OFFSET/KEY_LENGTH read one value.
+    pattern["key_offset"] = best.start - exp_offset
+    pattern["key_length"] = best.end - best.start
     plugin_content = _experiment_render_plugin(pattern, export_format)
     if not plugin_content:
         return None

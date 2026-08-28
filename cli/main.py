@@ -5,6 +5,11 @@ import logging
 import sys
 from pathlib import Path
 
+# The one app-layer import in this module: the parser's --max-returned default
+# must be the SAME number the producer applies, or the CLI would advertise a
+# cap the library does not use. numpy is already resolved by ``cli.consensus``
+# above, so this costs no additional startup time.
+from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
 from memdiver.core.service_errors import CapabilityError
 
 from ._shared import (
@@ -29,6 +34,7 @@ from .consensus import (
 )
 from .experiment import _cmd_experiment
 from .pipeline import (
+    _cmd_analyze_candidates,
     _cmd_auto_floor,
     _cmd_brute_force,
     _cmd_emit_plugin,
@@ -154,8 +160,58 @@ def _build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--entropy-window", type=int, default=32)
     sr.add_argument("--entropy-threshold", type=float, default=4.5)
     sr.add_argument("--min-region", type=int, default=16)
+    sr.add_argument("--max-region", type=int, default=0,
+                    help="Drop regions LONGER than this many bytes (0 = unbounded)")
+    sr.add_argument("--classes",
+                    help="Comma-separated ByteClass bands to keep: invariant, "
+                         "structural, pointer, key_candidate. Applied IN "
+                         "ADDITION to --min-variance, whose 3000 default "
+                         "already excludes everything below key_candidate — "
+                         "pass --min-variance 0 with a multi-class query.")
+    sr.add_argument("--order", choices=("offset", "rank"), default="offset",
+                    help="Order of the emitted regions (default offset). Every "
+                         "region carries 'rank' and 'score' either way.")
     sr.add_argument("-o", "--output", required=True, help="Output candidates.json")
     sr.add_argument("-v", "--verbose", action="store_true")
+    # analyze-candidates (the exploratory path: no oracle, no capture)
+    ac = sub.add_parser(
+        "analyze-candidates",
+        help="Rank candidate regions across N dumps (no oracle needed)",
+        parents=[_decrypt_parent_parser()],
+    )
+    ac.add_argument("dumps", nargs="+", help="Dump file paths or directories (N >= 2)")
+    ac.add_argument("--classes",
+                    help="Comma-separated ByteClass bands to keep: invariant, "
+                         "structural, pointer, key_candidate. Real key material "
+                         "is class-MIXED, so prefer all three non-invariant "
+                         "bands over key_candidate alone.")
+    ac.add_argument("--min-variance", type=float, default=None,
+                    help="Variance floor. Left unset it resolves against "
+                         "--classes: 3000 with no class named, 0 with one, so a "
+                         "class query is not silently re-narrowed by this floor.")
+    ac.add_argument("--min-region", type=int, default=16)
+    ac.add_argument("--max-region", type=int, default=0,
+                    help="Drop regions LONGER than this many bytes (0 = unbounded)")
+    ac.add_argument("--alignment", type=int, default=8)
+    ac.add_argument("--block-size", type=int, default=32)
+    ac.add_argument("--density-threshold", type=float, default=0.5)
+    ac.add_argument("--entropy-window", type=int, default=32)
+    ac.add_argument("--entropy-threshold", type=float, default=4.5)
+    ac.add_argument("--order", choices=("offset", "rank"), default="rank",
+                    help="Order of the emitted regions (default rank, best "
+                         "first). Every region carries 'rank' and 'score' "
+                         "either way.")
+    ac.add_argument("--max-returned", type=int,
+                    default=DEFAULT_MAX_RETURNED_REGIONS,
+                    help=f"Cap the returned regions to this many best-ranked "
+                         f"rows (default {DEFAULT_MAX_RETURNED_REGIONS}, "
+                         f"0 = uncapped)")
+    ac.add_argument("--normalize", action="store_true",
+                    help="ASLR-aware normalization for native .msl inputs")
+    ac.add_argument("--project-id", default="",
+                    help="Project to file the stored comparison under")
+    ac.add_argument("-o", "--output", help="Output JSON file")
+    ac.add_argument("-v", "--verbose", action="store_true")
     # brute-force
     bf = sub.add_parser(
         "brute-force",
@@ -172,6 +228,15 @@ def _build_parser() -> argparse.ArgumentParser:
                     "first-party trusted oracle (mutually exclusive with --oracle)")
     bf.add_argument("--tls-client-random", help="Hex TLS client_random restricting "
                     "the pcap oracle to one session")
+    bf.add_argument("--pcap-max-records", type=int, default=None,
+                    help="Cap the encrypted application-data records each direction "
+                    "of a captured session contributes to the pcap oracle "
+                    "(default: 16). Lower it for speed, raise it for coverage; "
+                    "'inspect-pcap' reports whether a capture is being clipped")
+    bf.add_argument("--pcap-max-challenges", type=int, default=None,
+                    help="Cap the total challenges the pcap oracle keeps across "
+                    "all sessions (default: uncapped). A cap silently discards "
+                    "verification work, so it is set explicitly, never by default")
     bf.add_argument("--persist-ground-truth", action="store_true",
                     help="Record confirmed hits in the project ground-truth ledger "
                     "(opt-in; no-op if the DuckDB backend is unavailable)")
@@ -326,6 +391,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Summarise the TLS sessions in a capture (the pcap arm/validate step)",
     )
     ipc.add_argument("pcap", help="Path to a .pcap/.pcapng capture")
+    ipc.add_argument("--pcap-max-records", type=int, default=None,
+                     help="Cap the encrypted application-data records each "
+                          "direction contributes (default: 16). Pass the same "
+                          "value the brute-force run will use so the reported "
+                          "caps are the caps actually in force")
+    ipc.add_argument("--pcap-max-challenges", type=int, default=None,
+                     help="Cap the total decryption challenges kept ACROSS all "
+                          "sessions (default: uncapped). TLS 1.3 yields several "
+                          "challenges per record, so this is not a record count")
     ipc.add_argument("-o", "--output",
                      help="Output JSON file (default: stdout)")
     ipc.add_argument("-v", "--verbose", action="store_true")
@@ -540,6 +614,7 @@ def main():
         "consensus-add": _cmd_consensus_add,
         "consensus-finalize": _cmd_consensus_finalize,
         "search-reduce": _cmd_search_reduce,
+        "analyze-candidates": _cmd_analyze_candidates,
         "brute-force": _cmd_brute_force,
         "n-sweep": _cmd_n_sweep,
         "auto-floor": _cmd_auto_floor,

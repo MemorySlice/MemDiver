@@ -77,3 +77,34 @@ def test_get_live_variance_before_any_fold(tmp_path):
         v = builder.get_live_variance()
         assert v.shape == (builder.total_bytes,)
         assert np.all(v == 0.0)
+
+
+def test_incremental_coverage_matches_the_batch_build(tmp_path):
+    """The fold reports the same alignment coverage the one-shot build does.
+
+    Both intersect the same keys and pages, so a caller that folds
+    incrementally (the pipeline's consensus stage) can publish the same
+    alignment provenance as a caller that builds in one shot.
+    """
+    from memdiver.engine.consensus_msl import build_msl_consensus_result
+
+    paths = _fixture_paths(tmp_path, count=3)
+    with open_dump(paths[0]) as s1, open_dump(paths[1]) as s2, open_dump(paths[2]) as s3:
+        batch = build_msl_consensus_result([s1, s2, s3])
+    with open_dump(paths[0]) as s1, open_dump(paths[1]) as s2, open_dump(paths[2]) as s3:
+        builder = build_msl_incremental([s1, s2, s3])
+
+    assert builder.coverage == batch.coverage
+    assert builder.coverage.bytes_compared == builder.total_bytes
+    assert builder.coverage.n_sources == 3
+    # Everything offered was compared: the ASLR fixtures capture the same
+    # region in every dump, just at different base addresses.
+    assert builder.coverage.bytes_discarded == 0
+
+
+def test_empty_sources_report_empty_coverage():
+    coverage = build_msl_incremental([]).coverage
+    assert coverage.bytes_compared == 0
+    assert coverage.n_sources == 0
+    assert coverage.bytes_discarded == 0
+    assert coverage.discarded_fraction == 0.0

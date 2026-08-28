@@ -37,7 +37,7 @@ _REPO_ROOT = _HERE.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests._paths import REPO_ROOT
+from tests._paths import REPO_ROOT, SKIP_REASON, dataset_source_summary
 from tests._paths import dataset_root as _resolve_dataset_root
 from tests._paths import _set_cli_override
 
@@ -133,11 +133,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_report_header(config: pytest.Config) -> str:
+    """Print, uncaptured and on every run, WHICH tree the suite resolved.
+
+    ``dataset_file()`` silently prefers the real corpus over the synthetic
+    fixtures, so two machines can run the same test ids against materially
+    different bytes. This one line makes that visible in every local run and
+    every CI log without anyone having to opt into ``-s``. It answers from
+    ``dataset_root()`` only, so printing it never materialises the synthetic
+    dataset.
+    """
+    return f"memdiver dataset: {dataset_source_summary()}"
+
+
 def pytest_configure(config: pytest.Config) -> None:
     _set_cli_override(config.getoption("--dataset-root"))
     config.addinivalue_line(
         "markers",
-        "requires_dataset: mark test as requiring the private mempdumps dataset",
+        "requires_dataset: mark test as requiring the private mempdumps dataset "
+        "(resolved by tests/_paths.py::dataset_root, which now falls back to the "
+        "local TLS corpus via tls_dumps_dir(); see `make test-corpus`)",
     )
     # Ensure the synthetic fixture dataset exists before collection.
     # generate_dataset() is idempotent — returns immediately if the
@@ -150,12 +165,16 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Auto-skip tests marked requires_dataset when no dataset is resolvable."""
+    """Auto-skip tests marked requires_dataset when no dataset is resolvable.
+
+    "Resolvable" is exactly what ``tests/_paths.py::dataset_root()`` says --
+    which, since the resolver reconciliation, ends at ``tls_dumps_dir()``. So a
+    test gated by this marker and a test body that opens paths under
+    ``tls_dumps_dir()`` can no longer disagree about whether the corpus exists.
+    """
     if _resolve_dataset_root() is not None:
         return
-    skip = pytest.mark.skip(
-        reason="Dataset unavailable. Set MEMDIVER_DATASET_ROOT or --dataset-root=PATH."
-    )
+    skip = pytest.mark.skip(reason=SKIP_REASON)
     for item in items:
         if "requires_dataset" in item.keywords:
             item.add_marker(skip)
@@ -166,7 +185,7 @@ def dataset_root() -> Path:
     """Session fixture returning the resolved dataset root, or skipping."""
     resolved = _resolve_dataset_root()
     if resolved is None:
-        pytest.skip("Dataset unavailable. Set MEMDIVER_DATASET_ROOT or --dataset-root=PATH.")
+        pytest.skip(SKIP_REASON)
     return resolved
 
 

@@ -15,7 +15,22 @@ def find_all_offsets(buf, needle: bytes) -> List[int]:
     Works over anything supporting ``.find(needle, start)`` (``bytes`` or an
     ``mmap`` object). Overlapping matches are preserved by advancing the
     search cursor by one byte past each hit (``start = idx + 1``).
+
+    An EMPTY needle returns ``[]``. This guard is load-bearing, not defensive
+    tidiness: ``mmap.find(b"", start)`` CLAMPS an out-of-range ``start`` to the
+    buffer length instead of returning ``-1`` (verified: on a 300-byte mapping
+    ``mm.find(b"", 999)`` is ``300``), so the ``start = idx + 1`` cursor can
+    never escape and the loop appends the same offset forever -- an unbounded
+    hang plus unbounded memory growth. ``bytes`` happens to terminate on the
+    same input, so the failure only reproduces on the mmap-backed sources
+    (:class:`DumpReader`, and via it ``RawDumpSource``/``MslDumpSource``), which
+    are exactly the ones a corpus sweep uses. Searching for nothing is a caller
+    error rather than a meaningful query, so both this and
+    :func:`find_first_offset` report "no match" instead of the degenerate
+    every-offset answer -- and they agree, so the two can be swapped freely.
     """
+    if not needle:
+        return []
     offsets: List[int] = []
     start = 0
     while True:
@@ -25,6 +40,39 @@ def find_all_offsets(buf, needle: bytes) -> List[int]:
         offsets.append(idx)
         start = idx + 1
     return offsets
+
+
+def find_first_offset(buf, needle: bytes) -> Optional[int]:
+    """Return the FIRST offset of *needle* in *buf*, or ``None`` when absent.
+
+    Works over anything supporting ``.find(needle)`` (``bytes`` or an ``mmap``
+    object). The presence-only counterpart of :func:`find_all_offsets`: a single
+    ``.find()`` that stops at the first hit instead of scanning to EOF, which is
+    what a "does this secret appear in this dump at all?" query over a
+    corpus-scale (multi-hundred-GB) sweep needs.
+
+    An EMPTY needle returns ``None``, agreeing with :func:`find_all_offsets`'s
+    ``[]`` so the two can be swapped freely (a caller cannot get "present" from
+    one and "absent" from the other for the same input). Searching for nothing
+    is a caller error, not a query with a degenerate answer: reporting offset
+    ``0`` would let an empty secret masquerade as a hit at the start of every
+    dump in a corpus sweep, which is a false positive in the one place that is
+    most expensive to notice. See :func:`find_all_offsets` for why the
+    every-offset reading is also unsafe on an ``mmap``.
+    """
+    if not needle:
+        return None
+    # The explicit start is REQUIRED, not stylistic. ``mmap.find(sub)`` defaults
+    # its start to the mmap's CURRENT FILE POSITION, not 0 -- unlike
+    # ``bytes.find``, which has no position. So after anything that advances the
+    # mapping (``read_all()`` is the common one) a bare ``buf.find(needle)``
+    # searches only the tail and returns -1 for a needle that IS present, which
+    # this function then reports as "absent". Verified on a real corpus dump: a
+    # secret at offset 585148 was found by ``find_all`` and reported missing by
+    # ``find_first`` once ``read_all()`` had run. ``find_all_offsets`` was never
+    # exposed to it because it always passes ``start``.
+    idx = buf.find(needle, 0)
+    return None if idx == -1 else idx
 
 
 class DumpReader:
@@ -102,6 +150,17 @@ class DumpReader:
         if self._mmap is None:
             return []
         return find_all_offsets(self._mmap, needle)
+
+    def find_first(self, needle: bytes) -> Optional[int]:
+        """Find the first occurrence of needle in the mapped file.
+
+        Returns ``None`` when the needle is absent (or the file is empty /
+        unmapped). Early-exits on the first hit - see
+        :func:`find_first_offset`, including its empty-needle note.
+        """
+        if self._mmap is None:
+            return None
+        return find_first_offset(self._mmap, needle)
 
     def regex_scan(self, pattern: bytes, max_matches: int = 0) -> List[Tuple[int, int, bytes]]:
         """Scan the mapped file with a regex pattern.

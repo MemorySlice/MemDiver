@@ -1,10 +1,61 @@
 """Tests for Volatility3 plugin exporter."""
+import ast
+
 import pytest
+import yara
+
 from memdiver.architect.volatility3_exporter import (
     Volatility3Exporter,
     _sanitize_class_name,
     _longest_static_run,
 )
+from memdiver.architect.yara_exporter import key_locator_from_pattern
+
+
+def _embedded_yara_meta(plugin_source: str) -> dict:
+    """Compile the plugin's embedded YARA_RULE and return its meta dict."""
+    tree = ast.parse(plugin_source)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "YARA_RULE" in targets and isinstance(node.value, ast.Constant):
+            rules = list(yara.compile(source=node.value.value))
+            assert len(rules) == 1, f"expected one rule, got {len(rules)}"
+            return dict(rules[0].meta)
+    raise AssertionError("generated plugin has no YARA_RULE string assignment")
+
+
+class TestKeyLocatorFromPattern:
+    """The locator a pattern dict carries, read defensively.
+
+    The dict can arrive verbatim from an HTTP request body, so any JSON value
+    is possible; anything non-integral must become ``None`` (meta omitted)
+    rather than crash ``int()`` inside the exporter.
+    """
+
+    def test_present_ints(self):
+        assert key_locator_from_pattern(
+            {"key_offset": 64, "key_length": 32}) == (64, 32)
+
+    def test_absent(self):
+        assert key_locator_from_pattern({}) == (None, None)
+
+    def test_explicit_none(self):
+        assert key_locator_from_pattern(
+            {"key_offset": None, "key_length": None}) == (None, None)
+
+    def test_partial(self):
+        assert key_locator_from_pattern({"key_length": 16}) == (None, 16)
+
+    @pytest.mark.parametrize("bad", ["n/a", object(), [1], {"a": 1}, True])
+    def test_non_integral_becomes_none(self, bad):
+        assert key_locator_from_pattern(
+            {"key_offset": bad, "key_length": bad}) == (None, None)
+
+    def test_numeric_string_and_float_are_accepted(self):
+        assert key_locator_from_pattern(
+            {"key_offset": "64", "key_length": 32.0}) == (64, 32)
 
 
 class TestSanitizeClassName:
@@ -72,6 +123,41 @@ class TestVolatility3Exporter:
         source = Volatility3Exporter.export(sample_pattern)
         assert "rule " in source
         assert "$key" in source
+
+    def test_export_generated_yara_carries_pattern_key_locator(self, sample_pattern):
+        """GAP C: the yara fallback must pass through the pattern's locator.
+
+        ``vol3_emit`` and the experiment orchestrator enrich the pattern dict
+        with ``key_offset``/``key_length``; when no ``yara_rule`` is supplied
+        the rule this exporter builds itself must carry them, so it matches
+        what every other emission path produces.
+        """
+        pattern = dict(sample_pattern, key_offset=8, key_length=16)
+        source = Volatility3Exporter.export(pattern)
+        meta = _embedded_yara_meta(source)
+        assert meta["key_offset"] == 8
+        assert meta["key_length"] == 16
+
+    def test_export_generated_yara_omits_locator_when_pattern_lacks_it(
+        self, sample_pattern
+    ):
+        """A bare PatternGenerator pattern knows no key position: omit, never
+        invent. (The plugin template's KEY_OFFSET/KEY_LENGTH keep their
+        documented 0/pattern-length fallbacks -- only the metas are omitted.)"""
+        source = Volatility3Exporter.export(sample_pattern)
+        meta = _embedded_yara_meta(source)
+        assert "key_offset" not in meta
+        assert "key_length" not in meta
+        assert "KEY_OFFSET = 0" in source
+
+    def test_export_generated_yara_survives_non_integral_locator(
+        self, sample_pattern
+    ):
+        """A hostile/non-integral locator must not break rule generation."""
+        pattern = dict(sample_pattern, key_offset="nope", key_length=None)
+        meta = _embedded_yara_meta(Volatility3Exporter.export(pattern))
+        assert "key_offset" not in meta
+        assert "key_length" not in meta
 
     def test_export_custom_yara(self, sample_pattern):
         custom_rule = 'rule custom { strings: $s = { AA BB } condition: $s }'

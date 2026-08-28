@@ -8,14 +8,86 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
-from memdiver.core.region_align import build_dump_region_map
+from memdiver.core.region_align import (
+    AlignmentCoverage,
+    build_dump_region_map,
+    captured_byte_count,
+)
 from memdiver.core.variance import WelfordVariance
 
 logger = logging.getLogger("memdiver.engine.consensus_msl")
+
+
+class MslConsensusResult(NamedTuple):
+    """Everything the ASLR-aware build knows about what it produced.
+
+    The tuple form :func:`build_msl_consensus` returns is a prefix of this,
+    so the two stay in agreement by construction. ``coverage`` is the extra:
+    how many captured bytes each dump offered versus how many survived the
+    key + page intersection, which is what the caller turns into the
+    ``AlignmentReport`` on the consensus vector.
+    """
+
+    variance: np.ndarray
+    total_bytes: int
+    reference_bytes: bytes
+    layout: List[Tuple[int, int, List[int]]]
+    coverage: AlignmentCoverage
+
+
+def build_msl_consensus_result(sources: List) -> MslConsensusResult:
+    """Build the ASLR-aligned consensus and report its coverage.
+
+    Same computation as :func:`build_msl_consensus` (which delegates here);
+    this is the shape that also carries :class:`AlignmentCoverage`, so a
+    caller can say how much of each dump the variance figure actually covers.
+    """
+    from memdiver.core.region_align import align_dumps
+
+    num_dumps = len(sources)
+    region_maps = []
+    for i, src in enumerate(sources):
+        rmap = build_dump_region_map(i, src.get_reader())
+        region_maps.append(rmap)
+
+    slices = align_dumps(region_maps)
+    coverage = AlignmentCoverage.from_alignment(region_maps, slices)
+
+    if not slices:
+        logger.warning("No aligned slices produced — dumps may have no common regions")
+        return MslConsensusResult(
+            np.array([], dtype=np.float32), 0, b"", [], coverage,
+        )
+
+    total_bytes = sum(s.page_size for s in slices)
+    variance = np.zeros(total_bytes, dtype=np.float32)
+    reference = bytearray(total_bytes)
+    n = num_dumps
+    offset = 0
+    layout: List[Tuple[int, int, List[int]]] = []
+
+    for aslice in slices:
+        data_mat = np.stack([
+            np.frombuffer(aslice.data[d], dtype=np.uint8)
+            for d in range(n)
+        ]).astype(np.float32)
+        chunk_var = np.var(data_mat, axis=0)
+        variance[offset:offset + aslice.page_size] = chunk_var
+        # Retain the first source's aligned bytes as the reference slab
+        # for downstream static-mask + pattern derivation. Index 0 is
+        # arbitrary but stable across callers.
+        reference[offset:offset + aslice.page_size] = aslice.data[0]
+        layout.append((offset, aslice.page_size, list(aslice.source_vaddrs)))
+        offset += aslice.page_size
+
+    logger.info("MSL consensus: %d bytes across %d aligned slices", total_bytes, len(slices))
+    return MslConsensusResult(
+        variance, total_bytes, bytes(reference), layout, coverage,
+    )
 
 
 def build_msl_consensus(
@@ -38,48 +110,17 @@ def build_msl_consensus(
     slab index the variance/classification arrays are indexed by — the basis
     for painting the consensus overlay on a dump's ``va`` view. Kept opt-in so
     the existing 3-tuple callers (pipeline, tests) are unaffected.
+
+    The tuple shape is retained for those callers; new code wanting the
+    alignment coverage as well calls :func:`build_msl_consensus_result`, which
+    this is a projection of. ``num_dumps`` is accepted (and must equal
+    ``len(sources)``) for signature compatibility.
     """
-    from memdiver.core.region_align import align_dumps
-
-    region_maps = []
-    for i, src in enumerate(sources):
-        rmap = build_dump_region_map(i, src.get_reader())
-        region_maps.append(rmap)
-
-    slices = align_dumps(region_maps)
-
-    if not slices:
-        logger.warning("No aligned slices produced — dumps may have no common regions")
-        if return_layout:
-            return np.array([], dtype=np.float32), 0, b"", []
-        return np.array([], dtype=np.float32), 0, b""
-
-    total_bytes = sum(s.page_size for s in slices)
-    variance = np.zeros(total_bytes, dtype=np.float32)
-    reference = bytearray(total_bytes)
-    n = num_dumps
-    offset = 0
-    layout: List[Tuple[int, int, List[int]]] = []
-
-    for aslice in slices:
-        data_mat = np.stack([
-            np.frombuffer(aslice.data[d], dtype=np.uint8)
-            for d in range(n)
-        ]).astype(np.float32)
-        chunk_var = np.var(data_mat, axis=0)
-        variance[offset:offset + aslice.page_size] = chunk_var
-        # Retain the first source's aligned bytes as the reference slab
-        # for downstream static-mask + pattern derivation. Index 0 is
-        # arbitrary but stable across callers.
-        reference[offset:offset + aslice.page_size] = aslice.data[0]
-        if return_layout:
-            layout.append((offset, aslice.page_size, list(aslice.source_vaddrs)))
-        offset += aslice.page_size
-
-    logger.info("MSL consensus: %d bytes across %d aligned slices", total_bytes, len(slices))
+    result = build_msl_consensus_result(sources)
     if return_layout:
-        return variance, total_bytes, bytes(reference), layout
-    return variance, total_bytes, bytes(reference)
+        return (result.variance, result.total_bytes,
+                result.reference_bytes, result.layout)
+    return result.variance, result.total_bytes, result.reference_bytes
 
 
 @dataclass
@@ -106,6 +147,10 @@ class MslIncrementalBuilder:
     _welford: Optional[WelfordVariance] = None
     _reference: Optional[bytes] = None
     total_bytes: int = 0
+    #: What the metadata-only intersection kept versus what each dump offered,
+    #: so a caller folding through this builder can report the same alignment
+    #: provenance a one-shot ``build_msl_consensus_result`` would have.
+    coverage: AlignmentCoverage = AlignmentCoverage(0, ())
 
     @classmethod
     def from_sources(cls, sources: List) -> "MslIncrementalBuilder":
@@ -147,6 +192,10 @@ class MslIncrementalBuilder:
             _layout=layout,
             _welford=WelfordVariance(total) if total > 0 else None,
             total_bytes=total,
+            coverage=AlignmentCoverage(
+                bytes_compared=total,
+                bytes_available=tuple(captured_byte_count(dl) for dl in dump_layouts),
+            ),
         )
 
     def _materialize_slab(self, dump_index: int) -> bytes:

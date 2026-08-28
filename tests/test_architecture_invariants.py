@@ -977,6 +977,13 @@ _MCP_TOOL_PRODUCERS = {
     "export_keylog": "keylog_result",
     "verify": "verify_key_result",
     "experiment": "experiment_result",
+    # The pcap arm/validate step. Wired on all four surfaces since Phase 1 but
+    # left out of this map, so its MCP signature parity went unguarded; adding
+    # it is a pure tightening (it needs no _MCP_ALLOWED_OMISSIONS entry).
+    "inspect_pcap": "inspect_pcap",
+    # A4's exploratory producer. Added with the tool, and likewise needing no
+    # _MCP_ALLOWED_OMISSIONS entry: the tool mirrors the producer 1:1.
+    "analyze_candidates": "analyze_candidates",
 }
 #: Producer params that are orchestration internals, never surfaced on any tool.
 #: ``key_material`` is the resolved dict a surface *builds* from the individual

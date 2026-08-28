@@ -127,8 +127,15 @@ describe("usePcapArm", () => {
       await result.current.arm("/srv/capture.pcap");
     });
 
+    // Asserted against the live locale string (frontend/src/i18n/locales/en/
+    // pipeline.json -> oracle.pcap.dpktMissing): dpkt is part of the BASE
+    // install now, so the copy tells the operator to repair it, not to add an
+    // extra. The old wording ("the optional 'dpkt' dependency") outlived that
+    // change and left this assertion red.
     expect(result.current.error).toBe(
-      "The server cannot parse pcaps because the optional 'dpkt' dependency is not installed.",
+      "The server cannot parse pcaps: its 'dpkt' dependency is missing. " +
+        "It is part of the base install \u2014 on the server, run: " +
+        "pip install --force-reinstall memdiver",
     );
     // Never leave a usable path behind: an un-armed path would still unlock
     // the wizard's "Next" with no valid oracle.

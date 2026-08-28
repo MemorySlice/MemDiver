@@ -1,5 +1,6 @@
 import path from "node:path";
-import { existsSync } from "node:fs";
+import os from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 
 /**
  * Two fixture tiers gate the e2e specs:
@@ -52,3 +53,45 @@ export const pcapFixtureAvailable =
   existsSync(pcapMatchedMslPath) &&
   existsSync(pcapCapturePath) &&
   existsSync(pcapManifestPath);
+
+// --- The phase-series TLS corpus (A6 candidate-table spec) ---
+//
+// A run directory of same-size `.dump` files captured from ONE process at
+// consecutive phases -- the shape the differential workflow exists for, and
+// the corpus the all-non-invariant class default was measured on (an OpenSSL
+// TLS 1.2 run whose real 48-byte secret classifies as 22 KEY_CANDIDATE + 18
+// POINTER + 8 STRUCTURAL). Private, like the dataset above, so specs gate on
+// `tlsPhaseDumpsAvailable` and skip elsewhere.
+//
+// Override the root with MEMDIVER_TLS_DUMPS. Filenames carry capture
+// timestamps, so they are DISCOVERED and sorted rather than hardcoded.
+const TLS_DUMPS_DEFAULT = path.join(os.homedir(), "Desktop", "tls_dumps");
+export const TLS_DUMPS_ROOT = process.env.MEMDIVER_TLS_DUMPS ?? TLS_DUMPS_DEFAULT;
+const TLS_PHASE_RUN_DIR = path.join(
+  TLS_DUMPS_ROOT,
+  "TLS12",
+  "100_iterations_Abort",
+  "openssl",
+  "openssl_run_12_1",
+);
+
+/**
+ * The first N phase dumps of that run, sorted (their names are timestamps, so
+ * sort order is capture order). N must be >= 3: below
+ * `MIN_N_FOR_VARIANCE` the backend declares the cross-dump variance
+ * untrustworthy and skips the class gate entirely, which would leave a
+ * class-filter assertion testing nothing.
+ */
+export function tlsPhaseDumps(count = 3): string[] {
+  try {
+    return readdirSync(TLS_PHASE_RUN_DIR)
+      .filter((name) => name.endsWith(".dump"))
+      .sort()
+      .slice(0, count)
+      .map((name) => path.join(TLS_PHASE_RUN_DIR, name));
+  } catch {
+    return [];
+  }
+}
+
+export const tlsPhaseDumpsAvailable = tlsPhaseDumps(3).length === 3;

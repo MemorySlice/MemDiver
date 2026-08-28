@@ -24,11 +24,20 @@ import shutil
 from pathlib import Path
 from typing import Union
 
-_DEFAULT_TLS_DUMPS_DIR = "/Users/danielbaier/Desktop/tls_dumps"
+# Home-relative rather than an absolute developer path, so the one hardcoded
+# spelling of the corpus location works on any machine that keeps it in the
+# conventional place. Overridable via ``MEMDIVER_TLS_DUMPS_DIR``.
+_DEFAULT_TLS_DUMPS_DIR = str(Path.home() / "Desktop" / "tls_dumps")
 
 
 def tls_dumps_dir() -> Path:
-    """Root of the local TLS-dump corpus (``MEMDIVER_TLS_DUMPS_DIR`` or default)."""
+    """Root of the local TLS-dump corpus (``MEMDIVER_TLS_DUMPS_DIR`` or default).
+
+    This is the SINGLE spelling of "where the corpus lives". It is also the
+    last resort of :func:`tests._paths.dataset_root`, which gates the
+    ``requires_dataset`` marker -- so a test may be gated by ``dataset_root()``
+    and resolve its own paths through here without the two disagreeing.
+    """
     return Path(os.environ.get("MEMDIVER_TLS_DUMPS_DIR", _DEFAULT_TLS_DUMPS_DIR))
 
 

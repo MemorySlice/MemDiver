@@ -107,6 +107,7 @@ from memdiver.services import (
     get_cross_references_result,
     identify_structure_result,
     # pipeline
+    analyze_candidates,
     auto_floor,
     brute_force,
     consensus,
@@ -184,6 +185,7 @@ __all__ = [
     "apply_structure_result",
     # pipeline producers
     "consensus",
+    "analyze_candidates",
     "search_reduce",
     "brute_force",
     "n_sweep",

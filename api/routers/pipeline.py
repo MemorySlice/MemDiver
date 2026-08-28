@@ -117,10 +117,16 @@ class PipelineRunRequest(BaseModel):
     #: registry (``oracle_id``) OR a pcap/pcapng of the same TLS session
     #: (``pcap_path``), which routes the brute-force stage through MemDiver's
     #: first-party trusted pcap oracle. ``tls_client_random`` (hex) optionally
-    #: restricts pcap matching to one session.
+    #: restricts pcap matching to one session. ``pcap_max_records`` /
+    #: ``pcap_max_challenges`` size the pcap oracle's verification work (records
+    #: per direction / total challenges); ``None`` keeps the defaults, and
+    #: ``POST /api/pcaps/validate`` reports the caps a capture actually loses
+    #: records to (``caps`` + ``records_truncated``).
     oracle_id: Optional[str] = None
     pcap_path: Optional[str] = None
     tls_client_random: Optional[str] = None
+    pcap_max_records: Optional[int] = Field(default=None, ge=1)
+    pcap_max_challenges: Optional[int] = Field(default=None, ge=1)
     reduce: ReduceParams = Field(default_factory=ReduceParams)
     brute_force: BruteForceParams = Field(default_factory=BruteForceParams)
     nsweep: Optional[NSweepParams] = None
@@ -263,6 +269,8 @@ def _build_worker_params(
         "oracle_path": str(oracle_path) if oracle_path is not None else None,
         "pcap_path": request.pcap_path,
         "tls_client_random": request.tls_client_random,
+        "pcap_max_records": request.pcap_max_records,
+        "pcap_max_challenges": request.pcap_max_challenges,
         "reduce_kwargs": reduce_kwargs,
         "brute_force": bf_kwargs,
     }

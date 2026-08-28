@@ -237,17 +237,97 @@ def create_server():
 
     @mcp.tool()
     @mcp_error_funnel
+    def analyze_candidates(
+        dump_paths: List[str],
+        classes: Optional[List[str]] = None,
+        min_variance: Optional[float] = None,
+        min_region: int = 16, max_region: int = 0,
+        alignment: int = 8, block_size: int = 32,
+        density_threshold: float = 0.5,
+        entropy_window: int = 32, entropy_threshold: float = 4.5,
+        order: str = "rank",
+        max_returned: int = tools_pipeline.DEFAULT_MAX_RETURNED_REGIONS,
+        normalize: bool = False,
+        project_id: str = "",
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Rank candidate regions across N dumps — NO oracle, NO capture needed.
+
+        The one call for the exploratory question "I have N dumps of one
+        process, I do not know whether there is a key or where": consensus →
+        class / length / entropy / density filters → ranked candidates. Use it
+        BEFORE ``brute_force`` — that tool needs an oracle or a pcap to confirm
+        a hit, this one confirms nothing and is reachable without either.
+
+        The regions come back INLINE under ``regions``, each with ``rank``,
+        ``score`` and the ``score_components`` the score is the weighted sum of.
+        The list is capped at ``max_returned`` best-ranked rows (0 = uncapped);
+        ``num_regions`` is always the true total.
+
+        ``classes`` names ByteClass bands ("invariant", "structural",
+        "pointer", "key_candidate"). Prefer ALL THREE non-invariant bands: real
+        key material is class-MIXED (a measured 48-byte TLS 1.2 secret is 22
+        KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL), so a KEY_CANDIDATE-only
+        query returns fragments from inside the key instead of the key. Leave
+        ``min_variance`` unset — it resolves against ``classes`` so a class
+        query is not silently re-narrowed by the historical 3000 floor.
+
+        Read ``alignment`` for how the dumps were put into correspondence and
+        ``warnings`` / ``diagnostics`` before trusting the numbers: an empty
+        ``regions`` list is a legitimate answer and always says which gate
+        emptied it. Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` for
+        encrypted ``.msl`` inputs.
+        """
+        return json.dumps(tools_pipeline.analyze_candidates(
+            dump_paths=dump_paths,
+            classes=classes,
+            min_variance=min_variance,
+            min_region=min_region,
+            max_region=max_region,
+            alignment=alignment,
+            block_size=block_size,
+            density_threshold=density_threshold,
+            entropy_window=entropy_window,
+            entropy_threshold=entropy_threshold,
+            order=order,
+            max_returned=max_returned,
+            normalize=normalize,
+            project_id=project_id,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
     def search_reduce(
         variance_path: str, reference_path: str, num_dumps: int,
         output_dir: str,
         alignment: int = 8, block_size: int = 32,
         density_threshold: float = 0.5, min_variance: float = 3000.0,
         entropy_window: int = 32, entropy_threshold: float = 4.5,
-        min_region: int = 16,
+        min_region: int = 16, max_region: int = 0,
+        classes: Optional[List[str]] = None,
+        order: str = "offset",
+        max_returned: int = tools_pipeline.DEFAULT_MAX_RETURNED_REGIONS,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
-        """Reduce consensus variance to a candidate region list.
+        """Reduce consensus variance to a RANKED candidate region list.
+
+        The regions come back inline under ``regions`` — each with ``rank``,
+        ``score`` and the ``score_components`` the score is the weighted sum of
+        — so this tool is usable without reading ``candidates_path`` back off
+        disk. The inline list is capped at ``max_returned`` best-ranked rows (0
+        = uncapped); ``regions_truncated`` says whether the cap bit and
+        ``num_regions`` is always the true total.
+
+        ``classes`` narrows to named variance bands ("key_candidate",
+        "pointer", "structural", "invariant") ON TOP OF ``min_variance``, whose
+        3000.0 default already excludes everything below KEY_CANDIDATE — pass
+        ``min_variance=0.0`` alongside a multi-class query. ``order`` is
+        "offset" or "rank". ``max_region`` mirrors ``min_region``.
 
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` when the
         reference is an encrypted ``.msl``.
@@ -264,6 +344,10 @@ def create_server():
             entropy_window=entropy_window,
             entropy_threshold=entropy_threshold,
             min_region=min_region,
+            max_region=max_region,
+            classes=classes,
+            order=order,
+            max_returned=max_returned,
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -277,6 +361,8 @@ def create_server():
         oracle_config_path: Optional[str] = None,
         pcap_path: Optional[str] = None,
         tls_client_random: Optional[str] = None,
+        pcap_max_records: Optional[int] = None,
+        pcap_max_challenges: Optional[int] = None,
         persist_ground_truth: bool = False,
         key_sizes: Optional[List[int]] = None, stride: int = 1,
         jobs: int = 0, exhaustive: bool = True,
@@ -292,6 +378,10 @@ def create_server():
         routed through MemDiver's first-party trusted pcap oracle to prove a
         recovered key decrypts real captured records). ``tls_client_random``
         (hex) optionally restricts pcap matching to one session.
+        ``pcap_max_records`` / ``pcap_max_challenges`` size the pcap oracle's
+        verification work (records per direction / total challenges); leave both
+        unset to keep the defaults, and read ``inspect_pcap``'s ``caps`` +
+        ``records_truncated`` to see what a capture actually loses to them.
 
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
         against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
@@ -305,6 +395,8 @@ def create_server():
             oracle_config_path=oracle_config_path,
             pcap_path=pcap_path,
             tls_client_random=tls_client_random,
+            pcap_max_records=pcap_max_records,
+            pcap_max_challenges=pcap_max_challenges,
             persist_ground_truth=persist_ground_truth,
             key_sizes=tuple(key_sizes or [32]),
             stride=stride,
@@ -521,7 +613,11 @@ def create_server():
 
     @mcp.tool()
     @mcp_error_funnel
-    def inspect_pcap(pcap_path: str) -> str:
+    def inspect_pcap(
+        pcap_path: str,
+        pcap_max_records: Optional[int] = None,
+        pcap_max_challenges: Optional[int] = None,
+    ) -> str:
         """Summarise the TLS sessions in a capture (the pcap arm/validate step).
 
         Parses ``pcap_path``'s handshakes and returns, per session, the
@@ -529,8 +625,19 @@ def create_server():
         per-direction application-data record counts — the facts the pcap
         verification oracle keys off. Reads only parsed state (no key
         derivation, no decryption). Requires the ``pcap`` extra (dpkt).
+
+        Pass the same ``pcap_max_records`` / ``pcap_max_challenges`` the
+        ``brute_force`` run will use, so the reported ``caps`` and the
+        ``records_truncated`` / ``challenges_truncated`` flags describe the caps
+        actually in force rather than the resource defaults. Leave both unset
+        for the defaults. A cap below 1 is rejected: it would verify nothing and
+        so could only turn a real key into an unexplained "0 confirmed".
         """
-        return json.dumps(tools_pipeline.inspect_pcap(pcap_path=pcap_path))
+        return json.dumps(tools_pipeline.inspect_pcap(
+            pcap_path=pcap_path,
+            pcap_max_records=pcap_max_records,
+            pcap_max_challenges=pcap_max_challenges,
+        ))
 
     # ------------------------------------------------------------------
     # verify + experiment — the two capabilities lifted into shared

@@ -50,6 +50,17 @@ jobs:
         # (this job doesn't run those), while still catching a real regression.
         # Raise this floor in a follow-up once coverage grows; do not lower it.
         run: python -m pytest -q --ignore-glob='tests/e2e_*_test.py' --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=82
+      - name: Run the slow ratchets
+        # `slow` is deselected by the default addopts in pyproject.toml so a
+        # plain `pytest` stays fast, but tests/test_benchmarks.py's auto-floor
+        # cost ceilings are RATCHETS (they pin the per-candidate memory and
+        # time numbers three optimisations were justified by) and must still
+        # run somewhere. Before the addopts change they rode along in the run
+        # above by accident, because `-m 'not e2e'` never deselected `slow`.
+        # The corpus-backed slow tests (tests/test_pcap_oracle_real_dump.py)
+        # self-skip here: they are gated on a machine-local dump tree that no
+        # CI runner has.
+        run: python -m pytest -q -m slow
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yara
 from fastapi.testclient import TestClient
 
 from memdiver.api.config import get_settings
@@ -162,6 +163,98 @@ def test_export_yara_happy_path(client):
     body = r.json()
     assert body["format"] == "yara"
     assert "rule exported" in body["content"]
+
+
+def _only_rule_meta(rule_source: str) -> dict:
+    """Compile a single-rule YARA source and return its meta dict."""
+    rules = list(yara.compile(source=rule_source))
+    assert len(rules) == 1, f"expected exactly one rule, got {len(rules)}"
+    return dict(rules[0].meta)
+
+
+def test_export_yara_forwards_pattern_key_locator(client):
+    """GAP C: a posted pattern that carries the locator must export it.
+
+    The endpoint receives a finished pattern dict, so the locator can only
+    come from the dict itself -- which is exactly what ``emit-plugin`` and the
+    experiment orchestrator put there. Round-tripping such a pattern through
+    ``/export`` must not silently drop it.
+    """
+    pattern = {
+        "name": "exp_test",
+        "length": 8,
+        "wildcard_pattern": "00 01 ?? ?? 04 05 06 07",
+        "static_ratio": 0.75,
+        "key_offset": 2,
+        "key_length": 2,
+    }
+    r = client.post(
+        "/api/architect/export",
+        json={"pattern": pattern, "format": "yara", "rule_name": "exported"},
+    )
+    assert r.status_code == 200, r.text
+    meta = _only_rule_meta(r.json()["content"])
+    assert meta["key_offset"] == 2
+    assert meta["key_length"] == 2
+
+
+def test_export_vol3_forwards_pattern_key_locator(client):
+    """The volatility3 branch builds the rule too -- same forwarding."""
+    pattern = {
+        "name": "exp_test",
+        "length": 8,
+        "wildcard_pattern": "00 01 ?? ?? 04 05 06 07",
+        "static_ratio": 0.75,
+        "key_offset": 2,
+        "key_length": 2,
+    }
+    r = client.post(
+        "/api/architect/export",
+        json={"pattern": pattern, "format": "volatility3", "rule_name": "Exported"},
+    )
+    assert r.status_code == 200, r.text
+    content = r.json()["content"]
+    assert "key_offset = 2" in content
+    assert "key_length = 2" in content
+
+
+def test_export_yara_omits_key_locator_when_pattern_lacks_it(client):
+    """A pattern straight from /generate-pattern knows no key position."""
+    pattern = {
+        "name": "exp_test",
+        "length": 8,
+        "wildcard_pattern": "00 01 ?? ?? 04 05 06 07",
+        "static_ratio": 0.75,
+    }
+    r = client.post(
+        "/api/architect/export",
+        json={"pattern": pattern, "format": "yara"},
+    )
+    assert r.status_code == 200, r.text
+    meta = _only_rule_meta(r.json()["content"])
+    assert "key_offset" not in meta
+    assert "key_length" not in meta
+
+
+@pytest.mark.parametrize("bad", ["n/a", [1, 2], {"a": 1}, True])
+def test_export_yara_survives_hostile_key_locator(client, bad):
+    """A non-integral locator in the request body must not 500 the endpoint."""
+    pattern = {
+        "name": "exp_test",
+        "length": 8,
+        "wildcard_pattern": "00 01 ?? ?? 04 05 06 07",
+        "static_ratio": 0.75,
+        "key_offset": bad,
+        "key_length": bad,
+    }
+    r = client.post(
+        "/api/architect/export",
+        json={"pattern": pattern, "format": "yara"},
+    )
+    assert r.status_code == 200, r.text
+    meta = _only_rule_meta(r.json()["content"])
+    assert "key_offset" not in meta
+    assert "key_length" not in meta
 
 
 def test_export_400_on_unknown_format(client):

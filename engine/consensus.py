@@ -11,22 +11,35 @@ N×d observation matrix is never materialized.
 import bisect
 import logging
 from array import array
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import numpy as np
 
+from memdiver.core.region_align import (
+    ALIGNMENT_FILE_OFFSET,
+    ALIGNMENT_METHODS,
+    ALIGNMENT_MODULE_OFFSET,
+    ALIGNMENT_VIRTUAL_ADDRESS,
+    AlignmentCoverage,
+)
 from memdiver.core.variance import (
     ByteClass,
+    ByteClassSpec,
     INVARIANT_MAX,
     STRUCTURAL_MAX,
     POINTER_MAX,
+    VarianceThresholds,
+    class_mask,
     compute_variance,
     classify_variance,
     find_contiguous_runs,
+    normalize_byte_classes,
     count_classifications,
     WelfordVariance,
 )
+from .consensus_va import supports_va_alignment
 from .results import StaticRegion
 
 logger = logging.getLogger("memdiver.engine.consensus")
@@ -38,9 +51,133 @@ __all__ = [
     "INVARIANT_MAX",
     "STRUCTURAL_MAX",
     "POINTER_MAX",
+    "VarianceThresholds",
     "ByteClass",
+    "AlignmentReport",
+    "ALIGNMENT_METHODS",
+    "ALIGNMENT_MODULE_OFFSET",
+    "ALIGNMENT_VIRTUAL_ADDRESS",
+    "ALIGNMENT_FILE_OFFSET",
     "_is_native_msl",
 ]
+
+# ---------------------------------------------------------------------------
+# Alignment provenance
+# ---------------------------------------------------------------------------
+#
+# HOW the N byte streams were put into correspondence before they were
+# compared. A closed vocabulary, because a variance figure produced by
+# ASLR-aware module+offset alignment and one produced by the flat-offset
+# fallback are not comparable, and a reader who cannot tell them apart will
+# compare them anyway.
+
+# The alignment vocabulary lives in ``core.region_align`` -- the lowest layer
+# that owns the alignment arithmetic -- so the consensus engine and the
+# ``consensus_runs.alignment_method`` column validate against one tuple.
+# Re-exported here because this is where callers of ``AlignmentReport``
+# already look.
+
+#: An aligned build that drops more than this share of the input bytes gets a
+#: warning. Some loss is normal — a region present in one dump and not another
+#: cannot be compared — but past this point the variance describes a corner of
+#: the dumps rather than the dumps.
+SIGNIFICANT_DISCARD_FRACTION = 0.10
+
+
+@dataclass(frozen=True)
+class AlignmentReport:
+    """How a consensus vector's N dumps were aligned, and what that cost.
+
+    Every consensus carries one, so no surface has to guess which path ran.
+    ``bytes_compared`` is the length of the byte stream every dump contributed
+    to; ``bytes_discarded`` is the total input bytes that never took part,
+    summed over all dumps, so that::
+
+        sum(input sizes) == bytes_compared * n_sources + bytes_discarded
+
+    ``warnings`` is non-empty exactly when the result is questionable: the
+    flat fallback ran on dumps of different sizes, or an aligned path kept too
+    little to be representative. Equal-sized dumps on the flat path — the
+    normal case for a phase-series capture of one process — stay silent.
+    """
+
+    method: str = ALIGNMENT_FILE_OFFSET
+    bytes_compared: int = 0
+    bytes_discarded: int = 0
+    sizes_differed: bool = False
+    n_sources: int = 0
+    warnings: Tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-ready form for the CLI / API / MCP surfaces."""
+        return {
+            "method": self.method,
+            "bytes_compared": self.bytes_compared,
+            "bytes_discarded": self.bytes_discarded,
+            "sizes_differed": self.sizes_differed,
+            "n_sources": self.n_sources,
+            "warnings": list(self.warnings),
+        }
+
+
+def _alignment_warnings(method: str, coverage: AlignmentCoverage) -> Tuple[str, ...]:
+    """The warnings a given alignment outcome earns — usually none.
+
+    The flat fallback is only reported when the dumps were not the same size,
+    because that is the case where comparing byte 0 to byte 0 is unsound.
+    Running the fallback on equal-sized dumps is the normal, correct case and
+    a warning there would be noise on every real run.
+    """
+    if not coverage.n_sources:
+        return ()
+    if coverage.bytes_compared == 0 and sum(coverage.bytes_available):
+        return (
+            f"{method} alignment found no bytes common to all "
+            f"{coverage.n_sources} dumps; nothing was compared.",
+        )
+    if method == ALIGNMENT_FILE_OFFSET:
+        if not coverage.sizes_differed:
+            return ()
+        return (
+            f"Flat file-offset alignment on {coverage.n_sources} dumps of "
+            f"differing size ({min(coverage.bytes_available)}-"
+            f"{max(coverage.bytes_available)} bytes): only the first "
+            f"{coverage.bytes_compared} bytes of each were compared and "
+            f"{coverage.bytes_discarded} bytes were discarded. Offsets were "
+            f"compared without ASLR correction, so a shifted layout would "
+            f"make this variance meaningless.",
+        )
+    if coverage.discarded_fraction > SIGNIFICANT_DISCARD_FRACTION:
+        return (
+            f"{method} alignment compared {coverage.bytes_compared} bytes per "
+            f"dump; {coverage.bytes_discarded} bytes "
+            f"({coverage.discarded_fraction:.1%} of the input) were present in "
+            f"some dumps but not all and were not compared.",
+        )
+    return ()
+
+
+def _build_report(method: str, coverage: AlignmentCoverage) -> AlignmentReport:
+    """Assemble (and log) the report for one alignment outcome."""
+    warnings = _alignment_warnings(method, coverage)
+    for message in warnings:
+        logger.warning("%s", message)
+    return AlignmentReport(
+        method=method,
+        bytes_compared=coverage.bytes_compared,
+        bytes_discarded=coverage.bytes_discarded,
+        sizes_differed=coverage.sizes_differed,
+        n_sources=coverage.n_sources,
+        warnings=warnings,
+    )
+
+
+def _flat_report(sizes: Sequence[int], bytes_compared: int) -> AlignmentReport:
+    """Report for a flat-offset build, from the N input sizes."""
+    return _build_report(
+        ALIGNMENT_FILE_OFFSET,
+        AlignmentCoverage.from_sizes(sizes, bytes_compared),
+    )
 
 # String-to-ByteClass mapping for backward-compat setter
 _STR_TO_BYTECLASS = {
@@ -54,7 +191,10 @@ _STR_TO_BYTECLASS = {
 class ConsensusVector:
     """Per-byte variance vector across N dumps at the same phase."""
 
-    def __init__(self):
+    def __init__(self, thresholds: Union[VarianceThresholds, None] = None):
+        # Band boundaries used by every classify pass on this vector. None
+        # means the module defaults (0.0 / 200.0 / 3000.0).
+        self.thresholds: Union[VarianceThresholds, None] = thresholds
         self.variance: Union[np.ndarray, array] = np.array([], dtype=np.float32)
         self._classifications: Union[np.ndarray, array] = np.array([], dtype=np.uint8)
         self.num_dumps: int = 0
@@ -68,14 +208,24 @@ class ConsensusVector:
         # pattern generation to derive static masks (variance == 0) and
         # reference content at the same self-consistent offsets.
         self.reference_bytes: bytes = b""
-        # MSL-only: per-slice VA layout [(slab_offset, page_size, [va_per_dump])]
-        # in slab order, plus the source dump paths in build order. Together they
-        # map any dump's virtual address to the slab index that `variance` /
+        # Aligned builds only: per-slice VA layout
+        # [(slab_offset, page_size, [va_per_dump])] in slab order, plus the
+        # source dump paths in build order. Together they map any dump's
+        # virtual address to the slab index that `variance` /
         # `classifications` are indexed by — so the consensus overlay can be
-        # painted on a dump's `va` view. None/empty for raw (flat-offset) builds.
+        # painted on a dump's `va` view. None/empty for raw (flat-offset)
+        # builds, which have no VA coordinate to map to. Named for the MSL
+        # path that first produced it; the VA path fills it with the same
+        # slab/VA correspondence.
         self.msl_layout: Union[List[Tuple[int, int, List[int]]], None] = None
         self.dump_paths: List[str] = []
         self._va_index_cache: Dict[int, List[Tuple[int, int, int]]] = {}
+        # How this vector's dumps were put into correspondence. Populated by
+        # every build path; the default describes an unbuilt vector.
+        self.alignment_report: AlignmentReport = AlignmentReport()
+        # Input sizes seen by an incremental build, so `finalize` can report
+        # the same coverage a one-shot build would have.
+        self._incremental_sizes: List[int] = []
 
     @property
     def classifications(self) -> array:
@@ -117,7 +267,8 @@ class ConsensusVector:
             return
 
         self.num_dumps = len(dump_paths)
-        min_size = min(p.stat().st_size for p in dump_paths)
+        sizes = [p.stat().st_size for p in dump_paths]
+        min_size = min(sizes)
         if min_size == 0:
             logger.warning("Empty dump files detected")
             return
@@ -125,8 +276,9 @@ class ConsensusVector:
         self.size = min_size
         buffers = [p.read_bytes()[:min_size] for p in dump_paths]
         self.variance = compute_variance(buffers, min_size)
-        self._classifications = classify_variance(self.variance)
+        self._classifications = classify_variance(self.variance, self.thresholds)
         self.reference_bytes = buffers[0] if buffers else b""
+        self.alignment_report = _flat_report(sizes, min_size)
         logger.info("Consensus built: %d bytes, %d dumps", min_size, self.num_dumps)
 
     def build_from_sources(
@@ -134,8 +286,19 @@ class ConsensusVector:
     ) -> None:
         """Build consensus from DumpSource objects.
 
-        Native MSL sources use ASLR-aware region alignment when *normalize* is True.
-        Raw, mixed, or imported-MSL sources fall back to flat bytes.
+        Picks the strongest correspondence the sources can supply, and records
+        which one that was in :attr:`alignment_report`:
+
+        * every source a native ``.msl`` -> ASLR-invariant module+offset;
+        * every source carrying a VA map (gcore, regioned raw) -> virtual
+          address;
+        * anything else — raw, mixed, imported ``.msl`` — -> the flat-offset
+          fallback, unchanged.
+
+        An aligned path that finds nothing in common yields an empty consensus
+        and says so in the report; it does not silently retry flat, because
+        "these dumps share no mapped page" and "these dumps agree byte for
+        byte from offset 0" are different answers.
         """
         if len(sources) < 2:
             logger.warning("Need >= 2 dumps for consensus, got %d", len(sources))
@@ -146,22 +309,35 @@ class ConsensusVector:
         self.dump_paths = [str(getattr(s, "path", "") or "") for s in sources]
         self._va_index_cache = {}
         if all(_is_native_msl(s) for s in sources):
-            from .consensus_msl import build_msl_consensus
-            (
-                self.variance,
-                self.size,
-                self.reference_bytes,
-                self.msl_layout,
-            ) = build_msl_consensus(sources, self.num_dumps, return_layout=True)
+            from .consensus_msl import build_msl_consensus_result
+            result = build_msl_consensus_result(sources)
+            self._adopt_aligned(result, ALIGNMENT_MODULE_OFFSET)
+        elif all(supports_va_alignment(s) for s in sources):
+            from .consensus_va import build_va_consensus
+            result = build_va_consensus(sources)
+            self._adopt_aligned(result, ALIGNMENT_VIRTUAL_ADDRESS)
         else:
             self.msl_layout = None
             self._build_raw(sources)
-        self._classifications = classify_variance(self.variance)
+        self._classifications = classify_variance(self.variance, self.thresholds)
+
+    def _adopt_aligned(self, result, method: str) -> None:
+        """Take an aligned build's slab, layout and coverage.
+
+        The MSL and VA results share a shape on purpose, so both aligned paths
+        land here and cannot drift in what they publish.
+        """
+        self.variance = result.variance
+        self.size = result.total_bytes
+        self.reference_bytes = result.reference_bytes
+        self.msl_layout = result.layout
+        self.alignment_report = _build_report(method, result.coverage)
 
     def _build_raw(self, sources: List) -> None:
         """Flat-bytes consensus from DumpSource objects (fallback)."""
         buffers = [s.read_all() for s in sources]
-        min_size = min(len(b) for b in buffers)
+        sizes = [len(b) for b in buffers]
+        min_size = min(sizes)
         if min_size == 0:
             logger.warning("Empty dump data detected")
             return
@@ -169,6 +345,7 @@ class ConsensusVector:
         truncated = [b[:min_size] for b in buffers]
         self.variance = compute_variance(truncated, min_size)
         self.reference_bytes = truncated[0]
+        self.alignment_report = _flat_report(sizes, min_size)
 
     # ------------------------------------------------------------------
     # VA-coordinate access (MSL overlay + variance heatmap)
@@ -291,6 +468,7 @@ class ConsensusVector:
         self._welford = WelfordVariance(size)
         self.size = size
         self.num_dumps = 0
+        self._incremental_sizes = []
         self.reference_bytes = b""
         self.variance = np.zeros(size, dtype=np.float32)
         self._classifications = np.array([], dtype=np.uint8)
@@ -312,6 +490,9 @@ class ConsensusVector:
             )
         data = raw[: self.size]
         self._welford.add_dump(data)
+        # The pre-truncation length, so `finalize` can report the same
+        # discarded-byte count a one-shot flat build would have reported.
+        self._incremental_sizes.append(len(raw))
         self.num_dumps = self._welford.num_dumps
         if not self.reference_bytes:
             self.reference_bytes = bytes(data)
@@ -347,33 +528,98 @@ class ConsensusVector:
                 self.num_dumps,
             )
         self.variance = self._welford.variance()
-        self._classifications = classify_variance(self.variance)
+        self._classifications = classify_variance(self.variance, self.thresholds)
+        # An incremental fold is the flat path, one dump at a time: every
+        # source was truncated to the size fixed by `build_incremental`.
+        self.alignment_report = _flat_report(self._incremental_sizes, self.size)
         self._welford = None
+
+    def _class_runs(self, classes: Tuple[ByteClass, ...]) -> List[Tuple[int, int]]:
+        """Contiguous runs of bytes belonging to any class in *classes*.
+
+        A multi-class query runs over the UNION of the classes rather than
+        per class, so a region that walks POINTER -> KEY_CANDIDATE -> POINTER
+        stays one region instead of fragmenting into three short ones. Real
+        secrets classify as a mix (a measured 48-byte TLS 1.2 secret is 22
+        KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL), so the union is the only
+        grouping that keeps them retrievable at a useful ``min_length``.
+        """
+        if len(classes) == 1:
+            return find_contiguous_runs(self._classifications, classes[0])
+        mask = class_mask(self._classifications, classes)
+        return find_contiguous_runs(mask.astype(np.uint8), 1)
+
+    def _region_mean_variance(self, start: int, end: int) -> float:
+        """Mean variance over [start, end) — 0.0 when no variance is loaded.
+
+        Reduced with numpy rather than the builtin ``sum`` the old
+        ``get_volatile_regions`` used: an INVARIANT run can span the whole
+        dump, and a Python-level accumulation over 11M float32s is seconds.
+        """
+        length = end - start
+        if length <= 0:
+            return 0.0
+        window = self.variance[start:end]
+        if len(window) == 0:
+            return 0.0
+        return float(np.asarray(window, dtype=np.float32).mean())
+
+    def _region_label(self, start: int, end: int,
+                      classes: Tuple[ByteClass, ...]) -> str:
+        """Label a region by the most volatile class it actually contains."""
+        if len(classes) == 1:
+            return classes[0].name.lower()
+        codes = self._classifications[start:end]
+        if isinstance(codes, np.ndarray):
+            present = {int(c) for c in np.unique(codes).tolist()}
+        else:
+            present = {int(c) for c in codes}
+        highest = max((c for c in classes if int(c) in present),
+                      default=max(classes))
+        return ByteClass(int(highest)).name.lower()
+
+    def get_regions(
+        self, byte_class: ByteClassSpec, *,
+        min_length: int = 1, max_length: int = 0,
+    ) -> List[StaticRegion]:
+        """Contiguous regions of one or more byte classes.
+
+        The single retrieval path over all four classes — STRUCTURAL and
+        POINTER have no dedicated getter and were previously counted but
+        unreachable.
+
+        Args:
+            byte_class: A single ``ByteClass`` (or its integer code), or an
+                iterable of them for a union query (see ``_class_runs``).
+            min_length: Shortest region to report, in bytes.
+            max_length: Longest region to report; 0 means unbounded.
+
+        Returns:
+            ``StaticRegion`` rows in offset order, each carrying the region's
+            mean variance and the most volatile class it contains.
+        """
+        classes = normalize_byte_classes(byte_class)
+        regions = []
+        for start, end in self._class_runs(classes):
+            length = end - start
+            if length < min_length:
+                continue
+            if max_length and length > max_length:
+                continue
+            regions.append(StaticRegion(
+                start=start, end=end,
+                mean_variance=self._region_mean_variance(start, end),
+                classification=self._region_label(start, end, classes),
+            ))
+        return regions
 
     def get_static_regions(self, min_length: int = 32) -> List[StaticRegion]:
         """Find contiguous static (invariant) byte regions."""
-        raw_runs = find_contiguous_runs(self._classifications, ByteClass.INVARIANT)
-        regions = []
-        for start, end in raw_runs:
-            if (end - start) >= min_length:
-                regions.append(StaticRegion(
-                    start=start, end=end,
-                    mean_variance=0.0, classification="invariant",
-                ))
-        return regions
+        return self.get_regions(ByteClass.INVARIANT, min_length=min_length)
 
     def get_volatile_regions(self, min_length: int = 16) -> List[StaticRegion]:
         """Find contiguous high-variance (key_candidate) regions."""
-        raw_runs = find_contiguous_runs(self._classifications, ByteClass.KEY_CANDIDATE)
-        regions = []
-        for start, end in raw_runs:
-            if (end - start) >= min_length:
-                mean_var = sum(self.variance[start:end]) / (end - start)
-                regions.append(StaticRegion(
-                    start=start, end=end,
-                    mean_variance=mean_var, classification="key_candidate",
-                ))
-        return regions
+        return self.get_regions(ByteClass.KEY_CANDIDATE, min_length=min_length)
 
     def get_aligned_candidates(
         self, block_size: int = 32, alignment: int = 16,

@@ -674,3 +674,65 @@ def test_search_reduce_emits_recommended_floor(tmp_path):
     payload = json.loads(out_path.read_text())
     assert "recommended_floor" in payload
     assert payload["recommended_floor"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# analyze-candidates — the exploratory path, reachable with no oracle (A4).
+# ---------------------------------------------------------------------------
+
+
+def test_parser_analyze_candidates_command():
+    parser = _build_parser()
+    args = parser.parse_args([
+        "analyze-candidates", "/tmp/a.dump", "/tmp/b.dump",
+        "--classes", "structural,pointer,key_candidate", "--min-region", "8",
+    ])
+    assert args.command == "analyze-candidates"
+    assert args.dumps == ["/tmp/a.dump", "/tmp/b.dump"]
+    assert args.classes == "structural,pointer,key_candidate"
+    assert args.min_region == 8
+    # Defaults that carry meaning: the floor is left to RESOLVE against
+    # --classes (a wire default of 3000 would silently re-impose the
+    # KEY_CANDIDATE cut the class query just widened), and the list comes back
+    # best-first because an exploratory user reads the top of it.
+    assert args.min_variance is None
+    assert args.order == "rank"
+
+
+def test_analyze_candidates_writes_a_ranked_payload(tmp_path, monkeypatch):
+    """The handler routes through the shared producer and relays the full
+    payload — regions, alignment provenance, resolved thresholds — to
+    ``--output``."""
+    import numpy as np
+
+    from memdiver.cli import _cmd_analyze_candidates
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    rng = np.random.default_rng(3)
+    background = rng.integers(0, 4, 8192, dtype=np.uint8)
+    dumps = []
+    for i in range(4):
+        body = background.copy()
+        body[2048:2096] = rng.integers(0, 256, 48, dtype=np.uint8)
+        p = tmp_path / f"phase_{i}.dump"
+        p.write_bytes(body.tobytes())
+        dumps.append(str(p))
+
+    out = tmp_path / "candidates.json"
+    rc = _cmd_analyze_candidates(argparse.Namespace(
+        dumps=dumps, classes="structural,pointer,key_candidate",
+        min_variance=None, min_region=8, max_region=0,
+        alignment=8, block_size=32, density_threshold=0.5,
+        entropy_window=32, entropy_threshold=4.5,
+        order="rank", max_returned=200, normalize=False, project_id="",
+        output=str(out),
+        key_file=None, passphrase=None, kem_key_file=None))
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["num_dumps"] == 4
+    assert payload["regions"][0]["offset"] == 2048
+    assert payload["regions"][0]["rank"] == 1
+    assert payload["alignment"]["method"] == "file_offset"
+    assert payload["thresholds"]["min_variance"] == 0.0
+    assert payload["warnings"] == []

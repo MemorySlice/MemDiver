@@ -53,6 +53,13 @@ export interface PipelineRunRequest {
   oracle_id?: string | null;
   pcap_path?: string | null;
   tls_client_random?: string | null;
+  // Pcap-oracle work caps, both validated server-side as >= 1 (api/routers/
+  // pipeline.py). Omit or send null to keep the backend defaults: 16 records
+  // per direction, no total challenge cap. Both are silent truncations of
+  // verification coverage, so send them only deliberately -- and read the arm
+  // step's `caps` / `records_truncated` to see what a capture actually loses.
+  pcap_max_records?: number | null;
+  pcap_max_challenges?: number | null;
   reduce?: ReduceParams;
   brute_force?: BruteForceParams;
   nsweep?: NSweepParams | null;
@@ -92,13 +99,140 @@ export interface PcapSession {
   // oracle can decrypt. Always emitted by the backend, so ``sessionHasAppRecords``
   // reads it directly.
   has_app_records: boolean;
+  // Record accounting added by ``TlsPcapResource.describe_capture``: how many
+  // application-data records the parser saw across both directions, and how
+  // many of those the challenge stream actually COVERS -- after the per-
+  // direction record cap, the TLS 1.2 ChangeCipherSpec gate, and whatever is
+  // left of the total challenge budget. ``records_returned < app_records_seen``
+  // means this session is only partially verified; ``records_returned: 0`` on a
+  // session with records means it is not verified at all (look in
+  // ``skipped_sessions`` for the reason). Optional so a caller holding a
+  // ``describe_sessions`` dict (which carries neither) still type-checks.
+  app_records_seen?: number;
+  records_returned?: number;
+  // Challenge accounting. A challenge is NOT a record: a TLS 1.3 record is
+  // probed over a sequence-number window (up to 9 candidates), so one record
+  // can contribute several challenges and this can far exceed
+  // ``records_returned``. ``challenges_available`` is what the session would
+  // contribute uncapped, ``challenges_returned`` what survives
+  // ``caps.max_challenges`` -- which is spent ACROSS sessions in parse order,
+  // so a later session can legitimately report 0 here.
+  challenges_available?: number;
+  challenges_returned?: number;
 }
 
-/** Server-side validation of an uploaded pcap: the sessions it contains. */
+/**
+ * Why the parser had to drop work, machine-readable. Mirrors the ``reason``
+ * values ``TlsPcapResource._note_skipped`` emits; the list is closed on the
+ * backend today, so a new reason is a deliberate contract change on both sides.
+ *
+ * Not every reason drops a whole session. ``no_change_cipher_spec`` KEEPS the
+ * session and reports that one direction's application data is unreachable,
+ * and ``client_random_mismatch`` reports a session that parsed fine but is not
+ * the one the resource is pinned to -- so a row can appear in both ``sessions``
+ * and ``skipped_sessions``, which is the point: it explains a
+ * ``records_returned: 0`` that would otherwise read as an unexplained zero.
+ * ``client_random_mismatch`` requires a pinned resource, which the arm producer
+ * does not do, so expect it from a run rather than from this response.
+ *
+ * ``no_cipher_suite`` and ``short_random`` are defensive guards the bundled
+ * dpkt cannot actually produce (it always yields a 32-byte random and an int
+ * suite code, and a short random surfaces as ``no_server_hello``). They stay
+ * in the union so a different dpkt build cannot break the narrowing, but a UI
+ * must not present them as expected outcomes.
+ */
+export type PcapSkipReason =
+  | "no_client_hello"
+  | "no_server_hello"
+  | "no_cipher_suite"
+  | "short_random"
+  | "unsupported_cipher_suite"
+  | "no_change_cipher_spec"
+  | "client_random_mismatch";
+
+/**
+ * One piece of work the parser saw but could not use. ``flow`` is the
+ * human-readable directional flow label ("ip:port -> ip:port"); the remaining
+ * fields are reason-specific context (``cipher_suite`` for an out-of-table
+ * suite, the two random lengths for a truncated handshake, ``direction`` plus
+ * that direction's ``app_records_seen`` for a missing ChangeCipherSpec, and
+ * the hex ``client_random`` of a session this run is not pinned to).
+ */
+export interface PcapSkippedSession {
+  reason: PcapSkipReason;
+  flow: string;
+  cipher_suite?: number;
+  client_random_len?: number;
+  server_random_len?: number;
+  /** ``no_change_cipher_spec`` only: which half of the session is unreachable. */
+  direction?: "client" | "server";
+  /** ``no_change_cipher_spec`` only: application-data records lost on that
+   * direction. Per-direction, so it does NOT match the session-level
+   * ``PcapSession.app_records_seen``, which sums both directions. */
+  app_records_seen?: number;
+  /** ``client_random_mismatch`` only: hex ``client_random`` of the session the
+   * stream skipped, so the UI can say WHICH session was passed over. */
+  client_random?: string;
+}
+
+/**
+ * The caps in force for a capture (``describe_capture().caps``).
+ *
+ * Both are silent losses of verification coverage, which is why both are
+ * reported rather than only the record one. ``max_challenges`` is ``null`` when
+ * uncapped -- the KEY is always present, so "uncapped" can never be mistaken
+ * for "unreported".
+ */
+export interface PcapCaps {
+  /** Application-data records each DIRECTION of each session contributes. */
+  max_records_per_direction: number;
+  /** Total challenges the oracle keeps, spent across sessions in parse order;
+   * ``null`` = uncapped. A value below 1 is rejected server-side. */
+  max_challenges?: number | null;
+}
+
+/**
+ * Server-side validation of an uploaded pcap: the sessions it contains.
+ *
+ * The accounting fields below say what the parse *dropped*, and exist so a
+ * zero-confirmation run is never mistaken for full coverage: a session with a
+ * cipher suite outside the parser's table used to vanish with only a log line.
+ * They are optional purely for backward compatibility with a cached or older
+ * response.
+ *
+ * ``POST /api/pcaps/validate`` returns the ``app.tools_pipeline.inspect_pcap``
+ * dict verbatim, and that producer emits every key below. They stay optional so
+ * a cached or older response still type-checks -- read them defensively, do not
+ * treat an absent one as an error.
+ */
 export interface PcapValidateResult {
   pcap_path: string;
   session_count: number;
   sessions: PcapSession[];
+  /** Work the parser dropped, each entry with a machine-readable reason. Not
+   * all of it is a whole session -- see ``PcapSkipReason``. */
+  skipped_sessions?: PcapSkippedSession[];
+  /** Directional TCP flows the capture yielded -- the denominator for
+   * ``session_count``: "1 session out of 40 flows" is not "1 out of 2". */
+  flow_count?: number;
+  caps?: PcapCaps;
+  /** True when any session returns fewer records than it saw, WHATEVER the
+   * cause: ``caps.max_records_per_direction``, a missing TLS 1.2
+   * ChangeCipherSpec (which makes a direction undecryptable outright), or an
+   * exhausted ``caps.max_challenges`` budget. It is not a statement about the
+   * record cap alone. */
+  records_truncated?: boolean;
+  /** Challenges the whole capture would contribute uncapped. Reported because
+   * it is not derivable from the record counts: a TLS 1.3 record is probed over
+   * a sequence-number window, so the corpus average is ~3.9 challenges per
+   * record -- a ``max_challenges`` of 50 therefore covers only ~13 records. */
+  challenges_available?: number;
+  /** Challenges that survive ``caps.max_challenges``. */
+  challenges_returned?: number;
+  /** ``challenges_returned < challenges_available`` -- some record got only
+   * part of its sequence window, so a no-hit run is a statement about the
+   * challenges tried, not about the capture. */
+  challenges_truncated?: boolean;
 }
 
 // ---- response models ----

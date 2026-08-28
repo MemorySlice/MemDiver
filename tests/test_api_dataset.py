@@ -368,3 +368,136 @@ def test_meta_to_dict_full_payload():
     assert result["master_key"] == "aabb"
     assert result["source_path"] == str(Path("/tmp/meta.json"))
     assert result["dumps"] == {"gcore": {"path": str(Path("/tmp/x.core")), "size": 42}}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/dataset/runs -- the ``capture`` block
+#
+# ``load_run_directory`` populates ``RunDirectory.capture_path`` /
+# ``capture_status``; the endpoint used to discard both, so the run<->capture
+# correlation reached no surface at all and "unreadable" was unobservable.
+# ---------------------------------------------------------------------------
+
+
+def _run_with_capture(root: Path, name: str, capture_bytes: bytes | None) -> Path:
+    """A legacy-named run dir, optionally with ``run_data/traffic.pcap``."""
+    from memdiver.core.discovery import CAPTURE_SUBDIR
+
+    run_dir = root / name
+    run_dir.mkdir(parents=True)
+    (run_dir / "20240101_120000_000001_pre_handshake.dump").write_bytes(b"\x00" * 64)
+    if capture_bytes is not None:
+        capture_dir = run_dir / CAPTURE_SUBDIR
+        capture_dir.mkdir()
+        (capture_dir / "traffic.pcap").write_bytes(capture_bytes)
+    return run_dir
+
+
+def test_list_runs_capture_present(client, isolated_env):
+    """A run owning a non-empty capture reports its path and ``present``."""
+    root = isolated_env / "capture_present_root"
+    run_dir = _run_with_capture(root, "openssl_run_13_1", b"\xd4\xc3\xb2\xa1")
+
+    r = client.get("/api/dataset/runs", params={"root": str(root)})
+    assert r.status_code == 200, r.text
+    capture = r.json()["runs"][0]["capture"]
+    assert capture["status"] == "present"
+    assert capture["path"] == str(run_dir / "run_data" / "traffic.pcap")
+
+
+def test_list_runs_capture_absent(client, isolated_env):
+    """No capture -> ``absent`` with a null path (never omitted)."""
+    root = isolated_env / "capture_absent_root"
+    _run_with_capture(root, "openssl_run_13_2", None)
+
+    r = client.get("/api/dataset/runs", params={"root": str(root)})
+    assert r.status_code == 200, r.text
+    capture = r.json()["runs"][0]["capture"]
+    assert capture == {"path": None, "status": "absent"}
+
+
+def test_list_runs_capture_unreadable(client, isolated_env):
+    """A zero-byte capture is surfaced as ``unreadable``, not ``absent``.
+
+    This is the state that no consumer could observe before the endpoint
+    forwarded the fields.
+    """
+    root = isolated_env / "capture_unreadable_root"
+    run_dir = _run_with_capture(root, "openssl_run_13_3", b"")
+
+    r = client.get("/api/dataset/runs", params={"root": str(root)})
+    assert r.status_code == 200, r.text
+    capture = r.json()["runs"][0]["capture"]
+    assert capture["status"] == "unreadable"
+    # The offending file is still named so the operator can find it.
+    assert capture["path"] == str(run_dir / "run_data" / "traffic.pcap")
+
+
+def test_list_runs_capture_from_meta_declaration(client, isolated_env):
+    """A ``capture`` key in meta.json is honoured end-to-end over HTTP."""
+    root = isolated_env / "capture_meta_root"
+    run_dir = root / "openssl_run_13_4"
+    run_dir.mkdir(parents=True)
+    (run_dir / "test_capture.msl").write_bytes(b"MSL0" + b"\x00" * 44)
+    (run_dir / "pcaps").mkdir()
+    (run_dir / "pcaps" / "session.pcapng").write_bytes(b"\x0a\x0d\x0d\x0a")
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "run_id": "openssl_run_13_4",
+                "cipher": "AES-256-GCM",
+                "password": "pw",
+                "master_key_hex": "ab" * 32,
+                "aslr_base": 0,
+                "pid": 1,
+                "dumps": {},
+                "capture": "pcaps/session.pcapng",
+            }
+        )
+    )
+
+    r = client.get("/api/dataset/runs", params={"root": str(root)})
+    assert r.status_code == 200, r.text
+    capture = r.json()["runs"][0]["capture"]
+    assert capture["status"] == "present"
+    assert capture["path"] == str(run_dir / "pcaps" / "session.pcapng")
+
+
+def test_list_runs_capture_on_meta_only_fallback_entry(isolated_env, monkeypatch):
+    """The hand-built meta-only fallback entry also carries a capture block.
+
+    ``_load_run_entry`` rebuilds a ``RunDirectory`` by hand when
+    ``load_run_directory`` declines the directory; that path must probe too, or
+    it would report ``absent`` for a run that plainly owns a capture.
+    """
+    from memdiver.api.routers.dataset import _load_run_entry
+    from memdiver.core.discovery import RunDiscovery
+
+    run_dir = isolated_env / "not_a_run_shape"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "run_id": "x",
+                "cipher": "c",
+                "password": "p",
+                "master_key_hex": "aa" * 16,
+                "aslr_base": 0,
+                "pid": 1,
+                "dumps": {},
+            }
+        )
+    )
+    (run_dir / "run_data").mkdir()
+    (run_dir / "run_data" / "traffic.pcap").write_bytes(b"\xd4\xc3\xb2\xa1")
+
+    # Force the fallback branch: the real loader accepts this directory (it has
+    # a meta.json), so stub it out to drive the meta-only reconstruction.
+    monkeypatch.setattr(
+        RunDiscovery, "load_run_directory", staticmethod(lambda *a, **k: None)
+    )
+    entry = _load_run_entry(run_dir)
+    assert entry is not None
+    assert entry["dumps"] == []  # proof we took the hand-built fallback
+    assert entry["capture"]["status"] == "present"
+    assert entry["capture"]["path"] == str(run_dir / "run_data" / "traffic.pcap")

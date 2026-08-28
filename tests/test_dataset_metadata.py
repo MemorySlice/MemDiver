@@ -108,3 +108,28 @@ def test_load_run_meta_real_dataset() -> None:
     assert meta.pid > 0
     assert meta.aslr_base == 0x400000
     assert "gcore" in meta.dumps
+
+
+def test_load_run_meta_capture_absent_stays_none(tmp_path: Path) -> None:
+    """No ``capture`` key (every corpus today) leaves the field ``None``."""
+    _write_meta(tmp_path, {"cipher": "aes", "dumps": {}})
+    meta = load_run_meta(tmp_path)
+    assert meta is not None
+    assert meta.capture is None
+
+
+def test_load_run_meta_capture_parsed_when_present(tmp_path: Path) -> None:
+    """Forward-compat: a declared capture path is carried through verbatim."""
+    _write_meta(tmp_path, {"capture": "run_data/traffic.pcap", "dumps": {}})
+    meta = load_run_meta(tmp_path)
+    assert meta is not None
+    assert meta.capture == "run_data/traffic.pcap"
+
+
+def test_dataset_meta_capture_defaults_to_none() -> None:
+    """The dataclass default keeps existing constructors working unchanged."""
+    meta = DatasetMeta(
+        run_id="r", cipher="", password="", master_key_hex="",
+        master_key=b"", aslr_base=0, pid=0,
+    )
+    assert meta.capture is None

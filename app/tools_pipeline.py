@@ -140,6 +140,30 @@ def _select_hit(hits_path: Path, hit_index: int) -> Dict[str, Any]:
 # search-reduce
 # ----------------------------------------------------------------------
 
+#: Default cap on the regions ``search_reduce`` returns INLINE. A pathological
+#: reduction can produce tens of thousands of runs, and an MCP tool result is a
+#: single JSON string an agent has to hold in its context — so the inline list
+#: is bounded by default and the caller raises it deliberately. The persisted
+#: ``candidates.json`` is never capped.
+DEFAULT_MAX_RETURNED_REGIONS = 200
+
+
+def _bounded_regions(
+    regions: List[Dict[str, Any]], max_returned: int
+) -> tuple[List[Dict[str, Any]], bool]:
+    """Cap an ordered region list to the ``max_returned`` BEST-RANKED rows.
+
+    Selection is by ``rank``, never by list position, so a cap applied to an
+    offset-ordered list still keeps the top candidates instead of whatever
+    happens to live at the lowest offsets. The rows that survive stay in the
+    order they arrived in, so the caller's ``order`` still describes them.
+
+    ``max_returned <= 0`` means uncapped.
+    """
+    if max_returned <= 0 or len(regions) <= max_returned:
+        return list(regions), False
+    return [r for r in regions if int(r.get("rank", 0)) <= max_returned], True
+
 
 def search_reduce(
     *,
@@ -154,6 +178,10 @@ def search_reduce(
     entropy_window: int = 32,
     entropy_threshold: float = 4.5,
     min_region: int = 16,
+    max_region: int = 0,
+    classes: Optional[Sequence[str]] = None,
+    order: str = "offset",
+    max_returned: int = DEFAULT_MAX_RETURNED_REGIONS,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
@@ -167,6 +195,27 @@ def search_reduce(
     a plain ``reference.bin`` opens raw (byte-identical to the previous
     ``read_bytes`` path).
 
+    ``classes`` narrows the result to named ByteClass bands ("key_candidate",
+    "pointer", "structural", "invariant") IN ADDITION to ``min_variance`` —
+    note that the default 3000.0 floor already excludes everything below
+    KEY_CANDIDATE, so an all-non-invariant query needs ``min_variance=0.0`` to
+    mean what it says. ``max_region`` mirrors ``min_region``.
+
+    ``order`` orders both the persisted ``candidates.json`` and the returned
+    ``regions``: "offset" (the default, unchanged from before ranking existed)
+    or "rank", best-scoring first. Every row carries ``rank``/``score``/
+    ``score_components`` in either order.
+
+    The regions come back INLINE in the returned dict, not only as a path: an
+    MCP client has no way to read ``candidates_path`` back, so returning only
+    the path made this whole stage unreachable over that surface. The inline
+    list is capped at ``max_returned`` rows (0 = uncapped) — always the
+    TOP-RANKED rows, presented in ``order``, never a blind head of the list, so
+    a cap can't drop the best candidate. ``regions_truncated`` says whether a
+    cap bit and ``num_regions`` always reports the true total, so a capped
+    result never reads as "that is all there is". ``candidates_path`` still
+    holds every region.
+
     ``on_progress`` / ``is_cancelled`` are the optional surface hooks (the web
     passes ``ctx.emit`` / ``ctx.is_cancelled``); when unset the stage-bracketing
     emits are silent no-ops and the leaf keeps its ``noop_progress`` default, so
@@ -174,7 +223,12 @@ def search_reduce(
     ``search_reduce`` stage (sub-stages ``variance``/``aligned``/``entropy``).
     """
     from memdiver.engine import floor_policy
-    from memdiver.engine.candidate_pipeline import reduce_search_space
+    from memdiver.engine.candidate_pipeline import (
+        reduce_search_space,
+        resolve_byte_classes,
+    )
+
+    wanted_classes = resolve_byte_classes(classes) if classes else None
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with ExitStack() as _vstack:
@@ -204,6 +258,9 @@ def search_reduce(
             entropy_window=entropy_window,
             entropy_threshold=entropy_threshold,
             min_region=min_region,
+            max_region=max_region,
+            classes=wanted_classes,
+            order=order,
             **reduce_extra,
         )
         # Advisory only: a data-driven floor to consider for min_variance
@@ -220,12 +277,409 @@ def search_reduce(
           extra={"num_regions": len(result.regions),
                  "stages": result.stages.to_dict(),
                  "fallback_entropy_only": result.fallback_entropy_only})
+    inline, truncated = _bounded_regions(payload["regions"], max_returned)
     return {
         "candidates_path": str(candidates_path),
         "num_regions": len(result.regions),
         "stages": result.stages.to_dict(),
         "fallback_entropy_only": result.fallback_entropy_only,
         "recommended_floor": recommended,
+        "regions": inline,
+        "regions_returned": len(inline),
+        "regions_truncated": truncated,
+        "max_returned": int(max_returned),
+        "order": order,
+    }
+
+
+# ----------------------------------------------------------------------
+# exploratory candidates — N dumps in, ranked candidates out, no oracle
+# ----------------------------------------------------------------------
+
+#: Diagnostic codes :func:`analyze_candidates` can attach to a result. Stable
+#: strings, because a surface (or a test) keys off them rather than off the
+#: prose, which is free to improve.
+CANDIDATES_EMPTY_CODE = "analysis.candidates.empty"
+CANDIDATES_UNCLASSIFIED_CODE = "analysis.candidates.unclassified"
+CANDIDATES_NOT_PERSISTED_CODE = "analysis.candidates.not_persisted"
+
+
+def _dominant_byte_class(class_counts: Dict[str, int]) -> str:
+    """Name the most volatile ByteClass a region actually contains.
+
+    Mirrors ``ConsensusVector._region_label``: a region is named for the
+    HIGHEST band present, never the most numerous one. Real key material is
+    class-mixed — the measured 48-byte TLS 1.2 secret is 22 KEY_CANDIDATE + 18
+    POINTER + 8 STRUCTURAL — so labelling by plurality would file it under
+    ``pointer`` and hide it from every ``byte_class="key_candidate"`` query.
+
+    Returns ``""`` for a region with no counts at all, which happens only in
+    the entropy-only fallback where the pipeline declines to classify.
+    """
+    from memdiver.core.variance import ByteClass
+
+    present = [c for c in ByteClass if class_counts.get(c.name.lower(), 0)]
+    return present[-1].name.lower() if present else ""
+
+
+def _candidate_db_row(region: Dict[str, Any]) -> Dict[str, Any]:
+    """Render one ranked region as an ``add_candidate_regions_batch`` row.
+
+    The score components are flattened out of the nested ``score_components``
+    dict into the four columns the table names them by, so a reader can sort or
+    filter on any one of them in SQL instead of re-parsing JSON.
+    """
+    components = region.get("score_components", {})
+    return {
+        "offset": region["offset"],
+        "length": region["length"],
+        "byte_class": _dominant_byte_class(region.get("class_counts", {})),
+        "mean_variance": region.get("mean_variance", 0.0),
+        "mean_entropy": region.get("mean_entropy", 0.0),
+        "rank": region.get("rank", 0),
+        "score": region.get("score", 0.0),
+        "score_class_weight": components.get("byte_class", 0.0),
+        "score_variance_component": components.get("variance", 0.0),
+        "score_entropy_component": components.get("entropy", 0.0),
+        "score_length_component": components.get("length", 0.0),
+    }
+
+
+def _empty_result_diagnostic(
+    stages: Dict[str, int],
+    class_counts: Dict[str, int],
+    *,
+    min_region: int,
+    max_region: int,
+) -> Diagnostic:
+    """Say WHICH gate emptied the candidate list, reading the funnel top-down.
+
+    An empty list is a legitimate answer — most byte positions in a process are
+    invariant across a phase series — but "0 regions" on its own is
+    indistinguishable from a broken filter chain, which is the failure mode
+    that made the pre-A4 Consensus tab useless. Naming the first stage whose
+    survivor count reached zero turns the empty result into an instruction.
+    """
+    total = stages.get("total_bytes", 0)
+    invariant = class_counts.get("invariant", 0)
+    if not total:
+        reason = ("no bytes were compared — the dumps have no common range "
+                  "under this alignment")
+    elif not stages.get("variance"):
+        reason = (
+            f"every one of the {total:,} compared bytes was below the variance "
+            f"floor ({invariant:,} of them classify INVARIANT), so nothing "
+            f"reached the class gate"
+        )
+    elif not stages.get("byte_class"):
+        reason = "no surviving byte fell in the requested variance classes"
+    elif not stages.get("aligned"):
+        reason = "the block-density gate rejected every surviving byte"
+    elif not stages.get("high_entropy"):
+        reason = "no surviving byte cleared the entropy threshold"
+    else:
+        bound = f" or longer than {max_region}" if max_region else ""
+        reason = (
+            f"{stages['high_entropy']:,} bytes survived every gate but formed "
+            f"no run shorter than {min_region}{bound} bytes"
+        )
+    return Diagnostic(
+        code=CANDIDATES_EMPTY_CODE,
+        message=f"No candidate regions: {reason}.",
+        severity=Severity.INFO,
+        details={"stages": dict(stages), "class_counts": dict(class_counts)},
+    )
+
+
+def _persist_candidate_run(
+    *,
+    dump_paths: Sequence[str],
+    project_id: str,
+    alignment: Dict[str, Any],
+    class_counts: Dict[str, int],
+    regions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Best-effort: file one exploratory comparison into the project DB.
+
+    Returns ``{"consensus_id", "candidates_persisted", "diagnostic"}`` with a
+    ``None`` diagnostic when the run was stored. NEVER raises: this is a read
+    path an analyst runs to look at a dump set, ``resolve_project_db()``
+    returns ``None`` in perfectly valid environments (the DuckDB/Ibis stack is
+    optional), and losing an already-computed answer to an unavailable cache
+    would be the wrong trade. The same posture — and the same
+    open/try/finally-close shape — as :func:`_persist_ground_truth_hits`.
+
+    Regions the reduction left UNCLASSIFIED (the entropy-only fallback at
+    N < 3, where ``class_counts`` is empty) are not written: ``byte_class`` is
+    a required, validated column, and there is no honest value for a region the
+    pipeline has already declined to classify. The caller reports the shortfall
+    as its own diagnostic rather than filing a guess.
+    """
+    from memdiver.app.composition import resolve_project_db
+
+    def _unavailable(reason: str, detail: str) -> Dict[str, Any]:
+        return {
+            "consensus_id": "",
+            "candidates_persisted": 0,
+            "diagnostic": Diagnostic(
+                code=CANDIDATES_NOT_PERSISTED_CODE,
+                message=(
+                    f"Results were not saved to the project database: {detail} "
+                    f"They are complete in this response."
+                ),
+                severity=Severity.INFO,
+                details={"reason": reason},
+            ),
+        }
+
+    db = resolve_project_db()
+    if db is None:
+        return _unavailable(
+            "project_db_unavailable",
+            "no project database is available (the DuckDB/Ibis extra is "
+            "optional).",
+        )
+    try:
+        consensus_id = db.add_consensus_run(
+            project_id=project_id,
+            dump_paths=list(dump_paths),
+            alignment_method=alignment["method"],
+            bytes_compared=alignment["bytes_compared"],
+            bytes_discarded=alignment["bytes_discarded"],
+            sizes_differed=alignment["sizes_differed"],
+            alignment_warnings=alignment["warnings"],
+            class_counts=class_counts,
+        )
+        if not consensus_id:
+            return _unavailable(
+                "project_db_unavailable",
+                "the project database declined the write.",
+            )
+        rows = [_candidate_db_row(r) for r in regions if r.get("class_counts")]
+        written = db.add_candidate_regions_batch(consensus_id, rows) if rows else 0
+        return {
+            "consensus_id": consensus_id,
+            "candidates_persisted": written,
+            "diagnostic": None,
+        }
+    except Exception as exc:  # noqa: BLE001 - persistence is advisory here
+        logger.warning("candidate persistence failed", exc_info=True)
+        return _unavailable("persistence_failed", f"{exc}.")
+    finally:
+        db.close()
+
+
+def analyze_candidates(
+    *,
+    dump_paths: Sequence[str],
+    classes: Optional[Sequence[str]] = None,
+    min_variance: Optional[float] = None,
+    min_region: int = 16,
+    max_region: int = 0,
+    alignment: int = 8,
+    block_size: int = 32,
+    density_threshold: float = 0.5,
+    entropy_window: int = 32,
+    entropy_threshold: float = 4.5,
+    order: str = "offset",
+    max_returned: int = DEFAULT_MAX_RETURNED_REGIONS,
+    normalize: bool = False,
+    project_id: str = "",
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """N dumps in, a ranked candidate list out — with no oracle and no pcap.
+
+    THE EXPLORATORY PATH. Every other route to a candidate list either starts
+    from a precomputed ``variance.npy`` (:func:`search_reduce`) or refuses to
+    run without a way to confirm a hit (``POST /api/pipeline/run``, correctly:
+    that flow exists to drive a brute force). An analyst holding N dumps of one
+    process who does not know whether there is a key, let alone where, could
+    not reach a candidate list at all. This producer is that one call:
+    consensus → class / length / entropy / density filters → ranked regions,
+    returned INLINE.
+
+    It deliberately takes no oracle and no capture. Nothing here confirms a
+    candidate; the ranking says which regions are worth looking at first, and
+    ``verify_key_result`` / :func:`brute_force` remain the ways to prove one.
+
+    ``classes`` names ByteClass bands ("invariant", "structural", "pointer",
+    "key_candidate"). Prefer ALL THREE non-invariant bands: real key material
+    is class-MIXED (measured on a real OpenSSL run, a 48-byte TLS 1.2 master
+    secret is 22 KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL), so a
+    KEY_CANDIDATE-only query returns fragments from INSIDE the key instead of
+    the key. ``min_variance`` is left to resolve against ``classes``
+    (:func:`~memdiver.engine.candidate_pipeline.reduce_search_space` — ``None``
+    means the historical 3000.0 floor only when no class is named, 0.0 when one
+    is), so a class query is never silently re-narrowed by the float floor it
+    just widened. Pass a float to override.
+
+    An EMPTY result is not an error. Most byte positions in a process are
+    invariant across a phase series, and "0 regions" alone reads exactly like a
+    broken filter chain, so an empty list always comes back with a
+    ``diagnostics`` entry naming the gate that emptied it.
+
+    Encrypted ``.msl`` inputs are decrypted when key material is supplied —
+    either as ``key_file`` / ``passphrase`` / ``kem_key_file`` (the CLI / MCP
+    idiom, read from disk here) or as a pre-decoded ``key_material`` dict of
+    ``open_dump`` kwargs (the web idiom, already decoded at the HTTP boundary).
+    A dump that is encrypted and LOCKED raises rather than reading back as
+    zeros, which would otherwise land as "every byte is invariant".
+
+    Persistence is BEST-EFFORT. The comparison and its ranked candidates are
+    written to the project DuckDB when one is available, and ``consensus_id``
+    identifies the stored run; re-running the same dump set under the same
+    alignment CORRECTS that row rather than duplicating it. When no database is
+    available the analysis is unaffected and a diagnostic says so — this is a
+    read path, not a sweep.
+
+    Returns the regions plus the class histogram, the alignment provenance
+    (``alignment``: which of module_offset / virtual_address / file_offset ran,
+    what it discarded, and any warning that makes the result questionable), the
+    RESOLVED ``thresholds``, the reduction funnel (``stages``), and
+    ``warnings`` / ``diagnostics``. ``regions`` is capped at ``max_returned``
+    best-ranked rows (0 = uncapped) exactly as :func:`search_reduce` caps its
+    own; ``num_regions`` is always the true total.
+    """
+    from memdiver.engine.candidate_pipeline import (
+        ORDERS,
+        reduce_search_space,
+        resolve_byte_classes,
+    )
+    from memdiver.engine.consensus_service import build_consensus
+
+    paths = [Path(p).expanduser() for p in dump_paths]
+    if len(paths) < 2:
+        # PRECONDITION, not INVALID_INPUT, to match the three sibling producers
+        # that make the identical check (`consensus`, and the two n-sweep
+        # entry points). Both map to HTTP 400 and CLI exit 2, so nothing
+        # observable turns on it -- but two spellings of one rule is how a
+        # caller learns to catch the wrong category.
+        raise CapabilityError(
+            f"Need at least 2 dumps to compare, got {len(paths)}",
+            category=ErrorCategory.PRECONDITION,
+        )
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+    if order not in ORDERS:
+        raise CapabilityError(
+            f"order={order!r} is not one of {ORDERS}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    try:
+        wanted_classes = resolve_byte_classes(classes) if classes else None
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
+
+    def _observe(source: Any) -> None:
+        # A locked encrypted dump reads back empty, which would land here as
+        # "every byte is invariant" — the single most misleading empty result
+        # this producer can return. Surface the lock instead, then let the
+        # caller's own hook (the CLI's AEAD line) run.
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    try:
+        cm = build_consensus(
+            [str(p) for p in paths], normalize=normalize,
+            key_material=km, on_source=_observe,
+        )
+    except (OSError, ValueError) as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
+
+    try:
+        result = reduce_search_space(
+            cm.variance, cm.reference_bytes, num_dumps=cm.num_dumps,
+            alignment=alignment, block_size=block_size,
+            density_threshold=density_threshold,
+            min_variance=min_variance,
+            classes=wanted_classes,
+            entropy_window=entropy_window,
+            entropy_threshold=entropy_threshold,
+            min_region=min_region,
+            max_region=max_region,
+            order=order,
+        )
+    except ValueError as exc:
+        # An unsatisfiable filter combination (the clearest being an
+        # entropy_threshold above log2(entropy_window), which no window can
+        # ever reach) is a caller-correctable argument, not a server fault —
+        # without this it would leave the web surface as an HTTP 500.
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
+
+    payload = result.to_dict()
+    all_regions: List[Dict[str, Any]] = payload["regions"]
+    class_counts = cm.classification_counts()
+    alignment_report = cm.alignment_report.to_dict()
+    stages = result.stages.to_dict()
+
+    diagnostics: List[Diagnostic] = []
+    if not all_regions:
+        diagnostics.append(_empty_result_diagnostic(
+            stages, class_counts, min_region=min_region, max_region=max_region))
+    unclassified = sum(1 for r in all_regions if not r.get("class_counts"))
+    if unclassified:
+        diagnostics.append(Diagnostic(
+            code=CANDIDATES_UNCLASSIFIED_CODE,
+            message=(
+                f"{unclassified} of {len(all_regions)} regions carry no byte "
+                f"classes: at N={cm.num_dumps} the cross-dump variance is not "
+                f"trustworthy, so the reduction fell back to entropy only and "
+                f"declined to classify. They are ranked and returned, but not "
+                f"saved, and no class filter can match them. Compare more "
+                f"dumps to classify them."
+            ),
+            severity=Severity.WARNING,
+            details={"unclassified_regions": unclassified,
+                     "num_dumps": cm.num_dumps},
+        ))
+
+    stored = _persist_candidate_run(
+        dump_paths=[str(p) for p in paths],
+        project_id=project_id,
+        alignment=alignment_report,
+        class_counts=class_counts,
+        regions=all_regions,
+    )
+    if stored["diagnostic"] is not None:
+        diagnostics.append(stored["diagnostic"])
+
+    inline, truncated = _bounded_regions(all_regions, max_returned)
+    return {
+        "num_dumps": cm.num_dumps,
+        "size": cm.size,
+        "class_counts": class_counts,
+        "alignment": alignment_report,
+        "thresholds": payload["thresholds"],
+        "stages": stages,
+        "fallback_entropy_only": result.fallback_entropy_only,
+        "num_regions": len(all_regions),
+        "regions": inline,
+        "regions_returned": len(inline),
+        "regions_truncated": truncated,
+        "max_returned": int(max_returned),
+        "order": order,
+        "consensus_id": stored["consensus_id"],
+        "persisted": bool(stored["consensus_id"]),
+        "candidates_persisted": stored["candidates_persisted"],
+        # The alignment provenance an analyst must see before trusting the
+        # numbers, hoisted so a surface renders its banner without reaching
+        # into ``alignment``. Empty on an equal-sized phase series — it fires
+        # exactly when the result is questionable.
+        "warnings": list(alignment_report["warnings"]),
+        "diagnostics": [d.to_dict() for d in diagnostics],
     }
 
 
@@ -234,8 +688,87 @@ def search_reduce(
 # ----------------------------------------------------------------------
 
 
+def _validate_pcap_caps(
+    pcap_max_records: Optional[int], pcap_max_challenges: Optional[int]
+) -> None:
+    """Reject a pcap parse cap below 1, on every surface.
+
+    Validated at this shared layer so all four surfaces agree with the web
+    router's ``ge=1``. Without it the CLI, MCP and library paths accepted 0 and
+    negatives, and the consequence was a SILENT FALSE NEGATIVE: a cap of 0
+    yields zero decryption challenges, so a genuine key reports "0 confirmed" --
+    indistinguishable from the key not being in the dump. A negative cap was
+    worse: it reached ``challenges[:-1]`` (dropping a challenge) and surfaced a
+    negative ``records_returned`` in the JSON the web UI and any corpus
+    aggregate consume. ``None`` means "leave the default alone" and is allowed.
+
+    Shared by :func:`brute_force` (which runs the oracle) and
+    :func:`inspect_pcap` (which reports the caps in force), so the arm step can
+    never accept a cap the run itself would reject.
+    """
+    for name, value in (
+        ("pcap_max_records", pcap_max_records),
+        ("pcap_max_challenges", pcap_max_challenges),
+    ):
+        if value is not None and int(value) < 1:
+            raise CapabilityError(
+                f"{name} must be >= 1 (got {value}); omit it to keep "
+                f"the default. A cap below 1 verifies nothing, so a real key "
+                f"would be reported as unconfirmed.",
+                category=ErrorCategory.INVALID_INPUT,
+            )
+
+
+def _corpus_axes_kwargs(dump_path: str) -> Dict[str, Any]:
+    """Resolve the corpus axes the analysed dump is an instance of.
+
+    Returns exactly the axis keywords :func:`_persist_ground_truth_hits`
+    accepts, so a caller that has a dump path can stamp a whole ledger batch
+    with one ``**`` splat and no axis name is ever spelled twice.
+
+    :func:`core.corpus_axes.axes_from_dump_path` returns ``None`` — never
+    raises — for any path outside the corpus layout (an ad-hoc dump the operator
+    pointed at, a reference slab that is not inside a run directory). That is
+    not an error: the row is still written, with the dump path recorded and
+    every other axis left at the ledger's own default.
+
+    ``canonical_phase`` is deliberately reported as ``""``. A canonical phase is
+    positional across a run's SIBLING dumps (see
+    :class:`core.corpus_axes.CorpusAxes`), so it cannot be derived from one path
+    at all; inventing one here would make the ledger's identity key mutate as
+    soon as an unrelated sibling dump appeared in the same run.
+    """
+    from memdiver.core.corpus_axes import axes_from_dump_path
+
+    axes = axes_from_dump_path(dump_path)
+    if axes is None:
+        return {"dump_path": str(dump_path)}
+    return {
+        "library": axes.library,
+        "protocol_version": axes.protocol_version,
+        "library_version": axes.library_version,
+        "scenario": axes.scenario,
+        "run_number": axes.run_number,
+        "phase": axes.phase,
+        "canonical_phase": "",
+        "dump_path": str(axes.dump_path or dump_path),
+    }
+
+
 def _persist_ground_truth_hits(
-    hits: list, *, confirmed_by: str, project_name: str
+    hits: list,
+    *,
+    confirmed_by: str,
+    project_name: str,
+    library: str = "",
+    protocol_version: str = "",
+    library_version: str = "unknown",
+    scenario: str = "",
+    run_number: int = 0,
+    phase: str = "",
+    canonical_phase: str = "",
+    dump_id: str = "",
+    dump_path: str = "",
 ) -> Optional[str]:
     """Best-effort: file confirmed brute-force hits into the ground-truth ledger.
 
@@ -243,6 +776,13 @@ def _persist_ground_truth_hits(
     composition root. Returns the run_id, or ``None`` when the DB is unavailable
     or persistence fails — it never raises, since the brute-force result is
     already computed and written.
+
+    The corpus axes say what the analysed dump is an instance of; without them
+    every ledger row lands with empty ``library`` / ``protocol_version`` /
+    ``scenario`` / ``run_number`` / ``phase`` / ``dump_path`` columns and the
+    proof ledger cannot be sliced by anything. Build them with
+    :func:`_corpus_axes_kwargs`; each keeps a default so a caller with no dump
+    path still writes a usable row.
     """
     from memdiver.app.composition import resolve_project_db
 
@@ -251,7 +791,20 @@ def _persist_ground_truth_hits(
         return None
     try:
         return db.record_ground_truth_run(
-            hits, confirmed_by=confirmed_by, project_name=project_name
+            hits,
+            confirmed_by=confirmed_by,
+            project_name=project_name,
+            library=library,
+            # ``ground_truth.version`` IS the protocol version; the DB keeps the
+            # historical column/parameter name, this layer uses the axis name.
+            version=protocol_version,
+            library_version=library_version,
+            scenario=scenario,
+            run_number=run_number,
+            phase=phase,
+            canonical_phase=canonical_phase,
+            dump_id=dump_id,
+            dump_path=dump_path,
         ) or None
     except Exception:
         logger.warning("ground-truth persistence failed", exc_info=True)
@@ -332,6 +885,8 @@ def brute_force(
     oracle_config_path: Optional[str] = None,
     pcap_path: Optional[str] = None,
     tls_client_random: Optional[str] = None,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
     persist_ground_truth: bool = False,
     key_sizes: Sequence[int] = (32,),
     stride: int = 1,
@@ -358,10 +913,24 @@ def brute_force(
         (hex) optionally restricts matching to one session. Requires the ``pcap``
         extra. Hits it confirms are labelled ``confirmed_by="pcap"``.
 
+    ``pcap_max_records`` / ``pcap_max_challenges`` size the pcap oracle's work:
+    the first caps how many encrypted application-data records each direction of
+    a session contributes, the second caps the total challenges the oracle keeps.
+    Both are silent truncations of verification coverage, so both are explicit
+    knobs rather than buried defaults; ``None`` (the default) leaves today's
+    behaviour exactly as it was — 16 records per direction, no challenge cap.
+    Passing the same two caps to ``inspect_pcap`` reports them back plus the
+    ``records_truncated`` / ``challenges_truncated`` flags for that capture, so
+    the truncation a cap will cause is visible before the sweep runs.
+
     ``persist_ground_truth`` (opt-in, default off) records the confirmed hits in
     the project database's ``ground_truth`` ledger (labelled ``"pcap"`` or
     ``"oracle"``) — the trusted denominator for later corpus/precision stats. It
-    no-ops gracefully when the DuckDB backend is unavailable.
+    no-ops gracefully when the DuckDB backend is unavailable. Each row is
+    stamped with the corpus axes resolved from ``reference_path`` (library,
+    protocol version, library version, scenario, run number, raw phase, dump
+    path), so the ledger can be sliced by axis; a dump outside the corpus layout
+    records its path and leaves the rest at the ledger's defaults.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw. ``on_progress`` / ``is_cancelled`` are
@@ -386,6 +955,13 @@ def brute_force(
         pcap_config: Dict[str, Any] = {"resource_type": "tls-pcap", "pcap": pcap_path}
         if tls_client_random:
             pcap_config["client_random"] = tls_client_random
+        # Only forward a cap the caller actually asked for: an absent key leaves
+        # the resource/oracle defaults untouched (see builtin_oracle's config).
+        _validate_pcap_caps(pcap_max_records, pcap_max_challenges)
+        if pcap_max_records is not None:
+            pcap_config["max_records_per_direction"] = int(pcap_max_records)
+        if pcap_max_challenges is not None:
+            pcap_config["max_challenges"] = int(pcap_max_challenges)
         bf_oracle_kwargs["oracle_config"] = pcap_config
         bf_oracle_kwargs["oracle_trusted"] = True
     else:
@@ -467,6 +1043,10 @@ def brute_force(
             result_dict["hits"],
             confirmed_by=hit_source,
             project_name=Path(reference_path).stem or "oracle-run",
+            # ``reference_path`` IS the dump this sweep searched (the CLI spells
+            # it ``--dump``), so it is the authoritative axis source; a path
+            # outside the corpus layout degrades to defaults, never an error.
+            **_corpus_axes_kwargs(reference_path),
         )
     # Resolve the static/dynamic variance cutoff to a concrete value (never
     # ``None``) so the web reducer can seed its convergence preview from the
@@ -1393,7 +1973,12 @@ def keylog_result(
 # ----------------------------------------------------------------------
 
 
-def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
+def inspect_pcap(
+    *,
+    pcap_path: str,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
+) -> Dict[str, Any]:
     """Summarise the TLS sessions a capture contains, without decrypting.
 
     The "arm/validate" step of the pcap verification flow: before a recovered
@@ -1415,6 +2000,47 @@ def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
     with an empty ``sessions`` list. Returns
     ``{"pcap_path": str, "session_count": int, "sessions": [...]}`` where each
     session is one :meth:`TlsPcapResource.describe_sessions` dict.
+
+    ``pcap_max_records`` / ``pcap_max_challenges`` are the same two caps
+    :func:`brute_force` applies to the oracle, and they are accepted here for
+    one reason: the caps this producer *reports* must be the caps a run will
+    actually use. Without them the arm step could only ever echo the resource
+    DEFAULTS, so an operator capping a run read back "uncapped" and had no way
+    to see the truncation coming. ``None`` (the default) leaves the resource
+    default untouched; a value below 1 is rejected exactly as
+    :func:`brute_force` rejects it, so the arm step cannot bless a cap the run
+    would refuse.
+
+    Alongside those it reports what the parse *dropped*, so a capture is never
+    silently understated (the numbers a corpus sweep aggregates depend on it):
+
+    * ``skipped_sessions`` — one dict per session the parser could not use, each
+      with a machine-readable ``reason``, the ``flow`` it appeared on, and any
+      reason-specific context (e.g. the out-of-table ``cipher_suite``). The
+      reachable reasons are ``"no_client_hello"``, ``"no_server_hello"``,
+      ``"unsupported_cipher_suite"``, ``"no_change_cipher_spec"`` (the session
+      parsed but none of its application data is coverable) and
+      ``"client_random_mismatch"`` (only when a resource is pinned to one
+      session, which this producer never does). ``"no_cipher_suite"`` and
+      ``"short_random"`` exist in the resource as defensive guards on malformed
+      ServerHello shapes the bundled dpkt cannot produce — it raises first — so
+      they are unreachable here and must not be advertised as expected output.
+    * ``flow_count`` — directional TCP flows the capture yielded, so "1 session
+      out of 40 flows" is distinguishable from "1 session out of 2".
+    * ``caps`` — the parse caps in force:
+      ``{"max_records_per_direction": int, "max_challenges": int | None}``.
+    * ``records_truncated`` — True when a record was not covered, i.e. some
+      session's ``records_returned`` is below its ``app_records_seen`` (both
+      additive keys on each session dict).
+    * ``challenges_available`` / ``challenges_returned`` /
+      ``challenges_truncated`` — the capture-level challenge stream the oracle
+      will see. ``max_challenges`` truncates that flat stream ACROSS sessions,
+      so it is reported per capture (and mirrored per session by
+      ``describe_capture``); ``challenges_returned < challenges_available`` is
+      the signal that some verification work is being discarded.
+
+    These keys are purely additive; every key this producer returned before is
+    unchanged, including a zero-session capture's ``session_count: 0``.
     """
     from memdiver.engine.resources.tls_pcap import (
         _PCAP_MISSING,
@@ -1433,18 +2059,35 @@ def inspect_pcap(*, pcap_path: str) -> Dict[str, Any]:
     # including dpkt's own ``dpkt.dpkt.NeedData`` on a truncated capture — through
     # ``_read_flows`` into ``PcapParseError`` (see ``tls_pcap._read_flows``), so no
     # bare dpkt error can reach here; map the funnelled errors to INVALID_INPUT.
+    _validate_pcap_caps(pcap_max_records, pcap_max_challenges)
+    # Only forward a cap the caller actually asked for, so an absent argument
+    # leaves the resource default in place instead of re-stating it here.
+    resource_caps: Dict[str, Any] = {}
+    if pcap_max_records is not None:
+        resource_caps["max_records_per_direction"] = int(pcap_max_records)
+    if pcap_max_challenges is not None:
+        resource_caps["max_challenges"] = int(pcap_max_challenges)
+
     try:
-        sessions = TlsPcapResource(pcap_path).describe_sessions()
+        capture = TlsPcapResource(pcap_path, **resource_caps).describe_capture()
     except (PcapParseError, OSError, ValueError) as exc:
         raise CapabilityError(
             f"could not parse capture {pcap_path!r}: {exc}",
             category=ErrorCategory.INVALID_INPUT,
         ) from exc
 
+    sessions = capture["sessions"]
     return {
         "pcap_path": pcap_path,
         "session_count": len(sessions),
         "sessions": sessions,
+        "skipped_sessions": capture["skipped"],
+        "flow_count": capture["flow_count"],
+        "caps": capture["caps"],
+        "records_truncated": capture["records_truncated"],
+        "challenges_available": capture["challenges_available"],
+        "challenges_returned": capture["challenges_returned"],
+        "challenges_truncated": capture["challenges_truncated"],
     }
 
 

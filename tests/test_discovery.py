@@ -144,3 +144,33 @@ def test_dataset_scanner_root_replaced_by_file_raises(tmp_path):
     scanner = DatasetScanner(not_a_dir)
     with pytest.raises(NotADirectoryError, match="not a directory"):
         scanner.fast_scan()
+
+
+def test_fast_scan_reports_capture_counters(tmp_path):
+    """DatasetInfo counts the runs that own a packet capture (run_data/)."""
+    lib_dir = tmp_path / "TLS13" / "scenario_a" / "openssl"
+    lib_dir.mkdir(parents=True)
+    for run_num, with_capture in ((1, True), (2, False)):
+        run_dir = _make_run_dir(lib_dir, name=f"openssl_run_13_{run_num}")
+        if with_capture:
+            capture_dir = run_dir / "run_data"
+            capture_dir.mkdir()
+            (capture_dir / "traffic.pcap").write_bytes(b"\xd4\xc3\xb2\xa1")
+
+    info = DatasetScanner(tmp_path).fast_scan()
+    assert info.total_runs == 2
+    assert info.runs_with_capture == 1
+    assert info.captures == {"13/scenario_a/openssl": 1}
+
+
+def test_load_run_directory_attaches_capture(tmp_path):
+    """load_run_directory pairs a run with its own capture."""
+    run_dir = _make_run_dir(tmp_path)
+    capture_dir = run_dir / "run_data"
+    capture_dir.mkdir()
+    (capture_dir / "traffic.pcap").write_bytes(b"\xd4\xc3\xb2\xa1")
+
+    run = RunDiscovery.load_run_directory(run_dir)
+    assert run is not None
+    assert run.capture_status == "present"
+    assert run.capture_path == capture_dir / "traffic.pcap"

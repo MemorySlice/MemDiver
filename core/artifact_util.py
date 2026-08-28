@@ -9,6 +9,8 @@ instead of each maintaining its own (occasionally OOM-risky) copy.
 from __future__ import annotations
 
 import hashlib
+import os
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -49,3 +51,46 @@ def register_artifact(
     }
     artifacts.append(spec)
     return spec
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` atomically: unique tmp file + ``os.replace``.
+
+    Exists so every surface shares one battle-tested atomic-write primitive.
+    It was extracted from ``api.services.task_manager.TaskManager._persist``,
+    whose record.json writes are issued off-lock from two threads (the
+    event-loop drain and the sync cancel handler dispatched to a worker
+    thread). It lives in :mod:`core` because ``app/`` — where the Wave 3
+    sweep ledger writes its ``manifest.json`` — must not import ``api/``.
+
+    Three properties are load-bearing and must be preserved by any edit:
+
+    * **Per-write unique tmp name.** A shared ``<name>.tmp`` let concurrent
+      writers interleave into torn output, or made the second ``os.replace``
+      raise ``FileNotFoundError`` because the tmp had already been moved.
+    * **``os.replace`` onto the final path**, which is atomic on POSIX and
+      Windows: a reader sees either the old file or the new one, never a
+      partial one. Concurrent writers are simply last-writer-wins.
+    * **``BaseException`` cleanup** (not ``Exception``): a ``KeyboardInterrupt``
+      or worker cancellation mid-write must not leave a stray tmp file behind.
+
+    No ``fsync`` is performed, matching the original: this guards against
+    *torn* files, not against power loss, and fsyncing every record write
+    would serialise the hot progress-drain path on disk latency.
+
+    The parent directory must already exist — callers own directory creation.
+
+    .. warning::
+       Do **not** use this for large append-only files. It rewrites the whole
+       file every call, so appending to a growing ``results.jsonl`` would be
+       O(n^2): a 30,000-line sweep ledger would push roughly 450 GB of writes
+       over a full run. That is why the sweep ledger uses this for its small
+       ``manifest.json`` only and appends to ``results.jsonl`` directly.
+    """
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding=encoding)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise

@@ -255,7 +255,11 @@ def auto_export_pattern(
         ratio = (sum(static_mask) / len(static_mask)) if static_mask else 0.0
         raise InsufficientStaticError(ratio, min_static_ratio)
 
-    content = _render_content(pattern, fmt_lower)
+    content = _render_content(
+        pattern, fmt_lower,
+        key_offset=best.start - offset,
+        key_length=best.end - best.start,
+    )
 
     return {
         "format": fmt_lower,
@@ -338,7 +342,10 @@ def manual_export_pattern(
         ratio = (sum(static_mask) / len(static_mask)) if static_mask else 0.0
         raise InsufficientStaticError(ratio, min_static_ratio)
 
-    content = _render_content(pattern, fmt_lower)
+    # key_start == offset on this path, so the key begins at pattern offset 0.
+    content = _render_content(
+        pattern, fmt_lower, key_offset=0, key_length=length,
+    )
 
     return {
         "format": fmt_lower,
@@ -353,12 +360,32 @@ def manual_export_pattern(
     }
 
 
-def _render_content(pattern: Dict[str, Any], fmt: str) -> str:
-    """Dispatch pattern dict to the requested exporter."""
+def _render_content(
+    pattern: Dict[str, Any],
+    fmt: str,
+    key_offset: int | None = None,
+    key_length: int | None = None,
+) -> str:
+    """Dispatch pattern dict to the requested exporter.
+
+    ``key_offset``/``key_length`` locate the key bytes *inside* the exported
+    pattern, so a consumer of the rule knows which slice of a hit is the key
+    rather than only that the surrounding structure matched. Both are
+    forwarded to the YARA exporter, which emits them as meta lines only when
+    supplied.
+
+    Note that on the MANUAL export path the caller's offset IS the key start
+    (``key_start == offset``), so ``key_offset`` is 0 there -- the pattern has
+    no static-anchor context prepended. Only the auto path, which pads the
+    detected volatile region with ``context`` bytes on each side, produces a
+    non-zero ``key_offset``.
+    """
     if fmt == "yara":
         from memdiver.architect.yara_exporter import YaraExporter
 
-        return YaraExporter.export(pattern)
+        return YaraExporter.export(
+            pattern, key_offset=key_offset, key_length=key_length,
+        )
     if fmt == "json":
         from memdiver.architect.json_exporter import JsonExporter
 
@@ -368,7 +395,9 @@ def _render_content(pattern: Dict[str, Any], fmt: str) -> str:
         from memdiver.architect.volatility3_exporter import Volatility3Exporter
         from memdiver.architect.yara_exporter import YaraExporter
 
-        yara_rule = YaraExporter.export(pattern)
+        yara_rule = YaraExporter.export(
+            pattern, key_offset=key_offset, key_length=key_length,
+        )
         return Volatility3Exporter.export(pattern, yara_rule=yara_rule)
     # Should be unreachable because of the earlier format check, but keep
     # the safety net here so the dispatch is self-contained.

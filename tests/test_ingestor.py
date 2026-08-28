@@ -146,3 +146,63 @@ def test_get_dump_paths_for_phase():
         assert paths[0].name == "20240101_120000_000001_pre_abort.dump"
     finally:
         shutil.rmtree(tmp_dir)
+
+
+def _create_dataset_with_captures(tmp_dir):
+    """Two openssl runs; only run 1 owns a ``run_data/traffic.pcap``."""
+    lib_dir = Path(tmp_dir) / "TLS13" / "default" / "openssl"
+    for run_num in (1, 2):
+        run_dir = lib_dir / f"openssl_run_13_{run_num}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "20240101_120000_000001_pre_abort.dump").write_bytes(b"\x00" * 512)
+        (run_dir / "keylog.csv").write_text(
+            "line\nCLIENT_RANDOM " + "aa" * 32 + " " + "ff" * 32 + "\n"
+        )
+        if run_num == 1:
+            capture_dir = run_dir / "run_data"
+            capture_dir.mkdir()
+            (capture_dir / "traffic.pcap").write_bytes(b"\xd4\xc3\xb2\xa1")
+    return Path(tmp_dir)
+
+
+def test_scan_counts_runs_with_capture():
+    """DatasetInfo.runs_with_capture / .captures reach the ingestor scan."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        root = _create_dataset_with_captures(tmp_dir)
+        info = DumpIngestor(root).scan()
+        assert info.total_runs == 2
+        assert info.runs_with_capture == 1
+        assert info.captures == {"13/default/openssl": 1}
+    finally:
+        shutil.rmtree(tmp_dir)
+
+
+def test_scan_capture_counters_round_trip_through_serializer():
+    """The counters survive serialize_dataset_info for the web/MCP surfaces."""
+    from memdiver.engine.serializer import serialize_dataset_info
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        root = _create_dataset_with_captures(tmp_dir)
+        info = DumpIngestor(root).scan()
+        serialized = serialize_dataset_info(info)
+        assert serialized["runs_with_capture"] == 1
+        assert serialized["captures"]["13/default/openssl"] == 1
+    finally:
+        shutil.rmtree(tmp_dir)
+
+
+def test_load_library_runs_attaches_capture():
+    """Runs loaded through the ingestor carry their own capture path."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        root = _create_dataset_with_captures(tmp_dir)
+        runs = DumpIngestor(root).load_library_runs("13", "default", "openssl")
+        by_num = {r.run_number: r for r in runs}
+        assert by_num[1].capture_status == "present"
+        assert by_num[1].capture_path.name == "traffic.pcap"
+        assert by_num[2].capture_status == "absent"
+        assert by_num[2].capture_path is None
+    finally:
+        shutil.rmtree(tmp_dir)
