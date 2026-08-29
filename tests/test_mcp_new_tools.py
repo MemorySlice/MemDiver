@@ -437,3 +437,151 @@ def test_analyze_candidates_missing_dump_is_not_found(
     with pytest.raises(FileNotFoundServiceError):
         tools_pipeline.analyze_candidates(
             dump_paths=[aes_dumps[0], str(tmp_path / "absent.dump")])
+
+
+# ---------------------------------------------------------------------------
+# B1/B3 — the key-location spine, called as the MCP tools call it.
+# ---------------------------------------------------------------------------
+
+
+def _planted_key(dump_path: str) -> bytes:
+    """The AES key this fixture planted in ONE dump, read back from it.
+
+    ``generate_aes_fixtures`` plants a per-run-VARYING key, so a key lifted out
+    of one dump is genuinely present in exactly that dump and provably absent
+    from the other 19 — the same shape as a real lifecycle series, and the input
+    a caller who already holds a secret actually has.
+    """
+    with open(dump_path, "rb") as handle:
+        handle.seek(KEY_OFFSET)
+        return handle.read(KEY_LENGTH)
+
+
+def test_locate_key_reports_present_in_one_absent_from_the_rest(aes_dumps):
+    needle = _planted_key(aes_dumps[0])
+
+    res = tools_pipeline.locate_key(
+        dump_paths=aes_dumps, key_hex=needle.hex())
+
+    assert res["verdict"] == "found"
+    assert res["dumps_total"] == res["dumps_searched"] == len(aes_dumps)
+    assert res["dumps_present"] == 1
+    assert res["dumps_absent"] == len(aes_dumps) - 1
+    assert res["unanimous"] is False
+    assert res["offsets_agree"] is True
+    assert res["common_offset"] == KEY_OFFSET
+    assert res["needle_length"] == KEY_LENGTH
+    # Rows are in the SUPPLIED order and only the first one holds the key.
+    assert [d["dump_path"] for d in res["dumps"]] == aes_dumps
+    assert res["dumps"][0]["present"] is True
+    assert all(d["present"] is False for d in res["dumps"][1:])
+    # No artefact path: an agent handed one has no way to read it back.
+    assert not any(key.endswith("_path") for key in res)
+
+
+def test_locate_key_absent_is_a_finding_not_an_error(aes_dumps):
+    res = tools_pipeline.locate_key(
+        dump_paths=aes_dumps, key_hex=(b"\xEE" * 32).hex())
+    assert res["verdict"] == "absent"
+    assert res["dumps_present"] == 0
+    assert res["unanimous"] is True
+    assert "analysis.locate_key.absent" in [
+        d["code"] for d in res["diagnostics"]]
+
+
+def test_locate_key_accepts_one_dump(aes_dumps):
+    """N == 1 is a complete answer here, unlike every sibling producer."""
+    res = tools_pipeline.locate_key(
+        dump_paths=aes_dumps[:1],
+        key_hex=_planted_key(aes_dumps[0]).hex())
+    assert res["verdict"] == "found"
+    assert res["dumps_total"] == 1
+
+
+def test_locate_key_requires_exactly_one_input_form(aes_dumps):
+    needle = _planted_key(aes_dumps[0]).hex()
+    with pytest.raises(CapabilityError) as none_given:
+        tools_pipeline.locate_key(dump_paths=aes_dumps)
+    with pytest.raises(CapabilityError) as two_given:
+        tools_pipeline.locate_key(
+            dump_paths=aes_dumps, key_hex=needle,
+            secret={"secret_type": "CLIENT_RANDOM",
+                    "client_random": "00" * 32, "secret": needle})
+    assert none_given.value.category is ErrorCategory.INVALID_INPUT
+    assert two_given.value.category is ErrorCategory.INVALID_INPUT
+    assert "key_hex" in two_given.value.message
+    assert "secret" in two_given.value.message
+
+
+def test_locate_key_missing_dump_is_not_found(aes_dumps, tmp_path):
+    with pytest.raises(FileNotFoundServiceError):
+        tools_pipeline.locate_key(
+            dump_paths=[aes_dumps[0], str(tmp_path / "absent.dump")],
+            key_hex=(b"\x00" * 32).hex())
+
+
+def test_export_key_pattern_wildcards_the_key_over_all_dumps(aes_dumps):
+    """The 19 dumps that do NOT hold this key are what wildcard it."""
+    needle = _planted_key(aes_dumps[0])
+
+    res = tools_pipeline.export_key_pattern(
+        dump_paths=aes_dumps, key_hex=needle.hex(), context=64)
+
+    assert res["pattern"]["length"] == 64 + KEY_LENGTH + 64
+    assert res["region"]["key_offset_in_pattern"] == 64
+    assert res["region"]["key_start"] == KEY_OFFSET
+    assert res["key_wildcard_count"] == KEY_LENGTH
+    assert res["key_static_count"] == 0
+    assert res["mask_regions"] == len(aes_dumps)
+    assert res["mask_dumps_present"] == 1
+    assert res["mask_dumps_absent"] == len(aes_dumps) - 1
+    assert res["offsets_agree"] is True
+
+    tokens = res["pattern"]["wildcard_pattern"].split()
+    assert tokens[64:64 + KEY_LENGTH] == ["??"] * KEY_LENGTH
+    assert [i for i, t in enumerate(tokens) if t == "??"] == list(
+        range(64, 64 + KEY_LENGTH))
+    # The nested location block is the locate_key payload, unchanged.
+    assert res["location"]["verdict"] == "found"
+    assert res["location"]["dumps_total"] == len(aes_dumps)
+
+
+def test_export_key_pattern_flags_a_rule_that_embeds_the_secret(aes_dumps):
+    """Two dumps that BOTH hold the same bytes there — the mask has nothing to
+    wildcard, so the rule carries the secret verbatim and must say so."""
+    from memdiver.app.tools_pipeline import KEY_PATTERN_STATIC_KEY_CODE
+
+    # The same key planted in two files: copy dump 0's key into dump 1.
+    needle = _planted_key(aes_dumps[0])
+    res = tools_pipeline.export_key_pattern(
+        dump_paths=[aes_dumps[0], aes_dumps[0]], key_hex=needle.hex(),
+        context=64, fmt="yara")
+
+    assert res["key_wildcard_count"] == 0
+    assert res["pattern"]["static_ratio"] == 1.0
+    assert "??" not in res["content"]
+    assert KEY_PATTERN_STATIC_KEY_CODE in [
+        d["code"] for d in res["diagnostics"]]
+
+
+def test_export_key_pattern_absent_key_is_not_found(aes_dumps):
+    from memdiver.app.export_service import (
+        InsufficientStaticError,
+        KeyNotFoundError,
+    )
+
+    with pytest.raises(KeyNotFoundError) as excinfo:
+        tools_pipeline.export_key_pattern(
+            dump_paths=aes_dumps, key_hex=(b"\xEE" * 32).hex())
+    # Never InsufficientStaticError, which would blame the DATA for a key that
+    # simply is not there.
+    assert not isinstance(excinfo.value, InsufficientStaticError)
+    assert excinfo.value.status == 404
+
+
+def test_export_key_pattern_needs_two_dumps(aes_dumps):
+    with pytest.raises(CapabilityError) as excinfo:
+        tools_pipeline.export_key_pattern(
+            dump_paths=aes_dumps[:1],
+            key_hex=_planted_key(aes_dumps[0]).hex())
+    assert excinfo.value.category is ErrorCategory.PRECONDITION

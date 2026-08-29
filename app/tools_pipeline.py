@@ -21,9 +21,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+)
 
 import numpy as np
 
@@ -34,6 +43,18 @@ from memdiver.core.service_errors import (
     FileNotFoundServiceError,
 )
 from memdiver.core.service_result import Diagnostic, KeyStatus, Severity
+from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+# Two DEFAULT VALUES, imported (never re-literalled) exactly as
+# DEFAULT_NEIGHBORHOOD_PAD above is: they are keyword defaults in this module's
+# signatures, so they must resolve at import time. The key-location COMPUTE is
+# still imported function-locally inside the producers, so ``app`` does not pull
+# ``engine.key_location`` at module scope.
+from memdiver.engine.key_location import (
+    DEFAULT_KEY_CONTEXT,
+    DEFAULT_MAX_KEY_OFFSETS,
+)
+
+from .composition import raise_if_locked
 
 from ._progress import (
     _cancel_bridge,
@@ -54,18 +75,12 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
-def _raise_if_locked(source: Any) -> None:
-    """Raise :class:`EncryptedDumpLockedError` for an encrypted-and-locked source.
-
-    A locked source (``tag_status`` MISSING_KEY / CORRUPTED) reads back empty;
-    without this guard the downstream empty/negative handling misattributes the
-    lock as a genuine empty result. A decrypted source — including a genuinely
-    empty one and any non-encrypted source — passes through untouched, so the
-    existing empty-result error path is preserved.
-    """
-    key = KeyStatus.from_source(source)
-    if not key.decrypted:
-        raise EncryptedDumpLockedError(key.hint)
+#: The one locked-container guard, promoted to :func:`app.composition.raise_if_locked`
+#: (this module, ``app.export_service`` and ``api.routers.architect`` each used
+#: to hold their own copy). Kept under the historical private name so every
+#: in-module caller — and the tests that reference it — keep working, while the
+#: single implementation now lives beside the openers it guards.
+_raise_if_locked = raise_if_locked
 
 
 def _dump_json(payload: Dict[str, Any], path: Path) -> None:
@@ -302,6 +317,35 @@ def search_reduce(
 CANDIDATES_EMPTY_CODE = "analysis.candidates.empty"
 CANDIDATES_UNCLASSIFIED_CODE = "analysis.candidates.unclassified"
 CANDIDATES_NOT_PERSISTED_CODE = "analysis.candidates.not_persisted"
+
+#: Diagnostic codes :func:`locate_key` can attach. Same rationale as the
+#: ``CANDIDATES_*`` block above: a surface (or a test) keys off the CODE, never
+#: off the prose, which is free to improve.
+LOCATE_KEY_NOT_SEARCHED_CODE = "analysis.locate_key.not_searched"
+LOCATE_KEY_ABSENT_CODE = "analysis.locate_key.absent"
+LOCATE_KEY_PARTIAL_CODE = "analysis.locate_key.partial"
+LOCATE_KEY_OFFSET_DRIFT_CODE = "analysis.locate_key.offset_drift"
+LOCATE_KEY_MULTI_HIT_CODE = "analysis.locate_key.multiple_occurrences"
+LOCATE_KEY_TRUNCATED_CODE = "analysis.locate_key.offsets_truncated"
+
+#: Diagnostic codes :func:`export_key_pattern` can attach. These are QUALITY
+#: judgements on the emitted rule, not errors: every one of them still returns a
+#: pattern, because a weak signature the analyst can see is worth more than a
+#: refusal they cannot inspect.
+KEY_PATTERN_STATIC_KEY_CODE = "export.key_pattern.key_fully_static"
+KEY_PATTERN_DEGENERATE_ANCHORS_CODE = "export.key_pattern.degenerate_anchors"
+KEY_PATTERN_SUBSET_CODE = "export.key_pattern.mask_subset"
+KEY_PATTERN_NO_ANCHORS_CODE = "export.key_pattern.no_static_anchors"
+
+#: ``degenerate_anchors`` thresholds. Four distinct byte values is the point
+#: below which a "static anchor" is a run of padding; 1.0 bit/byte is what a
+#: fair coin over two values carries, and anything below it cannot distinguish
+#: this region from any other stretch of the same filler. Both are measured
+#: against the real corpus: the key at offset 370,672 has 1 distinct anchor byte
+#: and 0.0 bits at the default 64-byte context, and reaches 1.26 bits only at
+#: context=256.
+KEY_PATTERN_MIN_ANCHOR_BYTES = 4
+KEY_PATTERN_MIN_ANCHOR_BITS = 1.0
 
 
 def _dominant_byte_class(class_counts: Dict[str, int]) -> str:
@@ -816,6 +860,21 @@ def _persist_ground_truth_hits(
 PARTIAL_COVERAGE_CODE = "brute_force.partial_coverage"
 
 
+def _validate_neighborhood_pad(neighborhood_pad: int) -> int:
+    """Reject a negative per-side neighborhood pad through the standard funnel.
+
+    Zero is legal (it means "attach only the hit itself"); a negative pad would
+    silently invert the slice bounds and emit a nonsense window.
+    """
+    pad = int(neighborhood_pad)
+    if pad < 0:
+        raise CapabilityError(
+            f"neighborhood_pad must be >= 0, got {pad}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return pad
+
+
 def _window_label(key_sizes: Sequence[int]) -> str:
     """Human phrase for the window widths a run tested ("32-byte", "32/48-byte")."""
     sizes = sorted({int(k) for k in key_sizes})
@@ -894,6 +953,7 @@ def brute_force(
     exhaustive: bool = True,
     state_path: Optional[str] = None,
     top_k: int = 10,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
     variance_threshold: Optional[float] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
@@ -932,6 +992,11 @@ def brute_force(
     path), so the ledger can be sliced by axis; a dump outside the corpus layout
     records its path and leaves the rest at the ledger's defaults.
 
+    ``neighborhood_pad`` (default 64 bytes per side) sets how much context is
+    sliced around each hit from the ``state_path`` Welford state. It flows
+    straight into the emitted vol3 plugin / YARA rule, so the default is pinned;
+    widen it only when the emitted signature is deliberately being regenerated.
+
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw. ``on_progress`` / ``is_cancelled`` are
     optional surface hooks; unset they are no-ops.
@@ -946,6 +1011,7 @@ def brute_force(
             "Provide exactly one of oracle_path or pcap_path",
             category=ErrorCategory.INVALID_INPUT,
         )
+    neighborhood_pad = _validate_neighborhood_pad(neighborhood_pad)
 
     bf_oracle_kwargs: Dict[str, Any] = {}
     if pcap_path:
@@ -999,6 +1065,7 @@ def brute_force(
             exhaustive=exhaustive,
             state_path=Path(state_path) if state_path else None,
             top_k=top_k,
+            neighborhood_pad=neighborhood_pad,
             **bf_oracle_kwargs,
             **bf_extra,
         )
@@ -1551,6 +1618,7 @@ def auto_floor(
     alignment_quality: Optional[float] = None,
     min_alignment: float = 0.5,
     managed_region: bool = False,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
@@ -1568,6 +1636,10 @@ def auto_floor(
 
     Encrypted ``.msl`` references are decrypted when key material is supplied.
 
+    ``neighborhood_pad`` (default 64 bytes per side) sets the context width
+    attached to a recovered hit — the same knob ``brute_force`` exposes, and the
+    same pinned default, because it reaches every emitted artifact.
+
     ``on_progress`` / ``is_cancelled`` are optional surface hooks; unset they
     are no-ops (byte-identical CLI/MCP behaviour). Progress mirrors the web's
     ``escalate`` stage (the pipeline's floor-free fall-through).
@@ -1577,6 +1649,7 @@ def auto_floor(
     from memdiver.engine.auto_floor import hit_tier, run_auto_floor
     from memdiver.engine.oracle import load_oracle, load_oracle_config
 
+    neighborhood_pad = _validate_neighborhood_pad(neighborhood_pad)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with ExitStack() as _vstack:
         try:
@@ -1619,6 +1692,7 @@ def auto_floor(
             p_min=p_min, self_test_trials=self_test_trials,
             oracle_budget=oracle_budget, alignment_quality=alignment_quality,
             min_alignment=min_alignment, managed_region=managed_region,
+            neighborhood_pad=neighborhood_pad,
             **af_extra,
         )
     out = _ensure_dir(Path(output_dir))
@@ -1791,6 +1865,820 @@ def _export_payload(
 
 
 # ----------------------------------------------------------------------
+# locate-key  (where ONE known secret sits across N dumps)  +  the
+# key-anchored pattern export built on top of it
+# ----------------------------------------------------------------------
+#
+# Neither producer returns a ``ServiceResult``. That envelope belongs to the
+# ``tools_inspect`` / ``tools_xref`` families, whose payloads must carry a
+# per-dump key/decrypt StatusBlock; these two are pipeline producers like every
+# other function in this module and return a bare dict with a ``diagnostics``
+# list. Hard errors are RAISED as ``CapabilityError`` — never returned as
+# ``{"error": ...}``, which ``tests/test_architecture_invariants.py`` enforces
+# with a zero-tolerance ratchet.
+
+
+class _KeyNeedle(NamedTuple):
+    """The resolved secret plus the provenance of HOW it was supplied.
+
+    ``input_form`` travels all the way into the payload on purpose: three input
+    forms that agree on the bytes still differ in what the caller knew, and an
+    analyst reading a result months later needs to see whether the 48 bytes came
+    from a key log (labelled, with a client random) or from a bare hex paste.
+    """
+
+    needle: bytes
+    secret_type: str
+    client_random: str
+    input_form: str
+
+
+#: The three accepted spellings of "here is the secret", in the order the
+#: error message lists them.
+KEY_INPUT_FORMS = ("key_hex", "keylog_line", "secret")
+
+
+def _resolve_key_needle(
+    key_hex: str,
+    keylog_line: str,
+    secret: Optional[Dict[str, str]],
+) -> _KeyNeedle:
+    """Resolve EXACTLY ONE of the three input forms into needle bytes.
+
+    Shared by :func:`locate_key` and :func:`export_key_pattern` so the two
+    cannot disagree about what a given input means.
+
+    There is deliberately NO precedence and NO autodetection. A caller that
+    sends ``key_hex`` together with a ``keylog_line`` naming DIFFERENT bytes has
+    a bug, and silently answering about one of them produces a confident,
+    fully-populated per-dump census of the wrong secret — the single most
+    expensive wrong answer this capability can give. Refusing costs one round
+    trip. The precedent is :func:`brute_force`'s ``--oracle`` / ``--pcap``
+    mutual exclusion, made for the same reason.
+
+    Raises:
+        CapabilityError: INVALID_INPUT when zero or more than one form is
+            supplied (the message names what WAS supplied), for malformed hex,
+            for a key-log line that does not parse, and for an empty secret.
+    """
+    supplied = [
+        name for name, value in (
+            ("key_hex", bool(key_hex and key_hex.strip())),
+            ("keylog_line", bool(keylog_line and keylog_line.strip())),
+            ("secret", secret is not None),
+        ) if value
+    ]
+    if len(supplied) != 1:
+        raise CapabilityError(
+            f"Supply exactly ONE of {list(KEY_INPUT_FORMS)}; got "
+            f"{supplied or 'none'}. There is no precedence between them on "
+            f"purpose: two forms naming different bytes would otherwise yield a "
+            f"confident per-dump answer about the wrong secret.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    form = supplied[0]
+
+    if form == "key_hex":
+        needle = _needle_from_key_hex(key_hex)
+        secret_type, client_random = "", ""
+    elif form == "keylog_line":
+        crypto_secret = _secret_from_keylog_line(keylog_line)
+        needle = bytes(crypto_secret.secret_value)
+        secret_type = str(crypto_secret.secret_type)
+        client_random = bytes(crypto_secret.identifier).hex()
+    else:
+        crypto_secret = _crypto_secret_from_dict(secret)
+        needle = bytes(crypto_secret.secret_value)
+        secret_type = str(crypto_secret.secret_type)
+        client_random = bytes(crypto_secret.identifier).hex()
+
+    if not needle:
+        # Mirrors ``search_bytes_result``'s "Empty byte pattern": an empty
+        # needle would come back "searched, present=False" for every dump — a
+        # green-looking absent verdict for a secret nobody searched for.
+        # ``locate_key_across_dumps`` refuses it too (as a ValueError, i.e. a
+        # writer bug); this is the user-facing spelling, raised first.
+        raise CapabilityError(
+            "Empty secret; nothing to locate",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return _KeyNeedle(
+        needle=needle,
+        secret_type=secret_type,
+        client_random=client_random,
+        input_form=form,
+    )
+
+
+def _needle_from_key_hex(key_hex: str) -> bytes:
+    """Normalise a pasted hex key into bytes.
+
+    The normalisation is copied VERBATIM from
+    ``app.tools_inspect.search_bytes_result`` (strip, drop a leading ``0x``,
+    join on any whitespace) so a hex string that works in the byte-search box
+    works here — an analyst pastes the same ``aa bb cc`` from the same hex
+    viewer into both.
+    """
+    cleaned = key_hex.strip()
+    if cleaned.lower().startswith("0x"):
+        cleaned = cleaned[2:]
+    cleaned = "".join(cleaned.split())
+    if not cleaned:
+        raise CapabilityError(
+            "Empty hex key", category=ErrorCategory.INVALID_INPUT)
+    try:
+        return bytes.fromhex(cleaned)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid hex key: {key_hex!r}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+
+
+def _secret_from_keylog_line(keylog_line: str) -> Any:
+    """Parse ONE NSS key-log line, saying WHY it failed when it does.
+
+    ``core.keylog.parse_keylog_line`` returns ``None`` for three distinct
+    mistakes and the fix differs for each: a wrong field count means the paste
+    lost a column, an unknown label means the wrong protocol was picked, and bad
+    hex means a truncated copy. One "could not parse that line" message would
+    send the analyst hunting through all three.
+    ``core.keylog.is_well_formed_keylog_line`` is what splits them apart.
+    """
+    from memdiver.core.keylog import (
+        ALL_SECRET_TYPES,
+        is_well_formed_keylog_line,
+        parse_keylog_line,
+    )
+
+    line = keylog_line.strip()
+    parsed = parse_keylog_line(line)
+    if parsed is not None:
+        return parsed
+
+    fields = line.split()
+    if len(fields) != 3:
+        raise CapabilityError(
+            f"keylog_line has {len(fields)} whitespace-separated field(s), "
+            f"expected 3: '<LABEL> <client_random_hex> <secret_hex>'",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if fields[0] not in ALL_SECRET_TYPES:
+        raise CapabilityError(
+            f"keylog_line has non-canonical label {fields[0]!r}; expected one "
+            f"of {sorted(ALL_SECRET_TYPES)}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if not is_well_formed_keylog_line(line):
+        raise CapabilityError(
+            f"keylog_line has malformed hex in the client_random or secret "
+            f"field: {line!r}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    # Unreachable: both the parser and the well-formedness probe consult
+    # ``keylog._get_all_secret_types()``, so a well-formed line with a canonical
+    # label and valid hex always parses. Kept as INTERNAL rather than silently
+    # re-raising INVALID_INPUT, because reaching it means the two diverged.
+    raise CapabilityError(
+        f"keylog_line is well-formed but did not parse: {line!r}",
+        category=ErrorCategory.INTERNAL,
+    )
+
+
+def _locate_key_diagnostics(
+    result: Any, *, max_offsets: int,
+) -> List[Diagnostic]:
+    """The honest qualifications on one key-location verdict.
+
+    Every one of these is a QUALIFICATION, never an error: the result is already
+    computed and the caller is entitled to it. What they encode is the gap
+    between "found" / "absent" and what the numbers actually support.
+    """
+    diagnostics: List[Diagnostic] = []
+
+    unsearched = [d for d in result.dumps if not d.searched]
+    if unsearched:
+        # Fires EVEN when the verdict is ``found``. A found verdict needs only
+        # one dump, but every count beside it (``dumps_absent``, the survival
+        # ratio a caller computes from it) is over a SHORT denominator, and the
+        # unsearched rows are exactly the ones that might also hold the key.
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_NOT_SEARCHED_CODE,
+            message=(
+                f"{len(unsearched)} of {result.dumps_total} dumps were never "
+                f"searched ("
+                + "; ".join(
+                    f"{d.name}: {d.status}" + (f" — {d.detail}" if d.detail else "")
+                    for d in unsearched[:5])
+                + f"). Their presence is UNKNOWN, not absent, so every count "
+                f"here is over {result.dumps_searched} dumps, not "
+                f"{result.dumps_total}."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps_not_searched": len(unsearched),
+                "dumps_total": result.dumps_total,
+                "dumps_searched": result.dumps_searched,
+                "statuses": {d.dump_path: d.status for d in unsearched},
+            },
+        ))
+
+    if result.verdict == "absent":
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_ABSENT_CODE,
+            message=(
+                f"The secret occurs in none of the {result.dumps_searched} "
+                f"dumps that were actually searched. This is a measured "
+                f"absence over a known denominator, not a failure to look."
+            ),
+            severity=Severity.INFO,
+            details={"dumps_searched": result.dumps_searched},
+        ))
+
+    if result.verdict == "found" and not result.unanimous:
+        # THE ordinary case on real memory, not an edge case: on the reference
+        # 8-dump OpenSSL TLS 1.2 run the master secret survives in 2 of the 8
+        # phases and is wiped in the other 6.
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_PARTIAL_CODE,
+            message=(
+                f"Present in {result.dumps_present} of "
+                f"{result.dumps_searched} searched dumps ("
+                + ", ".join(d.name for d in result.present[:8])
+                + f"), and provably absent from {result.dumps_absent}. Partial "
+                f"survival is the normal shape of a real key across a process "
+                f"lifecycle — the absent dumps are evidence, not a shortfall."
+            ),
+            severity=Severity.INFO,
+            details={
+                "dumps_present": result.dumps_present,
+                "dumps_absent": result.dumps_absent,
+                "present_dumps": [d.dump_path for d in result.present],
+                "absent_dumps": [d.dump_path for d in result.absent],
+            },
+        ))
+
+    if result.dumps_present > 1 and not result.offsets_agree:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_OFFSET_DRIFT_CODE,
+            message=(
+                f"The secret sits at DIFFERENT offsets across the "
+                f"{result.dumps_present} dumps that hold it "
+                f"({sorted(set(result.anchor_offsets.values()))}). No single "
+                f"offset generalises, so an offset-based rule derived from one "
+                f"of them will not locate it in the others."
+            ),
+            severity=Severity.INFO,
+            details={"anchor_offsets": dict(result.anchor_offsets)},
+        ))
+
+    multi = [d for d in result.present if d.hit_count > 1]
+    if multi:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_MULTI_HIT_CODE,
+            message=(
+                f"{len(multi)} dump(s) contain the secret more than once ("
+                + ", ".join(f"{d.name}: {d.hit_count}" for d in multi[:8])
+                + "). These are REAL copies, not a search artefact: a TLS "
+                "library keeps the same secret in its key-schedule and its "
+                "record-layer structs (see engine/truth_labels.py), so the "
+                "extra occurrences are additional places to look, not noise."
+            ),
+            severity=Severity.INFO,
+            details={d.dump_path: d.hit_count for d in multi},
+        ))
+
+    truncated = [d for d in result.dumps if d.offsets_truncated]
+    if truncated:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_KEY_TRUNCATED_CODE,
+            message=(
+                f"{len(truncated)} dump(s) returned only the first "
+                f"{max_offsets} offsets (max_offsets={max_offsets}); "
+                f"``hit_count`` is still the TRUE total, so the verdict and "
+                f"every count are unaffected. Raise max_offsets to see them "
+                f"all."
+            ),
+            severity=Severity.INFO,
+            details={
+                "max_offsets": int(max_offsets),
+                "hit_counts": {d.dump_path: d.hit_count for d in truncated},
+            },
+        ))
+    return diagnostics
+
+
+def _locate_key_payload(
+    result: Any,
+    *,
+    needle: bytes,
+    secret_type: str,
+    client_random: str,
+    input_form: str,
+    view: Optional[str],
+    max_offsets: int,
+) -> Dict[str, Any]:
+    """Shape a :class:`KeyLocationResult` into the wire payload.
+
+    Shared so :func:`export_key_pattern` can nest the IDENTICAL block under
+    ``location`` — one shape for "where is this key", whether it was asked
+    directly or as the first half of an export.
+
+    The needle bytes are deliberately NOT echoed. The caller already holds them
+    (they supplied them), and this payload is what gets pasted into tickets,
+    agent transcripts and CI logs. ``needle_sha256`` correlates two results
+    without disclosing anything, and ``client_random`` is public handshake
+    material that identifies the session.
+    """
+    return {
+        "verdict": result.verdict,
+        "input_form": input_form,
+        "secret_type": secret_type,
+        "client_random": client_random,
+        "needle_length": len(needle),
+        "needle_sha256": result.needle_sha256,
+        "view": view,
+        "dumps_total": result.dumps_total,
+        "dumps_searched": result.dumps_searched,
+        "dumps_present": result.dumps_present,
+        "dumps_absent": result.dumps_absent,
+        "dumps_unreadable": result.dumps_unreadable,
+        "dumps_too_small": result.dumps_too_small,
+        "unanimous": result.unanimous,
+        "first_offset": result.first_offset,
+        "offsets_agree": result.offsets_agree,
+        "common_offset": result.common_offset,
+        "dumps": [d.to_dict() for d in result.dumps],
+        "elapsed_s": result.elapsed_s,
+        "diagnostics": [
+            d.to_dict()
+            for d in _locate_key_diagnostics(result, max_offsets=max_offsets)
+        ],
+    }
+
+
+def locate_key(
+    *,
+    dump_paths: Sequence[str],
+    key_hex: str = "",
+    keylog_line: str = "",
+    secret: Optional[Dict[str, str]] = None,
+    view: Optional[str] = None,
+    max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """Locate ONE known secret across N dumps, with an honest three-valued census.
+
+    The single implementation behind the CLI ``locate-key`` command, the HTTP
+    ``POST /api/analysis/locate-key`` route, the MCP ``locate_key`` tool and
+    ``memdiver.services.locate_key``. The caller already HOLDS the secret — from
+    a key log, a confirmed brute-force hit, or a paste into the key-log composer
+    — and wants to know which dumps still contain it and where.
+
+    Supply the secret in exactly ONE of three forms:
+
+    * ``key_hex`` — bare hex bytes (``"aa bb cc"`` and ``"0xaabbcc"`` both work).
+    * ``keylog_line`` — one NSS key-log row, ``"<LABEL> <client_random> <secret>"``.
+      This form additionally reports ``secret_type`` and ``client_random``.
+    * ``secret`` — a ``{secret_type, client_random, secret}`` dict, validated by
+      the same helper ``export_keylog`` uses.
+
+    Zero or two-or-more forms is INVALID_INPUT, with no precedence between them
+    — see :func:`_resolve_key_needle` for why silence would be worse.
+
+    ONE dump is enough, unlike every sibling producer in this module. The
+    >= 2 rule elsewhere exists because a cross-dump *comparison* of one dump is
+    meaningless; "is this secret in this dump, and where" is a complete question
+    about a single dump and the answer is the whole point of the capability.
+
+    Nothing is PERSISTED and there is no ``project_id``. The only table this
+    would fit is ``ground_truth``, and that table holds ORACLE-CONFIRMED hits: a
+    key-log-derived location is corroborating evidence, not a confirmation, and
+    filing it there would launder one into the other for every later query that
+    trusts the ledger.
+
+    Returns:
+        A bare dict (not a ``ServiceResult``) carrying the verdict, the six
+        per-status counts, the per-dump rows in the SUPPLIED order, and
+        ``diagnostics``. Read ``verdict`` before any count: ``"not_searched"``
+        claims NOTHING and must never be rendered as an absence.
+
+    Raises:
+        CapabilityError: PRECONDITION for an empty ``dump_paths``, INVALID_INPUT
+            for the input-form and secret-parsing errors above.
+        FileNotFoundServiceError: when any supplied dump does not exist.
+        EncryptedDumpLockedError: for a locked encrypted container — every
+            answer in the set would otherwise be a confident absence over bytes
+            nobody decrypted.
+    """
+    # Function-local so the ``app`` layer does not pull ``engine`` at module
+    # import time (the repo-wide idiom; see ``analyze_candidates``).
+    from memdiver.engine.key_location import locate_key_across_dumps
+
+    resolved = _resolve_key_needle(key_hex, keylog_line, secret)
+
+    paths = [Path(p).expanduser() for p in dump_paths]
+    if not paths:
+        raise CapabilityError(
+            "Need at least 1 dump to search, got 0",
+            category=ErrorCategory.PRECONDITION,
+        )
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+
+    def _observe(source: Any) -> None:
+        # A locked encrypted dump reads back EMPTY, which this producer would
+        # otherwise report as a confident absence in every locked dump — the
+        # single most misleading result it can return. Surface the lock, then
+        # let the caller's own hook (the CLI's AEAD line) run.
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    result = locate_key_across_dumps(
+        [str(p) for p in paths],
+        resolved.needle,
+        view=view,
+        key_material=km,
+        max_offsets=max_offsets,
+        on_source=_observe,
+    )
+    return _locate_key_payload(
+        result,
+        needle=resolved.needle,
+        secret_type=resolved.secret_type,
+        client_random=resolved.client_random,
+        input_form=resolved.input_form,
+        view=view,
+        max_offsets=max_offsets,
+    )
+
+
+def _key_pattern_anchors(result: Any) -> Dict[str, int]:
+    """Pick ONE occurrence per present dump — the one nearest the modal offset.
+
+    A dump may hold several real copies of the secret (key schedule + record
+    layer). The window comparison is positional, so the N windows must be
+    anchored on CORRESPONDING copies; anchoring dump A on its key-schedule copy
+    and dump B on its record-layer copy compares two unrelated structures and
+    reports their surroundings as volatile.
+
+    The modal offset is the offset the most dumps agree on (ties broken toward
+    the lower offset, so the choice is deterministic), and each dump then
+    contributes its own occurrence CLOSEST to it (ties again toward the lower).
+    Where every dump has exactly one hit — the real-corpus case — this reduces
+    to "first hit", identically to ``KeyLocationResult.anchor_offsets``.
+    """
+    frequency: Counter = Counter()
+    for row in result.present:
+        frequency.update(row.offsets)
+    modal = min(frequency, key=lambda o: (-frequency[o], o))
+    return {
+        row.dump_path: min(row.offsets, key=lambda o: (abs(o - modal), o))
+        for row in result.present
+    }
+
+
+def export_key_pattern(
+    *,
+    dump_paths: Sequence[str],
+    key_hex: str = "",
+    keylog_line: str = "",
+    secret: Optional[Dict[str, str]] = None,
+    context: int = DEFAULT_KEY_CONTEXT,
+    fmt: str = "volatility3",
+    name: str = "memdiver_key_pattern",
+    min_static_ratio: float = 0.3,
+    view: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    include_window_hex: bool = False,
+    max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """Export a scanning signature ANCHORED on an already-known secret.
+
+    The single implementation behind the CLI ``export-key-pattern`` command, the
+    HTTP ``POST /api/analysis/key-pattern`` route, the MCP
+    ``export_key_pattern`` tool and ``memdiver.services.export_key_pattern``.
+
+    ``export_pattern`` guesses WHERE the key is (largest volatile region) and
+    then describes it. This producer is handed the key, locates it per dump, and
+    describes its NEIGHBOURHOOD — which is the artifact a Volatility/YARA
+    consumer actually needs, because the key bytes themselves are what the rule
+    must wildcard.
+
+    How the mask set is chosen, because it is the whole trick
+    --------------------------------------------------------
+    The static mask is computed over EVERY searched dump — the ones that hold
+    the key AND the ones that provably do not. That is measured, not stylistic.
+    On the reference 8-dump OpenSSL TLS 1.2 run the key survives in 2 dumps; a
+    mask over those 2 is 100 % static and the emitted rule embeds the secret
+    verbatim with no wildcard at all, matching that one key and nothing else.
+    A mask over all 8 wildcards exactly the 48 key bytes (128 of 176 static) and
+    generalises. The six wiped dumps ARE the wildcard mechanism.
+
+    An absent dump has no occurrence of its own to anchor on, so it can only
+    join by borrowing the shared offset — which exists only when
+    ``offsets_agree``. Under drift the absent dumps are EXCLUDED (and
+    ``mask_subset`` + ``offset_drift`` say so) rather than masked at an offset
+    that means nothing in them.
+
+    Padding is COMMON to every dump in the mask set, never clamped per dump: a
+    dump near a view boundary that got less left padding would place the key at
+    a different index inside its window, and the positional byte-wise comparison
+    would then be comparing the key against its own context.
+
+    Diagnostics, not refusals
+    -------------------------
+    ``key_fully_static`` (WARNING) fires when the key span carries no wildcard
+    at all. Nothing else notices this: ``min_static_ratio`` is a LOWER bound, so
+    a 100 %-static window sails through, and all three exporters render only
+    ``wildcard_pattern`` — so the rule quietly ships the raw secret. See also
+    ``degenerate_anchors``, which fires at the default context on the real
+    corpus key (its surroundings are zeros). Both WARN and still return the
+    pattern: a weak signature an analyst can see beats a refusal they cannot.
+
+    Returns:
+        ``format`` / ``content`` / ``pattern`` (and ``pattern_path`` when
+        ``output_dir`` is set) exactly as ``export_pattern`` does, plus
+        ``region``, the top-level ``offsets_agree``, the key-span static counts,
+        the mask-set census, ``windows``, the nested ``location`` block, and
+        ``diagnostics``.
+
+    Raises:
+        CapabilityError: PRECONDITION for fewer than 2 dumps or a verdict of
+            ``not_searched``, INVALID_INPUT for a negative ``context`` and the
+            input-form errors, UNSUPPORTED for an unknown ``fmt``.
+        KeyNotFoundError: (404/NOT_FOUND) when the key is provably absent from
+            every searched dump. Deliberately NOT ``InsufficientStaticError``,
+            which would blame the data for a missing key.
+        FileNotFoundServiceError: when any supplied dump does not exist.
+    """
+    from memdiver.app import export_service
+    from memdiver.architect.pattern_generator import PatternGenerator
+    from memdiver.engine.key_location import locate_key_across_dumps
+
+    resolved = _resolve_key_needle(key_hex, keylog_line, secret)
+    needle_length = len(resolved.needle)
+
+    paths = [Path(p).expanduser() for p in dump_paths]
+    if len(paths) < 2:
+        # Unlike ``locate_key``, which answers a single-dump question, a STATIC
+        # MASK is a comparison: ``StaticChecker.check_regions`` over one region
+        # never enters its loop and returns all-True, i.e. a silent
+        # ``static_ratio == 1.0`` and a perfect-looking rule from one dump.
+        raise CapabilityError(
+            f"Need at least 2 dumps to measure a static mask, got {len(paths)}",
+            category=ErrorCategory.PRECONDITION,
+        )
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+    if fmt.lower() not in export_service.SUPPORTED_FORMATS:
+        raise export_service.UnknownFormatError(fmt)
+    if context < 0:
+        raise CapabilityError(
+            f"context must be non-negative, got {context}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+    def _observe(source: Any) -> None:
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    # The ENGINE function, not ``locate_key``: a producer calling a producer
+    # would shape the payload twice and nest a ``diagnostics`` list inside a
+    # ``diagnostics`` list. The shared payload helper is reused instead.
+    result = locate_key_across_dumps(
+        [str(p) for p in paths],
+        resolved.needle,
+        view=view,
+        key_material=km,
+        max_offsets=max_offsets,
+        on_source=_observe,
+    )
+    location = _locate_key_payload(
+        result,
+        needle=resolved.needle,
+        secret_type=resolved.secret_type,
+        client_random=resolved.client_random,
+        input_form=resolved.input_form,
+        view=view,
+        max_offsets=max_offsets,
+    )
+
+    # -- gate on the verdict, with a DISTINCT error for each of the three ---
+    if result.verdict == "not_searched":
+        # Nothing was read at all. A static-ratio complaint here would blame
+        # the data for what is an access problem.
+        raise CapabilityError(
+            f"None of the {result.dumps_total} dumps could be searched, so the "
+            f"key's location is unknown — not absent. Fix the inputs listed in "
+            f"details and retry.",
+            category=ErrorCategory.PRECONDITION,
+            details={"verdict": result.verdict, "dumps": {
+                d.dump_path: (d.status + (f": {d.detail}" if d.detail else ""))
+                for d in result.dumps}},
+        )
+    if result.verdict == "absent":
+        raise export_service.KeyNotFoundError(
+            f"The secret is absent from all {result.dumps_searched} searched "
+            f"dumps, so there is no location to anchor a pattern on.",
+            verdict=result.verdict,
+        )
+
+    # -- anchor + mask set --------------------------------------------------
+    anchors = _key_pattern_anchors(result)
+    present_rows = list(result.present)
+    mask_rows = list(present_rows)
+    excluded: List[str] = [
+        d.dump_path for d in result.dumps if not d.searched
+    ]
+    if result.offsets_agree:
+        common = int(result.common_offset or 0)
+        for row in result.absent:
+            anchors[row.dump_path] = common
+            mask_rows.append(row)
+    else:
+        excluded.extend(d.dump_path for d in result.absent)
+
+    # REFERENCE DUMP FIRST: ``StaticChecker.check_regions`` takes ``regions[0]``
+    # as its reference, so ``hex_pattern`` (and the YARA key meta) would not
+    # hold the key at all if a dump that lacks it led the list.
+    reference_row = present_rows[0]
+    in_mask = {id(r) for r in mask_rows}
+    ordered = [reference_row] + [
+        d for d in result.dumps if id(d) in in_mask and d is not reference_row
+    ]
+
+    # -- COMMON padding, feasible for every dump in the mask set -----------
+    pad_left = min(min(context, anchors[d.dump_path]) for d in ordered)
+    pad_right = max(0, min(
+        min(context, d.size_for_view - (anchors[d.dump_path] + needle_length))
+        for d in ordered))
+    window_length = pad_left + needle_length + pad_right
+
+    windows = [(d.dump_path, anchors[d.dump_path] - pad_left) for d in ordered]
+    export = export_service.located_export_pattern(
+        windows,
+        window_length,
+        key_offset=pad_left,
+        key_length=needle_length,
+        fmt=fmt,
+        name=name,
+        min_static_ratio=min_static_ratio,
+        key_material=km,
+        view=view,
+        return_regions=include_window_hex,
+    )
+
+    static_mask = export["static_mask"]
+    key_static_count = sum(
+        1 for flag in static_mask[pad_left:pad_left + needle_length] if flag)
+    key_wildcard_count = needle_length - key_static_count
+
+    payload = _export_payload(export, name=name, output_dir=output_dir)
+    region = dict(payload["region"])
+    region.update({
+        "key_offset_in_pattern": pad_left,
+        "context_requested": int(context),
+        "context_before": pad_left,
+        "context_after": pad_right,
+    })
+    payload["region"] = region
+    # HOISTED to the top level because it decides whether ``region.offset`` is
+    # usable at all: under drift that offset is the REFERENCE dump's window
+    # start and generalises to nothing. ``ArchitectPlaceholder.tsx``'s
+    # ``runAutoExport`` already reads ``region.offset`` straight into a hex-view
+    # highlight, so a consumer must be able to see the caveat without walking
+    # into ``location``.
+    payload["offsets_agree"] = result.offsets_agree
+    payload["key_static_count"] = key_static_count
+    payload["key_wildcard_count"] = key_wildcard_count
+    payload["mask_regions"] = len(ordered)
+    payload["mask_dumps_present"] = len(present_rows)
+    payload["mask_dumps_absent"] = len(ordered) - len(present_rows)
+    payload["excluded_dumps"] = excluded
+
+    regions = export.get("regions") or []
+    window_rows: List[Dict[str, Any]] = []
+    for index, row in enumerate(ordered):
+        entry: Dict[str, Any] = {
+            "dump_path": row.dump_path,
+            "name": row.name,
+            "window_start": anchors[row.dump_path] - pad_left,
+            "key_start": anchors[row.dump_path],
+            "present": row.present is True,
+            "reference": row is reference_row,
+        }
+        if include_window_hex and index < len(regions):
+            entry["hex"] = bytes(regions[index]).hex()
+        window_rows.append(entry)
+    payload["windows"] = window_rows
+    payload["location"] = location
+
+    diagnostics: List[Diagnostic] = []
+    if key_wildcard_count == 0:
+        diagnostics.append(Diagnostic(
+            code=KEY_PATTERN_STATIC_KEY_CODE,
+            message=(
+                f"All {needle_length} key bytes came out STATIC, so the "
+                f"exported rule contains the secret verbatim and will match "
+                f"this one key and nothing else. Every dump in the mask set "
+                f"holds the same bytes at the anchor, so there was nothing to "
+                f"wildcard. Add dumps in which the key is ABSENT (a later "
+                f"lifecycle phase, or a run of the same binary without this "
+                f"session) — those are what turn the key span into '??'."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "key_static_count": key_static_count,
+                "mask_regions": len(ordered),
+                "mask_dumps_absent": len(ordered) - len(present_rows),
+            },
+        ))
+
+    distinctiveness = PatternGenerator.anchor_distinctiveness(
+        bytes.fromhex(export["pattern"]["hex_pattern"].replace(" ", "")),
+        static_mask,
+    )
+    if (distinctiveness["distinct_bytes"] < KEY_PATTERN_MIN_ANCHOR_BYTES
+            or distinctiveness["shannon_bits"] < KEY_PATTERN_MIN_ANCHOR_BITS):
+        diagnostics.append(Diagnostic(
+            code=KEY_PATTERN_DEGENERATE_ANCHORS_CODE,
+            message=(
+                f"The static anchors carry only "
+                f"{distinctiveness['distinct_bytes']} distinct byte value(s) "
+                f"({distinctiveness['shannon_bits']} bits/byte, longest "
+                f"constant run {distinctiveness['longest_constant_run']}), so "
+                f"this rule will match almost anywhere. On the reference "
+                f"corpus the real key's surroundings are zeros, and the "
+                f"resulting rule matches 5,311 positions in its own source "
+                f"dump. Raise --context until the window reaches structural "
+                f"bytes, or combine this pattern with a coarser locator."
+            ),
+            severity=Severity.WARNING,
+            details=dict(distinctiveness),
+        ))
+
+    if len(ordered) < result.dumps_total:
+        diagnostics.append(Diagnostic(
+            code=KEY_PATTERN_SUBSET_CODE,
+            message=(
+                f"The static mask was measured over {len(ordered)} of "
+                f"{result.dumps_total} dumps; {len(excluded)} were excluded "
+                f"("
+                + ("the key sits at different offsets, so a dump that lacks it "
+                   "has no offset to borrow" if not result.offsets_agree
+                   else "never searched, so nothing is known about them")
+                + "). Fewer dumps in the mask means fewer wildcards, and a "
+                "pattern that generalises less than the count suggests."
+            ),
+            severity=Severity.INFO,
+            details={
+                "mask_regions": len(ordered),
+                "dumps_total": result.dumps_total,
+                "excluded_dumps": excluded,
+                "offsets_agree": result.offsets_agree,
+            },
+        ))
+
+    if pad_left == 0 and pad_right == 0:
+        diagnostics.append(Diagnostic(
+            code=KEY_PATTERN_NO_ANCHORS_CODE,
+            message=(
+                f"The window is the key span alone (context_before = "
+                f"context_after = 0 for context={context}), so the rule has no "
+                f"static anchor OUTSIDE the key. Such a pattern can only match "
+                f"the key bytes themselves, which is exactly what a scanning "
+                f"signature must not rely on."
+            ),
+            severity=Severity.WARNING,
+            details={"context_requested": int(context)},
+        ))
+
+    # The location diagnostics are carried into this list too, so one read of
+    # ``diagnostics`` sees everything about the result — including
+    # ``offset_drift``, which is what makes ``mask_subset`` above legible. The
+    # locate-only subset stays available under ``location.diagnostics``.
+    payload["diagnostics"] = location["diagnostics"] + [
+        d.to_dict() for d in diagnostics]
+    return payload
+
+
+# ----------------------------------------------------------------------
 # verify-key  (decryption verification of a candidate key at an offset)
 # ----------------------------------------------------------------------
 
@@ -1889,6 +2777,63 @@ def verify_key_result(
 
 
 # ----------------------------------------------------------------------
+# shared secret-dict validation  (export-keylog AND the key-location path)
+# ----------------------------------------------------------------------
+
+
+def _crypto_secret_from_dict(
+    item: Any, *, index: Optional[int] = None,
+) -> Any:
+    """Validate one JSON secret dict into a :class:`CryptoSecret`.
+
+    Extracted VERBATIM from :func:`keylog_result`'s inline loop body (the three
+    guards and their exact wording are unchanged) so the key-location producers
+    validate a ``secret=`` argument identically. Two producers with two copies
+    of "is this secret_type canonical?" is how one of them ends up accepting a
+    label Wireshark cannot load, or rejecting one it can.
+
+    ``index`` names the item inside a list (``secrets[3] ...``); leave it
+    ``None`` for a single ``secret=`` argument (``secret ...``). Everything
+    after the label is byte-identical between the two spellings.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for a missing required key, a
+            non-canonical ``secret_type`` label, or malformed hex.
+    """
+    from memdiver.core.keylog import ALL_SECRET_TYPES
+    from memdiver.core.models import CryptoSecret
+
+    label = "secret" if index is None else f"secrets[{index}]"
+    try:
+        secret_type = item["secret_type"]
+        client_random = item["client_random"]
+        secret = item["secret"]
+    except (KeyError, TypeError) as exc:
+        raise CapabilityError(
+            f"{label} missing required key {exc}; each item needs "
+            "'secret_type', 'client_random', 'secret'",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+    if secret_type not in ALL_SECRET_TYPES:
+        raise CapabilityError(
+            f"{label} has non-canonical secret_type {secret_type!r}; "
+            f"expected one of {sorted(ALL_SECRET_TYPES)}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    try:
+        return CryptoSecret(
+            secret_type=secret_type,
+            identifier=bytes.fromhex(client_random),
+            secret_value=bytes.fromhex(secret),
+        )
+    except (ValueError, TypeError) as exc:
+        raise CapabilityError(
+            f"{label} has malformed hex: {exc}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+
+
+# ----------------------------------------------------------------------
 # export-keylog  (Wireshark-loadable NSS key log from recovered secrets)
 # ----------------------------------------------------------------------
 
@@ -1925,38 +2870,12 @@ def keylog_result(
     rejected up front: an unknown label silently yields a key log Wireshark
     cannot load, so it is caught here rather than shipped as a broken artifact.
     """
-    from memdiver.core.keylog import ALL_SECRET_TYPES, format_keylog_lines
+    from memdiver.core.keylog import format_keylog_lines
     from memdiver.core.models import CryptoSecret
 
-    crypto_secrets: List[CryptoSecret] = []
-    for i, item in enumerate(secrets):
-        try:
-            secret_type = item["secret_type"]
-            client_random = item["client_random"]
-            secret = item["secret"]
-        except (KeyError, TypeError) as exc:
-            raise CapabilityError(
-                f"secrets[{i}] missing required key {exc}; each item needs "
-                "'secret_type', 'client_random', 'secret'",
-                category=ErrorCategory.INVALID_INPUT,
-            ) from exc
-        if secret_type not in ALL_SECRET_TYPES:
-            raise CapabilityError(
-                f"secrets[{i}] has non-canonical secret_type {secret_type!r}; "
-                f"expected one of {sorted(ALL_SECRET_TYPES)}",
-                category=ErrorCategory.INVALID_INPUT,
-            )
-        try:
-            crypto_secrets.append(CryptoSecret(
-                secret_type=secret_type,
-                identifier=bytes.fromhex(client_random),
-                secret_value=bytes.fromhex(secret),
-            ))
-        except (ValueError, TypeError) as exc:
-            raise CapabilityError(
-                f"secrets[{i}] has malformed hex: {exc}",
-                category=ErrorCategory.INVALID_INPUT,
-            ) from exc
+    crypto_secrets: List[CryptoSecret] = [
+        _crypto_secret_from_dict(item, index=i) for i, item in enumerate(secrets)
+    ]
 
     keylog = format_keylog_lines(crypto_secrets)
     if output_path is not None:

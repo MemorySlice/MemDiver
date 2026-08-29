@@ -40,6 +40,7 @@ from memdiver.api.services.oracle_registry import (
 )
 from memdiver.api.services.task_manager import TERMINAL_STATUSES
 from memdiver.app.pipeline.pipeline_runner import get_pipeline_stages
+from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 
 logger = logging.getLogger("memdiver.api.routers.pipeline")
 
@@ -89,6 +90,11 @@ class EmitParams(BaseModel):
 
 class RefineRequest(BaseModel):
     additional_paths: List[str] = Field(..., min_length=1)
+    #: Per-side context width for the hit neighborhoods re-sliced after the
+    #: fold. Imported from ``engine.brute_force`` rather than hardcoded so the
+    #: web surface can never disagree with the brute-force engine about how
+    #: wide an emitted window is.
+    neighborhood_pad: int = Field(DEFAULT_NEIGHBORHOOD_PAD, ge=0)
 
 
 class RefineResponse(BaseModel):
@@ -603,7 +609,7 @@ async def refine_consensus(task_id: str, body: RefineRequest):
             for hit in hits_data.get("hits", []):
                 offset = int(hit["offset"])
                 length = int(hit["length"])
-                nb_pad = 64
+                nb_pad = body.neighborhood_pad
                 start = max(0, offset - nb_pad)
                 end = min(len(variance), offset + length + nb_pad)
                 # Use the post-fold variance (welford.variance()), NOT the
@@ -677,12 +683,21 @@ def infer_fields_endpoint(body: InferFieldsRequest):
 
 @router.get("/runs/{task_id}/neighborhood")
 async def get_neighborhood(
-    task_id: str, offset: int, length: int = 32
+    task_id: str, offset: int, length: int = 32,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
 ):
-    """Return the variance slice around a specific offset from the consensus state."""
+    """Return the variance slice around a specific offset from the consensus state.
+
+    ``neighborhood_pad`` is the per-side context width; it defaults to
+    ``engine.brute_force.DEFAULT_NEIGHBORHOOD_PAD`` so this endpoint returns
+    exactly the window ``brute-force`` would have attached to a hit.
+    """
     import json
 
     import numpy as np
+
+    if neighborhood_pad < 0:
+        raise HTTPException(400, "neighborhood_pad must be >= 0")
 
     manager = _task_manager_or_503()
     task = manager.get(task_id)
@@ -704,7 +719,7 @@ async def get_neighborhood(
         }
 
     m2 = np.load(state["m2_path"], mmap_mode="r")
-    nb_pad = 64
+    nb_pad = neighborhood_pad
     start = max(0, offset - nb_pad)
     end = min(len(m2), offset + length + nb_pad)
     variance_slice = (

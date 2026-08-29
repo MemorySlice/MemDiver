@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from memdiver.api.config import get_settings
 from memdiver.api.main import create_app
+from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 
 ORACLE_SOURCE = (
     "KEY = bytes(range(32))\n"
@@ -363,7 +364,10 @@ def test_refine_neighborhood_variance_uses_post_fold_state(tmp_path, monkeypatch
     assert resp.num_dumps == 4
     assert len(resp.hit_neighborhoods) == 1
     nb = resp.hit_neighborhoods[0]
-    nb_pad = 64
+    # Import the pad, never re-literal it: a local ``64`` here pinned this
+    # handler's *copy* of the constant and would have silently agreed with a
+    # regression that moved the engine's default.
+    nb_pad = DEFAULT_NEIGHBORHOOD_PAD
     start = max(0, hit_offset - nb_pad)
     end = min(size, hit_offset + hit_len + nb_pad)
     got = np.array(nb["neighborhood_variance"], dtype=np.float32)
@@ -487,6 +491,61 @@ def test_neighborhood_locates_state_from_taskrecord(tmp_path, monkeypatch):
 
     assert result["num_dumps"] == 3
     assert len(result["variance"]) > 0
+
+
+def test_neighborhood_pad_defaults_to_the_engine_constant(tmp_path, monkeypatch):
+    """The endpoint's window is the one brute-force would have attached.
+
+    Both the default and an explicit non-default pad are checked, so the query
+    param is proven live rather than accepted and ignored.
+    """
+    import asyncio
+
+    from memdiver.api.routers import pipeline as pipeline_mod
+
+    task_id = "task-neighborhood-pad"
+    store, record, m2 = _seed_consensus_on_disk(tmp_path / "tasks", task_id)
+    monkeypatch.setattr(
+        pipeline_mod, "_task_manager_or_503", lambda: _FakeManager(record, store)
+    )
+
+    offset, length = 96, 16
+    default = asyncio.run(
+        pipeline_mod.get_neighborhood(task_id, offset=offset, length=length)
+    )
+    explicit = asyncio.run(pipeline_mod.get_neighborhood(
+        task_id, offset=offset, length=length,
+        neighborhood_pad=DEFAULT_NEIGHBORHOOD_PAD,
+    ))
+    assert default == explicit
+    # The state is only 256 bytes wide, so the window is clamped at both ends;
+    # assert the bounds the handler computed, derived from the constant.
+    expected_start = max(0, offset - DEFAULT_NEIGHBORHOOD_PAD)
+    expected_end = min(len(m2), offset + length + DEFAULT_NEIGHBORHOOD_PAD)
+    assert default["neighborhood_start"] == expected_start
+    assert len(default["variance"]) == expected_end - expected_start
+
+    narrow = asyncio.run(pipeline_mod.get_neighborhood(
+        task_id, offset=offset, length=length, neighborhood_pad=8,
+    ))
+    assert narrow["neighborhood_start"] == offset - 8
+    assert len(narrow["variance"]) == 8 + length + 8
+
+
+def test_neighborhood_rejects_negative_pad(tmp_path, monkeypatch):
+    """A negative pad would invert the slice bounds -> 400, before any I/O."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from memdiver.api.routers import pipeline as pipeline_mod
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(pipeline_mod.get_neighborhood(
+            "task-does-not-matter", offset=0, length=32, neighborhood_pad=-1,
+        ))
+    assert exc.value.status_code == 400
+    assert "neighborhood_pad" in exc.value.detail
 
 
 def test_refine_and_neighborhood_end_to_end(client, synthetic_dumps):

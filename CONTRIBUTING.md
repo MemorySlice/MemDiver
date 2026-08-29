@@ -34,7 +34,7 @@ npm run dev      # Vite dev server, proxies to backend on :8080
 Frontend commands, all from the repo root:
 
 ```bash
-make fe-test        # vitest -> 23 files / 209 tests under tests/frontend/
+make fe-test        # vitest -> 32 files / 305 tests under tests/frontend/
 make fe-typecheck   # tsc -b frontend (app + node + test projects)
 make fe-lint        # eslint (advisory)
 npm run build       # -> frontend/dist, the bundle the backend serves

@@ -73,7 +73,7 @@
         "matchAny": "Match any session (do not restrict by client_random)",
         "noSessions": "No TLS sessions were found in this capture.",
         "noAppRecords": "(no application data — cannot verify)",
-        "dpktMissing": "The server cannot parse pcaps: its 'dpkt' dependency is missing. It is part of the base install \u2014 on the server, run: pip install --force-reinstall memdiver",
+        "dpktMissing": "The server cannot parse pcaps: its 'dpkt' dependency is missing. It is part of the base install — on the server, run: pip install --force-reinstall memdiver",
         "arm": "Arm / re-validate",
         "arming": "Arming…",
         "armHint": "Validates the path above and re-populates the session picker — use it after typing a server-side path by hand, or after a page reload (the path is remembered, the parsed sessions are not).",
@@ -91,12 +91,19 @@
       "searchReduce": "Search-reduce",
       "bruteForce": "Brute-force",
       "exhaustiveLabel": "Exhaustive (try every candidate even after the first hit)",
+      "emitPlugin": "Volatility 3 plugin",
+      "emitEnableLabel": "Emit a Volatility 3 plugin from the best hit",
+      "emitHint": "Writes emit_plugin/<name>.py plus a field map alongside the run's other artifacts, and fills the Plugin tab on the results screen. Leave this off and no plugin is produced.",
+      "nsweep": "N-sweep report",
+      "nsweepEnableLabel": "Run the N-sweep harness and build the interactive report",
+      "nsweepHint": "Re-folds a fresh consensus at every N and writes nsweep/report.json, .html and .md, which fills the Report tab on the results screen. Costs one full consensus + reduce + verify pass per N.",
+      "nsweepPcapUnavailable": "The N-sweep harness re-runs the oracle at every N and needs an uploaded oracle file, so it is unavailable on a pcap-oracle run.",
       "noOracleError": "No oracle selected. Go back to the Oracle step.",
       "noDumpsError": "No dump paths provided. Go back to the Dumps step.",
       "back": "← Back",
       "run": "Run pipeline",
       "submitting": "Submitting…",
-      "runTitle": "Start consensus → reduce → verify → sweep → emit",
+      "runTitle": "Start consensus → reduce → verify{{optional}}",
       "fields": {
         "minVariance": "min variance",
         "minVarianceHelp": "Per-byte variance threshold. Higher values keep only very volatile bytes; in the DFRWS paper 1500 separated real crypto material from noise at N≥20.",
@@ -117,8 +124,16 @@
         "jobs": "jobs",
         "jobsHelp": "Worker processes for the brute-force sweep. 0 (the default) auto-selects: a large exhaustive sweep runs on a small pool, while a short sweep or a first-hit run stays serial so the reported candidate count stays reproducible. Set 1 to force serial (easiest debugging), or any higher number to pin the worker count. MemDiver v1 caps concurrent pipelines at 1, so the chosen count is the whole CPU footprint.",
         "topK": "top K",
-        "topKHelp": "When no hit is found, how many highest-variance regions to report. Zero to disable the fallback."
-      }
+        "topKHelp": "When no hit is found, how many highest-variance regions to report. Zero to disable the fallback.",
+        "pluginName": "plugin name",
+        "pluginNameHelp": "Module name for the emitted Volatility 3 plugin. Becomes the artifact filename (<name>.py) and the generated plugin class, so keep it a valid Python identifier.",
+        "minStaticRatio": "min static ratio",
+        "minStaticRatioHelp": "Minimum fraction of a hit's neighborhood that must classify as static before a signature is emitted. 0.3 (the default) demands that under a third of the surrounding bytes be stable; raise it to emit only tightly-framed structures.",
+        "nValues": "N values",
+        "nValuesHelp": "Comma-separated dump counts to sweep, e.g. 1,3,5,10. Each N re-folds a fresh consensus over that many dumps, so the list length multiplies the run time. The default ladder is clamped to the number of dumps you selected."
+      },
+      "chainSweep": " → sweep",
+      "chainEmit": " → emit"
     }
   },
   "oracle": {

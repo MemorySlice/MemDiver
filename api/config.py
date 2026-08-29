@@ -32,6 +32,12 @@ def _default_task_root() -> Path:
     return Path.home() / ".memdiver" / "tasks"
 
 
+def _upload_dir_from_user_config() -> Path | None:
+    """Return the upload dir the user chose previously, or ``None`` if unset."""
+    from memdiver.api.upload_dir import read_user_upload_dir
+    return read_user_upload_dir()
+
+
 class Settings(BaseSettings):
     """MemDiver API configuration with env-var and .env support."""
 
@@ -47,7 +53,16 @@ class Settings(BaseSettings):
     max_rss_mb: int = 4096
     dataset_root: str = ""
     db_path: Path = Path("")
-    upload_dir: Path = Path("/tmp/memdiver_uploads")
+    # Configure-on-first-use (B0). ``upload_dir`` is not only where uploads land
+    # — it is the containment root every write-path check measures against
+    # (api/path_safety.ensure_within), so the unconfigured state must fail
+    # CLOSED. It therefore gets ``None``, not the ``Path("")`` sentinel its
+    # siblings below use: ``Path("") / "pcaps"`` is the *relative* path
+    # ``pcaps``, so an unguarded consumer would silently write into the server's
+    # CWD, whereas ``None / "pcaps"`` is a loud TypeError. In-class precedent:
+    # ``oracle_dir`` below. The guarded entry point is
+    # api.dependencies.upload_dir_or_409.
+    upload_dir: Path | None = None
     session_dir: Path = Path("")
     config_path: Path = Path("config.json")
     cors_origins: list[str] = ["http://localhost:5173"]
@@ -89,6 +104,26 @@ class Settings(BaseSettings):
                 logger.info("Loaded dataset_root from %s", self.config_path)
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Failed to read %s: %s", self.config_path, exc)
+        # upload_dir resolution: MEMDIVER_UPLOAD_DIR / .env (already applied by
+        # pydantic-settings above) always wins > the user-local config file >
+        # unconfigured (None).
+        #
+        # Note the deliberate asymmetry with dataset_root just above:
+        # dataset_root merges from ``self.config_path`` — the repo-root,
+        # GIT-TRACKED config.json — while upload_dir merges from
+        # ``memdiver_home()/config.json``, the user-local untracked file, and
+        # never from the tracked one. upload_dir is the only field the *server*
+        # writes (see api/routers/settings.py), and writing a tracked file would
+        # dirty every clone.
+        if self.upload_dir is not None and self.upload_dir == Path("."):
+            # MEMDIVER_UPLOAD_DIR="" parses to Path(".") -- the server CWD --
+            # because env_ignore_empty is False. Treat it as unset, loudly.
+            logger.warning(
+                "MEMDIVER_UPLOAD_DIR is empty; treating upload_dir as unconfigured"
+            )
+            self.upload_dir = None
+        if self.upload_dir is None:
+            self.upload_dir = _upload_dir_from_user_config()
         return self
 
 

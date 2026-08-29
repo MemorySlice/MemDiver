@@ -5,6 +5,8 @@ import { useTheme } from "@/providers/ThemeProvider";
 import { downloadJsonFile } from "@/utils/download";
 import { useTourController } from "@/ftue/useTourController";
 import type { ChartBackend } from "@/components/charts/types";
+import { UploadDirPrompt } from "./UploadDirPrompt";
+import { useUploadDir } from "./useUploadDir";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -76,6 +78,67 @@ function SelectRow<T extends string | number>({
         ))}
       </select>
     </Row>
+  );
+}
+
+/**
+ * Where uploads land. Unlike every other row in this menu, this one is *server*
+ * state: it comes from ``GET /api/settings/upload-dir``, never from the zustand
+ * ``persist`` store, because a localStorage copy could claim a path the backend
+ * never accepted.
+ *
+ * The picker is ``UploadDirPrompt`` -- the same modal the 409-on-upload path
+ * opens -- so there is exactly one place that POSTs the directory.
+ */
+function StorageSection() {
+  const { t } = useTranslation("misc");
+  const { status, refresh } = useUploadDir();
+  const [choosing, setChoosing] = useState(false);
+
+  const pinned = status?.env_pinned ?? false;
+
+  return (
+    <Section title={t("settings.sectionStorage")}>
+      <div className="space-y-1.5" data-testid="settings-storage">
+        <div className="md-text-secondary">{t("settings.uploadDir")}</div>
+        {status?.path ? (
+          <div
+            data-testid="settings-upload-dir-path"
+            className="font-mono text-[10px] break-all md-text-muted"
+          >
+            {status.path}
+          </div>
+        ) : (
+          <div data-testid="settings-upload-dir-unset" className="md-text-error">
+            {t("settings.uploadDirNotConfigured")}
+          </div>
+        )}
+        {pinned ? (
+          // Read-only: a POST would be rejected with 409, so do not offer one.
+          <div data-testid="settings-upload-dir-pinned" className="md-text-muted">
+            {t("settings.uploadDirEnvPinned")}
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-testid="settings-upload-dir-choose"
+            onClick={() => setChoosing(true)}
+            className="w-full text-left px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
+          >
+            {t("settings.uploadDirChoose")}
+          </button>
+        )}
+      </div>
+      {choosing && (
+        <UploadDirPrompt
+          onSaved={() => {
+            setChoosing(false);
+            void refresh();
+          }}
+          onClose={() => setChoosing(false)}
+        />
+      )}
+    </Section>
   );
 }
 
@@ -250,6 +313,8 @@ export function SettingsMenu() {
               onChange={(v) => settings.updateGeneral({ confirmBeforeReset: v })}
             />
           </Section>
+
+          <StorageSection />
 
           <Section title={t("settings.sectionHelp")}>
             <button

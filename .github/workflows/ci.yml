@@ -25,10 +25,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install memdiver with dev + all interface extras
-        # `all` = api,mcp,marimo — the interfaces that were base deps
-        # before O-4. Installing them keeps the test suite's coverage identical
-        # to pre-O-4 (API tests need fastapi; test_mcp_registration needs the mcp
-        # SDK; marimo gated tests would otherwise silently start skipping).
+        # `all` = marimo + vol (api/mcp/pcap are base deps again since 0.6).
+        # Installing them keeps the test suite's coverage identical to pre-O-4
+        # (API tests need fastapi; test_mcp_registration needs the mcp SDK;
+        # marimo-gated tests would otherwise silently start skipping) AND makes
+        # `vol` a dependency CI actually installs -- an extra CI never installs
+        # is one that rots silently, which is the exact failure
+        # tests/test_install_contract.py exists to catch. With volatility3
+        # present, BOTH vol3 proofs run in CI instead of skipping there
+        # forever: tests/test_vol3_verify.py in-process, and
+        # tests/test_vol3_subproc.py out-of-process, because the volatility3
+        # wheel installs a `vol` console script that `requires_vol3` finds on
+        # PATH.
         run: python -m pip install -e '.[dev,all]'
       - name: Run pytest
         # The browser e2e files (tests/e2e_*_test.py) need Playwright + a built
@@ -185,8 +193,10 @@ jobs:
           /tmp/wheelenv/bin/python -c "import memdiver; [getattr(memdiver, n) for n in memdiver.__all__]; print('public API symbols ok:', len(memdiver.__all__))"
           # FULL-BY-DEFAULT guarantee (reverses the old O-4 lean-core assertion):
           # `pip install memdiver` must ship every interface AND the dump-collection
-          # and post-quantum stacks. Marimo must still be ABSENT -- it is the one
-          # opt-in extra, costing ~164 MB, more than four times everything else.
+          # and post-quantum stacks. The two OPT-IN extras must still be absent:
+          # marimo (~164 MB, more than four times every other interface
+          # combined) and volatility3 (the `vol` extra -- VSL-1.0, and only
+          # needed to RUN an emitted plugin, not to emit one).
           #
           # find_spec, NOT __import__, on purpose: importing `oqs` makes
           # liboqs-python cmake-BUILD the liboqs C library into ~/_oqs, which
@@ -197,7 +207,8 @@ jobs:
           missing = [m for m in need if u.find_spec(m) is None]
           assert not missing, ('default install is missing: ' + repr(missing))
           assert u.find_spec('marimo') is None, 'marimo must stay an opt-in extra'
-          print('full default install ok:', len(need), 'stacks present, marimo absent')
+          assert u.find_spec('volatility3') is None, 'volatility3 must stay an opt-in extra'
+          print('full default install ok:', len(need), 'stacks present, marimo + volatility3 absent')
           "
       - name: CLI entrypoint smoke (core)
         run: /tmp/wheelenv/bin/memdiver --help > /dev/null && echo "memdiver CLI entrypoint ok"
@@ -242,6 +253,34 @@ jobs:
           assert len(names) >= 26, ('expected >= 26 tools, got', len(names), sorted(names))
           print('mcp FastMCP server builds ok:', len(names), 'tools incl', sorted(need))
           "
+      # The `vol` extra must install AND the `full` alias must resolve. Both
+      # halves matter: `vol` is what engine/vol3_verify.py probes at module
+      # level (so tests/test_install_contract.py requires it to be declared),
+      # and `full` exists only so `pip install "memdiver[full]"` -- the command
+      # people actually type -- resolves instead of erroring on an unknown
+      # extra. Note volatility3 publishes its OWN `full` extra; the two are
+      # unrelated and `all` stays canonical.
+      #
+      # `full` is checked with --dry-run on purpose: resolving it for real would
+      # pull marimo's ~164 MB, which the bare-wheel assertion above deliberately
+      # keeps out of this venv. A dry run proves the ALIAS resolves without
+      # paying for the download or perturbing the installed set.
+      - name: Volatility3 extra -- "[vol]" installs, "[full]" alias resolves
+        run: |
+          WHEEL=$(ls "$PWD"/dist/*.whl)
+          /tmp/wheelenv/bin/python -m pip install "${WHEEL}[vol]"
+          # Subshell, so the `cd` cannot leak into the commands after it; WHEEL
+          # is absolute for the same reason.
+          (cd /tmp && /tmp/wheelenv/bin/python -c "
+          from volatility3.framework import constants as c
+          print('volatility3 framework:', c.VERSION_MAJOR, c.VERSION_MINOR, c.VERSION_PATCH)
+          assert (c.VERSION_MAJOR, c.VERSION_MINOR) >= (2, 27), 'the vol extra floors at 2.27'
+          assert c.VERSION_MAJOR < 3, 'emitted plugins declare framework major 2'
+          ")
+          /tmp/wheelenv/bin/python -m pip install --dry-run "${WHEEL}[full]" | tee /tmp/full-dryrun.txt
+          grep -qi marimo /tmp/full-dryrun.txt || {
+            echo 'ERROR: memdiver[full] did not resolve through all -> marimo'; exit 1; }
+          echo 'memdiver[full] alias resolves (marimo seen in the dry run, not downloaded)'
 
   # Exercises the post-quantum KEM paths (ML-KEM / hybrid) which are gated
   # behind the optional [crypto] extra and skipped in the main `test` job.

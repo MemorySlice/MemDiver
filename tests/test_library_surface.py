@@ -39,6 +39,8 @@ _PIPELINE_PRODUCERS = [
     "consensus", "analyze_candidates", "search_reduce", "brute_force",
     "n_sweep", "auto_floor",
     "emit_plugin", "export_pattern", "verify_key_result", "experiment_result",
+    # B1/B3 — the key-location spine.
+    "locate_key", "export_key_pattern",
 ]
 _DATASET_PRODUCERS = [
     "scan_dataset", "list_protocols", "list_phases", "analyze_library",

@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import { copyFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 import { tab } from "../fixtures/selectors";
 import {
@@ -39,6 +39,22 @@ function isDpktSkip(message: string): boolean {
 
 test.describe("Brute-force coverage diagnostics", { tag: "@requires-pcap" }, () => {
   test.skip(!pcapFixtureAvailable, "pcap fixture (matched.msl + session_tls13.pcap) missing");
+
+  // B0 made the upload dir configure-on-first-use, so /api/pcaps/upload answers
+  // 409 until something chooses one — and this spec uploads a real capture
+  // below. Same idempotent hook as pcap-upload-run.spec.ts: the response is
+  // deliberately not asserted, because a 200 (configured) and a 409 (pinned by
+  // MEMDIVER_UPLOAD_DIR) are equally fine. Its purpose is to remove this spec's
+  // dependence on an earlier spec having configured the directory first. Not a
+  // temp dir: api/upload_dir.validate_candidate rejects every temp root.
+  test.beforeAll(async ({ request }) => {
+    const uploadDir = path.join(os.homedir(), ".memdiver", "e2e-uploads");
+    mkdirSync(uploadDir, { recursive: true });
+    await request.post(
+      `http://127.0.0.1:${process.env.BACKEND_PORT ?? "8091"}/api/settings/upload-dir`,
+      { data: { path: uploadDir } },
+    );
+  });
 
   test.beforeAll(() => {
     if (pcapFixtureAvailable) copyFileSync(pcapMatchedMslPath, mslCopyPath);

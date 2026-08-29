@@ -77,6 +77,10 @@ _IMPORT_TO_DISTRIBUTION = {
     "pydantic_settings": "pydantic-settings",
     "scipy": "scipy",
     "uvicorn": "uvicorn",
+    # Probed by engine/vol3_verify.py, which loads and RUNS an emitted
+    # Volatility3 plugin. Declared as the opt-in `vol` extra in pyproject.toml
+    # (and reached through `all`, so CI installs it).
+    "volatility3": "volatility3",
     "yara": "yara-python",
     "yaml": "PyYAML",
     "zstandard": "zstandard",

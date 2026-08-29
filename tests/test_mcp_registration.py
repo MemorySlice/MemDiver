@@ -46,6 +46,9 @@ EXPECTED_TOOLS = {
     # out, with no oracle and no capture. The MCP surface is the reason it
     # returns its regions inline: an agent handed a file path cannot read it.
     "analyze_candidates",
+    # B1/B3: the key-location spine. "I already hold this secret — which dumps
+    # still contain it, and where?" plus the signature built on that answer.
+    "locate_key", "export_key_pattern",
 }
 
 

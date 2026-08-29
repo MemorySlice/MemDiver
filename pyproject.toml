@@ -127,9 +127,49 @@ crypto = []
 # The one interface that is still opt-in: Marimo pulls ~164 MB, more than four
 # times every other interface combined.
 marimo = ["marimo>=0.8.0"]
-# Every interface at once. Base already covers api + mcp + pcap, so this now
-# adds only the Marimo notebook UI.
-all = ["memdiver[marimo]"]
+# Volatility3, for running (not merely emitting) the plugins the architect
+# layer generates -- engine/vol3_verify.py loads an emitted plugin and executes
+# it against a real framework, and engine/vol3_subproc.py drives a foreign
+# `vol` launcher out-of-process.
+#
+# Floor 2.27: the module-name + callable-filter `PsList` signatures
+# (`linux.pslist.PsList.list_tasks`, `windows.pslist.PsList.list_processes`)
+# that the emitted template's PID path relies on are stable from there.
+# Capped below 3.0: the emitted plugin declares
+# `_required_framework_version = (2, 0, 0)`, and Volatility3's own
+# `framework.require_interface_version` REJECTS a plugin whose required major
+# differs -- so a 3.x framework would refuse every plugin MemDiver emits.
+#
+# NAME COLLISION, worth knowing: volatility3 publishes its OWN extra called
+# `full`. `memdiver[full]` and `volatility3[full]` are unrelated; MemDiver's
+# `full` is a thin alias for `all`, and `all` remains the canonical name.
+#
+# Two costs accepted knowingly:
+#   * LICENSE: volatility3 is VSL-1.0 (Volatility Software License), entering
+#     the CI environment of an Apache-2.0 project. It is an optional,
+#     unvendored, unmodified runtime dependency -- nothing VSL-licensed is
+#     redistributed in MemDiver's wheel -- but the CI image does now contain a
+#     non-Apache package.
+#   * SUPPLY CHAIN: pip-audit's surface (the `security` job) grows by one
+#     package plus its transitives.
+vol = ["volatility3>=2.27,<3"]
+# Every optional interface at once. Base already covers api + mcp + pcap, so
+# this adds the Marimo notebook UI and Volatility3.
+#
+# `vol` is inside `all` DELIBERATELY. CI installs `-e '.[dev,all]'` (see the
+# two "Install memdiver with dev + all interface extras" steps in
+# .github/workflows/ci.yml), so an extra that `all` omits is an extra CI never
+# installs -- and a dependency CI never installs is one that rots silently
+# while every test still passes on whichever developer machine happens to have
+# the package for some other project. That is precisely the failure mode
+# tests/test_install_contract.py was written for; its docstring names
+# yara-python as exactly that case. Keeping `vol` in `all` is what makes the
+# vol3 proof harness run in CI instead of skipping there forever.
+all = ["memdiver[marimo]", "memdiver[vol]"]
+# Alias for `all`. Exists because `pip install "memdiver[full]"` is the command
+# people type; it must resolve rather than error on an unknown extra. See the
+# volatility3[full] name-collision note above.
+full = ["memdiver[all]"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis"]
 docs = [
     "sphinx>=7.3,<9",
@@ -240,6 +280,15 @@ markers = [
     # plain `pytest`. Only the one FULL-corpus pass carries `slow` on top; the
     # bounded slices stay in the default run on purpose -- see `make test-corpus`.
     "requires_dataset: needs the machine-local corpus (MEMDIVER_DATASET_ROOT / MEMDIVER_TLS_DUMPS_DIR / --dataset-root); auto-skips when absent",
+    # `requires_vol3` is a CONDITIONAL gate, exactly like `requires_dataset`,
+    # and is deliberately NOT `slow`. `slow` is a COST gate that ``addopts``
+    # deselects by default, so a proof hidden behind it would never run on the
+    # one machine that actually has a `vol` launcher installed -- the opposite
+    # of what a conditional gate is for. tests/conftest.py skips these items
+    # when engine.vol3_subproc.find_vol3_launcher() resolves nothing, so a
+    # developer without Volatility3 gets a clean skip and a developer with it
+    # gets the real out-of-process proof from a plain `pytest`.
+    "requires_vol3: needs a real Volatility3 launcher (MEMDIVER_VOL3_BIN / vol / vol.py on PATH); auto-skips when absent",
 ]
 
 # ---------------------------------------------------------------------------
@@ -356,6 +405,20 @@ files = [
     # The durable on-disk contract: the largest module in the change set
     # and the only one whose bugs survive the process that wrote them.
     "engine/project_db.py",
+    # Wave 6 -- B0 upload-dir funnel. Typed from the start; upload_dir.py is a
+    # security boundary (path validation + a privileged move), so a silent
+    # Optional/str-vs-Path slip there is exactly what types are for.
+    "api/upload_dir.py",
+    # Wave 7 -- B1 key-location compute. New and fully typed from the start;
+    # the verdict invariants are the whole point, so keep them type-checked.
+    "engine/key_location.py",
+    # Wave 8 -- B5.0 vol3 proof harness. Typed from the start. vol3_verify.py
+    # in particular: its dataclass field NAMES are the contract
+    # engine/detector_metrics.py duck-types on, so a silent Optional/int slip
+    # there would zero every metric rather than raise.
+    "engine/vol3_verify.py",
+    "engine/vol3_subproc.py",
+
 ]
 
 # ---------------------------------------------------------------------------
@@ -421,7 +484,8 @@ exclude_lines = [
 # A one-off baseline (.bandit-baseline.json — plain JSON, so this comment
 # carries the notes it can't) freezes today's pre-existing findings so the CI
 # `security` job only fails on NEW issues introduced going forward. Triage of
-# what's in it (47 findings, all LOW severity except one MEDIUM, NONE High):
+# what's in it (47 findings as frozen; the one MEDIUM was fixed by B0 and
+# its stale entry is inert, so live code is now all LOW, NONE High):
 #   B110/B112 (try/except/pass|continue, 23x): parser- and UI-robustness code
 #     (kaitai_compiled generated parsers, ui/views navigator, format_detect
 #     suggestion loop) that must tolerate malformed/partial input by design;
@@ -437,9 +501,18 @@ exclude_lines = [
 #   B105 (hardcoded "password", 2x): false positive — these are enum-like
 #     string literals for `secret_source` ("keylog"/"msl_hints" in
 #     core/discovery.py), not actual secrets.
-#   B108 (hardcoded /tmp dir, 1x, the only MEDIUM): api/config.py's default
-#     `upload_dir`, an overridable settings default, not a live secret/path
-#     injection.
+#   B108 (hardcoded /tmp dir): GONE as of B0. This was the baseline's only
+#     MEDIUM — api/config.py's `upload_dir` default of /tmp/memdiver_uploads,
+#     which api/main.py's lifespan then mkdir'd on every create_app(). Both are
+#     removed: `upload_dir` is now configure-on-first-use (None until the user
+#     chooses, see api/upload_dir.py + api/routers/settings.py) and the
+#     directory is created 0o700 on demand. The one remaining /tmp literal is
+#     in api/upload_dir.py behind `legacy_dir()`, `# nosec B108`-annotated:
+#     it names the OLD directory purely so its contents can be migrated out and
+#     the directory removed. The baseline is deliberately NOT regenerated — a
+#     stale entry never fails `bandit -b`, and regenerating churns 452 lines —
+#     so the durable guard is
+#     tests/test_api_upload_dir.py::test_config_has_no_hardcoded_tmp_path.
 # Regenerate after an intentional change to one of these patterns with:
 #   bandit -c pyproject.toml -r . -x run.py -f json -o .bandit-baseline.json
 # ---------------------------------------------------------------------------

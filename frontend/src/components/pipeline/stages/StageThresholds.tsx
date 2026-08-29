@@ -6,6 +6,14 @@
  * live in the store from {@link pipeline-store.ts}; the gocryptfs
  * recipe pre-populates these to the DFRWS paper values.
  *
+ * The two optional tail stages are opted into from here as well:
+ * ``emit`` (write a Volatility 3 plugin from the best hit, which is
+ * what fills the results screen's Plugin tab) and ``nsweep`` (re-fold
+ * a fresh consensus at every N and build the interactive report that
+ * fills the Report tab). Both keys are omitted from the request body
+ * entirely while their checkbox is off, so a run configured the way
+ * runs were configured before they existed sends a byte-identical body.
+ *
  * Hitting "Run pipeline" POSTs `/api/pipeline/run` with the current
  * form + oracle id, persists the returned ``task_id`` to the store
  * (which flips ``status`` to ``"pending"``), and advances the
@@ -16,10 +24,29 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { PipelineRunRequest } from "@/api/pipeline";
+import type { EmitParams, NSweepParams, PipelineRunRequest } from "@/api/pipeline";
 import { runPipeline } from "@/api/pipeline";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
+import { defaultNValues, parseNValues } from "@/utils/n-values";
+
+/** Caption + hover-help bubble shared by every field control below. */
+function FieldLabel({ label, help }: { label: string; help: string }) {
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      <span className="md-text-secondary">{label}</span>
+      <span
+        className="inline-block w-3.5 h-3.5 text-[9px] text-center leading-[14px] rounded-full bg-[var(--md-bg-hover)] md-text-muted cursor-help"
+        title={help}
+      >
+        ?
+      </span>
+    </div>
+  );
+}
+
+const FIELD_INPUT_CLASS =
+  "mt-0.5 w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded font-mono";
 
 interface NumericFieldProps {
   label: string;
@@ -27,6 +54,7 @@ interface NumericFieldProps {
   value: number;
   step?: number;
   min?: number;
+  testId?: string;
   onChange: (value: number) => void;
 }
 
@@ -36,34 +64,63 @@ function NumericField({
   value,
   step = 1,
   min,
+  testId,
   onChange,
 }: NumericFieldProps) {
   return (
     <label className="block">
-      <div className="flex items-center gap-1.5 text-xs">
-        <span className="md-text-secondary">{label}</span>
-        <span
-          className="inline-block w-3.5 h-3.5 text-[9px] text-center leading-[14px] rounded-full bg-[var(--md-bg-hover)] md-text-muted cursor-help"
-          title={help}
-        >
-          ?
-        </span>
-      </div>
+      <FieldLabel label={label} help={help} />
       <input
         type="number"
         value={value}
         step={step}
         min={min}
+        data-testid={testId}
         onChange={(e) => {
           if (e.target.value === "") return;
           const v = Number(e.target.value);
           if (!Number.isNaN(v)) onChange(v);
         }}
-        className="mt-0.5 w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded font-mono"
+        className={FIELD_INPUT_CLASS}
       />
     </label>
   );
 }
+
+interface TextFieldProps {
+  label: string;
+  help: string;
+  value: string;
+  testId?: string;
+  onChange: (value: string) => void;
+}
+
+function TextField({ label, help, value, testId, onChange }: TextFieldProps) {
+  return (
+    <label className="block">
+      <FieldLabel label={label} help={help} />
+      <input
+        type="text"
+        value={value}
+        data-testid={testId}
+        onChange={(e) => onChange(e.target.value)}
+        className={FIELD_INPUT_CLASS}
+      />
+    </label>
+  );
+}
+
+/**
+ * Opt-in defaults for the emit stage, mirroring ``EmitParams`` in
+ * api/routers/pipeline.py. Every backend field is already defaulted there,
+ * so the checkbox alone is enough to enable the stage; these values only
+ * pre-populate the controls with what the backend would have chosen.
+ */
+const DEFAULT_EMIT: EmitParams = {
+  name: "memdiver_plugin",
+  min_static_ratio: 0.3,
+};
+
 
 interface Props {
   onAdvance: (next: WizardStage) => void;
@@ -85,6 +142,42 @@ export function StageThresholds({ onAdvance }: Props) {
     updateForm({ bruteForce: { ...form.bruteForce, ...patch } });
   };
 
+  // Both optional stages are represented by `null` when off, which is exactly
+  // what the backend's `Optional[...] = None` gating reads (api/routers/
+  // pipeline.py `optional_stage_present`).
+  const emitOn = form.emit !== null;
+  // The N-sweep harness re-runs the oracle at every N and needs the BYO
+  // oracle *file* (`_run_nsweep(source_paths, oracle_path, ...)` in
+  // app/pipeline/pipeline_runner.py). A pcap-oracle run has no such file, so
+  // the stage is unavailable there — hard-gate it in the UI rather than let
+  // the worker fail mid-run.
+  const pcapOracle = Boolean(form.pcapPath?.trim());
+  const nsweepOn = form.nsweep !== null && !pcapOracle;
+
+  // The N list is edited as free text so intermediate states ("2," while
+  // typing) do not have to round-trip through the store as numbers.
+  const [nValuesText, setNValuesText] = useState<string>(() =>
+    (form.nsweep?.n_values ?? defaultNValues(form.sourcePaths.length)).join(","),
+  );
+
+  const patchEmit = (patch: Partial<EmitParams>): void => {
+    updateForm({ emit: { ...DEFAULT_EMIT, ...form.emit, ...patch } });
+  };
+  const toggleEmit = (on: boolean): void => {
+    updateForm({ emit: on ? { ...DEFAULT_EMIT, ...form.emit } : null });
+  };
+
+  const resolvedNValues = (): number[] => {
+    const parsed = parseNValues(nValuesText);
+    return parsed.length > 0 ? parsed : defaultNValues(form.sourcePaths.length);
+  };
+  const patchNSweep = (patch: Partial<NSweepParams>): void => {
+    updateForm({ nsweep: { n_values: resolvedNValues(), ...form.nsweep, ...patch } });
+  };
+  const toggleNSweep = (on: boolean): void => {
+    updateForm({ nsweep: on ? { n_values: resolvedNValues() } : null });
+  };
+
   async function submit(): Promise<void> {
     const pcapPath = form.pcapPath?.trim() ?? "";
     // Exactly one oracle source: an armed BYO oracle OR a pcap of the session.
@@ -104,6 +197,11 @@ export function StageThresholds({ onAdvance }: Props) {
         source_paths: form.sourcePaths,
         reduce: form.reduce,
         brute_force: form.bruteForce,
+        // Opt-in tail stages: the key is absent (not null) while the box is
+        // off, so an unchanged form posts exactly the body it always did.
+        ...(form.emit ? { emit: form.emit } : {}),
+        // nsweep needs the BYO oracle file, which a pcap run does not have.
+        ...(form.nsweep && !pcapPath ? { nsweep: form.nsweep } : {}),
         ...(pcapPath
           ? {
               pcap_path: pcapPath,
@@ -240,6 +338,84 @@ export function StageThresholds({ onAdvance }: Props) {
         </label>
       </div>
 
+      <div className="md-panel p-3 space-y-3">
+        <div className="md-text-accent font-semibold text-xs uppercase tracking-wide">
+          {t("stages.thresholds.emitPlugin")}
+        </div>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            data-testid="emit-enable"
+            checked={emitOn}
+            onChange={(e) => toggleEmit(e.target.checked)}
+          />
+          <span className="md-text-secondary">
+            {t("stages.thresholds.emitEnableLabel")}
+          </span>
+        </label>
+        <p className="text-[10px] md-text-muted">
+          {t("stages.thresholds.emitHint")}
+        </p>
+        {emitOn && (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <TextField
+              label={t("stages.thresholds.fields.pluginName")}
+              help={t("stages.thresholds.fields.pluginNameHelp")}
+              value={form.emit?.name ?? ""}
+              testId="emit-name"
+              onChange={(v) => patchEmit({ name: v })}
+            />
+            <NumericField
+              label={t("stages.thresholds.fields.minStaticRatio")}
+              help={t("stages.thresholds.fields.minStaticRatioHelp")}
+              value={form.emit?.min_static_ratio ?? 0.3}
+              step={0.05}
+              min={0}
+              testId="emit-min-static-ratio"
+              onChange={(v) => patchEmit({ min_static_ratio: v })}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="md-panel p-3 space-y-3">
+        <div className="md-text-accent font-semibold text-xs uppercase tracking-wide">
+          {t("stages.thresholds.nsweep")}
+        </div>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            data-testid="nsweep-enable"
+            checked={nsweepOn}
+            disabled={pcapOracle}
+            onChange={(e) => toggleNSweep(e.target.checked)}
+          />
+          <span className="md-text-secondary">
+            {t("stages.thresholds.nsweepEnableLabel")}
+          </span>
+        </label>
+        <p className="text-[10px] md-text-muted">
+          {pcapOracle
+            ? t("stages.thresholds.nsweepPcapUnavailable")
+            : t("stages.thresholds.nsweepHint")}
+        </p>
+        {nsweepOn && (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <TextField
+              label={t("stages.thresholds.fields.nValues")}
+              help={t("stages.thresholds.fields.nValuesHelp")}
+              value={nValuesText}
+              testId="nsweep-n-values"
+              onChange={(raw) => {
+                setNValuesText(raw);
+                const parsed = parseNValues(raw);
+                if (parsed.length > 0) patchNSweep({ n_values: parsed });
+              }}
+            />
+          </div>
+        )}
+      </div>
+
       {submitError && (
         <div className="md-panel p-2 text-xs border md-border-error md-text-error">
           {submitError}
@@ -259,7 +435,11 @@ export function StageThresholds({ onAdvance }: Props) {
           disabled={submitting}
           onClick={() => void submit()}
           className="text-xs px-4 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
-          title={t("stages.thresholds.runTitle")}
+          title={t("stages.thresholds.runTitle", {
+            optional:
+              (nsweepOn ? t("stages.thresholds.chainSweep") : "") +
+              (emitOn ? t("stages.thresholds.chainEmit") : ""),
+          })}
         >
           {submitting ? t("stages.thresholds.submitting") : t("stages.thresholds.run")}
         </button>

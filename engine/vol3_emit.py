@@ -1,9 +1,14 @@
 """Vol3 plugin emission from brute-force hits.
 
-Takes a hit + its neighborhood variance (the 128-byte window around a
-successful candidate that ``brute-force`` already sliced from the
-Welford state) and produces a Python Volatility3 plugin via the
-existing architect.Volatility3Exporter.
+Takes a hit + its neighborhood variance (the window around a successful
+candidate that ``brute-force`` already sliced from the Welford state) and
+produces a Python Volatility3 plugin via the existing
+architect.Volatility3Exporter.
+
+The window is ``pad + key_length + pad`` where ``pad`` is
+``engine.brute_force.DEFAULT_NEIGHBORHOOD_PAD`` (64) unless the caller passed
+``--neighborhood-pad`` / ``neighborhood_pad=``: 160 bytes for a 32-byte key at
+the default, not 128. (128 is the *total* padding, never a window size.)
 
 The static anchor comes from bytes *around* the hit, not the hit
 itself — the key region is ~100% volatile by construction and cannot
@@ -23,6 +28,9 @@ from memdiver.architect.pattern_generator import PatternGenerator
 from memdiver.architect.volatility3_exporter import Volatility3Exporter
 from memdiver.architect.yara_exporter import YaraExporter
 from memdiver.core.variance import POINTER_MAX
+# Imported (not re-typed) so the "widen the pad" advice below can never quote a
+# default the engine no longer uses.
+from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 from memdiver.engine.progress import (
     ProgressEvent,
     ProgressFn,
@@ -96,8 +104,11 @@ def _log_structure_summary(fields: List[dict], name: str) -> None:
     else:
         logger.warning(
             "Structure '%s': NO stable structural fields in neighborhood. "
-            "YARA pattern relies on byte-level matching only. Consider "
-            "widening neighborhood or adding more consensus dumps.", name,
+            "YARA pattern relies on byte-level matching only. Re-run "
+            "brute-force with a larger --neighborhood-pad (auto-floor and the "
+            "brute_force/auto_floor producers take neighborhood_pad=), or fold "
+            "more dumps into the consensus so more bytes settle as invariant.",
+            name,
         )
     if key:
         logger.info(
@@ -168,8 +179,11 @@ def emit_plugin_for_hit(
         raise RuntimeError(
             f"insufficient static bytes in neighborhood for {name}: "
             f"{static_ratio:.1%} static (need >= {min_static_ratio:.1%}). "
-            f"Widen the neighborhood pad or run with more dumps so the "
-            f"consensus matrix settles on more invariant bytes."
+            f"Re-run brute-force with a larger --neighborhood-pad (the "
+            f"brute_force / auto_floor producers and the MCP tools take "
+            f"neighborhood_pad=; it defaults to {DEFAULT_NEIGHBORHOOD_PAD} "
+            f"bytes per side), or fold "
+            f"more dumps into the consensus so more bytes settle as invariant."
         )
 
     # Attach key position + structure metadata for the template.

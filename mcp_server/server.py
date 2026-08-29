@@ -14,6 +14,14 @@ def create_server():
 
     from memdiver.app import experiment_orchestration
     from memdiver.app.composition import build_tool_session
+    # The pinned per-side neighborhood width, imported (never re-literalled) so
+    # the MCP surface's default cannot drift from the engine's.
+    from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+    # Same reason: the key-location tool defaults must be the engine's numbers.
+    from memdiver.engine.key_location import (
+        DEFAULT_KEY_CONTEXT,
+        DEFAULT_MAX_KEY_OFFSETS,
+    )
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
@@ -367,6 +375,7 @@ def create_server():
         key_sizes: Optional[List[int]] = None, stride: int = 1,
         jobs: int = 0, exhaustive: bool = True,
         state_path: Optional[str] = None, top_k: int = 10,
+        neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
         variance_threshold: Optional[float] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
@@ -386,6 +395,10 @@ def create_server():
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
         against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
         the static-byte cutoff surfaced in the stage's preview.
+        ``neighborhood_pad`` (default 64 bytes per side) is the context width
+        attached to each hit and therefore baked into every emitted vol3/YARA
+        artifact — leave it at the default unless you mean to change what the
+        tool emits.
         """
         return json.dumps(tools_pipeline.brute_force(
             candidates_path=candidates_path,
@@ -404,6 +417,7 @@ def create_server():
             exhaustive=exhaustive,
             state_path=state_path,
             top_k=top_k,
+            neighborhood_pad=neighborhood_pad,
             variance_threshold=variance_threshold,
             key_file=key_file,
             passphrase=passphrase,
@@ -560,10 +574,15 @@ def create_server():
         self_test_trials: int = 8, oracle_budget: Optional[int] = None,
         alignment_quality: Optional[float] = None, min_alignment: float = 0.5,
         managed_region: bool = False,
+        neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
-        """Automated oracle-arbitrated variance-floor selection → verdict."""
+        """Automated oracle-arbitrated variance-floor selection → verdict.
+
+        ``neighborhood_pad`` (default 64 bytes per side) is the context width
+        attached to a recovered hit; it reaches every emitted artifact.
+        """
         return json.dumps(tools_pipeline.auto_floor(
             variance_path=variance_path, reference_path=reference_path,
             oracle_path=oracle_path, output_dir=output_dir, num_dumps=num_dumps,
@@ -575,7 +594,7 @@ def create_server():
             phi0_method=phi0_method, p_min=p_min,
             self_test_trials=self_test_trials, oracle_budget=oracle_budget,
             alignment_quality=alignment_quality, min_alignment=min_alignment,
-            managed_region=managed_region,
+            managed_region=managed_region, neighborhood_pad=neighborhood_pad,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
         ))
 
@@ -609,6 +628,132 @@ def create_server():
         """
         return json.dumps(tools_pipeline.keylog_result(
             secrets=secrets, output_path=output_path,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def locate_key(
+        dump_paths: List[str],
+        key_hex: str = "",
+        keylog_line: str = "",
+        secret: Optional[dict] = None,
+        view: Optional[str] = None,
+        max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Locate a secret you ALREADY HOLD across N dumps — honest three-valued.
+
+        Use this when you have the key bytes (from a key log, a confirmed
+        brute-force hit, a paste) and want to know which dumps still contain
+        them and where. It is NOT a search for unknown keys — that is
+        ``analyze_candidates`` (no oracle) or ``brute_force`` (with one).
+
+        Supply the secret in exactly ONE of three forms; two forms is an error,
+        with no precedence, because two forms naming different bytes would
+        otherwise return a confident census of the wrong secret:
+
+        * ``key_hex`` — bare hex ("aa bb cc" or "0xaabbcc").
+        * ``keylog_line`` — "<LABEL> <client_random_hex> <secret_hex>". This form
+          also reports ``secret_type`` and ``client_random``.
+        * ``secret`` — {"secret_type", "client_random", "secret"}.
+
+        ONE dump is enough (unlike every other N-dump tool here).
+
+        READ ``verdict`` FIRST and do not skip to the counts:
+
+        * ``"found"`` — present in at least one searched dump.
+        * ``"absent"`` — searched, and provably not there. A real finding.
+        * ``"not_searched"`` — NOTHING was read (unreadable/too-small dumps).
+          This claims nothing at all and must never be reported as an absence.
+
+        Each per-dump row carries the same discipline: ``present`` is ``null``,
+        not ``false``, on any dump whose ``status`` is not ``"searched"``.
+        ``hit_count`` is the TRUE occurrence total even when ``offsets`` was
+        truncated to ``max_offsets``.
+
+        Partial survival (present in some dumps, absent from others) is the
+        NORMAL shape of a real key across a process lifecycle, not a failure —
+        on the reference 8-dump OpenSSL run the master secret survives in 2.
+        Nothing is persisted. Supply key_file / passphrase / kem_key_file for
+        encrypted ``.msl`` inputs.
+        """
+        return json.dumps(tools_pipeline.locate_key(
+            dump_paths=dump_paths,
+            key_hex=key_hex,
+            keylog_line=keylog_line,
+            secret=secret,
+            view=view,
+            max_offsets=max_offsets,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def export_key_pattern(
+        dump_paths: List[str],
+        key_hex: str = "",
+        keylog_line: str = "",
+        secret: Optional[dict] = None,
+        context: int = DEFAULT_KEY_CONTEXT,
+        fmt: str = "yara",
+        name: str = "memdiver_key_pattern",
+        min_static_ratio: float = 0.3,
+        view: Optional[str] = None,
+        output_dir: Optional[str] = None,
+        include_window_hex: bool = False,
+        max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Turn a KNOWN secret's location into a scanning signature.
+
+        The companion to ``locate_key``: same three input forms, same mutual
+        exclusion. Where ``export_pattern`` GUESSES which region is the key,
+        this one is told, locates it per dump, and describes its NEIGHBOURHOOD —
+        wildcarding the key bytes themselves, which is what makes the rule
+        reusable on a different session.
+
+        PASS DUMPS IN WHICH THE KEY IS ABSENT. This is the counter-intuitive
+        part and it is measured, not stylistic: the static mask is computed over
+        every searched dump, and the dumps that DO NOT hold the key are the
+        mechanism that turns the key span into "??". On the reference 8-dump
+        OpenSSL run, masking over all 8 wildcards exactly the 48 key bytes;
+        masking over only the 2 dumps that hold it yields a 100 %-static rule
+        that embeds the secret verbatim and matches that one key and nothing
+        else. If you pass only the dumps where the key is present you will get
+        exactly that, plus a ``key_fully_static`` WARNING telling you so.
+
+        Read ``diagnostics`` before using the rule. Two WARNINGs matter most:
+        ``key_fully_static`` (above) and ``degenerate_anchors`` — the static
+        anchors carry near-zero entropy, so the rule matches almost anywhere
+        (this fires at the default context on the real corpus key, whose
+        surroundings are zeros; raise ``context``). Also check the top-level
+        ``offsets_agree``: when it is false, ``region.offset`` is the reference
+        dump's window start and generalises to nothing.
+
+        ``fmt`` defaults to ``yara`` here. Requires at least 2 dumps (a static
+        mask is a comparison). ``include_window_hex`` adds each dump's raw
+        window bytes.
+        """
+        return json.dumps(tools_pipeline.export_key_pattern(
+            dump_paths=dump_paths,
+            key_hex=key_hex,
+            keylog_line=keylog_line,
+            secret=secret,
+            context=context,
+            fmt=fmt,
+            name=name,
+            min_static_ratio=min_static_ratio,
+            view=view,
+            output_dir=output_dir,
+            include_window_hex=include_window_hex,
+            max_offsets=max_offsets,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
         ))
 
     @mcp.tool()

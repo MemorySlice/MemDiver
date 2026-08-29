@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -32,6 +31,7 @@ import pytest
 from memdiver.app import tools_pipeline
 from memdiver.core.service_errors import CapabilityError
 from memdiver.engine.vol3_emit import extract_inferred_fields
+from tests._emit_pins import strip_timestamp
 
 KEY_BYTES = bytes(range(32))
 KEY_OFFSET = 256
@@ -54,10 +54,9 @@ class Collector:
         return [f.get("stage") for f in self.of(event)]
 
 
-def _strip_timestamp(text: str) -> str:
-    """Neutralize the UTC timestamp the vol3 exporter embeds so two runs of
-    ``emit_plugin`` are byte-comparable."""
-    return re.sub(r"Generated: \S+", "Generated: X", text)
+#: Promoted into ``tests/_emit_pins.py`` so the golden-pin module shares one
+#: definition of the vol3 timestamp stripper rather than a third copy.
+_strip_timestamp = strip_timestamp
 
 
 @pytest.fixture

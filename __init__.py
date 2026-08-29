@@ -112,7 +112,9 @@ from memdiver.services import (
     brute_force,
     consensus,
     emit_plugin,
+    export_key_pattern,
     export_pattern,
+    locate_key,
     n_sweep,
     search_reduce,
     # verify / experiment
@@ -192,6 +194,8 @@ __all__ = [
     "auto_floor",
     "emit_plugin",
     "export_pattern",
+    "locate_key",
+    "export_key_pattern",
     # verify / experiment producers
     "verify_key_result",
     "experiment_result",

@@ -19,6 +19,30 @@ from .consensus import _load_welford_session
 
 logger = logging.getLogger("memdiver.cli")
 
+#: Static-anchor padding ``export --auto`` applies per side of the detected
+#: region when ``--context`` is omitted. Mirrors the producer default in
+#: ``app.export_service.auto_export_pattern``; the parser advertises None so
+#: "omitted" and "explicitly 32" stay distinguishable on the manual path.
+DEFAULT_AUTO_EXPORT_CONTEXT = 32
+
+#: Why ``export --offset/--length --context N`` is refused instead of silently
+#: dropping N: ``manual_export_pattern`` has no ``context`` parameter, and its
+#: contract is "the offset you gave me IS the key start" -- the emitted pattern
+#: therefore has ``key_offset=0`` and contains none of the requested anchor
+#: bytes. ``export-key-pattern`` is the command that does build a padded
+#: window around an already-known secret.
+_MANUAL_CONTEXT_REJECTION = (
+    "--context applies only to `export --auto`, where it pads the "
+    "auto-detected region. A manual --offset/--length region IS the key "
+    "(the pattern starts at the key, with no static-anchor context), so "
+    "--context cannot be honoured here and is refused rather than ignored.\n"
+    "To build a padded signature around a key you already know, use "
+    "`memdiver export-key-pattern <dumps...> --key-hex <hex> --context N` "
+    "(or --keylog-line '<LABEL> <client_random_hex> <secret_hex>'): it "
+    "locates the secret across the dumps itself and keeps N static-anchor "
+    "bytes per side."
+)
+
 
 def _split_classes(spec):
     """Split a ``--classes key_candidate,pointer`` flag into class names.
@@ -145,6 +169,7 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
     import tempfile
 
     from memdiver.app.tools_pipeline import brute_force
+    from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
     with tempfile.TemporaryDirectory() as scratch:
@@ -165,6 +190,13 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
             exhaustive=not args.first_hit,
             state_path=args.state,
             top_k=args.top_k,
+            # getattr with the shared default, matching `persist_ground_truth`
+            # above: these handlers are also driven directly with a hand-built
+            # argparse.Namespace (the test convention in tests/test_cli.py and
+            # tests/test_pipeline_key_aware.py), which need not carry every flag.
+            neighborhood_pad=getattr(
+                args, "neighborhood_pad", DEFAULT_NEIGHBORHOOD_PAD
+            ),
             key_file=args.key_file,
             passphrase=args.passphrase,
             kem_key_file=args.kem_key_file,
@@ -268,6 +300,7 @@ def _cmd_auto_floor(args: argparse.Namespace) -> int:
     import numpy as np
 
     from memdiver.app.tools_pipeline import auto_floor
+    from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 
     _state, welford = _load_welford_session(Path(args.state))
     variance = welford.variance()
@@ -302,6 +335,13 @@ def _cmd_auto_floor(args: argparse.Namespace) -> int:
             alignment_quality=args.alignment_quality,
             min_alignment=args.min_alignment,
             managed_region=args.managed_region,
+            # getattr with the shared default, matching `persist_ground_truth`
+            # above: these handlers are also driven directly with a hand-built
+            # argparse.Namespace (the test convention in tests/test_cli.py and
+            # tests/test_pipeline_key_aware.py), which need not carry every flag.
+            neighborhood_pad=getattr(
+                args, "neighborhood_pad", DEFAULT_NEIGHBORHOOD_PAD
+            ),
             key_file=args.key_file,
             passphrase=args.passphrase,
             kem_key_file=args.kem_key_file,
@@ -386,6 +426,14 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     key_material = _key_material_from_args(args)
 
+    # ``--context`` defaults to None at the parser so "not supplied" stays
+    # distinguishable from an explicit ``--context 32``; the 32 is resolved
+    # here, on the only path that can honour it.
+    supplied_context = getattr(args, "context", None)
+    # Meaningful on the --auto path only; the manual path refuses the flag.
+    auto_context = (DEFAULT_AUTO_EXPORT_CONTEXT
+                    if supplied_context is None else supplied_context)
+
     try:
         if args.auto:
             result = export_pattern(
@@ -393,7 +441,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 fmt=args.format,
                 name=args.name,
                 align=getattr(args, "align", False),
-                context=getattr(args, "context", 32),
+                context=auto_context,
                 min_static_ratio=args.min_static_ratio,
                 key_material=key_material,
             )
@@ -403,6 +451,9 @@ def _cmd_export(args: argparse.Namespace) -> int:
                     "Specify --offset and --length, or use --auto",
                     file=sys.stderr,
                 )
+                return 1
+            if supplied_context is not None:
+                print(_MANUAL_CONTEXT_REJECTION, file=sys.stderr)
                 return 1
             result = manual_export_pattern(
                 dump_paths=dump_paths,
@@ -418,17 +469,33 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
 
     region = result["region"]
-    logger.info(
-        "Auto-selected region: offset=0x%x length=%d (key 0x%x-0x%x)",
-        region["offset"], region["length"],
-        region["key_start"], region["key_end"],
-    )
-    print(
-        f"Auto-detected region: offset=0x{region['offset']:x}, "
-        f"{region['length']} bytes (key at 0x{region['key_start']:x}-"
-        f"0x{region['key_end']:x}, context={args.context}B)",
-        file=sys.stderr,
-    )
+    if args.auto:
+        logger.info(
+            "Auto-selected region: offset=0x%x length=%d (key 0x%x-0x%x)",
+            region["offset"], region["length"],
+            region["key_start"], region["key_end"],
+        )
+        print(
+            f"Auto-detected region: offset=0x{region['offset']:x}, "
+            f"{region['length']} bytes (key at 0x{region['key_start']:x}-"
+            f"0x{region['key_end']:x}, context={auto_context}B)",
+            file=sys.stderr,
+        )
+    else:
+        # Nothing was detected on this path and nothing was padded: the region
+        # the operator gave IS the key, so ``manual_export_pattern`` renders it
+        # with ``key_offset=0`` (see ``export_service._render_content``). Saying
+        # "auto-detected" or quoting a context width here would both be false.
+        logger.info(
+            "Specified region: offset=0x%x length=%d (key at pattern offset 0)",
+            region["offset"], region["length"],
+        )
+        print(
+            f"Specified region: offset=0x{region['offset']:x}, "
+            f"{region['length']} bytes (the region IS the key: it begins at "
+            f"pattern offset 0, with no static-anchor context)",
+            file=sys.stderr,
+        )
 
     content = result["content"]
     if args.output:
@@ -436,6 +503,112 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"Exported {result['format']} to {args.output}", file=sys.stderr)
     else:
         print(content)
+    return 0
+
+
+def _cmd_locate_key(args: argparse.Namespace) -> int:
+    """Locate ONE known secret across N dumps and report the honest verdict.
+
+    Routes through ``app.tools_pipeline.locate_key`` — the same producer the
+    HTTP ``POST /api/analysis/locate-key`` route and the MCP ``locate_key`` tool
+    use. The full payload (verdict, six per-status counts, the per-dump census in
+    the supplied order, diagnostics) goes to ``--output``; the verdict line and
+    the diagnostics go to STDERR, so an operator piping the JSON onward still
+    sees the qualifications.
+
+    Exit codes make the command SCRIPTABLE, which is the point of a CLI here:
+
+    * ``0`` — ``found``.
+    * ``3`` — ``absent``. Already ``_CLI_EXIT[NOT_FOUND]``, so this reuses the
+      established "the thing you asked about is not there" code rather than
+      inventing a locate-key-specific vocabulary.
+    * ``2`` — ``not_searched``. Grouped with the caller-correctable codes because
+      that is what it is: nothing was read, and the inputs need fixing.
+
+    The full payload is written in ALL THREE cases. A non-zero exit is a verdict,
+    not a failure, and the census that produced it is exactly what the operator
+    needs to see.
+    """
+    from memdiver.app.tools_pipeline import locate_key
+
+    payload = locate_key(
+        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        key_hex=args.key_hex or "",
+        keylog_line=args.keylog_line or "",
+        view=args.view,
+        max_offsets=args.max_offsets,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    print(
+        f"memdiver: verdict={payload['verdict']} "
+        f"present={payload['dumps_present']}/{payload['dumps_searched']} "
+        f"searched (of {payload['dumps_total']} supplied)",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
+    return _LOCATE_KEY_EXIT.get(payload["verdict"], 2)
+
+
+#: Verdict -> process exit code. ``3`` is ``_CLI_EXIT[NOT_FOUND]``; ``2`` is the
+#: shared caller-correctable code. Kept as a dict so a new verdict in
+#: ``engine.key_location.KEY_LOCATION_VERDICTS`` fails loudly at the ``.get``
+#: default (2) rather than silently exiting 0.
+_LOCATE_KEY_EXIT = {"found": 0, "absent": 3, "not_searched": 2}
+
+
+def _cmd_export_key_pattern(args: argparse.Namespace) -> int:
+    """Export a scanning signature anchored on an already-known secret.
+
+    Routes through ``app.tools_pipeline.export_key_pattern`` — the same producer
+    the HTTP ``POST /api/analysis/key-pattern`` route and the MCP
+    ``export_key_pattern`` tool use. The full payload goes to ``--output``; the
+    verdict line and every diagnostic go to stderr, because the two WARNING
+    diagnostics (``key_fully_static`` / ``degenerate_anchors``) are the whole
+    reason an operator should not paste the rule straight into production.
+
+    ``--format`` defaults to ``yara`` here, not to the producer's
+    ``volatility3``: this is a documented per-surface default divergence of the
+    same kind as ``--order`` (``rank`` on the surfaces, ``offset`` in the
+    producer) — an operator asking for a signature on the terminal wants the
+    portable one.
+    """
+    from memdiver.app.tools_pipeline import export_key_pattern
+
+    payload = export_key_pattern(
+        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        key_hex=args.key_hex or "",
+        keylog_line=args.keylog_line or "",
+        context=args.context,
+        fmt=args.format,
+        name=args.name,
+        min_static_ratio=args.min_static_ratio,
+        view=args.view,
+        output_dir=args.output_dir,
+        include_window_hex=args.include_window_hex,
+        max_offsets=args.max_offsets,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    location = payload["location"]
+    print(
+        f"memdiver: verdict={location['verdict']} "
+        f"mask over {payload['mask_regions']} dump(s) "
+        f"({payload['mask_dumps_present']} present, "
+        f"{payload['mask_dumps_absent']} absent); "
+        f"{payload['key_wildcard_count']}/{location['needle_length']} key bytes "
+        f"wildcarded",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
     return 0
 
 

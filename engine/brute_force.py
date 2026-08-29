@@ -73,7 +73,24 @@ EXIT_HIT = 0
 EXIT_CRASH = 1
 EXIT_NO_HIT = 2
 
-NEIGHBORHOOD_PAD = 64
+#: Bytes of context sliced on EACH side of a hit when the Welford neighborhood
+#: variance is attached (so the emitted window is ``pad + key_length + pad`` —
+#: 160 bytes for a 32-byte key at this default). This is the canonical home:
+#: ``engine.auto_floor``, ``api.routers.pipeline`` and ``app.tools_pipeline``
+#: all import it instead of redeclaring a literal.
+#:
+#: Changing this default rewrites every artifact the tool emits downstream —
+#: ``Hit.neighborhood_start`` / ``.neighborhood_variance`` feed
+#: ``engine.vol3_emit``, which turns them into ``PATTERN_LENGTH``,
+#: ``KEY_OFFSET``, the hex/wildcard pattern, ``static_ratio``, ``VTYPES``,
+#: ``NEEDLE`` and the YARA ``$key`` string. So it is a *parameter*
+#: (``neighborhood_pad=``, ``--neighborhood-pad``) with a pinned default rather
+#: than a value anyone is free to nudge; ``tests/test_vol3_emit_golden.py``
+#: holds the golden that goes red when it moves.
+DEFAULT_NEIGHBORHOOD_PAD = 64
+
+#: Historical name, kept as an alias so existing importers keep working.
+NEIGHBORHOOD_PAD = DEFAULT_NEIGHBORHOOD_PAD
 
 #: Below this many candidates ``resolve_jobs`` auto-selects serial. Spawning a
 #: pool costs a process launch plus one oracle import per worker (the
@@ -296,16 +313,22 @@ def _load_neighborhood_variance(
     state_path: Path,
     offset: int,
     length: int,
+    *,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
 ) -> Tuple[int, List[float]]:
-    """Slice the hit's neighborhood variance from a mmap'd m2.npy."""
+    """Slice the hit's neighborhood variance from a mmap'd m2.npy.
+
+    ``neighborhood_pad`` bytes of context are taken on each side of the hit;
+    the default is :data:`DEFAULT_NEIGHBORHOOD_PAD`.
+    """
     state = json.loads(Path(state_path).read_text())
     n = int(state.get("num_dumps", 0))
     if n == 0:
         return offset, []
     m2 = np.load(state["m2_path"], mmap_mode="r")
     try:
-        start = max(0, offset - NEIGHBORHOOD_PAD)
-        end = min(len(m2), offset + length + NEIGHBORHOOD_PAD)
+        start = max(0, offset - neighborhood_pad)
+        end = min(len(m2), offset + length + neighborhood_pad)
         # ``.astype`` materializes an independent copy, so the mapping can be
         # released immediately below.
         slice_variance = (m2[start:end].astype(np.float32) / float(n))
@@ -640,6 +663,7 @@ def run_brute_force(
     exhaustive: bool = True,
     state_path: Optional[Path] = None,
     top_k: int = 10,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
 ) -> BruteForceResult:
@@ -656,6 +680,11 @@ def run_brute_force(
     load sandbox: the builtin is our own code and the resource it reads (a pcap)
     is data, not executable — only user-supplied ``--oracle`` scripts need the
     sandbox.
+
+    ``neighborhood_pad`` (default :data:`DEFAULT_NEIGHBORHOOD_PAD`) is the
+    per-side context width attached to each hit when ``state_path`` is given.
+    It propagates into every emitted vol3/YARA artifact, so it is pinned by
+    default and only ever moved deliberately.
     """
     payload = load_candidates(candidates_path)
     regions: List[dict] = payload.get("regions", [])
@@ -727,7 +756,7 @@ def run_brute_force(
         if state_path is not None:
             try:
                 neighborhood_start, neighborhood = _load_neighborhood_variance(
-                    state_path, offset, size
+                    state_path, offset, size, neighborhood_pad=neighborhood_pad,
                 )
             except Exception as exc:
                 logger.warning("could not load neighborhood variance: %s", exc)

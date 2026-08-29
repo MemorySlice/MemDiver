@@ -7,6 +7,7 @@ on disk and POST them via the documented payloads.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,44 @@ from fastapi.testclient import TestClient
 
 from memdiver.api.config import get_settings
 from memdiver.api.main import create_app
+from memdiver.msl import crypto
+from memdiver.msl.enums import EncAlgo, KdfType, KeyEncap
+from memdiver.msl.writer import MslEncryptionConfig, MslWriter
+
+# A 4 KiB region whose first 32 bytes are the region of interest: a 16-byte
+# static prefix shared by both dumps, then 16 bytes that differ. Written at a
+# non-zero base address so the .msl memory (flattened-VAS) coordinate 0 is a
+# genuinely different place in the file from raw byte 0.
+_REGION_BASE = 0x140000
+_STATIC_PREFIX = bytes(range(16))
+_VOLATILE_TAILS = (b"\x00" * 16, b"\xFF" * 16)
+
+
+def _region_payload(tail: bytes) -> bytes:
+    return _STATIC_PREFIX + tail + b"\x5A" * (4096 - 32)
+
+
+def _write_msl_pair(
+    tmp_path: Path,
+    stem: str,
+    encryption_key: bytes | None = None,
+) -> list[str]:
+    """Two ``.msl`` containers holding the same region at ``_REGION_BASE``."""
+    paths: list[str] = []
+    for i, tail in enumerate(_VOLATILE_TAILS):
+        out = tmp_path / f"{stem}_{i}.msl"
+        cfg = None
+        if encryption_key is not None:
+            cfg = MslEncryptionConfig(
+                enc_algo=EncAlgo.AES_256_GCM, kdf_type=KdfType.NONE,
+                key_encap=KeyEncap.NONE, raw_key=encryption_key,
+            )
+        writer = MslWriter(out, pid=11, encryption=cfg)
+        writer.add_memory_region(_REGION_BASE, _region_payload(tail))
+        writer.add_end_of_capture()
+        writer.write()
+        paths.append(str(out))
+    return paths
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +131,150 @@ def test_check_static_404_on_missing_dump(client, tmp_path):
     )
     assert r.status_code == 404
     assert "does_not_exist" in r.json()["detail"]
+
+
+@pytest.fixture
+def msl_dumps(tmp_path: Path) -> list[str]:
+    """Two plaintext ``.msl`` dumps -- memory bytes != raw bytes at offset 0."""
+    return _write_msl_pair(tmp_path, "plain")
+
+
+@pytest.fixture
+def encrypted_msl_dumps(tmp_path: Path):
+    """Two AES-256-GCM encrypted ``.msl`` dumps plus their raw key (hex)."""
+    if not crypto.cipher_is_available(EncAlgo.AES_256_GCM):
+        pytest.skip("AES-256-GCM backend not installed")
+    key = os.urandom(32)
+    return _write_msl_pair(tmp_path, "enc", encryption_key=key), key.hex()
+
+
+def test_check_static_reads_msl_in_memory_space_not_file_space(client, msl_dumps):
+    """B4b regression: ``.msl`` offsets are MEMORY offsets, not file offsets.
+
+    The route used to call ``StaticChecker.check``, which does
+    ``path.read_bytes()[offset:offset + length]`` -- raw FILE bytes. For a
+    ``.msl`` input, file offset 0 is the container's magic header (and, at
+    bytes 24..32, its per-dump UUID), not the captured memory at
+    ``_REGION_BASE``. So the old code answered HTTP 200 with the header's
+    hex and a mask derived from header/UUID bytes.
+
+    Asserting the exact reference hex pins this down: the response must be
+    the first dump's MEMORY bytes. This test FAILS against the old
+    ``StaticChecker.check`` call (reference_hex would start with the
+    ``MEMSLICE`` magic and the mask would be True across bytes 16..24).
+    """
+    r = client.post(
+        "/api/architect/check-static",
+        json={"dump_paths": msl_dumps, "offset": 0, "length": 32},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    expected = _region_payload(_VOLATILE_TAILS[0])[:32]
+    assert body["reference_hex"] == expected.hex()
+    # ... and it is emphatically NOT the container header at file offset 0.
+    raw_header = Path(msl_dumps[0]).read_bytes()[:32]
+    assert body["reference_hex"] != raw_header.hex()
+
+    assert len(body["static_mask"]) == 32
+    assert all(body["static_mask"][:16])
+    assert not any(body["static_mask"][16:])
+    assert body["static_ratio"] == 0.5
+    assert body["anchors"] == [{"start": 0, "length": 16}]
+
+
+def test_check_static_raw_dumps_unchanged(client, synthetic_dumps):
+    """The common raw-dump case is byte-for-byte what it always was.
+
+    ``open_dump`` falls back to ``RawDumpSource`` for an opaque file, whose
+    ``read_range`` is a plain file slice -- exactly what ``StaticChecker.check``
+    did. Same reference bytes, same mask, same ratio.
+    """
+    r = client.post(
+        "/api/architect/check-static",
+        json={"dump_paths": synthetic_dumps, "offset": 0, "length": 32},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    expected = Path(synthetic_dumps[0]).read_bytes()[:32]
+    assert body["reference_hex"] == expected.hex()
+    assert body["static_mask"] == [True] * 16 + [False] * 16
+    assert body["static_ratio"] == 0.5
+
+
+def test_check_static_decrypts_encrypted_msl_with_key(client, encrypted_msl_dumps):
+    """Key material on the request body opens an encrypted container."""
+    paths, key_hex = encrypted_msl_dumps
+    r = client.post(
+        "/api/architect/check-static",
+        json={
+            "dump_paths": paths, "offset": 0, "length": 32, "key_hex": key_hex,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    expected = _region_payload(_VOLATILE_TAILS[0])[:32]
+    assert body["reference_hex"] == expected.hex()
+    assert body["static_mask"] == [True] * 16 + [False] * 16
+
+
+def test_check_static_locked_encrypted_msl_is_an_error_not_all_static(
+    client, encrypted_msl_dumps,
+):
+    """A locked container must surface, never read back as an empty region.
+
+    An encrypted ``.msl`` opened without a key does NOT raise on read -- it
+    reads back zero bytes. Unguarded, ``check_regions`` would then answer 200
+    with an empty mask and an empty reference: a vacuous "nothing here"
+    indistinguishable from a genuine result. The route raises
+    ``EncryptedDumpLockedError`` (PRECONDITION -> 400) instead, rendered in
+    this router's ``{"detail": ...}`` shape.
+    """
+    paths, _ = encrypted_msl_dumps
+    r = client.post(
+        "/api/architect/check-static",
+        json={"dump_paths": paths, "offset": 0, "length": 32},
+    )
+    assert r.status_code == 400, r.text
+    assert "encrypted" in r.json()["detail"].lower()
+
+
+def test_check_static_wrong_key_is_an_error(client, encrypted_msl_dumps):
+    """A wrong key fails AEAD verification -- also a 400, never a silent read."""
+    paths, _ = encrypted_msl_dumps
+    r = client.post(
+        "/api/architect/check-static",
+        json={
+            "dump_paths": paths, "offset": 0, "length": 32,
+            "key_hex": ("11" * 32),
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]
+
+
+def test_check_static_unequal_sizes_mark_tail_non_static(client, tmp_path):
+    """A shorter second dump cannot confirm the tail -- it must read False."""
+    long_dump = tmp_path / "long.bin"
+    short_dump = tmp_path / "short.bin"
+    long_dump.write_bytes(bytes(range(32)))
+    short_dump.write_bytes(bytes(range(16)))
+
+    r = client.post(
+        "/api/architect/check-static",
+        json={
+            "dump_paths": [str(long_dump), str(short_dump)],
+            "offset": 0,
+            "length": 32,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Reference is the FIRST (longer) region, so the mask spans 32 positions;
+    # the 16 the short dump does not cover cannot be static.
+    assert len(body["static_mask"]) == 32
+    assert all(body["static_mask"][:16])
+    assert not any(body["static_mask"][16:])
 
 
 # ---------------------------------------------------------------------------

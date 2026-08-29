@@ -58,6 +58,37 @@ from memdiver.core.key_material import (
 )
 
 
+# ── The one locked-container guard (shared by every opener's caller) ───
+#
+# Promoted here from three private copies (``app.tools_pipeline._raise_if_locked``,
+# the inline block in ``app.export_service.auto_export_pattern``, and a third
+# copy in ``api.routers.architect._read_static_regions``). It sits beside the
+# openers above because it is the check every caller of those openers owes its
+# user, and it is PUBLIC on purpose: a router reaching for another module's
+# private name is worse than the duplication it replaces.
+
+
+def raise_if_locked(source: object) -> None:
+    """Raise :class:`EncryptedDumpLockedError` for an encrypted-and-locked source.
+
+    A locked source (``tag_status`` MISSING_KEY / CORRUPTED) reads back EMPTY
+    rather than raising. Without this guard every downstream empty/negative
+    handler misattributes the lock: "no KEY_CANDIDATE regions", "every byte is
+    invariant", "the key is absent from all N dumps". Each of those is a
+    confident claim about bytes nobody ever decrypted.
+
+    A decrypted source — including a genuinely empty one — and any
+    non-encrypted source pass through untouched, so the existing empty-result
+    error paths are preserved exactly.
+    """
+    from memdiver.core.service_errors import EncryptedDumpLockedError
+    from memdiver.core.service_result import KeyStatus
+
+    key = KeyStatus.from_source(source)
+    if not key.decrypted:
+        raise EncryptedDumpLockedError(key.hint)
+
+
 # ── Builders (function-local imports; downward-only) ──────────────────
 
 def build_tool_session() -> "ToolSession":
@@ -136,6 +167,8 @@ __all__ = [
     "open_dump",
     "key_material_from_files",
     "key_material_from_hex",
+    # the shared locked-container guard
+    "raise_if_locked",
     # app-layer cached openers
     "cached_dump_source",
     "cached_msl_reader",

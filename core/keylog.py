@@ -351,3 +351,38 @@ class KeylogParser:
             identifier=identifier,
             secret_value=secret_value,
         )
+
+
+# -- Public single-line entry points ---------------------------------------- #
+#
+# The ``app`` layer needs to parse ONE key-log line (a user pasting a secret
+# into the key-log composer) and needs to tell a malformed row apart from one a
+# template legitimately filtered out. Both capabilities already exist here, but
+# only behind private names. These two public aliases expose them without
+# forking a second parser: :meth:`KeylogParser._parse_line` stays the ONE
+# implementation, and the private names keep working for their existing
+# in-module caller and for the tests that reference them by name.
+
+
+def parse_keylog_line(line: str, *, template=None) -> Optional[CryptoSecret]:
+    """Parse a single NSS key-log line into a :class:`CryptoSecret`.
+
+    Returns ``None`` both for a malformed line and for a well-formed line whose
+    secret type falls outside *template*. Call
+    :func:`is_well_formed_keylog_line` to tell those two reasons apart — that is
+    the only thing that distinguishes them.
+
+    Args:
+        line: One ``LABEL client_random_hex secret_hex`` row.
+        template: Optional object with a ``secret_types`` collection. When
+            supplied, only those types are accepted; otherwise the whole
+            registry vocabulary is.
+    """
+    allowed = template.secret_types if template is not None else None
+    return KeylogParser._parse_line(line, allowed)
+
+
+#: Public alias of :func:`_is_well_formed_keylog_line` — see that function for
+#: why the type token is checked against the whole registry vocabulary rather
+#: than against the caller's template.
+is_well_formed_keylog_line = _is_well_formed_keylog_line

@@ -736,3 +736,329 @@ def test_analyze_candidates_writes_a_ranked_payload(tmp_path, monkeypatch):
     assert payload["alignment"]["method"] == "file_offset"
     assert payload["thresholds"]["min_variance"] == 0.0
     assert payload["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# locate-key / export-key-pattern — the key-location spine (B1/B3).
+# ---------------------------------------------------------------------------
+
+#: 48 bytes, matching the real TLS 1.2 master-secret length.
+_LK_SECRET = bytes(range(0x40, 0x40 + 48))
+
+
+def _plant_locate_key_dumps(tmp_path, present: int = 2, total: int = 4) -> list:
+    """``total`` dumps sharing one background; the secret in the first
+    ``present`` of them at offset 2048 — the 2-of-N shape of real memory."""
+    import numpy as np
+
+    rng = np.random.default_rng(97)
+    background = rng.integers(0, 4, 8192, dtype=np.uint8)
+    paths = []
+    for i in range(total):
+        body = background.copy()
+        if i < present:
+            body[2048:2096] = np.frombuffer(_LK_SECRET, dtype=np.uint8)
+        p = tmp_path / f"lk_{i}.dump"
+        p.write_bytes(body.tobytes())
+        paths.append(str(p))
+    return paths
+
+
+def _locate_key_args(dumps, output, **overrides):
+    ns = dict(
+        dumps=dumps, key_hex=_LK_SECRET.hex(), keylog_line=None,
+        view=None, max_offsets=64, output=output,
+        key_file=None, passphrase=None, kem_key_file=None,
+    )
+    ns.update(overrides)
+    return argparse.Namespace(**ns)
+
+
+def test_parser_locate_key_command():
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["locate-key", "/tmp/a.dump", "--key-hex", "aabbcc"])
+    assert args.command == "locate-key"
+    assert args.key_hex == "aabbcc"
+    assert args.keylog_line is None
+    assert args.max_offsets == 64
+    assert args.view is None
+
+
+def test_parser_locate_key_requires_exactly_one_input_form():
+    """``--key-hex`` / ``--keylog-line`` are mutually exclusive AND required, so
+    the CLI never reaches the producer's own check for these two cases."""
+    import pytest
+
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["locate-key", "/tmp/a.dump"])
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "locate-key", "/tmp/a.dump", "--key-hex", "aa",
+            "--keylog-line", "CLIENT_RANDOM 00 11"])
+
+
+def test_parser_export_key_pattern_command():
+    parser = _build_parser()
+    args = parser.parse_args([
+        "export-key-pattern", "/tmp/a.dump", "/tmp/b.dump",
+        "--key-hex", "aabbcc", "--context", "32", "--include-window-hex",
+    ])
+    assert args.command == "export-key-pattern"
+    assert args.context == 32
+    assert args.include_window_hex is True
+    # yara on the CLI, volatility3 in the producer — a documented per-surface
+    # default divergence of the same kind as --order.
+    assert args.format == "yara"
+    assert args.name == "memdiver_key_pattern"
+    assert args.min_static_ratio == 0.3
+
+
+def test_locate_key_exits_zero_when_found(tmp_path, capsys):
+    from memdiver.cli import _cmd_locate_key
+
+    out = tmp_path / "located.json"
+    rc = _cmd_locate_key(_locate_key_args(
+        _plant_locate_key_dumps(tmp_path), str(out)))
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["verdict"] == "found"
+    assert (payload["dumps_present"], payload["dumps_absent"]) == (2, 2)
+    # The verdict line and the diagnostics go to STDERR, so an operator piping
+    # the JSON onward still sees the qualifications.
+    err = capsys.readouterr().err
+    assert "verdict=found" in err
+    assert "Partial survival" in err
+
+
+def test_locate_key_exits_three_when_absent(tmp_path, capsys):
+    """``3`` is already ``_CLI_EXIT[NOT_FOUND]``, so this reuses the existing
+    vocabulary instead of inventing a locate-key-specific code."""
+    from memdiver.cli import _CLI_EXIT, _cmd_locate_key
+    from memdiver.core.service_errors import ErrorCategory
+
+    out = tmp_path / "absent.json"
+    rc = _cmd_locate_key(_locate_key_args(
+        _plant_locate_key_dumps(tmp_path, present=0), str(out)))
+
+    assert rc == 3
+    assert rc == _CLI_EXIT[ErrorCategory.NOT_FOUND]
+    # The full payload is still written — a non-zero exit is a VERDICT, and the
+    # census that produced it is exactly what the operator needs.
+    payload = json.loads(out.read_text())
+    assert payload["verdict"] == "absent"
+    assert payload["dumps_searched"] == 4
+    assert "verdict=absent" in capsys.readouterr().err
+
+
+def test_locate_key_exits_two_when_nothing_was_searched(
+    tmp_path, monkeypatch, capsys
+):
+    from memdiver.cli import _cmd_locate_key
+    from memdiver.engine import key_location as key_location_module
+
+    monkeypatch.setattr(
+        key_location_module, "open_dump",
+        lambda path, **kwargs: (_ for _ in ()).throw(OSError("unreadable")))
+
+    out = tmp_path / "unknown.json"
+    rc = _cmd_locate_key(_locate_key_args(
+        _plant_locate_key_dumps(tmp_path), str(out)))
+
+    assert rc == 2
+    payload = json.loads(out.read_text())
+    assert payload["verdict"] == "not_searched"
+    # Never "absent": nothing was read, so nothing may be claimed.
+    assert payload["verdict"] != "absent"
+    assert payload["dumps_searched"] == 0
+    assert "never searched" in capsys.readouterr().err
+
+
+def test_export_key_pattern_writes_the_pattern_and_warns(tmp_path, capsys):
+    from memdiver.cli import _cmd_export_key_pattern
+
+    out = tmp_path / "pattern.json"
+    rc = _cmd_export_key_pattern(argparse.Namespace(
+        dumps=_plant_locate_key_dumps(tmp_path),
+        key_hex=_LK_SECRET.hex(), keylog_line=None,
+        context=64, format="yara", name="lk_rule", min_static_ratio=0.3,
+        view=None, output_dir=str(tmp_path / "rules"),
+        include_window_hex=False, max_offsets=64, output=str(out),
+        key_file=None, passphrase=None, kem_key_file=None))
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["pattern"]["length"] == 176
+    assert payload["region"]["key_offset_in_pattern"] == 64
+    assert payload["key_wildcard_count"] == 48
+    assert payload["mask_regions"] == 4
+    assert (tmp_path / "rules" / "lk_rule.yar").is_file()
+    err = capsys.readouterr().err
+    assert "48/48 key bytes wildcarded" in err
+
+
+def test_export_key_pattern_warns_when_the_rule_embeds_the_secret(
+    tmp_path, capsys
+):
+    """Only the dumps that hold the key -> a 100 %-static rule. The operator
+    must see that on stderr, because nothing in the payload's shape says it."""
+    from memdiver.cli import _cmd_export_key_pattern
+
+    out = tmp_path / "static.json"
+    rc = _cmd_export_key_pattern(argparse.Namespace(
+        dumps=_plant_locate_key_dumps(tmp_path, present=2, total=2),
+        key_hex=_LK_SECRET.hex(), keylog_line=None,
+        context=64, format="yara", name="static_rule", min_static_ratio=0.3,
+        view=None, output_dir=None, include_window_hex=False,
+        max_offsets=64, output=str(out),
+        key_file=None, passphrase=None, kem_key_file=None))
+
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["key_wildcard_count"] == 0
+    err = capsys.readouterr().err
+    assert "0/48 key bytes wildcarded" in err
+    assert "verbatim" in err
+
+
+# ---------------------------------------------------------------------------
+# export — the --context knob applies to --auto ONLY (B4d).
+# ---------------------------------------------------------------------------
+
+
+def _export_args(dumps, **overrides):
+    """A full ``export`` Namespace. ``context=None`` is the parser's default,
+    i.e. "the flag was not supplied" — see ``_build_parser``."""
+    ns = dict(
+        dumps=dumps, offset=None, length=None, auto=False, context=None,
+        format="json", name="ex_rule", min_static_ratio=0.3, align=False,
+        output=None, key_file=None, passphrase=None, kem_key_file=None,
+    )
+    ns.update(overrides)
+    return argparse.Namespace(**ns)
+
+
+def test_parser_export_context_defaults_to_none_not_32():
+    """The default MUST stay ``None``: with ``default=32`` the handler cannot
+    tell an omitted flag from an explicit ``--context 32``, and the manual-path
+    rejection would fire on every manual export."""
+    from memdiver.cli.pipeline import DEFAULT_AUTO_EXPORT_CONTEXT
+
+    parser = _build_parser()
+    omitted = parser.parse_args(["export", "/tmp/a.dump", "/tmp/b.dump"])
+    assert omitted.context is None
+    supplied = parser.parse_args(
+        ["export", "/tmp/a.dump", "/tmp/b.dump", "--context", "8"])
+    assert supplied.context == 8
+    # The 32 the flag used to carry now lives in the handler, unchanged.
+    assert DEFAULT_AUTO_EXPORT_CONTEXT == 32
+
+
+def test_export_manual_rejects_an_explicitly_supplied_context(tmp_path, capsys):
+    """``manual_export_pattern`` has no ``context`` parameter and its contract is
+    "the offset you gave me IS the key start", so the requested anchor bytes
+    provably do not reach the pattern. Refuse, and name the command that does
+    build a padded window."""
+    from memdiver.cli import _cmd_export
+
+    rc = _cmd_export(_export_args(
+        _plant_locate_key_dumps(tmp_path), offset=0, length=64, context=32))
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "export-key-pattern" in err
+    assert "--context" in err
+    # The message must point at the real alternative's input forms, not just
+    # say "unsupported".
+    assert "--key-hex" in err
+    assert "--keylog-line" in err
+
+
+def test_export_manual_never_claims_a_detection_or_a_context(tmp_path, capsys):
+    """The manual path detects nothing and pads nothing. Before B4d it printed
+    "Auto-detected region: ... context=32B" unconditionally — a knob it ignored
+    and a detection that never happened."""
+    from memdiver.cli import _cmd_export
+
+    rc = _cmd_export(_export_args(
+        _plant_locate_key_dumps(tmp_path), offset=0, length=64))
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "Auto-detected" not in err
+    assert "Auto-selected" not in err
+    assert "context=" not in err
+    # It says what actually happened instead.
+    assert "Specified region: offset=0x0, 64 bytes" in err
+    assert "pattern offset 0" in err
+
+
+def test_export_manual_logs_without_the_auto_wording(tmp_path, caplog):
+    """Same guarantee on the logger, which carried its own "Auto-selected"."""
+    import logging
+
+    from memdiver.cli import _cmd_export
+
+    with caplog.at_level(logging.INFO, logger="memdiver.cli"):
+        rc = _cmd_export(_export_args(
+            _plant_locate_key_dumps(tmp_path), offset=0, length=64))
+
+    assert rc == 0
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Auto-selected" not in messages
+    assert "Specified region: offset=0x0 length=64" in messages
+
+
+def _fake_auto_result():
+    return {
+        "format": "json",
+        "content": "{}",
+        "pattern": {"name": "ex_rule", "length": 128},
+        "region": {"offset": 0x1000, "length": 128,
+                   "key_start": 0x1020, "key_end": 0x1060},
+    }
+
+
+def test_export_auto_still_passes_the_default_32_and_the_auto_wording(
+    tmp_path, monkeypatch, capsys
+):
+    """The --auto path is unchanged: an omitted --context still resolves to 32
+    at the producer, and the auto wording still reports it."""
+    from memdiver.app import tools_pipeline
+    from memdiver.cli import _cmd_export
+
+    seen = {}
+
+    def _record(**kwargs):
+        seen.update(kwargs)
+        return _fake_auto_result()
+
+    monkeypatch.setattr(tools_pipeline, "export_pattern", _record)
+
+    rc = _cmd_export(_export_args(
+        _plant_locate_key_dumps(tmp_path), auto=True))
+
+    assert rc == 0
+    assert seen["context"] == 32
+    err = capsys.readouterr().err
+    assert "Auto-detected region: offset=0x1000, 128 bytes" in err
+    assert "context=32B" in err
+
+
+def test_export_auto_forwards_an_explicit_context(tmp_path, monkeypatch, capsys):
+    from memdiver.app import tools_pipeline
+    from memdiver.cli import _cmd_export
+
+    seen = {}
+    monkeypatch.setattr(
+        tools_pipeline, "export_pattern",
+        lambda **kw: (seen.update(kw), _fake_auto_result())[1])
+
+    rc = _cmd_export(_export_args(
+        _plant_locate_key_dumps(tmp_path), auto=True, context=8))
+
+    assert rc == 0
+    assert seen["context"] == 8
+    assert "context=8B" in capsys.readouterr().err

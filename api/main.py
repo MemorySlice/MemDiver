@@ -51,7 +51,11 @@ async def _lifespan(app: FastAPI):
     """Startup / shutdown lifecycle for the FastAPI app."""
     settings = get_settings()
     logger.info("MemDiver API starting on %s:%d", settings.host, settings.port)
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    # NOTE: upload_dir is deliberately NOT created here. It is
+    # configure-on-first-use (api/config.py) and may legitimately be None;
+    # creating it at startup is what used to materialise a world-writable
+    # /tmp/memdiver_uploads on every create_app(). The directory is now
+    # created 0o700 on demand by api.dependencies.upload_dir_or_409.
     if settings.dataset_root:
         session = get_tool_session()
         # set_dataset now RAISES a CapabilityError for a missing root (it used to
@@ -189,6 +193,7 @@ def create_app() -> FastAPI:
         pcaps,
         pipeline,
         sessions,
+        settings as settings_router,
         structures,
         tasks,
     )
@@ -208,6 +213,9 @@ def create_app() -> FastAPI:
     app.include_router(oracles.router, prefix="/api/oracles", tags=["oracles"])
     app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
     app.include_router(experiment.router, prefix="/api/experiment", tags=["experiment"])
+    app.include_router(
+        settings_router.router, prefix="/api/settings", tags=["settings"]
+    )
 
     from memdiver.api.ws.progress import router as ws_router
 

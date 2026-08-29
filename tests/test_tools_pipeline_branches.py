@@ -937,3 +937,64 @@ def test_verify_key_bad_ciphertext_hex_raises(tmp_path):
         )
     assert exc.value.category == ErrorCategory.INVALID_INPUT
     assert "Invalid hex input" in exc.value.message
+
+
+# ----------------------------------------------------------------------
+# _validate_neighborhood_pad  (the configurable per-side context width)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("pad", [-1, -64])
+def test_validate_neighborhood_pad_rejects_negative(pad):
+    """A negative pad would invert the slice bounds; reject it up front."""
+    with pytest.raises(CapabilityError) as exc:
+        tp._validate_neighborhood_pad(pad)
+    assert exc.value.category == ErrorCategory.INVALID_INPUT
+    assert "neighborhood_pad" in str(exc.value)
+
+
+@pytest.mark.parametrize("pad", [0, 1, 64, 4096])
+def test_validate_neighborhood_pad_accepts_non_negative(pad):
+    """Zero means 'attach only the hit itself' and is legal."""
+    assert tp._validate_neighborhood_pad(pad) == pad
+
+
+def test_validate_neighborhood_pad_default_matches_engine():
+    """The producers' default is the engine constant, not a re-typed literal."""
+    from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+
+    assert tp.DEFAULT_NEIGHBORHOOD_PAD is DEFAULT_NEIGHBORHOOD_PAD
+    for producer in (tp.brute_force, tp.auto_floor):
+        import inspect
+
+        param = inspect.signature(producer).parameters["neighborhood_pad"]
+        assert param.default == DEFAULT_NEIGHBORHOOD_PAD
+
+
+def test_brute_force_rejects_negative_neighborhood_pad(tmp_path):
+    """The guard fires before any oracle/reference work is attempted."""
+    with pytest.raises(CapabilityError) as exc:
+        tp.brute_force(
+            candidates_path=str(tmp_path / "missing.json"),
+            reference_path=str(tmp_path / "missing.bin"),
+            output_dir=str(tmp_path / "out"),
+            oracle_path=str(tmp_path / "oracle.py"),
+            neighborhood_pad=-8,
+        )
+    assert exc.value.category == ErrorCategory.INVALID_INPUT
+    assert "neighborhood_pad" in str(exc.value)
+
+
+def test_auto_floor_rejects_negative_neighborhood_pad(tmp_path):
+    """Same guard on the escalation producer."""
+    with pytest.raises(CapabilityError) as exc:
+        tp.auto_floor(
+            variance_path=str(tmp_path / "missing.npy"),
+            reference_path=str(tmp_path / "missing.bin"),
+            oracle_path=str(tmp_path / "oracle.py"),
+            output_dir=str(tmp_path / "out"),
+            num_dumps=3,
+            neighborhood_pad=-1,
+        )
+    assert exc.value.category == ErrorCategory.INVALID_INPUT
+    assert "neighborhood_pad" in str(exc.value)

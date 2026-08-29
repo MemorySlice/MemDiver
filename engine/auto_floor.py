@@ -30,6 +30,10 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from memdiver.engine import floor_policy
+from memdiver.engine.brute_force import (
+    DEFAULT_NEIGHBORHOOD_PAD,
+    NEIGHBORHOOD_PAD as _BF_NEIGHBORHOOD_PAD,
+)
 from memdiver.engine.candidate_pipeline import DEFAULT_ALIGNMENT
 # Re-exported so callers/tests keep importing ``_enumerate_candidates`` from
 # here after the region->pairs helper moved into floor_policy (Phase 4).
@@ -56,7 +60,11 @@ EXIT_HIT = 0          # RECOVERED or FLOOR_WAS_TOO_HIGH
 EXIT_ABSENT = 2
 EXIT_INCONCLUSIVE = 3
 
-NEIGHBORHOOD_PAD = 64
+#: Re-exported from the canonical home in ``engine.brute_force`` so the two
+#: neighborhood slicers can never drift apart (this module used to carry a
+#: verbatim ``NEIGHBORHOOD_PAD = 64`` duplicate). Kept as module-level names so
+#: anything importing them from here keeps working.
+NEIGHBORHOOD_PAD = _BF_NEIGHBORHOOD_PAD
 _ORACLE_FALSE_ACCEPT = 2.0 ** -128
 
 
@@ -561,6 +569,7 @@ def run_auto_floor(
     alignment_quality: Optional[float] = None,
     min_alignment: float = 0.5,
     managed_region: bool = False,
+    neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
     progress_callback: ProgressFn = noop_progress,
 ) -> AutoFloorResult:
     """Automated oracle-arbitrated floor selection → single verdict.
@@ -579,6 +588,11 @@ def run_auto_floor(
         ``regime`` (the stride grid may not have enumerated the key).
     Byte-identical candidate windows are de-duplicated before the oracle sees
     them (B3): identical bytes give identical results, so testing once is free.
+
+    ``neighborhood_pad`` (default :data:`DEFAULT_NEIGHBORHOOD_PAD`, imported
+    from ``engine.brute_force``) is the per-side context width attached to a
+    recovered hit; it reaches every emitted vol3/YARA artifact, so its default
+    is pinned rather than nudged.
     """
     variance = np.asarray(variance, dtype=np.float64)
     reduce_kwargs = dict(reduce_kwargs or {})
@@ -673,8 +687,8 @@ def run_auto_floor(
     if hit_idx is not None:
         off = int(offsets[hit_idx]); size = int(sizes[hit_idx])
         phi_star = float(wvar[hit_idx])
-        start = max(0, off - NEIGHBORHOOD_PAD)
-        end = min(variance.size, off + size + NEIGHBORHOOD_PAD)
+        start = max(0, off - neighborhood_pad)
+        end = min(variance.size, off + size + neighborhood_pad)
         # RECOVERED iff the shipped default floor (with its density gate) would
         # itself have tested this candidate; else the default would have MISSED
         # it and only the lowered/oracle-arbitrated search found it (footnote-2).

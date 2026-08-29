@@ -1,0 +1,17 @@
+
+rule MemDiverPinnedKey
+{
+    meta:
+        description = "MemDiver pattern: MemDiverPinnedKey"
+        pattern_length = 160
+        static_ratio = "0.8"
+        key_offset = 64
+        key_length = 32
+        generated_by = "MemDiver"
+
+    strings:
+        $key = { 21 1E 6E 8B 7B 59 F6 C1 4F B5 C2 C7 B0 50 4C D1 25 D7 6D 4E 14 1C F1 41 5E 3B D2 38 31 EA 9F E4 95 15 52 63 7F 81 EA B7 CE D6 B6 EF F4 FD 46 05 1C D6 DA F9 77 1F 89 24 36 56 21 AC 00 44 47 53 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? C7 EF 45 A7 A5 E8 81 C9 FD A6 CE 8E AE 3E AC B6 21 82 8F 5C 71 08 EB 05 01 2C 9D 39 55 1F D6 50 75 B0 11 68 77 B3 11 90 CA 77 0C 78 EB 3E 87 BF 7C 9F EC 44 E4 4B 10 9C 63 EE B2 4A DB 0A 0F 34 }
+
+    condition:
+        $key
+}

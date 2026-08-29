@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
 from memdiver.core.input_schemas import OUTPUT_FORMATS
+from memdiver.engine.key_location import (
+    DEFAULT_KEY_CONTEXT,
+    DEFAULT_MAX_KEY_OFFSETS,
+)
 
 
 class ScanRequest(BaseModel):
@@ -36,6 +40,14 @@ class KeyMaterialFields(BaseModel):
     Same shape as ``POST /api/inspect/tag-status``: ``passphrase`` (utf-8),
     ``key_hex`` (raw symmetric key, hex), ``kem_key_hex`` (KEM private key,
     hex). All optional — omit for plaintext dumps (spec §10).
+
+    WIRE-FIELD COLLISION, read before adding a field. On this wire ``key_hex``
+    means THE CONTAINER DECRYPTION KEY and nothing else. The key-location
+    requests below carry a *TLS secret to search for*, which is a completely
+    different value with the same natural name — so they spell it
+    ``secret_hex`` and the route maps it to the producer's ``key_hex=``
+    parameter. Reusing ``key_hex`` for both would let one field decrypt the
+    container in one request and be searched for as a needle in the next.
     """
 
     passphrase: str | None = None
@@ -75,6 +87,62 @@ class AnalysisCandidatesRequest(KeyMaterialFields):
     max_returned: int = DEFAULT_MAX_RETURNED_REGIONS
     normalize: bool = False
     project_id: str = ""
+
+
+class KeySecretFields(KeyMaterialFields):
+    """The three mutually-exclusive spellings of "here is the secret".
+
+    ``secret_hex`` is the producer's ``key_hex`` parameter renamed for the wire:
+    see the collision note on :class:`KeyMaterialFields`. The inherited
+    ``key_hex`` keeps its container-decryption meaning, so one request can both
+    decrypt an encrypted ``.msl`` and search it for a secret.
+
+    Exactly one of the three must be supplied. The check is NOT duplicated here
+    as a validator: the producer owns it, so the CLI, MCP and library surfaces
+    get the identical error, and a 400 out of the app's global
+    ``CapabilityError`` handler is exactly what a 422 from here would have been.
+    """
+
+    secret_hex: str = ""
+    keylog_line: str = ""
+    secret: dict | None = None
+
+
+class LocateKeyRequest(KeySecretFields):
+    """Request body for ``POST /api/analysis/locate-key``.
+
+    Mirrors ``app.tools_pipeline.locate_key`` 1:1. ``dump_paths`` may hold a
+    SINGLE dump — locating a key in one dump is a complete answer, unlike every
+    other N-dump route.
+    """
+
+    dump_paths: list[str]
+    view: str | None = None
+    max_offsets: int = DEFAULT_MAX_KEY_OFFSETS
+
+
+class KeyPatternRequest(KeySecretFields):
+    """Request body for ``POST /api/analysis/key-pattern``.
+
+    Two deliberate per-surface default divergences from the producer, of the
+    documented ``order`` kind (``"offset"`` in the producer, ``"rank"`` on the
+    surfaces):
+
+    * ``format`` is ``"yara"`` here, not the producer's ``"volatility3"``.
+    * ``include_window_hex`` defaults to TRUE here alone. The web UI renders the
+      per-dump windows in ``CrossLibraryHex``, which needs the actual bytes; the
+      CLI/MCP/library callers do not and should not pay for them.
+    """
+
+    dump_paths: list[str]
+    context: int = DEFAULT_KEY_CONTEXT
+    format: str = "yara"
+    name: str = "memdiver_key_pattern"
+    min_static_ratio: float = 0.3
+    view: str | None = None
+    output_dir: str | None = None
+    include_window_hex: bool = True
+    max_offsets: int = DEFAULT_MAX_KEY_OFFSETS
 
 
 class AnalyzeFileRequest(KeyMaterialFields):

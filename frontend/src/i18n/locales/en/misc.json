@@ -131,7 +131,16 @@
     "runOnboardingTour": "Run onboarding tour",
     "export": "Export",
     "reset": "Reset",
-    "resetConfirm": "Reset all settings to defaults?"
+    "resetConfirm": "Reset all settings to defaults?",
+    "sectionStorage": "Storage",
+    "uploadDir": "Upload Directory",
+    "uploadDirNotConfigured": "Not configured",
+    "uploadDirEnvPinned": "Pinned by MEMDIVER_UPLOAD_DIR",
+    "uploadDirChoose": "Choose...",
+    "uploadDirPromptTitle": "Choose an Upload Directory",
+    "uploadDirPromptBody": "MemDiver has no upload directory yet. Pick a folder where uploaded captures and dumps should be stored.",
+    "uploadDirMigrate": "Move {{files}} existing file(s) ({{size}}) from the old temporary directory",
+    "uploadDirSaved": "Upload directory saved: {{path}}"
   },
   "research": {
     "emptyTitle": "Build a detection pattern",

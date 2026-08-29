@@ -12,6 +12,15 @@ as a RATCHET: it asserts every capability is wired on every in-scope surface
 except a documented, non-stale set of gaps (:data:`KNOWN_PARITY_GAPS`), and that
 every producer path imports and is callable.
 
+That ratchet iterates :data:`CAPABILITIES` and nothing else, so it is blind BY
+CONSTRUCTION to a producer that was never registered here — exactly the hole
+``pcap.inspect`` sat in (see its comment below). The complementary guard is
+``tests/test_capability_completeness.py``: it discovers every public producer in
+the app-layer producer modules and every route in ``api/routers/*.py`` by AST
+and requires each to be either reachable from :data:`CAPABILITIES` or on an
+annotated, shrink-only exemption list. Add a producer without registering it and
+that test fails.
+
 Scope note: the registry currently enumerates the presentation-separation
 producer families — inspect, xref/structure, the Phase-25 pipeline stages, and
 the Phase-5 ``verify`` / ``experiment`` capabilities — plus the dataset/analysis
@@ -159,6 +168,17 @@ CAPABILITIES: Tuple[Capability, ...] = (
     # that the analyst who cannot yet confirm a key still reaches a candidate
     # list, and a headless/agent-driven analyst is exactly that analyst.
     _cap("analysis.candidates", "memdiver.app.tools_pipeline.analyze_candidates",
+         ("library", "cli", "web", "mcp")),
+    # -- the key-location spine (B1/B3) -------------------------------------
+    # "I already hold the secret — which of my dumps still contain it, and
+    # where?" and "turn that location into a scanning signature". Both claim all
+    # four surfaces from the start for the same reason ``analysis.candidates``
+    # does: the headless/agent-driven analyst is the one who most needs the
+    # honest three-valued verdict, and the exported rule is a file an agent must
+    # be able to ask for.
+    _cap("analysis.locate_key", "memdiver.app.tools_pipeline.locate_key",
+         ("library", "cli", "web", "mcp")),
+    _cap("export.key_pattern", "memdiver.app.tools_pipeline.export_key_pattern",
          ("library", "cli", "web", "mcp")),
     # -- frontend-serving producers (Phase 9) -------------------------------
     # Field inference + algorithm-availability gating were duplicated in the

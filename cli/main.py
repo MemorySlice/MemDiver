@@ -11,6 +11,16 @@ from pathlib import Path
 # above, so this costs no additional startup time.
 from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
 from memdiver.core.service_errors import CapabilityError
+# Same reasoning for --neighborhood-pad: the flag must advertise the SAME pad
+# the engine applies, so it imports the canonical constant instead of repeating
+# the literal (this file used to be one of four places holding a bare 64).
+from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+# Same reasoning again for --context / --max-offsets on the two key-location
+# subcommands: the flags must advertise the SAME numbers the engine applies.
+from memdiver.engine.key_location import (
+    DEFAULT_KEY_CONTEXT,
+    DEFAULT_MAX_KEY_OFFSETS,
+)
 
 from ._shared import (
     _decrypt_parent_parser,
@@ -34,15 +44,18 @@ from .consensus import (
 )
 from .experiment import _cmd_experiment
 from .pipeline import (
+    DEFAULT_AUTO_EXPORT_CONTEXT,
     _cmd_analyze_candidates,
     _cmd_auto_floor,
     _cmd_brute_force,
     _cmd_emit_plugin,
     _cmd_export,
+    _cmd_export_key_pattern,
     _cmd_export_keylog,
     _cmd_gen_kem_key,
     _cmd_import_dir,
     _cmd_inspect_pcap,
+    _cmd_locate_key,
     _cmd_n_sweep,
     _cmd_search_reduce,
     _cmd_verify,
@@ -53,6 +66,15 @@ from .inspect import (
 )
 
 logger = logging.getLogger("memdiver.cli")
+
+#: Shared help text for ``--neighborhood-pad`` (brute-force + auto-floor).
+_NEIGHBORHOOD_PAD_HELP = (
+    "Bytes of context sliced on EACH side of a hit for the emitted "
+    "neighborhood window (window = pad + key_size + pad, so 160 bytes for a "
+    "32-byte key at the default). This value is baked into every Volatility3 "
+    "plugin and YARA rule MemDiver emits, so changing it rewrites the emitted "
+    f"signature (default: {DEFAULT_NEIGHBORHOOD_PAD})"
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -248,6 +270,8 @@ def _build_parser() -> argparse.ArgumentParser:
     bf.add_argument("--first-hit", action="store_true",
                     help="Stop at the first verified candidate (default: exhaustive)")
     bf.add_argument("--state", help="Consensus state path (attaches neighborhood variance)")
+    bf.add_argument("--neighborhood-pad", type=int, default=DEFAULT_NEIGHBORHOOD_PAD,
+                    help=_NEIGHBORHOOD_PAD_HELP)
     bf.add_argument("--top-k", type=int, default=10)
     bf.add_argument("-o", "--output", required=True, help="Output hits.json")
     bf.add_argument("-v", "--verbose", action="store_true")
@@ -330,6 +354,8 @@ def _build_parser() -> argparse.ArgumentParser:
     af.add_argument("--managed-region", action="store_true",
                     help="Target is a managed runtime / moving-GC heap: a no-hit is "
                          "INCONCLUSIVE(regime) (off-grid object headers may hide the key)")
+    af.add_argument("--neighborhood-pad", type=int, default=DEFAULT_NEIGHBORHOOD_PAD,
+                    help=_NEIGHBORHOOD_PAD_HELP)
     af.add_argument("--positive-control",
                     help="Hex of a known-good key for the oracle self-test (optional)")
     af.add_argument("--output-dir", required=True, help="Directory for verdict.json/report.md")
@@ -361,8 +387,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--length", type=int, default=None, help="Region length in bytes")
     ex.add_argument("--auto", action="store_true",
                     help="Auto-detect largest KEY_CANDIDATE region")
-    ex.add_argument("--context", type=int, default=32,
-                    help="Bytes of context around auto-detected region (default: 32)")
+    # default=None, NOT 32: the manual (--offset/--length) path cannot honour
+    # --context at all, so it must be able to tell "omitted" from an explicit
+    # value and refuse only the latter. The 32 is resolved in _cmd_export.
+    ex.add_argument("--context", type=int, default=None,
+                    help=f"--auto only: static-anchor bytes kept on each side "
+                         f"of the AUTO-DETECTED region (default: "
+                         f"{DEFAULT_AUTO_EXPORT_CONTEXT}). Not applicable with "
+                         f"--offset/--length -- use `export-key-pattern "
+                         f"--context N` to pad a known key instead")
     ex.add_argument("--name", default="memdiver_pattern", help="Pattern name")
     ex.add_argument("--format", default="volatility3",
                     choices=["yara", "json", "volatility3", "vol3"])
@@ -372,6 +405,71 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Use alignment-filtered candidates for auto-detection")
     ex.add_argument("-o", "--output", help="Output file path")
     ex.add_argument("-v", "--verbose", action="store_true")
+    # locate-key (where ONE known secret sits across N dumps)
+    lk = sub.add_parser(
+        "locate-key",
+        help="Locate a KNOWN secret across N dumps (exit 0 found / 3 absent / "
+             "2 nothing searched)",
+        parents=[_decrypt_parent_parser()],
+    )
+    lk.add_argument("dumps", nargs="+",
+                    help="Dump file paths or directories (N >= 1: locating a "
+                         "key in ONE dump is a complete answer)")
+    lk_form = lk.add_mutually_exclusive_group(required=True)
+    lk_form.add_argument("--key-hex",
+                         help="The secret as hex bytes ('aa bb cc' and "
+                              "'0xaabbcc' both accepted)")
+    lk_form.add_argument("--keylog-line",
+                         help="One NSS key-log row: "
+                              "'<LABEL> <client_random_hex> <secret_hex>'")
+    lk.add_argument("--view", default=None,
+                    help="Byte view to search (default: the format's own — "
+                         "'raw' for raw dumps, 'vas' for .msl)")
+    lk.add_argument("--max-offsets", type=int, default=DEFAULT_MAX_KEY_OFFSETS,
+                    help=f"Offsets RETURNED per dump (default "
+                         f"{DEFAULT_MAX_KEY_OFFSETS}); hit_count stays the "
+                         f"true total either way")
+    lk.add_argument("-o", "--output", help="Output JSON file")
+    lk.add_argument("-v", "--verbose", action="store_true")
+    # export-key-pattern (a signature anchored on an already-known secret)
+    ekp = sub.add_parser(
+        "export-key-pattern",
+        help="Export a scanning signature anchored on a KNOWN secret "
+             "(wildcards the key, keeps its neighbourhood)",
+        parents=[_decrypt_parent_parser()],
+    )
+    ekp.add_argument("dumps", nargs="+",
+                     help="Dump file paths or directories (N >= 2: a static "
+                          "mask is a comparison). INCLUDE dumps in which the "
+                          "key is absent — they are what wildcard the key.")
+    ekp_form = ekp.add_mutually_exclusive_group(required=True)
+    ekp_form.add_argument("--key-hex", help="The secret as hex bytes")
+    ekp_form.add_argument("--keylog-line", help="One NSS key-log row")
+    ekp.add_argument("--context", type=int, default=DEFAULT_KEY_CONTEXT,
+                     help=f"Static-anchor bytes per side of the key (default "
+                          f"{DEFAULT_KEY_CONTEXT})")
+    # yara, NOT the producer's volatility3 — a documented per-surface default
+    # divergence of the same kind as --order (rank here, offset in the producer).
+    ekp.add_argument("--format", default="yara",
+                     choices=("yara", "json", "volatility3", "vol3"),
+                     help="Output format (default yara)")
+    ekp.add_argument("--name", default="memdiver_key_pattern",
+                     help="Pattern / rule name")
+    ekp.add_argument("--min-static-ratio", type=float, default=0.3,
+                     help="Minimum static-byte ratio for a pattern to be "
+                          "emitted (default 0.3). A LOWER bound only — see the "
+                          "key_fully_static diagnostic for the upper end.")
+    ekp.add_argument("--view", default=None,
+                     help="Byte view to read (default: the format's own)")
+    ekp.add_argument("--output-dir",
+                     help="Also write the rendered pattern into this directory")
+    ekp.add_argument("--include-window-hex", action="store_true",
+                     help="Include each dump's raw window bytes as hex")
+    ekp.add_argument("--max-offsets", type=int, default=DEFAULT_MAX_KEY_OFFSETS,
+                     help=f"Offsets returned per dump (default "
+                          f"{DEFAULT_MAX_KEY_OFFSETS})")
+    ekp.add_argument("-o", "--output", help="Output JSON file")
+    ekp.add_argument("-v", "--verbose", action="store_true")
     # export-keylog
     ekl = sub.add_parser(
         "export-keylog",
@@ -620,6 +718,8 @@ def main():
         "auto-floor": _cmd_auto_floor,
         "emit-plugin": _cmd_emit_plugin,
         "export-keylog": _cmd_export_keylog,
+        "locate-key": _cmd_locate_key,
+        "export-key-pattern": _cmd_export_key_pattern,
         "inspect-pcap": _cmd_inspect_pcap,
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,

@@ -10,7 +10,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from memdiver.api.config import Settings
-from memdiver.api.dependencies import get_api_settings, get_tool_session
+from memdiver.api.dependencies import (
+    get_api_settings,
+    get_tool_session,
+    upload_dir_or_409,
+)
 from memdiver.api.path_safety import ensure_within
 from memdiver.app.session import ToolSession
 from memdiver.mcp_server import tools
@@ -59,8 +63,13 @@ async def upload_dump(
         # server process can reach (arbitrary write). With no output_dir the
         # converted file lands next to the (server-chosen) temp upload.
         if output_dir:
+            # upload_dir_or_409() is called HERE, not as a Depends, so the
+            # common frontend flow (no output_dir -> convert beside the temp
+            # upload) keeps working on a server where no upload directory has
+            # been chosen yet. Only a caller-supplied output_dir needs the
+            # containment root, and therefore needs it configured.
             try:
-                out_dir = ensure_within(settings.upload_dir, Path(output_dir))
+                out_dir = ensure_within(upload_dir_or_409(), Path(output_dir))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
             out_dir.mkdir(parents=True, exist_ok=True)

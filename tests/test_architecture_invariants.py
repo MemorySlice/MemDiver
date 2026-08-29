@@ -912,15 +912,21 @@ def test_cross_surface_capability_parity():
 
 
 # ---------------------------------------------------------------------------
-# Invariant 13 (G9) — the four pipeline producers that open a keyed container
+# Invariant 13 (G9) — the SIX pipeline producers that open a keyed container
 # must SURFACE a locked (missing/wrong-key) dump rather than silently losing
 # the key state and misreporting it as a genuine empty/negative result. Each
 # is expected to raise EncryptedDumpLockedError. Crypto-fixture-gated like the
 # flagship E2E tests (skips when AES-256-GCM is absent).
+#
+# The two key-location producers (B1/B3) matter most of the six: a locked
+# container reads back EMPTY rather than raising, so without the guard
+# ``locate_key`` would report a confident ABSENCE in every locked dump, and
+# ``export_key_pattern`` would emit a 100 %-static pattern over bytes nobody
+# decrypted.
 # ---------------------------------------------------------------------------
 
 
-def test_g9_four_producers_surface_locked_dump(encrypted_msl, tmp_path):
+def test_g9_producers_surface_locked_dump(encrypted_msl, tmp_path):
     import numpy as np
 
     from memdiver.app import tools_pipeline
@@ -958,6 +964,12 @@ def test_g9_four_producers_surface_locked_dump(encrypted_msl, tmp_path):
             num_dumps=2,
         )
 
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.locate_key(dump_paths=pair, key_hex="deadbeef")
+
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.export_key_pattern(dump_paths=pair, key_hex="deadbeef")
+
 
 # ---------------------------------------------------------------------------
 # Cross-surface SIGNATURE parity (not just capability presence)
@@ -984,6 +996,10 @@ _MCP_TOOL_PRODUCERS = {
     # A4's exploratory producer. Added with the tool, and likewise needing no
     # _MCP_ALLOWED_OMISSIONS entry: the tool mirrors the producer 1:1.
     "analyze_candidates": "analyze_candidates",
+    # B1/B3 — the key-location spine. Both mirror their producer 1:1 and so
+    # need no _MCP_ALLOWED_OMISSIONS entry either.
+    "locate_key": "locate_key",
+    "export_key_pattern": "export_key_pattern",
 }
 #: Producer params that are orchestration internals, never surfaced on any tool.
 #: ``key_material`` is the resolved dict a surface *builds* from the individual

@@ -4,8 +4,9 @@ and what pip cannot provide at all.
 Three distinct conditions reach a user as a "missing dependency" message, and
 each needs a *different* action:
 
-1. A genuinely-optional extra is absent. Only ``marimo`` (plus the tooling-only
-   ``dev``/``docs`` groups) is still in this class.
+1. A genuinely-optional extra is absent. ``marimo`` and ``vol``
+   (Volatility3, for running the emitted plugins) plus the tooling-only
+   ``dev``/``docs`` groups are what is left in this class.
 2. A BASE package is absent -- a force-uninstall or an otherwise broken
    environment. A ``memdiver[<extra>]`` hint is actively misleading here,
    because since 0.6 those extras are empty back-compat aliases that install
@@ -22,8 +23,12 @@ dozen call sites that report an absent dependency.
 
 from __future__ import annotations
 
-#: Optional-dependency groups that still install something.
-OPTIONAL_EXTRAS = frozenset({"marimo", "dev", "docs"})
+#: Optional-dependency groups that still install something. Membership here is
+#: what makes ``missing_package_message(..., extra=...)`` render the
+#: ``pip install "memdiver[<extra>]"`` form instead of degrading to the
+#: base-reinstall wording -- so a new opt-in extra must be added here, and must
+#: NOT be added to :data:`NO_OP_EXTRAS`.
+OPTIONAL_EXTRAS = frozenset({"marimo", "vol", "dev", "docs"})
 
 #: Extra names kept only so already-published commands ("pip install
 #: memdiver[api]") keep RESOLVING; their contents moved into the base install,

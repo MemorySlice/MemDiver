@@ -6,6 +6,8 @@
 - Exposes `dataset_root` and `aes_sample_binary` session fixtures.
 - Registers the `requires_dataset` marker for tests that need the
   private mempdumps directory.
+- Registers the `requires_vol3` marker for tests that need a real Volatility3
+  launcher, and reports which one resolved.
 """
 from __future__ import annotations
 
@@ -124,6 +126,25 @@ def live_backend() -> str:
                 proc.wait(timeout=3)
 
 
+#: Named so the skip line tells the reader how to turn the proof ON, rather
+#: than only that it was off.
+VOL3_SKIP_REASON: str = (
+    "No Volatility3 launcher found. Set MEMDIVER_VOL3_BIN=/path/to/vol.py "
+    "(plus MEMDIVER_VOL3_PYTHON for a checkout with its own venv), or put "
+    "vol/vol.py on PATH, or `pip install \"memdiver[vol]\"`."
+)
+
+
+def _vol3_launcher():
+    """Resolve a Volatility3 launcher, or ``None``. Never raises."""
+    try:
+        from memdiver.engine.vol3_subproc import find_vol3_launcher
+
+        return find_vol3_launcher()
+    except Exception:  # pragma: no cover - defensive; collection must not break
+        return None
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--dataset-root",
@@ -143,7 +164,27 @@ def pytest_report_header(config: pytest.Config) -> str:
     ``dataset_root()`` only, so printing it never materialises the synthetic
     dataset.
     """
-    return f"memdiver dataset: {dataset_source_summary()}"
+    return (
+        f"memdiver dataset: {dataset_source_summary()}\n"
+        f"memdiver vol3 launcher: {_vol3_launcher_summary()}"
+    )
+
+
+def _vol3_launcher_summary() -> str:
+    """Which Volatility3 launcher the ``requires_vol3`` gate resolved.
+
+    Reported for the same reason the dataset line above is: three Volatility3
+    trees routinely coexist on one machine and they disagree on version, so
+    "the vol3 proof passed" is meaningless without saying which framework it
+    passed against. Import is local so a broken engine module degrades to a
+    header note instead of breaking collection outright.
+    """
+    try:
+        from memdiver.engine.vol3_subproc import launcher_report
+
+        return launcher_report()
+    except Exception as exc:  # pragma: no cover - defensive; header must never fail
+        return f"unavailable ({exc.__class__.__name__}: {exc})"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -153,6 +194,13 @@ def pytest_configure(config: pytest.Config) -> None:
         "requires_dataset: mark test as requiring the private mempdumps dataset "
         "(resolved by tests/_paths.py::dataset_root, which now falls back to the "
         "local TLS corpus via tls_dumps_dir(); see `make test-corpus`)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "requires_vol3: mark test as requiring a real Volatility3 launcher "
+        "(MEMDIVER_VOL3_BIN, or vol/vol.py on PATH; a .py launcher also honours "
+        "MEMDIVER_VOL3_PYTHON). A CONDITIONAL gate, not `slow` -- see the marker "
+        "comment in pyproject.toml",
     )
     # Ensure the synthetic fixture dataset exists before collection.
     # generate_dataset() is idempotent — returns immediately if the
@@ -171,13 +219,23 @@ def pytest_collection_modifyitems(
     which, since the resolver reconciliation, ends at ``tls_dumps_dir()``. So a
     test gated by this marker and a test body that opens paths under
     ``tls_dumps_dir()`` can no longer disagree about whether the corpus exists.
+
+    Auto-skip ``requires_vol3`` items too, when no ``vol``/``vol.py`` launcher
+    resolves. Same shape, same reason: a conditional gate, so a machine with a
+    launcher gets the real out-of-process proof from a plain ``pytest`` and a
+    machine without one gets a clean, named skip.
     """
-    if _resolve_dataset_root() is not None:
-        return
-    skip = pytest.mark.skip(reason=SKIP_REASON)
-    for item in items:
-        if "requires_dataset" in item.keywords:
-            item.add_marker(skip)
+    if _resolve_dataset_root() is None:
+        skip_dataset = pytest.mark.skip(reason=SKIP_REASON)
+        for item in items:
+            if "requires_dataset" in item.keywords:
+                item.add_marker(skip_dataset)
+
+    if _vol3_launcher() is None:
+        skip_vol3 = pytest.mark.skip(reason=VOL3_SKIP_REASON)
+        for item in items:
+            if "requires_vol3" in item.keywords:
+                item.add_marker(skip_vol3)
 
 
 @pytest.fixture(scope="session")

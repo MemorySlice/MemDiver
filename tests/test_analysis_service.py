@@ -159,3 +159,51 @@ def test_reference_bytes_come_from_consensus_not_file(aslr_triple):
     region = result["region"]
     assert region["length"] == 96
     assert region["offset"] == 0x1E0
+
+
+def test_vol3_plugin_constants_agree_with_its_embedded_yara_rule():
+    """A vol3 export must not disagree with the YARA rule it embeds.
+
+    ``Volatility3Exporter.export`` takes no ``key_offset``/``key_length``
+    parameters -- it reads them off the pattern dict, defaulting to 0 and to the
+    FULL pattern length. ``_render_content``'s vol3 branch used to pass those
+    values to ``YaraExporter`` only, so an export with a padded window emitted a
+    plugin whose embedded rule said ``key_offset = 256`` while its own
+    ``KEY_OFFSET``/``KEY_LENGTH`` constants said ``0`` and ``560``. Run under real
+    Volatility3 that plugin reported the ENTIRE window as the key: KeyOffset ==
+    PatternOffset, KeyHex the whole padded window, and KeyEntropy diluted by the
+    padding -- i.e. it "found" something useless while looking successful.
+
+    The invariant asserted here is agreement, which is what makes the bug
+    impossible to reintroduce in either exporter independently.
+    """
+    from memdiver.app.export_service import _render_content
+
+    key_offset, key_length, total = 256, 48, 560
+    pattern = {
+        "name": "agreement_probe",
+        "length": total,
+        "hex_pattern": " ".join(["41"] * total),
+        "wildcard_pattern": " ".join(
+            "??" if key_offset <= i < key_offset + key_length else "41"
+            for i in range(total)
+        ),
+        "static_ratio": (total - key_length) / total,
+        "static_count": total - key_length,
+        "volatile_count": key_length,
+    }
+
+    content = _render_content(
+        pattern, "volatility3", key_offset=key_offset, key_length=key_length
+    )
+
+    assert f"KEY_OFFSET = {key_offset}" in content
+    assert f"KEY_LENGTH = {key_length}" in content
+    assert f"PATTERN_LENGTH = {total}" in content
+    # The embedded rule's meta must say the same thing as the constants.
+    assert f"key_offset = {key_offset}" in content
+    assert f"key_length = {key_length}" in content
+    # And the caller's dict must not have been mutated on the way through:
+    # `pattern` is handed back to the user in the producer payload.
+    assert "key_offset" not in pattern
+    assert "key_length" not in pattern

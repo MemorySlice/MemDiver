@@ -366,6 +366,20 @@ aggregate quota (default 5 GiB, `MEMDIVER_PCAP_QUOTA_BYTES`); the oldest are
 pruned first when the quota is exceeded. You may also type a server-side path
 directly instead of uploading.
 
+`upload_dir` has **no default** — there is deliberately no world-writable
+`/tmp` fallback, because it is also the containment root every server-side write
+path is checked against. The **first** upload therefore asks you where captures
+and dumps should live; the choice is stored in your user-local
+`~/.memdiver/config.json` (never the git-tracked repo `config.json`) and the
+directory is created owner-only (`0o700`). You can review or change it later
+under **Settings → Storage**, or pin it for the whole server with
+`MEMDIVER_UPLOAD_DIR` — which always wins, and makes the UI control read-only.
+An unconfigured server answers `POST /api/pcaps/upload` with **409**
+`upload_dir_unconfigured: …`; the UI turns that into the "choose a directory"
+prompt and then retries the upload with the same file, so nothing is lost.
+If files are still sitting in the old `/tmp/memdiver_uploads`, the prompt offers
+a one-time migration.
+
 ## All four surfaces
 
 The pcap capability follows the "one producer, four surfaces" rule:

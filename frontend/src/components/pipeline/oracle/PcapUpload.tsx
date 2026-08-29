@@ -19,7 +19,10 @@
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { ApiError } from "@/api/client";
 import { uploadPcap, type PcapSession } from "@/api/pipeline";
+import { UploadDirPrompt } from "@/components/settings/UploadDirPrompt";
+import { isUploadDirUnconfigured } from "@/components/settings/upload-dir-error";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { pcapSessionSummary, sessionHasAppRecords } from "./pcap-session";
 import { pcapErrorMessage, usePcapArm } from "./use-pcap-arm";
@@ -41,6 +44,13 @@ export function PcapUpload() {
 
   const [phase, setPhase] = useState<UploadPhase>("idle");
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Configure-on-first-use: a fresh install has no upload directory, so the
+  // very first POST is rejected with 409. Rather than surfacing that as an
+  // error the user cannot act on, hold onto the file they just dropped, let
+  // them pick a directory, then replay the upload automatically.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [showUploadDirPrompt, setShowUploadDirPrompt] = useState(false);
 
   // Concurrency guard: a second file dropped while an upload/validate is in
   // flight would interleave ``updateForm({pcapPath})`` (capture A) with
@@ -70,6 +80,14 @@ export function PcapUpload() {
         // Never leave a usable ``pcapPath`` behind on failure: a set-but-broken
         // path would let StageOracle unlock "Next" with no valid oracle.
         updateForm({ pcapPath: null });
+        // The one recoverable failure: no upload directory is configured yet.
+        // Both halves of the guard matter -- the status keeps a 400 that merely
+        // mentions the token from opening the prompt.
+        if (e instanceof ApiError && e.status === 409 && isUploadDirUnconfigured(e.message)) {
+          setPendingFile(file);
+          setShowUploadDirPrompt(true);
+          return;
+        }
         setUploadError(pcapErrorMessage(e, t("stages.oracle.pcap.dpktMissing")));
       } finally {
         setPhase("idle");
@@ -88,6 +106,22 @@ export function PcapUpload() {
     };
     input.click();
   }, [handleFile]);
+
+  // On a successful save the file the user already dropped must not be lost:
+  // close the prompt and replay the upload with the very same ``File``.
+  // ``handleFile``'s ``finally`` has already released ``inFlightRef``, so the
+  // replay is not swallowed by the concurrency guard.
+  const handleUploadDirSaved = useCallback((): void => {
+    setShowUploadDirPrompt(false);
+    const file = pendingFile;
+    setPendingFile(null);
+    if (file) void handleFile(file);
+  }, [handleFile, pendingFile]);
+
+  const handleUploadDirPromptClose = useCallback((): void => {
+    setShowUploadDirPrompt(false);
+    setPendingFile(null);
+  }, []);
 
   const selectSession = (session: PcapSession): void => {
     updateForm({ tlsClientRandom: session.client_random });
@@ -227,6 +261,13 @@ export function PcapUpload() {
         <div className="text-xs md-text-muted">
           {t("stages.oracle.pcap.noSessions")}
         </div>
+      )}
+
+      {showUploadDirPrompt && (
+        <UploadDirPrompt
+          onSaved={handleUploadDirSaved}
+          onClose={handleUploadDirPromptClose}
+        />
       )}
     </div>
   );

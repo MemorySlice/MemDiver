@@ -10,6 +10,7 @@ from memdiver.architect.volatility3_exporter import (
     _longest_static_run,
 )
 from memdiver.architect.yara_exporter import key_locator_from_pattern
+from tests._emit_pins import emitted_requirements
 
 
 def _embedded_yara_meta(plugin_source: str) -> dict:
@@ -115,6 +116,42 @@ class TestVolatility3Exporter:
         source = Volatility3Exporter.export(sample_pattern)
         compile(source, "<generated>", "exec")  # Must not raise SyntaxError
 
+    def test_export_imports_format_hints_explicitly(self, sample_pattern):
+        """Bug (a), pinned in text so it is caught without volatility3 installed.
+
+        ``renderers`` is a package; ``import ... renderers`` does not bind its
+        ``format_hints`` submodule, so ``renderers.format_hints.Hex`` at module
+        level raises ``AttributeError`` in a fresh interpreter. It only ever
+        appeared to work because 111 of Volatility3's own bundled plugins do the
+        explicit submodule import, and once vol3's ``import_files`` plugin walk
+        has run the name is bound on the parent for the rest of the process.
+
+        The REAL guard is
+        ``tests/test_vol3_verify.py::test_emitted_plugin_module_level_format_hints_is_a_bug``,
+        which deletes the attribute and then actually loads the plugin. This one
+        is the cheap tripwire that still fires on a machine without the ``vol``
+        extra -- so it asserts the import is present AND that no
+        ``renderers.format_hints`` attribute access survives anywhere.
+        """
+        source = Volatility3Exporter.export(sample_pattern)
+        tree = ast.parse(source)
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "volatility3.framework.renderers"
+            for alias in node.names
+        }
+        assert "format_hints" in imported, (
+            "the emitted plugin must import the format_hints SUBMODULE "
+            f"explicitly; renderers imports were {sorted(imported)}"
+        )
+        assert "renderers.format_hints" not in source, (
+            "an attribute access through the parent package is exactly the bug"
+        )
+        # ``renderers`` itself is still needed -- TreeGrid lives there.
+        assert "renderers.TreeGrid" in source
+
     def test_export_custom_name(self, sample_pattern):
         source = Volatility3Exporter.export(sample_pattern, plugin_name="CustomScanner")
         assert "class CustomScanner" in source
@@ -176,9 +213,51 @@ class TestVolatility3Exporter:
         assert "math.log2" in source
 
     def test_export_pid_requirement(self, sample_pattern):
+        """``pid`` is an optional IntRequirement -- asserted on a parse, not a substring.
+
+        The previous body was ``assert '"pid"' in source`` followed by
+        ``assert "pid_filter" in source or "pid" in source``. The second line
+        asserted nothing: its right operand, ``"pid" in source``, was already
+        guaranteed true by the line above it, so the ``or`` could never fail --
+        including in the world where the exporter stopped emitting a
+        ``pid_filter`` concept entirely. Do not "restore" it.
+        """
         source = Volatility3Exporter.export(sample_pattern)
-        assert '"pid"' in source
-        assert "pid_filter" in source or "pid" in source
+        reqs = emitted_requirements(source)
+
+        assert "pid" in reqs, sorted(reqs)
+        assert reqs["pid"]["kind"] == "Int"
+        assert reqs["pid"]["optional"] is True
+        assert reqs["pid"]["has_default"] is True
+        assert reqs["pid"]["default"] is None
+
+    def test_export_requirement_map_is_pinned(self, sample_pattern):
+        """The exporter's requirement map, pinned whole.
+
+        B5.2 added ``kernel`` (Module, optional -- see
+        ``tests/test_vol3_emit.py::test_emit_requirement_map_is_pinned`` for why
+        optional is load-bearing) and ``virtual`` (Boolean, optional, default
+        False -- opt back in to scanning the translation layer). This pin is what
+        makes the next change a deliberate edit rather than unobserved drift.
+        """
+        reqs = emitted_requirements(Volatility3Exporter.export(sample_pattern))
+        assert list(reqs) == [
+            "primary", "symbols", "kernel", "pid", "full_scan", "virtual",
+        ]
+        assert {name: entry["kind"] for name, entry in reqs.items()} == {
+            "primary": "TranslationLayer",
+            "symbols": "SymbolTable",
+            "kernel": "Module",
+            "pid": "Int",
+            "full_scan": "Boolean",
+            "virtual": "Boolean",
+        }
+        assert {name: entry["optional"] for name, entry in reqs.items()} == {
+            "primary": False, "symbols": True, "kernel": True,
+            "pid": True, "full_scan": True, "virtual": True,
+        }
+        assert reqs["virtual"]["has_default"] is True
+        assert reqs["virtual"]["default"] is False
 
     def test_export_description(self, sample_pattern):
         source = Volatility3Exporter.export(

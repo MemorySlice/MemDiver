@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from memdiver.api.config import Settings
-from memdiver.api.dependencies import get_api_settings
+from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
 
 logger = logging.getLogger("memdiver.api.routers.pcaps")
@@ -71,11 +71,15 @@ def _prune_pcap_dir(pcap_dir: Path, quota_bytes: int, keep: Path) -> None:
 async def upload_pcap(
     file: UploadFile = File(...),
     settings: Settings = Depends(get_api_settings),
+    upload_dir: Path = Depends(upload_dir_or_409),
 ):
     """Upload a packet capture and persist it for pipeline verification.
 
     The capture is streamed in 1 MiB chunks to a uuid-named file under
     ``settings.upload_dir/pcaps/`` (0o600), preserving the original suffix.
+    ``upload_dir`` is configure-on-first-use, so an unconfigured server answers
+    409 here (``upload_dir_or_409``) — this endpoint ALWAYS needs the directory,
+    which is why it is a hard dependency rather than a conditional call.
     Uploads exceeding ``PCAP_UPLOAD_MAX_BYTES`` are rejected with 413 and any
     partial file is removed; a disallowed suffix is rejected with 400.
     """
@@ -88,7 +92,7 @@ async def upload_pcap(
         )
 
     try:
-        pcap_dir = ensure_within(settings.upload_dir, settings.upload_dir / "pcaps")
+        pcap_dir = ensure_within(upload_dir, upload_dir / "pcaps")
     except ValueError as exc:
         # Defensive: a planted symlink at upload_dir/pcaps escaping the base
         # would otherwise surface as a 500. Mirror validate_pcap's 400 handling

@@ -80,7 +80,7 @@ CI asserts that exactly one copy of `react` exists.
 - **Integration** — `test_integration.py`, `test_aes_e2e.py`, `test_pipeline.py`.
 - **Real-dump E2E** — gated by the `requires_dataset` marker; skipped when no dataset is configured.
 - **Python browser E2E (pytest-playwright)** — `tests/e2e_*_test.py` (manually invoked, not collected by pytest default discovery).
-- **Frontend unit (vitest)** — 23 files / 209 tests under `tests/frontend/`,
+- **Frontend unit (vitest)** — 32 files / 305 tests under `tests/frontend/`,
   mirroring the `frontend/src/` tree. Tests are **never** co-located with the
   module under test, and the directory anchor is load-bearing: it is what keeps
   vitest and the Playwright suite apart (Playwright's files are all `*.spec.ts`

@@ -189,7 +189,9 @@ _CONFIG_DEFAULTS: Dict[str, Any] = {
     "algorithms": (),
     "keylog_filename": KEYLOG_FILENAME,
     "template_name": "",
-    "min_secret_len": 0,
+    # nosec B105 - bandit reads the "..._len" key name as a password field; this
+    # is a numeric length floor in a defaults dict, not a credential.
+    "min_secret_len": 0,  # nosec B105
     "memdiver_version": "",
     "sweep_schema_version": SWEEP_SCHEMA_VERSION,
 }

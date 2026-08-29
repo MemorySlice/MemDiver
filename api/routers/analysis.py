@@ -24,6 +24,8 @@ from memdiver.api.models import (
     ConsensusRequest,
     ConvergenceRequest,
     ExportKeylogRequest,
+    KeyPatternRequest,
+    LocateKeyRequest,
     VerifyKeyRequest,
 )
 from memdiver.api.services.consensus_session import (
@@ -31,7 +33,7 @@ from memdiver.api.services.consensus_session import (
     get_consensus_manager,
 )
 from memdiver.api.config import Settings
-from memdiver.api.dependencies import get_api_settings
+from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
@@ -164,6 +166,71 @@ def analysis_candidates(req: AnalysisCandidatesRequest):
         max_returned=req.max_returned,
         normalize=req.normalize,
         project_id=req.project_id,
+        key_material=km,
+    )
+
+
+@router.post("/locate-key")
+def analysis_locate_key(req: LocateKeyRequest):
+    """Locate a secret the caller ALREADY HOLDS across N dumps.
+
+    Thin HTTP adapter over :func:`memdiver.app.tools_pipeline.locate_key`, the
+    same producer the CLI ``locate-key`` command and the MCP ``locate_key`` tool
+    route through. Synchronous, like ``POST /candidates`` beside it and for the
+    same reason: the result is a per-dump census a human is waiting to read.
+
+    ``secret_hex`` — NOT ``key_hex`` — carries the secret to search for; see the
+    wire-collision note on ``api.models.KeyMaterialFields``.
+
+    Deliberately NO ``try/except``: a ``CapabilityError`` out of the producer is
+    translated by the app's single global handler (``api.main``). A key that is
+    provably absent is a 200 with ``verdict == "absent"``, not an error — only
+    a malformed request (400) or a missing dump (404) leaves through the handler.
+    """
+    from memdiver.app.tools_pipeline import locate_key
+
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
+    return locate_key(
+        dump_paths=list(req.dump_paths),
+        key_hex=req.secret_hex,
+        keylog_line=req.keylog_line,
+        secret=req.secret,
+        view=req.view,
+        max_offsets=req.max_offsets,
+        key_material=km,
+    )
+
+
+@router.post("/key-pattern")
+def analysis_key_pattern(req: KeyPatternRequest):
+    """Export a scanning signature anchored on an already-known secret.
+
+    Thin HTTP adapter over
+    :func:`memdiver.app.tools_pipeline.export_key_pattern`. Same producer as the
+    CLI ``export-key-pattern`` command and the MCP ``export_key_pattern`` tool.
+
+    ``include_window_hex`` defaults to TRUE on this route only, because the web
+    UI renders the per-dump windows in ``CrossLibraryHex`` and cannot fetch the
+    bytes any other way. Same no-``try/except`` contract as the route above: a
+    key absent from every searched dump reaches the client as a 404 via
+    ``KeyNotFoundError``, and nothing was searched at all reaches it as a 400.
+    """
+    from memdiver.app.tools_pipeline import export_key_pattern
+
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
+    return export_key_pattern(
+        dump_paths=list(req.dump_paths),
+        key_hex=req.secret_hex,
+        keylog_line=req.keylog_line,
+        secret=req.secret,
+        context=req.context,
+        fmt=req.format,
+        name=req.name,
+        min_static_ratio=req.min_static_ratio,
+        view=req.view,
+        output_dir=req.output_dir,
+        include_window_hex=req.include_window_hex,
+        max_offsets=req.max_offsets,
         key_material=km,
     )
 
@@ -491,8 +558,11 @@ def export_keylog(
     resolved_output: str | None = None
     if req.output_path is not None:
         try:
+            # Called here rather than as a Depends so an export WITHOUT an
+            # output_path (the frontend's flow) still works on a server with no
+            # upload directory chosen yet; only the contained write needs one.
             resolved_output = str(
-                ensure_within(settings.upload_dir, Path(req.output_path))
+                ensure_within(upload_dir_or_409(), Path(req.output_path))
             )
         except ValueError as exc:
             # Do not echo the resolved upload_dir — the ValueError message

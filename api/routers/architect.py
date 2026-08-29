@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from memdiver.api.models import KeyMaterialFields
+from memdiver.api.services.key_material import decode_key_material
+from memdiver.app.composition import open_dump, raise_if_locked
 from memdiver.architect.json_exporter import JsonExporter
 from memdiver.architect.pattern_generator import PatternGenerator
 from memdiver.architect.static_checker import StaticChecker
@@ -17,6 +21,11 @@ from memdiver.architect.yara_exporter import (
     YaraExporter,
     key_locator_from_pattern,
 )
+from memdiver.core.service_errors import (
+    CapabilityError,
+    EncryptedDumpLockedError,
+)
+from memdiver.core.service_result import KeyStatus
 
 logger = logging.getLogger("memdiver.api.routers.architect")
 
@@ -28,8 +37,20 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-class CheckStaticRequest(BaseModel):
-    """Request body for static byte checking across dumps."""
+class CheckStaticRequest(KeyMaterialFields):
+    """Request body for static byte checking across dumps.
+
+    Inherits the optional ``passphrase`` / ``key_hex`` / ``kem_key_hex``
+    decryption fields (spec §10) from :class:`KeyMaterialFields`, the same
+    shape ``POST /api/analysis/consensus`` and ``POST /api/inspect/tag-status``
+    use. Without them an encrypted ``.msl`` reads back empty, and the route
+    would report an empty region as a result rather than as a locked
+    container.
+
+    ``offset`` is a MEMORY offset for ``.msl`` inputs — the flattened-VAS
+    coordinate every other MemDiver surface presents — and a plain file
+    offset for raw dumps. See :func:`check_static`.
+    """
 
     dump_paths: list[str]
     offset: int
@@ -59,9 +80,59 @@ class ExportRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _read_static_regions(
+    paths: List[Path],
+    offset: int,
+    length: int,
+    key_material: Dict[str, Any],
+) -> List[bytes]:
+    """Read ``[offset, offset+length)`` from each dump's memory projection.
+
+    All sources are held open together inside one :class:`ExitStack` and the
+    bytes are copied out before any of them closes, mirroring
+    ``app.export_service.manual_export_pattern``.
+
+    Raises:
+        EncryptedDumpLockedError: if any input is an encrypted container that
+            the supplied key material cannot open. Such a source does not
+            raise on read — it reads back EMPTY — which
+            :meth:`StaticChecker.check_regions` would then report as an empty
+            (vacuously all-static) region instead of a locked dump.
+    """
+    with ExitStack() as stack:
+        regions = []
+        for path in paths:
+            source = stack.enter_context(open_dump(path, **key_material))
+            # The ONE shared guard (``app.composition.raise_if_locked``). This
+            # used to be a local copy precisely because the only spelling of it
+            # was another module's private ``_raise_if_locked``; promoting it to
+            # a public app-layer helper removed that reason.
+            raise_if_locked(source)
+            regions.append(source.read_range(offset, length))
+    return regions
+
+
 @router.post("/check-static")
 def check_static(req: CheckStaticRequest):
-    """Check which bytes are static across multiple dump files."""
+    """Check which bytes are static across multiple dump files.
+
+    The region is read through each dump's ``DumpSource`` memory projection
+    (``open_dump(...).read_range``) — the flattened VAS view for ``.msl``
+    inputs, raw bytes for ``.dump`` / ``.bin`` inputs — so ``req.offset`` is
+    interpreted in the SAME space MemDiver presents offsets in, and supplied
+    key material decrypts encrypted ``.msl`` containers.
+
+    This previously called ``StaticChecker.check``, which reads RAW FILE
+    bytes and slices them at ``offset``. For a ``.msl`` input that silently
+    compared container bytes — magic header, block metadata, ciphertext — at
+    a numeric position the rest of the product labels a memory offset: wrong
+    bytes, HTTP 200, no error. And with no key fields on the request an
+    encrypted container yielded ciphertext or nothing at all. Same bug and
+    same fix as ``app.export_service.manual_export_pattern``;
+    :meth:`StaticChecker.check_regions` is the shared byte-comparison core,
+    so the staticness semantics (including the shorter-region tail rule) are
+    unchanged.
+    """
     paths = []
     for p in req.dump_paths:
         path = Path(p)
@@ -72,7 +143,18 @@ def check_static(req: CheckStaticRequest):
     if len(paths) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 dump paths")
 
-    static_mask, reference = StaticChecker.check(paths, req.offset, req.length)
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
+    # Translated here rather than at the app's global CapabilityError handler:
+    # this route's siblings all answer with FastAPI's ``{"detail": ...}`` body
+    # (the 404 and 400 above, and ``/export``'s 400), and mixing the handler's
+    # structured envelope into one branch would split the router's error
+    # contract. Converting the whole router to the funnel is out of scope.
+    try:
+        regions = _read_static_regions(paths, req.offset, req.length, km)
+    except CapabilityError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+
+    static_mask, reference = StaticChecker.check_regions(regions)
     ratio = StaticChecker.static_ratio(static_mask)
     anchors = PatternGenerator.find_anchors(static_mask)
 

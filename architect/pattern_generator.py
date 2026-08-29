@@ -1,7 +1,9 @@
 """PatternGenerator - create wildcard patterns from hex regions."""
 
 import logging
-from typing import List, Optional, Tuple
+import math
+from collections import Counter
+from typing import Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("memdiver.architect.pattern_generator")
 
@@ -96,6 +98,75 @@ class PatternGenerator:
         if start is not None and (len(static_mask) - start) >= min_anchor_length:
             anchors.append((start, len(static_mask) - start))
         return anchors
+
+    @staticmethod
+    def anchor_distinctiveness(
+        reference_bytes: bytes,
+        static_mask: List[bool],
+        min_anchor_length: int = 4,
+    ) -> Dict[str, Union[int, float]]:
+        """Measure how DISTINCTIVE a pattern's static anchors actually are.
+
+        ``min_static_ratio`` in :meth:`generate` answers "is there enough
+        static material to build a rule from?". It cannot answer the question
+        that decides whether the rule is useful: "do those static bytes say
+        anything?" A window whose anchors are 128 zero bytes passes any static
+        ratio and then matches thousands of positions in the very dump it came
+        from.
+
+        This is not hypothetical. On the real 8-dump OpenSSL TLS 1.2 corpus the
+        48-byte master secret at offset 370,672 sits inside a run of zeros: at
+        the default 64 bytes of context the resulting mask has 128 static bytes
+        carrying exactly ONE distinct value, and the emitted rule matches 5,311
+        positions in its own source dump.
+
+        Only bytes inside a static RUN of at least *min_anchor_length* count —
+        the same anchors :meth:`find_anchors` reports, because a lone static
+        byte between two wildcards anchors nothing.
+
+        Returns:
+            ``distinct_bytes`` (how many different values the anchors carry),
+            ``shannon_bits`` (their per-byte Shannon entropy, 0.0 for a single
+            repeated value), ``longest_constant_run`` (the longest run of ONE
+            repeated value within a single anchor — never spanning two anchors,
+            which are not adjacent in the matched bytes) and ``static_bytes``
+            (how many bytes were measured). All zero when there are no anchors.
+        """
+        anchors = PatternGenerator.find_anchors(static_mask, min_anchor_length)
+        runs: List[List[int]] = []
+        for start, length in anchors:
+            run = list(reference_bytes[start:start + length])
+            if run:
+                runs.append(run)
+        values = [b for run in runs for b in run]
+        if not values:
+            return {
+                "distinct_bytes": 0,
+                "shannon_bits": 0.0,
+                "longest_constant_run": 0,
+                "static_bytes": 0,
+            }
+
+        counts = Counter(values)
+        total = len(values)
+        shannon = -sum(
+            (c / total) * math.log2(c / total) for c in counts.values()
+        )
+        longest = 0
+        for run in runs:
+            current = 1
+            longest = max(longest, 1)
+            for i in range(1, len(run)):
+                current = current + 1 if run[i] == run[i - 1] else 1
+                longest = max(longest, current)
+        return {
+            "distinct_bytes": len(counts),
+            # max(0.0, ...) only to normalise the -0.0 a single-value Counter
+            # produces; the sum is mathematically non-negative.
+            "shannon_bits": round(max(0.0, shannon), 4),
+            "longest_constant_run": longest,
+            "static_bytes": total,
+        }
 
     @staticmethod
     def infer_fields(

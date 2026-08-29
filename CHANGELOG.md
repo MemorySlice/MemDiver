@@ -5,7 +5,182 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- **The upload directory is no longer a hardcoded, world-writable `/tmp` path.**
+  `api/config.py` defaulted `upload_dir` to `/tmp/memdiver_uploads` and
+  `api/main.py`'s lifespan `mkdir`'d it on every `create_app()`, so a
+  predictable, `drwxrwxrwt`-parented directory was created eagerly — holding
+  uploaded packet captures and memory dumps, and doubling as the containment
+  root every server-side write path is checked against (`ensure_within`). It
+  was the repository's only MEDIUM bandit finding (B108).
+  `upload_dir` is now **configure-on-first-use**: unset by default, and the
+  first upload asks the user where to store data rather than silently picking
+  another location for them.
+  - Unconfigured **fails closed**. There is no permissive fallback, because a
+    fallback would widen the write-containment checks instead of failing them.
+    `api/dependencies.upload_dir_or_409()` is the single guarded entry point and
+    returns HTTP **409** with a token-prefixed detail
+    (`upload_dir_unconfigured: …`) — 409 because the request is well-formed and
+    nothing is broken; the user simply has to choose. `None`, not `Path("")`, is
+    the unset sentinel: `Path("") / "pcaps"` is the *relative* path `pcaps`, so
+    an unguarded consumer would have written into the server's CWD, whereas
+    `None / "pcaps"` raises loudly.
+  - The chosen directory is **validated**, not just accepted: absolute only, and
+    rejected if it is or sits inside a system location, `sys.prefix` (a write
+    into `site-packages` is a `.pth` import-hijack primitive), **or any
+    temporary directory** (`tempfile.gettempdir()`, `/tmp`, `/var/tmp`) — the
+    last rule being the whole point, since swapping one world-writable temp
+    default for a user-chosen temp path would be theatre. Bare `$HOME` is
+    refused in favour of a subdirectory. Writability is *proven* with a real
+    temp-file write rather than inferred from `os.access(W_OK)`, which lies
+    under POSIX ACLs, read-only mounts and macOS SIP. The directory is created
+    and pinned `0o700`.
+  - The one-time migration out of the legacy `/tmp` directory is hardened
+    against a world-writable source: it refuses if that directory is a symlink
+    or is not owned by the current user, **skips any entry that is itself a
+    symlink** (otherwise "migrate" would relocate an attacker's link into the
+    user's new private directory), skips name collisions instead of clobbering,
+    and removes the old directory only once it is genuinely empty.
+  - The choice is persisted in the **user-local, git-untracked**
+    `~/.memdiver/config.json` — never the repo-root tracked `config.json` that
+    `dataset_root` merges from, since writing a tracked file would dirty every
+    clone. The write is read-modify-write and atomic (`.json.tmp` chmod 0o600,
+    then `replace`), so a crash cannot truncate the file and lose the setup
+    wizard's `skip_duckdb_setup` flag that shares it.
+  - `MEMDIVER_UPLOAD_DIR` (and `.env`) still always wins. When it is set, the
+    settings endpoint reports `env_pinned` and **refuses** to persist a value
+    from the UI: writing a file that would then be silently shadowed forever is
+    worse than refusing.
+
+### Fixed
+- **A vol3 export disagreed with the YARA rule it embeds.**
+  `app/export_service.py::_render_content` passed `key_offset`/`key_length` to
+  `YaraExporter` but not to `Volatility3Exporter`, which takes no such parameters
+  and reads them off the pattern dict -- defaulting to `0` and to the *full*
+  pattern length. So a padded-window export emitted a plugin whose embedded rule
+  said `key_offset = 256` while its own constants said `KEY_OFFSET = 0` /
+  `KEY_LENGTH = 560`. Run under real Volatility3 it reported the **entire window**
+  as the key: `KeyOffset == PatternOffset`, `KeyHex` the whole padded window, and
+  `KeyEntropy` diluted by the padding (2.04 instead of 5.42) -- looking successful
+  while finding something useless. Affected every `--format volatility3` export
+  through `auto_export_pattern` / `manual_export_pattern` / `located_export_pattern`;
+  `engine/vol3_emit.py` was never affected because it enriches the dict itself.
+  Found by actually running the emitted plugin against the reference corpus.
+  Fixed by enriching a **copy** of the pattern (the original is returned in the
+  producer payload and must not be mutated), and pinned by
+  `test_vol3_plugin_constants_agree_with_its_embedded_yara_rule`, which asserts the
+  constants and the embedded rule's meta agree.
+
+- **The emitted Volatility3 plugin: three real bugs, and its `_version` goes
+  `(1, 1, 0)` → `(2, 0, 0)`.** All three were found by running the emitted
+  artifact instead of `ast.parse`-ing it (`engine/vol3_verify.py` in-process,
+  `engine/vol3_subproc.py` through a real `vol`). Everyone who re-emits a plugin
+  gets different bytes, hence the major bump and the regenerated review artifact
+  `tests/fixtures/vol3_plugin_pin/default_pad_plugin.py.golden`. The YARA golden
+  beside it is **unchanged** — none of this touches the pattern, only the plugin.
+  `_required_framework_version` stays `(2, 0, 0)`.
+  - **(a) The emitted plugin did not import.** The template imported
+    `renderers` and then used `renderers.format_hints.Hex` at module level in
+    `_COLUMNS` and `_generator`. `renderers` is a *package*: importing it does
+    not bind its `format_hints` submodule, so a bare import raised
+    `AttributeError: module 'volatility3.framework.renderers' has no attribute
+    'format_hints'`. It only ever worked by accident of import order — 111 files
+    under `volatility3/framework/plugins/` do
+    `from volatility3.framework.renderers import format_hints`, and once vol3's
+    own `import_files` plugin walk has run the submodule is bound on the parent
+    for the rest of the process, which is exactly what happens when a user runs
+    `vol`. The template now does that import itself.
+    `tests/test_vol3_verify.py::test_emitted_plugin_module_level_format_hints_is_a_bug`
+    was `xfail(strict=True)` and is now green with the marker removed; its
+    control test proves the `monkeypatch.delattr` is what makes it non-vacuous.
+  - **(b) `--pid` was dead code that silently scanned everything.** The emitted
+    requirements carried no `kernel` ModuleRequirement, so `_try_pid_scan`'s
+    `config.get("vmlinux")` / `config.get("nt_symbols")` were always `None`; and
+    it called `list_tasks`/`list_processes` as
+    `(context, layer_name, symbol_table_string)` while 2.27.x wants
+    `(context, <module name>, filter_func)` — argument 2 raised
+    `KeyError: 'primary'` and argument 3 raised
+    `TypeError: 'str' object is not callable`. Both were swallowed by
+    `except Exception: continue`, so `--pid 1234` scanned the whole layer and
+    said nothing. Now: an **optional** `requirements.ModuleRequirement(name=
+    "kernel", …)` (optional is load-bearing — a mandatory one would fail
+    `PluginInterface.__init__`'s requirement gate on exactly the flat process
+    dumps this plugin exists to scan, while vol3's `KernelModule` automagic
+    calls `requirement.unsatisfied()` directly and so still *fills* an optional
+    one when a kernel image and symbols exist); a `_pid_scan(pid)` that passes
+    `config["kernel"]` as the module name and each `PsList`'s own
+    `create_pid_filter([pid])` callable as `filter_func` (which filters out
+    non-matches, so the old manual `proc.pid == pid` comparison is gone); and an
+    OS branch chosen from the kernel symbol table's metadata class
+    (`LinuxMetadata` / `WindowsMetadata`), falling back to trying both in order.
+    When a `--pid` was asked for and could not be honoured, `run()` now emits a
+    **loud** `vollog.warning` naming the PID and saying the results are *not*
+    restricted to that process, instead of quietly returning a whole-layer scan.
+    - **PID narrowing itself remains unproven.** What is covered: the declared
+      requirement set, that the plugin validates and scans with no kernel module,
+      that the automagic does not skip an optional `ModuleRequirement`, the loud
+      warning, and the argument *shape* (via a stub `pslist` injected into
+      `sys.modules`). What is **not**: `proc.add_process_layer()` and the
+      process-layer scan after it, which need a real kernel memory image plus a
+      matching ISF that neither this repository nor the development machine has.
+      Do not read the new tests as end-to-end `--pid` coverage.
+  - **(c) The plugin scanned the wrong layer — the default scan target is now
+    the physical/file layer.** MemDiver's raw dumps begin with `7f 45 4c 46` and
+    have `e_type = ET_DYN`, so they *look* like an ELF to vol3's `LayerStacker`
+    while carrying no PT_LOAD table covering the dump. Measured two independent
+    ways on one 11,223,040-byte ground-truth dump: in-process the stack came out
+    `['base_layer', 'primary']` with `primary` an `Elf64Layer` exposing ~6 KB
+    (`max 0x232b`), so the plugin scanned ~6 KB of an 11 MB dump; out-of-process
+    the real `vol` printed
+    `Scan Failure: Sections have no size, nothing to scan` and returned `[]` for
+    the pad-128 plugin that finds the key in 0.02 s in-process. The template now
+    walks `layer.dependencies` down to the lowest layer — complete, and addressed
+    in *file* offsets, which is the space MemDiver's own output is in — with a
+    `seen` set against cycles and a `vollog.info` naming the chosen layer and its
+    size. A new `--virtual` (`BooleanRequirement`, optional, default `False`)
+    opts back into the configured translation layer, which is the right choice
+    for a genuine kernel image. Verified: the real `vol` CLI now returns exactly
+    one row at `KeyOffset 370672`, `PatternOffset 370544`, with key hex identical
+    to `data[370672:370720]`, where the same invocation previously returned `[]`
+    (`tests/test_vol3_subproc.py`, against both the 2.27.0 console script and the
+    2.27.1 source checkout); and in-process a CI-runnable model of the truncated
+    stack finds the key only once the walk reaches the lowest layer, while
+    `--virtual` on the same stack finds nothing (`tests/test_vol3_verify.py`).
+    Flipping the default is safe because nobody can have been relying on zero
+    hits where the key demonstrably is.
+  - **Four of five bare `except Exception` swallows narrowed; the fifth kept.**
+    The rule applied was *keep the degrade that is legitimate, kill the one that
+    hides an API mismatch.* Both per-hit `layer.read` guards are now
+    `except exceptions.InvalidAddressException` (a window straddling the end of a
+    mapped section is expected; anything else is a bug). The `RegExScanner` guard
+    now covers only the regex's **construction** (`except re.error`, with a
+    warning) and leaves `layer.scan` unguarded — a `layer.scan` API mismatch used
+    to degrade to the weaker `BytesScanner` and report "no results", which is
+    indistinguishable from "the key is not there". The single
+    `import yara` / `yara.compile` guard is split: `except ImportError` warns and
+    disables YARA verification (legitimate — the plugin runs in the *user's* vol3
+    environment, which need not carry yara-python), while
+    `except yara.SyntaxError` logs at **error** (a rule that will not compile is
+    a defect in MemDiver's own emitter). `_pid_scan`'s OS loop catches
+    `ImportError` for the module import and
+    `(SymbolError, InvalidAddressException, KeyError, TypeError)` for the
+    listing, each at `vollog.debug`, because the wrong-OS branch legitimately
+    raises those.
+
 ### Changed
+- **`POST`/`GET /api/settings/upload-dir` and a Settings → Storage panel.** New
+  `api/routers/settings.py` reports where uploads are stored (path, source,
+  `env_pinned`, quota, and any offerable legacy directory) and accepts a chosen
+  path, returning **400** with the specific validation reason on rejection. The
+  cached `Settings` singleton is mutated **in place** rather than
+  `cache_clear()`-ed, because the API-token middleware and the startup
+  `ArtifactStore` hold that exact instance and would otherwise be stranded on a
+  stale object. In the UI, a passive Storage section shows and edits the path;
+  the load-bearing path is the pcap upload itself, which catches the 409, prompts
+  for a directory, and then **re-runs the upload with the same file** so the user
+  never loses the capture they just dropped. There is deliberately no blocking
+  first-run modal — inspect, analysis, consensus, brute-force, structures and
+  sessions never touch `upload_dir`.
 - **Brute-force `--stride` now defaults to `1` (was `8`).** The candidate grid
   is absolute, so the old default handed the oracle only 8-aligned offsets and
   a secret at, e.g., offset `585148` was never tested — the run ended
