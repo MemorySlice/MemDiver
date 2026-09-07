@@ -20,7 +20,7 @@ memdiver ui
 
 ## Extension points
 
-MemDiver has six pluggable surfaces. They differ in how (and whether) an
+MemDiver has seven pluggable surfaces. They differ in how (and whether) an
 out-of-tree package can register into them:
 
 | Extension point | How to add (in-tree) | Out-of-tree (entry point)? | Guide |
@@ -31,15 +31,25 @@ out-of-tree package can register into them:
 | Dump source | `register_dump_source(detector, factory)` | YES (`memdiver.dump_sources`) | [adding_dump_source](adding_dump_source.md) |
 | Binary format | `register_format(FormatDescriptor(...))` | YES (`memdiver.formats`) | [adding_binary_format](adding_binary_format.md) |
 | Pipeline stage | `register_stage(Stage(...))` (import-time) | YES (`memdiver.pipeline_stages`) | [adding_pipeline_stage](adding_pipeline_stage.md) |
+| Verification resource | `register_resource_type(name, factory)` in `engine/resources/builtin_oracle.py` | YES (`memdiver.oracles`) | [adding_oracles](adding_oracles.md) |
 
-Five of the six extension points support out-of-tree registration by an installed
+Six of the seven extension points support out-of-tree registration by an installed
 package via an `entry_points` group (all except **Oracle**, which is loaded from
 a user-supplied `.py` file at runtime rather than an installed package — see
 [adding_oracles](adding_oracles.md)). For the two subclass-based points the entry
-point resolves to a subclass (or a module exposing one); for the three
+point resolves to a subclass (or a module exposing one); for the four
 register-call-based points it resolves to a module (imported for its
 `register_*` side effects) or a callable (invoked to self-register). Discovery is
 additive and failure-isolated — a silent no-op when nothing is installed.
+
+**Verification resources carry no trust.** The first-party pcap resource is
+loaded with the untrusted-code sandbox disabled (our own module, and a pcap is
+data rather than executable; sandboxing a large capture's parse would misread a
+slow parse as a hang). That exemption is granted per resource type and only to
+in-tree factories: `register_resource_type` records the provenance of every
+registration, and a type that arrived through `memdiver.oracles` is always
+loaded under the sandbox. Otherwise installing a package would be enough to run
+its code unsandboxed.
 
 Entry-point discovery runs **once per process** (at first use of the relevant
 registry), so a package installed into an already-running process is not picked

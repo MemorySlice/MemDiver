@@ -27,7 +27,8 @@ from memdiver.core.service_result import Resolution, ServiceResult, StatusBlock 
 _INSPECT_PRODUCERS = [
     "read_hex_result", "read_hex_raw_result", "resolve_va_result",
     "search_bytes_result", "entropy_result", "strings_result",
-    "detect_format_result", "session_info_result", "page_states_result",
+    "detect_format_result", "analyze_region_result",
+    "session_info_result", "page_states_result",
     "processes_result", "modules_result", "handles_result",
     "connections_result", "module_index_result", "blocks_result",
 ]
@@ -38,9 +39,12 @@ _XREF_PRODUCERS = [
 _PIPELINE_PRODUCERS = [
     "consensus", "analyze_candidates", "search_reduce", "brute_force",
     "n_sweep", "auto_floor",
-    "emit_plugin", "export_pattern", "verify_key_result", "experiment_result",
+    "emit_plugin", "export_pattern", "manual_export_pattern",
+    "verify_key_result", "experiment_result",
     # B1/B3 — the key-location spine.
     "locate_key", "export_key_pattern",
+    # C3 — the paired field search built on top of it.
+    "locate_field_across_pairs",
 ]
 _DATASET_PRODUCERS = [
     "scan_dataset", "list_protocols", "list_phases", "analyze_library",

@@ -7,7 +7,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from memdiver.api.models import KeyMaterialFields
@@ -24,6 +24,9 @@ from memdiver.architect.yara_exporter import (
 from memdiver.core.service_errors import (
     CapabilityError,
     EncryptedDumpLockedError,
+    ErrorCategory,
+    FileNotFoundServiceError,
+    UnsupportedFormatError,
 )
 from memdiver.core.service_result import KeyStatus
 
@@ -137,22 +140,26 @@ def check_static(req: CheckStaticRequest):
     for p in req.dump_paths:
         path = Path(p)
         if not path.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {p}")
+            raise FileNotFoundServiceError(f"File not found: {p}")
         paths.append(path)
 
     if len(paths) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 dump paths")
+        raise CapabilityError(
+            "Need at least 2 dump paths",
+            category=ErrorCategory.INVALID_INPUT,
+        )
 
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
-    # Translated here rather than at the app's global CapabilityError handler:
-    # this route's siblings all answer with FastAPI's ``{"detail": ...}`` body
-    # (the 404 and 400 above, and ``/export``'s 400), and mixing the handler's
-    # structured envelope into one branch would split the router's error
-    # contract. Converting the whole router to the funnel is out of scope.
-    try:
-        regions = _read_static_regions(paths, req.offset, req.length, km)
-    except CapabilityError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    # No local translation: an ``EncryptedDumpLockedError`` (or any other
+    # ``CapabilityError``) from the read propagates to the app's single global
+    # handler (``api.main._capability_error_handler``), which renders it with
+    # ``exc.status`` and the structured ``exc.to_dict()`` envelope. The router's
+    # OWN failures above and below now raise the same transport-agnostic type,
+    # so the whole router speaks one error contract instead of splitting between
+    # FastAPI's ``{"detail": ...}`` and the funnel's ``{"error", "code",
+    # "category"}``. Statuses are unchanged (NOT_FOUND -> 404, INVALID_INPUT /
+    # PRECONDITION / UNSUPPORTED -> 400).
+    regions = _read_static_regions(paths, req.offset, req.length, km)
 
     static_mask, reference = StaticChecker.check_regions(regions)
     ratio = StaticChecker.static_ratio(static_mask)
@@ -172,15 +179,22 @@ def generate_pattern(req: GeneratePatternRequest):
     try:
         reference = bytes.fromhex(req.reference_hex)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid hex: {exc}") from exc
+        raise CapabilityError(
+            f"Invalid hex: {exc}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
 
     pattern = PatternGenerator.generate(
         reference, req.static_mask, req.name, req.min_static_ratio,
     )
     if pattern is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Insufficient static bytes for pattern generation",
+        # PRECONDITION, not INVALID_INPUT: the request itself is well-formed;
+        # it is the DATA (too few static bytes for ``min_static_ratio``) that
+        # cannot yield a usable pattern. Both categories render 400, so the
+        # wire status is identical either way.
+        raise CapabilityError(
+            "Insufficient static bytes for pattern generation",
+            category=ErrorCategory.PRECONDITION,
         )
     return pattern
 
@@ -206,15 +220,31 @@ def export_pattern(req: ExportRequest):
     # silently produced ``$key = {  }`` -- a rule that returned HTTP 200 and
     # then failed to compile on the analyst's machine. Mirrors the 400 that
     # ``/generate-pattern`` raises for an unusable pattern.
+    #
+    # ``_render_export``'s own unknown-format failure is already a
+    # ``CapabilityError`` and is NOT a ``ValueError``, so it passes through this
+    # handler untouched and reaches the global funnel directly.
     try:
         return _render_export(req, fmt, key_offset, key_length)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise CapabilityError(
+            str(exc), category=ErrorCategory.INVALID_INPUT,
+        ) from exc
 
 
 def _render_export(req: "ExportRequest", fmt: str,
                    key_offset, key_length) -> Dict[str, Any]:
-    """Render the requested artifact. Raises ``ValueError`` on a bad pattern."""
+    """Render the requested artifact for ``fmt``.
+
+    Raises:
+        ValueError: from an exporter, for a pattern carrying no usable byte
+            string. The caller re-raises it as an INVALID_INPUT
+            ``CapabilityError``.
+        UnsupportedFormatError: for a format name that is not one of
+            ``yara`` / ``json`` / ``volatility3``. Already a
+            ``CapabilityError``, so it propagates straight to the global
+            handler (UNSUPPORTED -> 400).
+    """
     if fmt == "yara":
         content = YaraExporter.export(
             req.pattern, rule_name=req.rule_name, description=req.description,
@@ -235,9 +265,8 @@ def _render_export(req: "ExportRequest", fmt: str,
             description=req.description, yara_rule=yara_rule,
         )
     else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown format: {req.format}. Use 'yara', 'json', or 'volatility3'.",
+        raise UnsupportedFormatError(
+            f"Unknown format: {req.format}. Use 'yara', 'json', or 'volatility3'.",
         )
 
     return {"format": fmt, "content": content}

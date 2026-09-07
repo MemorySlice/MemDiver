@@ -986,6 +986,14 @@ _MCP_TOOL_PRODUCERS = {
     "consensus": "consensus",
     "auto_floor": "auto_floor",
     "export_pattern": "export_pattern",
+    # P2.3's manual complement. Mirrors its producer 1:1 (every param but the
+    # resolved key_material dict), so it needs no _MCP_ALLOWED_OMISSIONS entry.
+    "manual_export_pattern": "manual_export_pattern",
+    # P2.4's per-offset investigation view. The first INSPECT producer in this
+    # map (see the producer_modules lookup below); it mirrors its producer 1:1
+    # apart from the ToolSession the surface owns, so it needs no
+    # _MCP_ALLOWED_OMISSIONS entry.
+    "analyze_region": "analyze_region_result",
     "export_keylog": "keylog_result",
     "verify": "verify_key_result",
     "experiment": "experiment_result",
@@ -1000,11 +1008,20 @@ _MCP_TOOL_PRODUCERS = {
     # need no _MCP_ALLOWED_OMISSIONS entry either.
     "locate_key": "locate_key",
     "export_key_pattern": "export_key_pattern",
+    # C3's paired field search. Mirrors its producer 1:1 (every param but the
+    # resolved key_material dict and the on_source hook, both in
+    # _INTERNAL_PRODUCER_PARAMS), so it needs no _MCP_ALLOWED_OMISSIONS entry.
+    "locate_field_across_pairs": "locate_field_across_pairs",
 }
 #: Producer params that are orchestration internals, never surfaced on any tool.
 #: ``key_material`` is the resolved dict a surface *builds* from the individual
-#: key_file/passphrase/kem_key_file args, so it is never a direct tool param.
-_INTERNAL_PRODUCER_PARAMS = {"on_progress", "on_source", "is_cancelled", "key_material"}
+#: key_file/passphrase/kem_key_file args, so it is never a direct tool param;
+#: ``session`` is the ToolSession the surface owns (the MCP server closes over
+#: its own ``_session``), so an inspect producer's leading parameter is likewise
+#: never a tool param.
+_INTERNAL_PRODUCER_PARAMS = {
+    "on_progress", "on_source", "is_cancelled", "key_material", "session",
+}
 #: Real MCP-surface gaps the parity guard discovered — a shrink-only baseline
 #: (same philosophy as capabilities.KNOWN_PARITY_GAPS). Each entry is a producer
 #: parameter the MCP tool does not yet forward; close them as encrypted-reference
@@ -1025,19 +1042,24 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
     import inspect
 
     pytest.importorskip("mcp")
-    from memdiver.app import experiment_orchestration, tools_pipeline
+    from memdiver.app import experiment_orchestration, tools_inspect, tools_pipeline
     from memdiver.mcp_server.server import create_server
 
     server = create_server()
     tools = {t.name: t for t in server._tool_manager.list_tools()}
 
+    # experiment_result was extracted to its own module (P3.1) and
+    # analyze_region_result is an inspect producer (P2.4); everything else
+    # still lives in tools_pipeline.
+    producer_modules = {
+        "experiment_result": experiment_orchestration,
+        "analyze_region_result": tools_inspect,
+    }
+
     problems = []
     for tool_name, producer_attr in _MCP_TOOL_PRODUCERS.items():
         assert tool_name in tools, f"MCP tool {tool_name!r} is not registered"
-        # experiment_result was extracted to its own module (P3.1); the other
-        # producers still live in tools_pipeline.
-        source = (experiment_orchestration
-                  if producer_attr == "experiment_result" else tools_pipeline)
+        source = producer_modules.get(producer_attr, tools_pipeline)
         producer = getattr(source, producer_attr)
         tool_params = set(inspect.signature(tools[tool_name].fn).parameters)
         producer_params = {

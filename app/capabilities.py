@@ -107,6 +107,19 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "web", "mcp")),
     _cap("inspect.blocks", "memdiver.app.tools_inspect.blocks_result",
          ("library", "web", "mcp")),
+    # "What is at this offset?" — the per-offset investigation view (byte
+    # value, local entropy band, printable strings in the neighbourhood). It
+    # was a complete, tested producer reachable from NOWHERE, parked in the
+    # completeness suite's EXEMPT_PRODUCERS; P2.4 wired the missing web route
+    # (GET /api/inspect/region), MCP tool (``analyze_region``), CLI subcommand
+    # (``inspect region``) and library re-export in one atomic change, so it is
+    # registered truthfully on all four surfaces and needs no KNOWN_PARITY_GAPS
+    # entry. The marimo investigation panel still calls
+    # core.region_analysis.analyze_region directly, because it holds in-memory
+    # variance/hits this path-based producer cannot accept — and marimo is out
+    # of IN_SCOPE_SURFACES anyway.
+    _cap("inspect.analyze_region", "memdiver.app.tools_inspect.analyze_region_result",
+         ("library", "cli", "web", "mcp")),
     # -- xref / structure ----------------------------------------------------
     _cap("xref.cross_references",
          "memdiver.app.tools_xref.get_cross_references_result",
@@ -135,6 +148,17 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("pipeline.emit_plugin", "memdiver.app.tools_pipeline.emit_plugin",
          ("library", "cli", "web", "mcp")),
     _cap("pipeline.export_pattern", "memdiver.app.tools_pipeline.export_pattern",
+         ("library", "cli", "web", "mcp")),
+    # The exact COMPLEMENT of ``export.key_pattern``: "I know the offset, I do
+    # not have the key bytes" -- the path out of ``analyze_candidates`` or a
+    # reverse-engineering session. It was CLI-only for a long time (and so sat
+    # outside the parity ratchet entirely, parked in the completeness suite's
+    # EXEMPT_PRODUCERS); P2.3 wired the missing web route
+    # (POST /api/analysis/manual-export), MCP tool (``manual_export_pattern``)
+    # and library re-export in one atomic change, so it is registered truthfully
+    # on all four surfaces and needs no KNOWN_PARITY_GAPS entry.
+    _cap("pipeline.manual_export_pattern",
+         "memdiver.app.tools_pipeline.manual_export_pattern",
          ("library", "cli", "web", "mcp")),
     # -- pcap arm/validate (the pcap verification oracle's first step) -------
     # Wired on all four surfaces since Phase 1 (services.py, CLI `inspect-pcap`,
@@ -179,6 +203,18 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("analysis.locate_key", "memdiver.app.tools_pipeline.locate_key",
          ("library", "cli", "web", "mcp")),
     _cap("export.key_pattern", "memdiver.app.tools_pipeline.export_key_pattern",
+         ("library", "cli", "web", "mcp")),
+    # -- the paired field search (C3) ---------------------------------------
+    # ``analysis.locate_key`` above is N dumps and ONE needle. This is N
+    # (dump, capture) PAIRS, each dump taking its needle from the capture of
+    # the run it belongs to -- the question a corpus of independent handshakes
+    # can actually answer, and one no key log is read for. Wired on all four
+    # surfaces in the change that introduced it (services.py re-export, CLI
+    # ``locate-field-pairs``, POST /api/pcaps/locate-field, MCP
+    # ``locate_field_across_pairs``), so it needs no KNOWN_PARITY_GAPS entry --
+    # and could not have one, since that baseline is shrink-only.
+    _cap("analysis.locate_field_pairs",
+         "memdiver.app.tools_pipeline.locate_field_across_pairs",
          ("library", "cli", "web", "mcp")),
     # -- frontend-serving producers (Phase 9) -------------------------------
     # Field inference + algorithm-availability gating were duplicated in the

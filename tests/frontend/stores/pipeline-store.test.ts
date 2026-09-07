@@ -727,6 +727,63 @@ describe("pipeline-store v1 -> v2 stride migration", () => {
     );
     expect(out.form.bruteForce.jobs).toBe(1);
   });
+
+  /*
+   * C3 added ``form.pcapPairs`` (explicit ``(dump, capture)`` pairings) and
+   * did NOT bump PIPELINE_STORE_VERSION. These three cases are the proof that
+   * the omission is correct, and they are here rather than argued in a comment
+   * because the opposite mistake -- a data REWRITE shipped without a bump,
+   * which ``migrate`` then never runs -- has already been made on this exact
+   * store twice (the stride and jobs cases above).
+   *
+   * The distinction: a bump is required to TRANSFORM stored data. A purely
+   * additive key needs only a default, and the custom ``merge`` supplies that
+   * on EVERY rehydrate by spreading ``current.form`` (i.e. DEFAULT_FORM) under
+   * the persisted form. A blob still at the current version skips ``migrate``
+   * entirely, so ``merge`` is the only backfill that runs for it -- which is
+   * exactly the case the first test below pins.
+   */
+  /** A persisted form as it looked BEFORE ``pcapPairs`` existed. */
+  function formWithoutPcapPairs(): Record<string, unknown> {
+    const form: Record<string, unknown> = { ...V1_FORM };
+    delete form.pcapPairs;
+    return form;
+  }
+
+  it("backfills pcapPairs on a CURRENT-version blob, so no version bump is needed", async () => {
+    // version = 3 = PIPELINE_STORE_VERSION, so ``migrate`` does not run at
+    // all. If the backfill depended on it, this is the case that would
+    // rehydrate ``pcapPairs`` as undefined and strand every existing user.
+    seedV1(formWithoutPcapPairs(), 3);
+    await usePipelineStore.persist.rehydrate();
+    const s = usePipelineStore.getState();
+
+    expect(s.form.pcapPairs).toBeNull();
+    // ...and the backfill is surgical: every persisted field survives.
+    expect(s.form.sourcePaths).toEqual(["/dumps/a.msl", "/dumps/b.msl"]);
+    expect(s.form.pcapPath).toBe("/caps/session.pcap");
+    expect(s.form.bruteForce.jobs).toBe(1);
+  });
+
+  it("backfills pcapPairs through migrate on an OLD blob too", () => {
+    const out = migratePipelineState(
+      {
+        stage: "recipe",
+        taskId: null,
+        lastSeq: 0,
+        form: formWithoutPcapPairs(),
+      },
+      1,
+    );
+    expect(out.form.pcapPairs).toBeNull();
+  });
+
+  it("keeps explicit pairs a user had already staged", async () => {
+    const pairs = [{ dump_path: "/dumps/a.msl", pcap_path: "/caps/a.pcap" }];
+    seedV1({ ...V1_FORM, pcapPairs: pairs }, 3);
+    await usePipelineStore.persist.rehydrate();
+    expect(usePipelineStore.getState().form.pcapPairs).toEqual(pairs);
+  });
 });
 
 /**

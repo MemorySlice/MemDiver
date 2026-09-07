@@ -87,6 +87,7 @@ from memdiver import services
 from memdiver.services import (
     ToolSession,
     # inspect
+    analyze_region_result,
     blocks_result,
     connections_result,
     detect_format_result,
@@ -114,7 +115,9 @@ from memdiver.services import (
     emit_plugin,
     export_key_pattern,
     export_pattern,
+    locate_field_across_pairs,
     locate_key,
+    manual_export_pattern,
     n_sweep,
     search_reduce,
     # verify / experiment
@@ -169,6 +172,7 @@ __all__ = [
     "read_hex_result",
     "read_hex_raw_result",
     "resolve_va_result",
+    "analyze_region_result",
     "search_bytes_result",
     "entropy_result",
     "strings_result",
@@ -194,8 +198,10 @@ __all__ = [
     "auto_floor",
     "emit_plugin",
     "export_pattern",
+    "manual_export_pattern",
     "locate_key",
     "export_key_pattern",
+    "locate_field_across_pairs",
     # verify / experiment producers
     "verify_key_result",
     "experiment_result",

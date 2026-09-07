@@ -120,6 +120,42 @@ def get_entropy(
         ))
 
 
+@router.get("/region")
+def analyze_region(
+    dump_path: str,
+    offset: int = Query(0, ge=0),
+    window: int = 64,
+    view: ViewMode = "raw",
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Investigate a single offset: byte value, local entropy band, strings.
+
+    The "what is at this offset?" view behind the hex viewer's inspector,
+    routed through the shared ``analyze_region_result`` producer so the CLI
+    ``inspect region`` subcommand and the MCP ``analyze_region`` tool cannot
+    drift from it. Only the ``window``-sized neighbourhood is read, so this
+    stays cheap on multi-GB dumps.
+
+    Unlike the older sibling routes this does NOT wrap the call in
+    ``_http_inspect``: that helper exists to preserve their legacy
+    200-with-``{"error": …}`` bodies, and a route added after the global
+    ``CapabilityError`` funnel (api/main.py) has no such contract to keep. A
+    missing dump therefore answers 404 and an out-of-range offset 400, each
+    carrying the producer's own category. The success path still goes through
+    ``present_inspect_http``, so the status block is dropped exactly as the
+    siblings drop it.
+
+    ``variance_at_offset`` / ``matching_secrets`` are always empty here: they
+    are in-memory cross-run artefacts a path-based producer cannot accept.
+    """
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        return present_inspect_http(tools_inspect.analyze_region_result(
+            session, dump_path, offset, window, view=view))
+
+
 @router.get("/strings")
 def extract_strings(
     dump_path: str,

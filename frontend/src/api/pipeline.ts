@@ -8,6 +8,9 @@
  */
 
 import { request, uploadFile } from "./client";
+// ``StageDiagnostic`` is the ONE diagnostic shape every producer emits, so
+// the paired-field result below reuses it rather than declaring a second.
+import type { StageDiagnostic } from "./progress-events";
 
 // ---- request models (must match api/routers/pipeline.py) ----
 
@@ -119,6 +122,122 @@ export interface PcapSession {
   // so a later session can legitimately report 0 here.
   challenges_available?: number;
   challenges_returned?: number;
+  // The C2 byte-addressed view: which bytes of this handshake could be hunted
+  // for in a memory dump, and where on the wire each came from. Present ONLY
+  // when the request asked for it (``validatePcap(path, {includeFields: true})``
+  // -> ``include_fields`` on the body); the arm request does not, so these are
+  // optional exactly as ``app_records_seen`` above is -- a response that
+  // predates the flag, or one that simply did not ask, still type-checks.
+  fields?: PcapField[];
+  field_notes?: PcapFieldNote[];
+}
+
+/**
+ * Which handshake message a field's bytes were read out of. A CLOSED union
+ * mirroring the ``SOURCE_*`` constants in
+ * ``engine/resources/protocol_fields.py`` -- named there rather than inlined so
+ * a consumer can switch on them instead of matching free text.
+ */
+export type PcapFieldSource =
+  | "client_hello"
+  | "server_hello"
+  | "certificate"
+  | "record_layer";
+
+/**
+ * A field's value shape, mirroring the ``TYPE_*`` vocabulary in
+ * ``protocol_fields.py``. ``bytes`` and ``string`` are the byte-needle cases;
+ * ``uint``/``uint[]`` are wire-encoding artifacts no TLS library stores in wire
+ * form, so no dump search over them is meaningful. ``bytes[]`` is reserved --
+ * nothing emits it today (certificates come out individually so each keeps its
+ * own provenance) but it is part of the agreed vocabulary, so a consumer must
+ * tolerate it.
+ */
+export type PcapFieldType = "bytes" | "uint" | "string" | "uint[]" | "bytes[]";
+
+/**
+ * Where on the wire a field's bytes sat. Carried so a hit at some dump offset
+ * can be cross-checked against WHICH record of WHICH direction produced the
+ * bytes it matched. ``null`` for a field with no wire position at all -- the
+ * record-sequence lists, which TLS never transmits.
+ */
+export interface PcapFieldProvenance {
+  direction: "client" | "server";
+  /** Index into that direction's record list. */
+  record_index: number;
+  /** Byte offset in the reassembled direction stream. */
+  stream_offset: number;
+  /** Byte offset inside the record fragment. */
+  record_offset: number;
+}
+
+/**
+ * One extracted protocol field: what it is, its bytes, and where from.
+ *
+ * ``searchable`` is DERIVED on the backend (a ``bytes``/``string`` run of at
+ * least 8 bytes), never hand-set. Treat it as a permission: a field with
+ * ``searchable: false`` matches everywhere in any real multi-megabyte dump, so
+ * offering it as a needle could only produce a guaranteed false-positive sweep
+ * -- and ``locate_key``'s ``pcap_field`` form refuses it.
+ *
+ * ``field_id`` is unique WITHIN a session. Extension ids carry a
+ * ``client_ext.``/``server_ext.`` prefix for exactly that reason: extension
+ * 0x000b appears in both hellos of a real handshake, so a bare ``ext.0x000b``
+ * would collide and any id-keyed lookup would silently resolve to whichever
+ * came last.
+ */
+export interface PcapField {
+  field_id: string;
+  label: string;
+  type: PcapFieldType;
+  /** The field's raw wire bytes as hex; empty for a field with no byte form. */
+  value_hex: string;
+  /** The decoded form when there is a more useful one than hex (the hostname
+   * for ``sni``, the int for ``cipher_suite``, the list for ``cipher_suites``);
+   * ``null`` when hex is all there is. */
+  value: string | number | number[] | null;
+  /** Bytes for a byte field, element count for a ``uint[]``. */
+  length: number;
+  source: PcapFieldSource;
+  provenance: PcapFieldProvenance | null;
+  searchable: boolean;
+}
+
+/**
+ * Why a field a caller might reasonably expect is legitimately absent.
+ *
+ * Machine-readable ``code`` first, human ``detail`` second -- the same
+ * discipline as ``PcapSkippedSession``, and for the same reason: an
+ * unexplained absence is indistinguishable from a bug to the person least able
+ * to tell the difference. The load-bearing one is
+ * ``tls13_certificates_encrypted``: RFC 8446 moves the Certificate message
+ * inside the protected epoch, so no TLS 1.3 capture can carry one.
+ *
+ * NOT a closed union: the backend adds codes as new fields gain explanations,
+ * and a UI that cannot label one still shows its ``detail``.
+ */
+export interface PcapFieldNote {
+  code: string;
+  detail: string;
+}
+
+/**
+ * One entry of the top-level ``field_index``: the ids a capture offers, and
+ * which sessions carry each. A CATALOGUE, deliberately without values -- a
+ * capture's two sessions both have a ``client_random`` field with different
+ * bytes, so an id-keyed map of values could only be wrong.
+ *
+ * ``searchable`` here means "in at least one of the listed sessions", because
+ * the flag is derived from a length and two sessions can legitimately disagree.
+ * The authoritative per-session flag is ``PcapField.searchable``.
+ */
+export interface PcapFieldIndexEntry {
+  label: string;
+  type: PcapFieldType;
+  source: PcapFieldSource;
+  searchable: boolean;
+  /** Positions in ``PcapValidateResult.sessions`` that carry this id. */
+  sessions: number[];
 }
 
 /**
@@ -233,6 +352,126 @@ export interface PcapValidateResult {
    * part of its sequence window, so a no-hit run is a statement about the
    * challenges tried, not about the capture. */
   challenges_truncated?: boolean;
+  /** The C2 catalogue of field ids this capture offers, keyed by ``field_id``.
+   * Present only when the request asked for fields. */
+  field_index?: Record<string, PcapFieldIndexEntry>;
+}
+
+// ---- paired field search (POST /api/pcaps/locate-field) ----
+
+/**
+ * ONE explicit ``(dump, capture)`` pairing.
+ *
+ * Mirrors the backend's ``PCAP_PAIR_KEYS``: ``client_random`` is the only
+ * optional key and picks a session when the capture holds several (there is no
+ * default server-side -- the wrong session's field is a valid-looking needle
+ * from another handshake).
+ *
+ * Explicit pairings are the alternative to letting each dump discover the
+ * capture of the run it lives in; supply one form or the other, never both.
+ */
+export interface PcapPair {
+  dump_path: string;
+  pcap_path: string;
+  client_random?: string;
+}
+
+/**
+ * How a pair's capture was arrived at. A CLOSED union mirroring the
+ * ``PAIRING_*`` constants in ``app/tools_pipeline.py`` -- ``"unpaired"`` is a
+ * VALUE, not an absence: a dump with no capture is still a row, because
+ * dropping it would shrink the denominator every ratio is computed over.
+ */
+export type PcapPairing = "explicit" | "discovered" | "unpaired";
+
+/**
+ * What HAPPENED to a pair. Three-valued for the same reason the per-dump
+ * ``status`` in a ``locate-key`` census is, and it must be read BEFORE any
+ * number on the row:
+ *
+ * * ``"searched"`` -- ``location`` is non-null and carries the census.
+ * * ``"unpaired"`` -- no capture, so nothing was searched. NOT an absence.
+ * * ``"field_unresolved"`` -- a capture was found but yields no usable field;
+ *   ``detail`` says why. Also NOT an absence.
+ */
+export type PcapPairStatus = "searched" | "unpaired" | "field_unresolved";
+
+/** One pair row. ``location`` is non-null iff ``status === "searched"``. */
+export interface PcapPairRow {
+  dump_path: string;
+  dump_name: string;
+  /** ``""`` when no capture was resolved for this dump. */
+  pcap_path: string;
+  pairing: PcapPairing;
+  /** ``"supplied"`` for an explicit pair; otherwise the run walker's own
+   * three-state verdict (``"present"`` / ``"absent"`` / ``"unreadable"``). */
+  capture_status: string;
+  field_id: string;
+  /** The bytes actually searched for, hex. ``""`` means none was resolved --
+   * never "the empty needle". Echoed (unlike a key census) because a handshake
+   * field is public wire material and it is what makes the row reproducible. */
+  needle_hex: string;
+  status: PcapPairStatus;
+  /** Why, whenever ``status`` is not ``"searched"``. */
+  detail: string;
+  /** The ``locate-key``-shaped census over this ONE dump, or ``null``. Typed
+   * loosely because it is the key-location payload verbatim and no screen
+   * consumes its interior yet; narrow it where one does. */
+  location: Record<string, unknown> | null;
+}
+
+/** Per-status pair census. Every ratio must be read over these, not over
+ * ``pairs.length``: unpaired and field-unresolved pairs were never searched. */
+export interface PcapPairCounts {
+  pairs_total: number;
+  pairs_searched: number;
+  pairs_unpaired: number;
+  pairs_field_unresolved: number;
+  pairs_present: number;
+  pairs_absent: number;
+  dumps_searched: number;
+  dumps_unreadable: number;
+  dumps_too_small: number;
+  /** How many distinct captures were consulted, and how many distinct needles
+   * they yielded -- together, whether this was a real pairing or one needle
+   * wearing N hats. */
+  captures_distinct: number;
+  needles_distinct: number;
+}
+
+/**
+ * Result of the paired field search. ``verdict`` uses the SAME three-valued
+ * vocabulary a ``locate-key`` result does, so ``"not_searched"`` claims
+ * nothing at all and must never render as an absence.
+ */
+export interface LocateFieldPairsResult {
+  verdict: "found" | "absent" | "not_searched";
+  mode: "explicit" | "discovery";
+  field_id: string;
+  view: string | null;
+  caps: {
+    pcap_max_records: number | null;
+    pcap_max_challenges: number | null;
+  };
+  counts: PcapPairCounts;
+  /** Whether every pair that found the field agrees on its first offset, and
+   * that offset when they do. */
+  offsets_agree: boolean;
+  common_offset: number | null;
+  pairs: PcapPairRow[];
+  elapsed_s: number;
+  diagnostics: StageDiagnostic[];
+}
+
+/** Request body for the paired field search: exactly one of the two forms. */
+export interface LocateFieldPairsRequest {
+  pairs?: PcapPair[] | null;
+  dump_paths?: string[] | null;
+  field_id?: string;
+  view?: string | null;
+  max_offsets?: number;
+  pcap_max_records?: number | null;
+  pcap_max_challenges?: number | null;
 }
 
 // ---- response models ----
@@ -314,10 +553,40 @@ export const uploadPcap = (file: File): Promise<PcapUploadResult> =>
  * dpkt-missing / bad-capture condition the backend returns HTTP 400 via the
  * capability-error funnel, which ``request`` re-raises as an ``ApiError``.
  */
-export const validatePcap = (pcapPath: string) =>
+export interface ValidatePcapOptions {
+  /**
+   * Also ask for each session's byte-addressable protocol fields
+   * (``PcapField``) plus the top-level ``field_index``. Costs a second
+   * server-side read of the capture, so the arm request leaves it off and only
+   * the field browser opts in. Omitted from the body entirely when false, so
+   * the arm request stays byte-identical to what it has always sent.
+   */
+  includeFields?: boolean;
+}
+
+export const validatePcap = (pcapPath: string, options?: ValidatePcapOptions) =>
   request<PcapValidateResult>("/api/pcaps/validate", {
     method: "POST",
-    body: JSON.stringify({ pcap_path: pcapPath }),
+    body: JSON.stringify(
+      options?.includeFields
+        ? { pcap_path: pcapPath, include_fields: true }
+        : { pcap_path: pcapPath },
+    ),
+  });
+
+/**
+ * Search N dumps for a handshake field, each dump taking the field from the
+ * capture that belongs to IT.
+ *
+ * ``validatePcap`` above arms one capture; this is the multi-dump search built
+ * on top. Supply exactly one of ``pairs`` (explicit) or ``dump_paths``
+ * (discovery) -- the backend refuses both, with no precedence, and that
+ * refusal arrives as an ``ApiError`` via the capability-error funnel.
+ */
+export const locateFieldPairs = (body: LocateFieldPairsRequest) =>
+  request<LocateFieldPairsResult>("/api/pcaps/locate-field", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 
 export const getPipelineRun = (taskId: string) =>

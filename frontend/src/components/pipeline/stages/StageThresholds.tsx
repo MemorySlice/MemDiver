@@ -146,13 +146,13 @@ export function StageThresholds({ onAdvance }: Props) {
   // what the backend's `Optional[...] = None` gating reads (api/routers/
   // pipeline.py `optional_stage_present`).
   const emitOn = form.emit !== null;
-  // The N-sweep harness re-runs the oracle at every N and needs the BYO
-  // oracle *file* (`_run_nsweep(source_paths, oracle_path, ...)` in
-  // app/pipeline/pipeline_runner.py). A pcap-oracle run has no such file, so
-  // the stage is unavailable there — hard-gate it in the UI rather than let
-  // the worker fail mid-run.
+  // The N-sweep harness re-runs the oracle at every N, and since P2.2 that
+  // oracle can be either source: `_run_nsweep` forwards `pcap_path` /
+  // `tls_client_random` the same way `_run_brute_force` does, so a pcap run
+  // sweeps against the capture with no BYO oracle file involved. `pcapOracle`
+  // survives only to word the hint, not to gate the stage.
   const pcapOracle = Boolean(form.pcapPath?.trim());
-  const nsweepOn = form.nsweep !== null && !pcapOracle;
+  const nsweepOn = form.nsweep !== null;
 
   // The N list is edited as free text so intermediate states ("2," while
   // typing) do not have to round-trip through the store as numbers.
@@ -200,8 +200,9 @@ export function StageThresholds({ onAdvance }: Props) {
         // Opt-in tail stages: the key is absent (not null) while the box is
         // off, so an unchanged form posts exactly the body it always did.
         ...(form.emit ? { emit: form.emit } : {}),
-        // nsweep needs the BYO oracle file, which a pcap run does not have.
-        ...(form.nsweep && !pcapPath ? { nsweep: form.nsweep } : {}),
+        // nsweep runs on either oracle source; the worker picks up the same
+        // pcap_path / tls_client_random the brute-force stage uses.
+        ...(form.nsweep ? { nsweep: form.nsweep } : {}),
         ...(pcapPath
           ? {
               pcap_path: pcapPath,
@@ -387,7 +388,6 @@ export function StageThresholds({ onAdvance }: Props) {
             type="checkbox"
             data-testid="nsweep-enable"
             checked={nsweepOn}
-            disabled={pcapOracle}
             onChange={(e) => toggleNSweep(e.target.checked)}
           />
           <span className="md-text-secondary">
@@ -396,7 +396,7 @@ export function StageThresholds({ onAdvance }: Props) {
         </label>
         <p className="text-[10px] md-text-muted">
           {pcapOracle
-            ? t("stages.thresholds.nsweepPcapUnavailable")
+            ? t("stages.thresholds.nsweepPcapHint")
             : t("stages.thresholds.nsweepHint")}
         </p>
         {nsweepOn && (

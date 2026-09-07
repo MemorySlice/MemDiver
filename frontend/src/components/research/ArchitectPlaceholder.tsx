@@ -56,7 +56,13 @@ export function ArchitectPlaceholder() {
     setPatternResult(null);
     setExportOutput(null);
     try {
-      const data = await checkStatic({ dump_paths: dumpPaths, offset: selStart, length: selLen });
+      const data = await checkStatic({
+        dump_paths: dumpPaths,
+        offset: selStart,
+        length: selLen,
+        // Dumps in a set share one key; carry the first available one.
+        ...useDumpStore.getState().getKeyMaterialByPath(dumpPaths[0]),
+      });
       setStaticResult(data);
       setStep(2);
       if (data.static_mask && data.static_mask.length > 0) {

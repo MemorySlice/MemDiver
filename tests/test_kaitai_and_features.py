@@ -353,6 +353,7 @@ class TestArchitectEndpoints:
             json={"dump_paths": ["/nonexistent/a.dump", "/nonexistent/b.dump"], "offset": 0, "length": 16},
         )
         assert resp.status_code == 404
+        assert resp.json()["category"] == "NOT_FOUND", resp.text
 
     def test_generate_pattern_empty_data(self, client):
         resp = client.post(
@@ -360,6 +361,7 @@ class TestArchitectEndpoints:
             json={"reference_hex": "", "static_mask": [], "name": "test"},
         )
         assert resp.status_code == 400
+        assert resp.json()["category"] == "PRECONDITION", resp.text
 
     def test_export_yara(self, client):
         """The exported rule must actually COMPILE, not merely return 200.
@@ -398,6 +400,11 @@ class TestArchitectEndpoints:
         Not a 500 (the dict comes from the request body, so this is the caller's
         error) and not a 200 carrying a broken rule -- which is what happened
         before the exporter validated its input.
+
+        The router now raises a ``CapabilityError`` instead of an
+        ``HTTPException``, so the 400 body is the global funnel's
+        ``{"error", "code", "category"}`` envelope rather than FastAPI's
+        ``{"detail": ...}``. Same status, structured body.
         """
         resp = client.post(
             "/api/architect/export",
@@ -408,7 +415,9 @@ class TestArchitectEndpoints:
             },
         )
         assert resp.status_code == 400
-        assert "wildcard_pattern" in resp.json()["detail"]
+        body = resp.json()
+        assert body["category"] == "INVALID_INPUT", body
+        assert "wildcard_pattern" in body["error"]
 
 
 class TestPatternsEndpoint:

@@ -26,6 +26,7 @@ from memdiver.api.models import (
     ExportKeylogRequest,
     KeyPatternRequest,
     LocateKeyRequest,
+    ManualExportRequest,
     VerifyKeyRequest,
 )
 from memdiver.api.services.consensus_session import (
@@ -521,6 +522,48 @@ def auto_export(req: AutoExportRequest):
             name=req.name,
             align=req.align,
             context=req.context,
+            key_material=km,
+        )
+    except CapabilityError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@router.post("/manual-export")
+def manual_export(req: ManualExportRequest):
+    """Export a pattern from a caller-supplied offset + length.
+
+    The manual counterpart to :func:`auto_export`, and a thin HTTP adapter over
+    the ``app`` producer
+    :func:`memdiver.app.tools_pipeline.manual_export_pattern` — the same single
+    implementation the CLI ``export`` command (without ``--auto``) and the MCP
+    ``manual_export_pattern`` tool route through, so the four surfaces cannot
+    drift. This route is why ``pipeline.manual_export_pattern`` could be
+    registered as a four-surface capability: before it, the only way to reach
+    the producer was the terminal.
+
+    ``req.offset`` is memory-relative for ``.msl`` inputs (the producer reads
+    through each dump's memory projection), which is the same space every other
+    offset in this API is expressed in. Encrypted containers decrypt with the
+    ``KeyMaterialFields`` on the body, decoded here exactly as the sibling
+    routes do.
+
+    Returns the producer's ``{format, content, pattern, region}`` payload
+    verbatim; a user-correctable failure (too few dumps, missing file, unknown
+    format, region too volatile) arrives as the producer's ``CapabilityError``
+    and is translated to an ``HTTPException`` carrying its own accurate status,
+    preserving this router's ``{"detail": ...}`` contract.
+    """
+    from memdiver.app.tools_pipeline import manual_export_pattern
+
+    km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex)
+    try:
+        return manual_export_pattern(
+            dump_paths=list(req.dump_paths),
+            offset=req.offset,
+            length=req.length,
+            fmt=req.format,
+            name=req.name,
+            min_static_ratio=req.min_static_ratio,
             key_material=km,
         )
     except CapabilityError as exc:

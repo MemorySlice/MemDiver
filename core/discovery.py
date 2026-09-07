@@ -6,7 +6,7 @@ import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Union
 
 from .dataset_metadata import DatasetMeta, load_run_meta
 from .models import DumpFile, RunDirectory
@@ -50,6 +50,17 @@ CAPTURE_SUBDIR = "run_data"
 # Ordered candidates: a tuple (not a set) so the first match is deterministic
 # when a run happens to carry more than one capture flavour.
 CAPTURE_FILENAMES = ("traffic.pcap", "traffic.pcapng", "traffic.cap")
+
+# Last-resort candidates, probed ONLY when the conventional layout above yields
+# nothing: a capture sitting beside the dumps rather than in ``run_data/``.
+#
+# Ordered, and each glob's own matches are sorted, so a directory holding two
+# captures resolves to the same one on every run. The whole list is APPENDED
+# after the conventional candidates precisely so that this relaxation cannot
+# change the answer for any corpus that follows the convention -- these
+# candidates are unreachable until ``_find_capture`` would otherwise have
+# returned ``"absent"``.
+CAPTURE_SIBLING_GLOBS = ("*.pcap", "*.pcapng", "*.cap")
 
 
 def _infer_dump_kind(path: Path) -> str:
@@ -247,18 +258,30 @@ class RunDiscovery:
         hardcoded probe -- the fast scan is stat-only and must not read a
         ``meta.json`` per run across thousands of runs. The two therefore agree
         on every corpus that uses the conventional layout, and a corpus that
-        relocates its capture via ``meta.capture`` is found by the per-run load
-        (which every consumer of ``capture_path`` goes through) while the fast
-        scan's ``runs_with_capture`` counter under-counts it.
+        relocates its capture via ``meta.capture`` (or leaves it beside the
+        dumps, see the sibling probe below) is found by the per-run load (which
+        every consumer of ``capture_path`` goes through) while the fast scan's
+        ``runs_with_capture`` counter under-counts it.
         """
         capture_dir = run_path / CAPTURE_SUBDIR
         declared = RunDiscovery._declared_capture_path(run_path, meta)
         candidates = [capture_dir / name for name in CAPTURE_FILENAMES]
         if declared is not None:
             candidates.insert(0, declared)
+        # APPENDED, never inserted: a run that follows the convention has
+        # already matched above, so the sibling probe cannot change any answer
+        # this function used to give -- it only replaces some of the
+        # ``"absent"`` ones. That ordering is what lets an ad-hoc directory
+        # (one dump plus one capture, no ``run_data/``) be paired at all
+        # without perturbing corpus resolution.
+        candidates.extend(RunDiscovery._sibling_capture_candidates(run_path))
 
         unusable: Optional[Tuple[Path, str]] = None
+        seen: set = set()
         for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
             status = RunDiscovery._classify_capture(candidate)
             if status == "present":
                 return candidate, status
@@ -269,6 +292,64 @@ class RunDiscovery:
         if unusable is not None:
             return unusable
         return None, "absent"
+
+    @staticmethod
+    def _sibling_capture_candidates(run_path: Path) -> List[Path]:
+        """Captures sitting DIRECTLY in *run_path*, in a deterministic order.
+
+        The last-resort half of :meth:`_find_capture`'s candidate list (see the
+        comment on :data:`CAPTURE_SIBLING_GLOBS` for why it is appended rather
+        than merged in). Each glob's matches are sorted, so two captures in one
+        directory always resolve to the same one.
+
+        Never raises: an unreadable or missing directory contributes nothing,
+        matching the "scan paths tolerate partial datasets" posture of
+        :meth:`_find_capture` itself.
+        """
+        found: List[Path] = []
+        for pattern in CAPTURE_SIBLING_GLOBS:
+            try:
+                found.extend(sorted(run_path.glob(pattern)))
+            except OSError as exc:
+                # A mode-000 directory raises EACCES out of the scandir walk on
+                # some platforms; one unreadable run must not abort a sweep.
+                logger.debug(
+                    "Cannot probe %s for %s captures: %s", run_path, pattern, exc
+                )
+        return found
+
+    @staticmethod
+    def find_capture_for(path: Union[str, Path]) -> Tuple[Optional[Path], str]:
+        """Locate the capture that belongs to ONE dump (or run directory).
+
+        The public entry point onto :meth:`_find_capture`, for callers that hold
+        a *dump* path rather than a run directory. A file is normalised to its
+        parent directory and a directory is used as-is; the probe itself --
+        ``meta.capture``, then ``run_data/`` x :data:`CAPTURE_FILENAMES`, then
+        the sibling globs -- is :meth:`_find_capture`'s, unchanged, so a dump
+        and its run agree on which capture is theirs by construction.
+
+        Returns the same three-state ``(path, status)`` pair
+        (``"present"`` / ``"absent"`` / ``"unreadable"``), and never raises: the
+        caller's job is to render "no capture for this dump" as a typed row, not
+        to have the pairing pass abort on one directory.
+
+        Used by ``app.tools_pipeline.locate_field_across_pairs`` to give each
+        dump of an N-dump search a needle from ITS OWN capture.
+        """
+        run_path = Path(path)
+        if not run_path.is_dir():
+            run_path = run_path.parent
+        try:
+            meta = load_run_meta(run_path)
+        except OSError as exc:
+            # Same downgrade ``load_run_directory`` applies: a mode-000 run dir
+            # must not stop the capture probe, which may still succeed.
+            logger.warning(
+                "Failed to read meta.json for %s: %s", run_path, exc
+            )
+            meta = None
+        return RunDiscovery._find_capture(run_path, meta)
 
     @staticmethod
     def _declared_capture_path(

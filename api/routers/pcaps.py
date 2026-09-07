@@ -4,6 +4,11 @@ Exposes ``POST /api/pcaps/upload`` which streams a multipart capture to
 ``settings.upload_dir/pcaps/`` in 1 MiB chunks, enforces a 512 MiB size cap
 (``PCAP_UPLOAD_MAX_BYTES``), and returns the persisted path.
 
+Alongside it, ``POST /api/pcaps/validate`` arms a capture (the ``pcap.inspect``
+capability) and ``POST /api/pcaps/locate-field`` runs the paired field search
+(``analysis.locate_field_pairs``): N dumps, each searched for a handshake field
+taken from the capture that belongs to it.
+
 Unlike the dumps router (which converts then discards its temp upload), the
 stored capture is *persisted* on success: the verification pipeline re-reads
 ``pcap_path`` later. See the note on ``dest`` below for the disk posture.
@@ -14,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -23,6 +28,10 @@ from pydantic import BaseModel, Field
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
+# The producer's own default, imported rather than re-literalled so the
+# route's ``max_offsets`` cannot drift from the value every other surface
+# defaults to.
+from memdiver.engine.key_location import DEFAULT_MAX_KEY_OFFSETS
 
 logger = logging.getLogger("memdiver.api.routers.pcaps")
 
@@ -148,11 +157,25 @@ class ValidatePcapRequest(BaseModel):
     actually in force rather than the resource defaults. ``ge=1`` matches the
     pipeline router: a cap below 1 verifies nothing, so it could only turn a
     real key into an unexplained "0 confirmed".
+
+    ``include_fields`` opts into the byte-addressed view of each handshake — a
+    ``fields`` list plus ``field_notes`` per session and a top-level
+    ``field_index``. It defaults to ``False`` so the arm request the UI has
+    always sent keeps its exact response; the field browser asks for it
+    explicitly, because switching it on re-reads the capture.
+
+    ``detect_protocols`` opts into the ``protocols`` inventory — what the
+    capture holds and whether any registered resource can decrypt it. Also
+    ``False`` by default, for the same reason: it is the answer to "the arm step
+    said 0 sessions, so what IS this capture?", which is a question the operator
+    asks after the fact rather than on every arm.
     """
 
     pcap_path: str
     pcap_max_records: Optional[int] = Field(default=None, ge=1)
     pcap_max_challenges: Optional[int] = Field(default=None, ge=1)
+    include_fields: bool = False
+    detect_protocols: bool = False
 
 
 @router.post("/validate")
@@ -190,6 +213,75 @@ def validate_pcap(
 
     return inspect_pcap(
         pcap_path=str(pcap_path),
+        pcap_max_records=body.pcap_max_records,
+        pcap_max_challenges=body.pcap_max_challenges,
+        include_fields=body.include_fields,
+        detect_protocols=body.detect_protocols,
+    )
+
+
+class LocateFieldPairsRequest(BaseModel):
+    """Body for ``POST /api/pcaps/locate-field``: N ``(dump, capture)`` pairs.
+
+    Supply exactly ONE of ``pairs`` or ``dump_paths``; the producer refuses both
+    (and neither) with INVALID_INPUT, and this model deliberately does not
+    pre-empt that with a validator so all four surfaces report the mistake in
+    the same words.
+
+    * ``pairs`` — explicit pairings, ``[{"dump_path", "pcap_path",
+      "client_random"?}]``. Typed as a list of plain dicts rather than a nested
+      model for exactly that reason: the producer owns the per-entry key
+      validation, so a misspelt key yields its message rather than FastAPI's
+      422.
+    * ``dump_paths`` — discovery: each dump finds the capture of the run it
+      lives in.
+
+    ``field_id`` defaults to ``client_random``, the one field present in every
+    TLS version and unique per handshake. The two caps mirror
+    ``ValidatePcapRequest``'s and are carried through to the needle extraction,
+    so the search runs under the caps the caller asked for.
+    """
+
+    pairs: Optional[List[Dict[str, str]]] = None
+    dump_paths: Optional[List[str]] = None
+    field_id: str = "client_random"
+    view: Optional[str] = None
+    max_offsets: int = Field(default=DEFAULT_MAX_KEY_OFFSETS, ge=1)
+    pcap_max_records: Optional[int] = Field(default=None, ge=1)
+    pcap_max_challenges: Optional[int] = Field(default=None, ge=1)
+
+
+@router.post("/locate-field")
+def locate_field(body: LocateFieldPairsRequest):
+    """Search N dumps for a handshake field, each from ITS OWN capture.
+
+    The web face of ``analysis.locate_field_pairs``. ``POST
+    /api/analysis/locate-key`` answers "is THIS secret in these dumps"; this
+    route answers the question a corpus can actually support — "for each dump,
+    is the ``field_id`` of the capture belonging to that dump present in it, and
+    where?" — with the needle read off the wire and no key log involved.
+
+    Like :func:`validate_pcap`, the paths are READS of files the operator chose
+    and are checked for existence by the producer only, matching ``POST
+    /api/pipeline/run``; see that docstring for the documented localhost
+    read-path posture.
+
+    The compute is delegated to
+    :func:`memdiver.app.tools_pipeline.locate_field_across_pairs` — the same
+    producer the CLI ``locate-field-pairs`` command, the MCP
+    ``locate_field_across_pairs`` tool and ``memdiver.services`` route to, so
+    the four surfaces cannot drift. Every failure (both input forms, a malformed
+    pair, a missing path, a locked container) surfaces as its
+    ``CapabilityError``, translated by the app's global handler.
+    """
+    from memdiver.app.tools_pipeline import locate_field_across_pairs
+
+    return locate_field_across_pairs(
+        pairs=body.pairs,
+        dump_paths=body.dump_paths,
+        field_id=body.field_id,
+        view=body.view,
+        max_offsets=body.max_offsets,
         pcap_max_records=body.pcap_max_records,
         pcap_max_challenges=body.pcap_max_challenges,
     )

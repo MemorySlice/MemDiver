@@ -187,6 +187,36 @@ class AutoExportRequest(KeyMaterialFields):
     context: int = 32
 
 
+class ManualExportRequest(KeyMaterialFields):
+    """Request body for exporting a pattern from a caller-supplied region.
+
+    The manual counterpart to :class:`AutoExportRequest`: the caller already
+    knows WHERE the key lives (from ``/api/analysis/candidates``, from a
+    previous run, or from a reverse-engineering session) and hands the region
+    over explicitly, so there is no consensus pass and no ``align`` / ``context``
+    knob to turn — those only mean something while the region is still being
+    searched for.
+
+    ``offset`` is interpreted in the same space MemDiver presents offsets in
+    (memory-relative for ``.msl`` inputs, raw-file for ``.dump``), because the
+    producer reads through each dump's memory projection. ``min_static_ratio``
+    is exposed here — unlike on the auto route — because on this path the user
+    chose the region and is the one who has to decide how much of it must be
+    invariant for a usable signature.
+
+    Deliberately NO ``output_dir``: like the sibling ``/auto-export`` route this
+    returns the rendered pattern in the response body rather than writing it to
+    an arbitrary server-side path.
+    """
+
+    dump_paths: list[str]
+    offset: int
+    length: int
+    format: str = "volatility3"
+    name: str = "memdiver_pattern"
+    min_static_ratio: float = 0.3
+
+
 class ExportKeylogRequest(BaseModel):
     """Request body for Wireshark NSS key-log export from recovered secrets.
 

@@ -125,8 +125,17 @@ def test_wizard_navigation(page):
     print("PASS: Wizard navigation works")
 
 
-def _poll_task_result(task_id, timeout=120):
-    """Poll GET /api/tasks/{id}/result until the task reaches a terminal state."""
+def _poll_task_result(task_id, timeout=420):
+    """Poll GET /api/tasks/{id}/result until the task reaches a terminal state.
+
+    The 420 s budget is sized from a measured benchmark, not guessed. The
+    ``/api/analysis/run-file`` docstring (``api/routers/analysis.py``) records
+    ~102.5 s for ``entropy_scan`` alone on a 10 MB dump (2026-04-13), and
+    :func:`test_algorithm_results_api` submits FOUR algorithms over a real
+    dataset dump. The previous 120 s therefore gave four algorithms barely more
+    than the wall-clock of one, so the test passed in isolation and failed under
+    load -- which read as a flake but was an under-sized budget.
+    """
     terminal = {"succeeded", "failed", "cancelled", "error"}
     deadline = time.time() + timeout
     while time.time() < deadline:

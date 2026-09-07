@@ -3,6 +3,15 @@
 Exercise the public REST contract of the architect endpoints with a real
 TestClient. Production code is untouched -- we synthesise small dump files
 on disk and POST them via the documented payloads.
+
+Every error path of this router now travels the app's single global
+``CapabilityError`` handler (``api.main._capability_error_handler``) rather
+than a hand-rolled ``HTTPException``. That means the error BODY is
+``exc.to_dict()`` -- ``{"error", "code", "category"}`` -- not FastAPI's
+``{"detail": ...}``. The status codes are unchanged (NOT_FOUND -> 404,
+INVALID_INPUT / PRECONDITION / UNSUPPORTED -> 400), so each error test below
+pins BOTH the status and the envelope; :func:`_assert_funnel_body` is the one
+place that spells the envelope out.
 """
 
 from __future__ import annotations
@@ -54,6 +63,23 @@ def _write_msl_pair(
         writer.write()
         paths.append(str(out))
     return paths
+
+
+def _assert_funnel_body(response, *, category: str, contains: str = "") -> dict:
+    """Assert ``response`` carries the global funnel envelope, and return it.
+
+    The envelope is exactly ``exc.to_dict()``: the three keys ``error`` /
+    ``code`` / ``category`` and nothing else. Asserting the exact key set (not
+    merely that ``error`` is present) is what would catch a silent regression
+    back to FastAPI's ``{"detail": ...}`` shape, or a stray extra field.
+    """
+    body = response.json()
+    assert set(body) == {"error", "code", "category"}, body
+    assert body["category"] == category, body
+    assert "detail" not in body, body
+    if contains:
+        assert contains in body["error"], body
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -123,14 +149,35 @@ def test_check_static_happy_path(client, synthetic_dumps):
 
 
 def test_check_static_404_on_missing_dump(client, tmp_path):
-    """check-static returns 404 if any dump path doesn't exist."""
+    """check-static returns 404 if any dump path doesn't exist.
+
+    ``FileNotFoundServiceError`` (NOT_FOUND) through the global funnel: the
+    status is the same 404 the hand-rolled ``HTTPException`` produced, the body
+    is now the structured envelope.
+    """
     missing = str(tmp_path / "does_not_exist.bin")
     r = client.post(
         "/api/architect/check-static",
         json={"dump_paths": [missing, missing], "offset": 0, "length": 16},
     )
-    assert r.status_code == 404
-    assert "does_not_exist" in r.json()["detail"]
+    assert r.status_code == 404, r.text
+    _assert_funnel_body(r, category="NOT_FOUND", contains="does_not_exist")
+
+
+def test_check_static_400_on_fewer_than_two_dumps(client, synthetic_dumps):
+    """A single dump cannot establish staticness -- INVALID_INPUT -> 400.
+
+    Nothing pinned this branch before the funnel migration, so the arity guard
+    could have changed status or message unnoticed.
+    """
+    r = client.post(
+        "/api/architect/check-static",
+        json={"dump_paths": synthetic_dumps[:1], "offset": 0, "length": 16},
+    )
+    assert r.status_code == 400, r.text
+    _assert_funnel_body(
+        r, category="INVALID_INPUT", contains="at least 2 dump paths",
+    )
 
 
 @pytest.fixture
@@ -227,8 +274,10 @@ def test_check_static_locked_encrypted_msl_is_an_error_not_all_static(
     reads back zero bytes. Unguarded, ``check_regions`` would then answer 200
     with an empty mask and an empty reference: a vacuous "nothing here"
     indistinguishable from a genuine result. The route raises
-    ``EncryptedDumpLockedError`` (PRECONDITION -> 400) instead, rendered in
-    this router's ``{"detail": ...}`` shape.
+    ``EncryptedDumpLockedError`` (PRECONDITION -> 400) instead. That error is
+    no longer caught and re-thrown as an ``HTTPException`` by the route -- it
+    propagates to the global funnel, so the status is the same 400 and the body
+    is the structured envelope carrying the error's stable ``code``.
     """
     paths, _ = encrypted_msl_dumps
     r = client.post(
@@ -236,7 +285,11 @@ def test_check_static_locked_encrypted_msl_is_an_error_not_all_static(
         json={"dump_paths": paths, "offset": 0, "length": 32},
     )
     assert r.status_code == 400, r.text
-    assert "encrypted" in r.json()["detail"].lower()
+    body = _assert_funnel_body(r, category="PRECONDITION")
+    assert "encrypted" in body["error"].lower()
+    # The machine-readable code the hand-rolled ``{"detail": ...}`` shape threw
+    # away is now on the wire.
+    assert body["code"] == "encrypted_dump_locked"
 
 
 def test_check_static_wrong_key_is_an_error(client, encrypted_msl_dumps):
@@ -250,7 +303,8 @@ def test_check_static_wrong_key_is_an_error(client, encrypted_msl_dumps):
         },
     )
     assert r.status_code == 400, r.text
-    assert r.json()["detail"]
+    body = _assert_funnel_body(r, category="PRECONDITION")
+    assert body["error"]
 
 
 def test_check_static_unequal_sizes_mark_tail_non_static(client, tmp_path):
@@ -308,8 +362,27 @@ def test_generate_pattern_422_on_invalid_payload(client):
     assert r.status_code == 422
 
 
+def test_generate_pattern_400_on_invalid_hex(client):
+    """A non-hex ``reference_hex`` is INVALID_INPUT -> 400 through the funnel.
+
+    Pydantic accepts the field (it is a plain ``str``), so the failure happens
+    in the handler at ``bytes.fromhex`` -- not as a 422.
+    """
+    r = client.post(
+        "/api/architect/generate-pattern",
+        json={"reference_hex": "zzzz", "static_mask": [True, True]},
+    )
+    assert r.status_code == 400, r.text
+    _assert_funnel_body(r, category="INVALID_INPUT", contains="Invalid hex")
+
+
 def test_generate_pattern_400_on_below_threshold(client):
-    """Below-threshold static ratio surfaces as a 400 with a clear detail."""
+    """Below-threshold static ratio surfaces as a PRECONDITION 400.
+
+    The request is well-formed; the DATA cannot yield a pattern -- hence
+    PRECONDITION rather than INVALID_INPUT. Both render 400, so the wire status
+    is byte-for-byte what the old ``HTTPException(400, ...)`` produced.
+    """
     reference = b"\x00" * 32
     payload = {
         "reference_hex": reference.hex(),
@@ -318,8 +391,9 @@ def test_generate_pattern_400_on_below_threshold(client):
         "min_static_ratio": 0.3,
     }
     r = client.post("/api/architect/generate-pattern", json=payload)
-    assert r.status_code == 400
-    assert "static" in r.json()["detail"].lower()
+    assert r.status_code == 400, r.text
+    body = _assert_funnel_body(r, category="PRECONDITION")
+    assert "static" in body["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -441,11 +515,34 @@ def test_export_yara_survives_hostile_key_locator(client, bad):
 
 
 def test_export_400_on_unknown_format(client):
-    """Unknown format strings raise a 400 with a list of supported values."""
+    """Unknown format strings raise a 400 with a list of supported values.
+
+    ``UnsupportedFormatError`` is a ``CapabilityError``, NOT a ``ValueError``,
+    so it is not swallowed by ``export_pattern``'s malformed-pattern handler --
+    it reaches the global funnel with category UNSUPPORTED, whose status hint is
+    the same 400 the hand-rolled raise used.
+    """
     pattern = {"name": "x", "length": 0, "wildcard_pattern": ""}
     r = client.post(
         "/api/architect/export",
         json={"pattern": pattern, "format": "invalid_format"},
     )
-    assert r.status_code == 400
-    assert "Unknown format" in r.json()["detail"]
+    assert r.status_code == 400, r.text
+    _assert_funnel_body(r, category="UNSUPPORTED", contains="Unknown format")
+
+
+def test_export_400_on_malformed_pattern(client):
+    """A pattern with no usable byte string is INVALID_INPUT -> 400.
+
+    The exporter raises a plain ``ValueError``; ``export_pattern`` converts it
+    to a ``CapabilityError`` (rather than an ``HTTPException``) so the body
+    matches every other error this router emits.
+    """
+    r = client.post(
+        "/api/architect/export",
+        json={"pattern": {"name": "p", "wildcard_hex": "7f 45"}, "format": "yara"},
+    )
+    assert r.status_code == 400, r.text
+    _assert_funnel_body(
+        r, category="INVALID_INPUT", contains="wildcard_pattern",
+    )

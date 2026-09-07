@@ -24,6 +24,7 @@ import { uploadPcap, type PcapSession } from "@/api/pipeline";
 import { UploadDirPrompt } from "@/components/settings/UploadDirPrompt";
 import { isUploadDirUnconfigured } from "@/components/settings/upload-dir-error";
 import { usePipelineStore } from "@/stores/pipeline-store";
+import { PcapFieldBrowser } from "./PcapFieldBrowser";
 import { pcapSessionSummary, sessionHasAppRecords } from "./pcap-session";
 import { pcapErrorMessage, usePcapArm } from "./use-pcap-arm";
 
@@ -255,6 +256,14 @@ export function PcapUpload() {
             );
           })}
         </div>
+      )}
+
+      {/* Under the picker on purpose: a field id is only meaningful once a
+          session is chosen, and the browser refuses to guess one. Rendered
+          only for a capture that actually parsed, so a failed arm shows its
+          error rather than an expandable panel with nothing behind it. */}
+      {pcapPath && sessions.length > 0 && !busy && !error && (
+        <PcapFieldBrowser pcapPath={pcapPath} clientRandom={tlsClientRandom} />
       )}
 
       {pcapPath && sessions.length === 0 && !busy && !error && (

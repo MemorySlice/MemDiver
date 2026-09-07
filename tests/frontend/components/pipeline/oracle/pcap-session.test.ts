@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 
-import type { PcapSession } from "@/api/pipeline";
+import type { PcapField, PcapSession } from "@/api/pipeline";
 import {
+  pcapFieldPreview,
   pcapSessionSummary,
   pcapVersionLabel,
   sessionHasAppRecords,
@@ -71,5 +72,56 @@ describe("sessionHasAppRecords", () => {
         makeSession({ has_app_records: true, client_app_records: 0, server_app_records: 0 }),
       ),
     ).toBe(true);
+  });
+});
+
+function makeField(overrides: Partial<PcapField> = {}): PcapField {
+  return {
+    field_id: "client_random",
+    label: "ClientHello.random",
+    type: "bytes",
+    value_hex: "aa".repeat(32),
+    value: null,
+    length: 32,
+    source: "client_hello",
+    provenance: null,
+    searchable: true,
+    ...overrides,
+  };
+}
+
+/**
+ * ``pcapFieldPreview`` decides what a reader sees for one field. The rule is
+ * "the decoded form when there is a more useful one than hex", because the two
+ * audiences differ: a dump search wants ``value_hex``, a human reading the
+ * browser wants the hostname.
+ */
+describe("pcapFieldPreview", () => {
+  it("prefers a decoded string over its hex", () => {
+    expect(
+      pcapFieldPreview(
+        makeField({ type: "string", value: "example.com", value_hex: "6578" }),
+      ),
+    ).toBe("example.com");
+  });
+
+  it("renders a uint and a uint[] from the decoded value", () => {
+    expect(pcapFieldPreview(makeField({ type: "uint", value: 4865 }))).toBe("4865");
+    expect(
+      pcapFieldPreview(makeField({ type: "uint[]", value: [4865, 4866] })),
+    ).toBe("4865, 4866");
+  });
+
+  it("elides a long hex run but keeps a short one whole", () => {
+    // 32 bytes of random is 64 hex characters; the full run stays in the row's
+    // ``title``, so eliding here hides nothing.
+    expect(pcapFieldPreview(makeField())).toBe(`${"aa".repeat(16)}…`);
+    expect(pcapFieldPreview(makeField({ value_hex: "aabbccdd" }))).toBe("aabbccdd");
+  });
+
+  it("renders a field with no byte form as empty", () => {
+    // The record-sequence lists: no wire bytes at all (TLS never transmits the
+    // sequence number), so there is nothing to preview when ``value`` is null.
+    expect(pcapFieldPreview(makeField({ value_hex: "", value: null }))).toBe("");
   });
 });

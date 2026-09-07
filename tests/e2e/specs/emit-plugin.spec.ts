@@ -89,10 +89,12 @@ test.describe("Emitted Volatility 3 plugin", { tag: "@requires-pcap" }, () => {
     await sessionRow.click();
     await page.getByRole("button", { name: /Next: Thresholds/i }).click();
 
-    // The opt-in that used to be missing. The N-sweep box next to it stays
-    // disabled here on purpose: that harness re-runs the oracle at every N
-    // and needs a BYO oracle FILE, which a pcap-oracle run does not have.
-    await expect(page.getByTestId("nsweep-enable")).toBeDisabled();
+    // The opt-in that used to be missing. The N-sweep box next to it is now
+    // live on a pcap run too (P2.2): the harness re-runs whichever oracle the
+    // run armed, so it sweeps against the capture with no BYO oracle FILE.
+    // Left unchecked here — this spec is about the emit stage, and a sweep
+    // would add a full consensus + reduce + verify pass per N.
+    await expect(page.getByTestId("nsweep-enable")).toBeEnabled();
     await page.getByTestId("emit-enable").check();
     await page.getByTestId("emit-name").fill(PLUGIN_NAME);
     // min_static_ratio is left at the backend default (0.3): raising it can

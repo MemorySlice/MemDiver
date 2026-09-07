@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional
 
 from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
 
+from memdiver.app.pipeline.artifact_events import EmittingArtifactList
 from memdiver.core.artifact_util import register_artifact
 
 logger = logging.getLogger("memdiver.app.pipeline.batch_task_runner")
@@ -177,7 +178,9 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     else:
         out_path.write_text(json.dumps(result_dict, indent=2))
 
-    artifacts: List[Dict[str, Any]] = []
+    # Emitting list: the batch_result registration below streams a live
+    # ``artifact`` event (see app.pipeline.artifact_events).
+    artifacts: List[Dict[str, Any]] = EmittingArtifactList(ctx)
     register_artifact(
         artifacts,
         artifact_dir,

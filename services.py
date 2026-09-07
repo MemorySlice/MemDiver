@@ -47,6 +47,7 @@ from memdiver.app.session import ToolSession
 
 # --- inspect: hex / entropy / strings / byte-search / structured MSL --------
 from memdiver.app.tools_inspect import (
+    analyze_region_result,
     blocks_result,
     connections_result,
     detect_format_result,
@@ -84,7 +85,9 @@ from memdiver.app.tools_pipeline import (
     export_pattern,
     inspect_pcap,
     keylog_result,
+    locate_field_across_pairs,
     locate_key,
+    manual_export_pattern,
     n_sweep,
     search_reduce,
     verify_key_result,
@@ -110,6 +113,7 @@ __all__ = [
     "read_hex_result",
     "read_hex_raw_result",
     "resolve_va_result",
+    "analyze_region_result",
     "search_bytes_result",
     "entropy_result",
     "strings_result",
@@ -136,8 +140,11 @@ __all__ = [
     "auto_floor",
     "emit_plugin",
     "export_pattern",
+    "manual_export_pattern",
     "locate_key",
     "export_key_pattern",
+    # C3 — the paired field search (N (dump, capture) pairs, one needle each).
+    "locate_field_across_pairs",
     "keylog_result",
     "inspect_pcap",
     # verify / experiment

@@ -115,6 +115,16 @@ def _cmd_inspect_entropy(args: argparse.Namespace) -> int:
     return _emit_inspect(machine_payload, args.output)
 
 
+def _cmd_inspect_region(args: argparse.Namespace) -> int:
+    """Investigate one offset: byte value, entropy band, neighbourhood strings."""
+    from memdiver.mcp_server.tools_inspect import analyze_region_result
+    machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: analyze_region_result(_new_tool_session(), args.dump_path,
+                                      args.offset, args.window, view=args.view,
+                                      **_inspect_key_kwargs(args)))
+    return _emit_inspect(machine_payload, args.output)
+
+
 def _cmd_inspect_strings(args: argparse.Namespace) -> int:
     """Extract printable strings from a dump region."""
     from memdiver.mcp_server.tools_inspect import strings_result
@@ -210,6 +220,7 @@ def _cmd_inspect_structure(args: argparse.Namespace) -> int:
 _INSPECT_HANDLERS = {
     "hex": _cmd_inspect_hex,
     "entropy": _cmd_inspect_entropy,
+    "region": _cmd_inspect_region,
     "strings": _cmd_inspect_strings,
     "byte-search": _cmd_inspect_byte_search,
     "page-states": _cmd_inspect_page_states,

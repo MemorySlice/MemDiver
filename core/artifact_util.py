@@ -9,10 +9,37 @@ instead of each maintaining its own (occasionally OOM-risky) copy.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Protocol, runtime_checkable
+
+logger = logging.getLogger("memdiver.core.artifact_util")
+
+
+@runtime_checkable
+class ArtifactRegistrationSink(Protocol):
+    """An ``artifacts`` list that also wants to *observe* each registration.
+
+    :func:`register_artifact` is the one place in the codebase where an
+    artifact becomes real (written, sized, hashed, and appended). Anything
+    that needs to react to that — a live progress stream, an audit log — wants
+    to hook exactly there, not at the ~19 scattered call sites.
+
+    Rather than thread a sink argument through every stage helper (or, worse,
+    sprinkle an ``emit`` next to every ``register_artifact``), the hook rides
+    on the ``artifacts`` container itself: pass a list that implements
+    ``artifact_registered`` and it is called once per appended spec. A plain
+    ``list`` does not implement it, so the default path is byte-for-byte
+    unchanged and ``core`` keeps importing nothing from the layers above it.
+
+    The concrete pipeline-layer implementation is
+    ``app.pipeline.artifact_events.EmittingArtifactList``.
+    """
+
+    def artifact_registered(self, spec: Dict[str, Any]) -> None:
+        ...  # pragma: no cover - structural protocol
 
 
 def sha256_streamed(path: Path) -> str:
@@ -35,7 +62,13 @@ def register_artifact(
     relpath: str,
     media_type: str = "application/octet-stream",
 ) -> Dict[str, Any]:
-    """Compute size + sha256 of a written artifact and append a record."""
+    """Compute size + sha256 of a written artifact and append a record.
+
+    If ``artifacts`` implements :class:`ArtifactRegistrationSink` (i.e. it
+    carries an ``artifact_registered`` attribute) the freshly built spec is
+    handed to it after the append, so callers can stream registrations live
+    without every call site knowing about it.
+    """
     full = artifact_dir / relpath
     try:
         size = full.stat().st_size
@@ -50,6 +83,18 @@ def register_artifact(
         "sha256": sha,
     }
     artifacts.append(spec)
+    # Central artifact-notification point. STRUCTURAL on purpose (the Protocol
+    # is ``runtime_checkable``, so this is an attribute check, not a nominal
+    # one): ``core`` must not import ``app``/``api``, and the overwhelmingly
+    # common caller passes a plain ``list``, which simply does not satisfy it.
+    # A sink that raises must never take a run down with it — the artifact IS
+    # registered by the time we get here, and a dropped progress event is
+    # strictly less bad than a failed pipeline stage.
+    if isinstance(artifacts, ArtifactRegistrationSink):
+        try:
+            artifacts.artifact_registered(spec)
+        except Exception:  # pragma: no cover - best effort, never fatal
+            logger.debug("artifact_registered sink failed", exc_info=True)
     return spec
 
 

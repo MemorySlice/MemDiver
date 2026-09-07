@@ -31,6 +31,16 @@ EXPECTED_TOOLS = {
     "search_reduce", "brute_force", "n_sweep", "emit_plugin",
     "read_hex_raw", "resolve_va", "search_bytes", "get_page_states",
     "consensus", "auto_floor", "export_pattern",
+    # P2.3: the manual complement of export_pattern — "I know the offset, I do
+    # not have the key bytes". Wired on web + MCP + library in one atomic change
+    # so the producer could leave EXEMPT_PRODUCERS and be registered truthfully
+    # on all four surfaces.
+    "manual_export_pattern",
+    # P2.4: the per-offset investigation view ("what is at this offset?"). It
+    # was a producer reachable from nowhere; wired on web + MCP + CLI + library
+    # in one atomic change so it could leave EXEMPT_PRODUCERS and be registered
+    # truthfully on all four surfaces.
+    "analyze_region",
     # Phase 4 (G3): capabilities that were previously web-only are now
     # reachable from MCP too.
     "get_connections", "get_module_index", "get_blocks",
@@ -49,6 +59,11 @@ EXPECTED_TOOLS = {
     # B1/B3: the key-location spine. "I already hold this secret — which dumps
     # still contain it, and where?" plus the signature built on that answer.
     "locate_key", "export_key_pattern",
+    # C3: the PAIRED field search — N (dump, capture) pairs, each dump taking
+    # its needle from the capture of the run it belongs to, and no key log
+    # read. Registered on all four surfaces in the change that added it, so it
+    # needs no _MCP_ALLOWED_OMISSIONS / KNOWN_PARITY_GAPS entry.
+    "locate_field_across_pairs",
 }
 
 

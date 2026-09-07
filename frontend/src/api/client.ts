@@ -309,7 +309,7 @@ export interface CheckStaticResult { static_mask: boolean[]; reference_hex: stri
 export interface PatternGenResult { name: string; length: number; hex_pattern: string; wildcard_pattern: string; static_ratio: number; static_count: number; volatile_count: number }
 export interface ExportResult { format: string; content: string }
 
-export const checkStatic = (body: { dump_paths: string[]; offset: number; length: number }) =>
+export const checkStatic = (body: { dump_paths: string[]; offset: number; length: number } & KeyMaterial) =>
   request<CheckStaticResult>("/api/architect/check-static", { method: "POST", body: JSON.stringify(body) });
 
 export const generatePattern = (body: { reference_hex: string; static_mask: boolean[]; name?: string }) =>

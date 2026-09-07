@@ -31,6 +31,7 @@ import type {
   BruteForceParams,
   EmitParams,
   NSweepParams,
+  PcapPair,
   PcapSession,
   ReduceParams,
   StageRecord,
@@ -220,6 +221,14 @@ export interface PipelineFormValues {
   // oracleId. tlsClientRandom (hex) optionally restricts matching to one session.
   pcapPath: string | null;
   tlsClientRandom: string | null;
+  // The C3 alternative to the single ``pcapPath`` above: N explicit
+  // ``(dump, capture)`` pairings, so each dump is searched for a field taken
+  // from ITS OWN capture. ``null`` -- the default -- means "no explicit
+  // pairing", which is today's behaviour unchanged: ``sourcePaths`` plus one
+  // ``pcapPath``. It is deliberately additive rather than a replacement,
+  // because a single capture remains the overwhelmingly common case and the
+  // pipeline run itself still takes exactly one.
+  pcapPairs: PcapPair[] | null;
   reduce: ReduceParams;
   bruteForce: BruteForceParams;
   nsweep: NSweepParams | null;
@@ -296,6 +305,7 @@ const DEFAULT_FORM: PipelineFormValues = {
   oracleSha256: null,
   pcapPath: null,
   tlsClientRandom: null,
+  pcapPairs: null,
   reduce: {
     alignment: 8,
     block_size: 32,
@@ -856,6 +866,14 @@ export const usePipelineStore = create<PipelineState>()(
       // runs when the stored version differs, so blobs already at v2 need the
       // same backfill for fields added later -- the same reason
       // settings-store.ts carries a custom merge.
+      //
+      // This is ALSO why a purely additive key needs no PIPELINE_STORE_VERSION
+      // bump: ``current.form`` is DEFAULT_FORM, the persisted form spreads OVER
+      // it, and a key the blob does not carry is therefore not overwritten. A
+      // bump is required only to TRANSFORM stored data (the stride and jobs
+      // rewrites in ``migrate``), because ``migrate`` never fires without one.
+      // ``form.pcapPairs`` is the current example; the distinction is pinned by
+      // tests/frontend/stores/pipeline-store.test.ts.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PipelineState>;
         const form = (p.form ?? {}) as Partial<PipelineFormValues>;

@@ -100,25 +100,6 @@ _DEPRECATED_MARKER = ".. deprecated::"
 #: So they stay out of the registry and stay visible here instead.
 EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
     (
-        "memdiver.app.tools_pipeline.manual_export_pattern",
-        "CLI-only today (cli/pipeline.py). Still wanted — it is the exact "
-        "COMPLEMENT of export.key_pattern: 'I know the offset, I do not have "
-        "the key bytes', the path out of analyze_candidates or an RE session — "
-        "but there is no web route (/auto-export is auto-only), no MCP tool "
-        "(only export_pattern), and it is not re-exported through "
-        "memdiver.services, so it is not on the library surface either. "
-        "Registering it truthfully would add three entries to the shrink-only "
-        "KNOWN_PARITY_GAPS; wiring it on web+MCP is separate, deliberate work.",
-    ),
-    (
-        "memdiver.app.tools_inspect.analyze_region_result",
-        "Zero surfaces: nothing outside tests calls it. The marimo "
-        "investigation panel runs core.region_analysis.analyze_region directly "
-        "because it holds in-memory variance/hits this path-based producer "
-        "cannot accept, and no CLI/web/MCP/library entry point exists. "
-        "Registering it would add FOUR new KNOWN_PARITY_GAPS entries.",
-    ),
-    (
         "memdiver.app.tools.import_dump",
         "Library + web only (memdiver.services re-export, POST "
         "/api/dumps/upload). The CLI `import` command calls msl.importer."
@@ -138,13 +119,14 @@ EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
 EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
     (
         "architect",
-        "UNMIGRATED LEGACY SURFACE: /check-static, /generate-pattern and "
-        "/export bypass the app layer entirely (they import architect/ "
-        "StaticChecker / PatternGenerator / *Exporter directly) and answer with "
-        "raw HTTPException, predating the CapabilityError funnel. There is no "
-        "app-layer producer to register, and converting the router is "
-        "explicitly out of scope here; this entry is what makes the gap "
-        "VISIBLE instead of invisible.",
+        "NO APP-LAYER PRODUCER: /check-static, /generate-pattern and /export "
+        "bypass the app layer entirely (they import architect/ StaticChecker / "
+        "PatternGenerator / *Exporter directly), so there is nothing to "
+        "register as a capability. The router's ERROR contract is no longer "
+        "part of this gap -- every failure path now raises a transport-agnostic "
+        "CapabilityError and is rendered by the global funnel in api/main.py "
+        "(see tests/test_api_architect.py) -- but the missing producer is real, "
+        "and this entry is what keeps it VISIBLE instead of invisible.",
     ),
     (
         "consensus",

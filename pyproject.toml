@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.6.0"
+version = "0.7.0"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -205,7 +205,7 @@ memdiver = "memdiver.cli:main"
 #   [project.entry-points."memdiver.kdfs"]
 #   my_kdf = "my_pkg.kdfs:MyKDF"
 #
-# The three register-call-based extension points also support out-of-tree
+# The four register-call-based extension points also support out-of-tree
 # discovery via these groups (see docs/contributing/adding_{dump_source,
 # binary_format,pipeline_stage}.md). Here an entry point resolves to a module
 # (imported for its register_* side effect) or a callable (invoked to
@@ -219,6 +219,15 @@ memdiver = "memdiver.cli:main"
 #
 #   [project.entry-points."memdiver.pipeline_stages"]
 #   my_stage = "my_pkg.memdiver_stage"            # module, or "...:register" callable
+#
+#   [project.entry-points."memdiver.oracles"]
+#   my_resource = "my_pkg.memdiver_resource"      # module, or "...:register" callable
+#
+# "memdiver.oracles" advertises verification resources (register_resource_type
+# in engine/resources/builtin_oracle.py), selected by resource_type in an oracle
+# config. An out-of-tree resource is ALWAYS loaded under the untrusted-code
+# sandbox: only first-party in-tree factories get the trusted-load exemption,
+# so installing a package can never buy unsandboxed execution.
 
 [tool.setuptools]
 package-dir = {"memdiver" = "."}
@@ -418,6 +427,21 @@ files = [
     # there would zero every metric rather than raise.
     "engine/vol3_verify.py",
     "engine/vol3_subproc.py",
+    # Wave 9 -- C1 protocol field model. A pure byte parser (no dpkt, no I/O)
+    # written typed from the start, so it joins the island on arrival. Types
+    # earn their keep here specifically: every function returns offsets that
+    # index into a caller's buffer, and an Optional/int slip would produce a
+    # provenance record that points at the wrong bytes -- a silently WRONG
+    # answer rather than a crash. `engine/resources/tls_pcap.py` itself stays
+    # outside the island (it is `Any`-typed around dpkt throughout).
+    "engine/resources/protocol_fields.py",
+    # Wave 10 -- C4a protocol detection. Typed from the start. It sits on the
+    # FAILURE path (it explains why something else broke) and is contractually
+    # forbidden to raise, so the Optional-returning sniffs and the
+    # flow-key/connection-key tuple shapes are exactly what types are for: a
+    # slip there would turn a diagnostic into a second exception. dpkt itself
+    # stays `Any` (ignore_missing_imports), as it does for `tls_pcap.py`.
+    "engine/resources/protocol_detect.py",
 
 ]
 

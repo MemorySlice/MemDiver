@@ -17,6 +17,9 @@ def create_server():
     # The pinned per-side neighborhood width, imported (never re-literalled) so
     # the MCP surface's default cannot drift from the engine's.
     from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+    # Same reason again: the pcap verification resource default is the app
+    # layer's constant, so the MCP spelling cannot drift from the producer's.
+    from memdiver.app.tools_pipeline import DEFAULT_RESOURCE_TYPE
     # Same reason: the key-location tool defaults must be the engine's numbers.
     from memdiver.engine.key_location import (
         DEFAULT_KEY_CONTEXT,
@@ -102,6 +105,24 @@ def create_server():
         """Compute sliding-window entropy profile for a dump file region."""
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.entropy_result(
             _session, dump_path, offset, length, window, step, threshold,
+            key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def analyze_region(
+        dump_path: str, offset: int, window: int = 64, view: str = "raw",
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Investigate one offset: byte value, local entropy band, strings.
+
+        The agent-facing "what is at this offset?" probe — the natural
+        follow-up to a byte-search or entropy hit. Only the ``window``-sized
+        neighbourhood is read, so it is cheap on multi-GB dumps.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.analyze_region_result(
+            _session, dump_path, offset, window, view,
             key_file, passphrase, kem_key_file,
         )))
 
@@ -371,6 +392,7 @@ def create_server():
         tls_client_random: Optional[str] = None,
         pcap_max_records: Optional[int] = None,
         pcap_max_challenges: Optional[int] = None,
+        resource_type: str = DEFAULT_RESOURCE_TYPE,
         persist_ground_truth: bool = False,
         key_sizes: Optional[List[int]] = None, stride: int = 1,
         jobs: int = 0, exhaustive: bool = True,
@@ -392,6 +414,12 @@ def create_server():
         unset to keep the defaults, and read ``inspect_pcap``'s ``caps`` +
         ``records_truncated`` to see what a capture actually loses to them.
 
+        ``resource_type`` picks the registered verification resource (default
+        ``"tls-pcap"``). Change it only when a capture holds a protocol another
+        installed resource handles — the error you get on a multi-protocol
+        capture names the choices, and ``inspect_pcap(detect_protocols=True)``
+        lists them before you run.
+
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
         against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
         the static-byte cutoff surfaced in the stage's preview.
@@ -410,6 +438,7 @@ def create_server():
             tls_client_random=tls_client_random,
             pcap_max_records=pcap_max_records,
             pcap_max_challenges=pcap_max_challenges,
+            resource_type=resource_type,
             persist_ground_truth=persist_ground_truth,
             key_sizes=tuple(key_sizes or [32]),
             stride=stride,
@@ -427,8 +456,14 @@ def create_server():
     @mcp.tool()
     @mcp_error_funnel
     def n_sweep(
-        source_paths: List[str], oracle_path: str, output_dir: str,
+        source_paths: List[str], output_dir: str,
         n_values: List[int],
+        oracle_path: Optional[str] = None,
+        pcap_path: Optional[str] = None,
+        tls_client_random: Optional[str] = None,
+        pcap_max_records: Optional[int] = None,
+        pcap_max_challenges: Optional[int] = None,
+        resource_type: str = DEFAULT_RESOURCE_TYPE,
         reduce_kwargs: Optional[dict] = None,
         key_sizes: Optional[List[int]] = None,
         stride: int = 1, exhaustive: bool = True,
@@ -440,6 +475,16 @@ def create_server():
     ) -> str:
         """Run the N-scaling harness and emit the Plotly survivor report.
 
+        Supply exactly one oracle source, the same pair ``brute_force`` takes:
+        ``oracle_path`` (a BYO decryption oracle script) or ``pcap_path`` (a
+        pcap/pcapng of the same TLS session, routed through MemDiver's
+        first-party trusted pcap oracle). The sweep re-runs whichever one it was
+        given at every N. ``tls_client_random`` (hex) optionally restricts pcap
+        matching to one session, and ``pcap_max_records`` /
+        ``pcap_max_challenges`` size the pcap oracle's verification work.
+        ``resource_type`` picks the registered verification resource (default
+        ``"tls-pcap"``), the same knob ``brute_force`` takes.
+
         Set ``escalate`` to run a floor-free sweep at the terminal N when no
         checkpoint found a hit; its verdict surfaces under ``escalation``.
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` for encrypted
@@ -448,6 +493,11 @@ def create_server():
         return json.dumps(tools_pipeline.n_sweep(
             source_paths=source_paths,
             oracle_path=oracle_path,
+            pcap_path=pcap_path,
+            tls_client_random=tls_client_random,
+            pcap_max_records=pcap_max_records,
+            pcap_max_challenges=pcap_max_challenges,
+            resource_type=resource_type,
             output_dir=output_dir,
             n_values=n_values,
             reduce_kwargs=reduce_kwargs,
@@ -616,6 +666,32 @@ def create_server():
 
     @mcp.tool()
     @mcp_error_funnel
+    def manual_export_pattern(
+        dump_paths: List[str], offset: int, length: int,
+        output_dir: Optional[str] = None,
+        fmt: str = "volatility3", name: str = "memdiver_pattern",
+        min_static_ratio: float = 0.3,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Export a YARA/JSON/Vol3 pattern from a KNOWN offset + length.
+
+        The manual counterpart to ``export_pattern``: use it when the region is
+        already known — from ``analyze_candidates``, from a previous run, or
+        from a reverse-engineering session — so no consensus/auto-detect pass is
+        needed (hence no ``align`` / ``context``). ``offset`` is memory-relative
+        for ``.msl`` inputs, the same space every other offset this server
+        reports is in.
+        """
+        return json.dumps(tools_pipeline.manual_export_pattern(
+            dump_paths=dump_paths, offset=offset, length=length,
+            output_dir=output_dir, fmt=fmt, name=name,
+            min_static_ratio=min_static_ratio,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
     def export_keylog(
         secrets: List[dict], output_path: Optional[str] = None,
     ) -> str:
@@ -637,6 +713,7 @@ def create_server():
         key_hex: str = "",
         keylog_line: str = "",
         secret: Optional[dict] = None,
+        pcap_field: Optional[dict] = None,
         view: Optional[str] = None,
         max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -649,7 +726,7 @@ def create_server():
         them and where. It is NOT a search for unknown keys — that is
         ``analyze_candidates`` (no oracle) or ``brute_force`` (with one).
 
-        Supply the secret in exactly ONE of three forms; two forms is an error,
+        Supply the secret in exactly ONE of four forms; two forms is an error,
         with no precedence, because two forms naming different bytes would
         otherwise return a confident census of the wrong secret:
 
@@ -657,6 +734,17 @@ def create_server():
         * ``keylog_line`` — "<LABEL> <client_random_hex> <secret_hex>". This form
           also reports ``secret_type`` and ``client_random``.
         * ``secret`` — {"secret_type", "client_random", "secret"}.
+        * ``pcap_field`` — {"pcap_path", "field_id", "client_random"?}: NAME a
+          handshake field instead of pasting its bytes, e.g.
+          {"pcap_path": "/x/session.pcap", "field_id": "client_random"}. Prefer
+          this over transcribing hex out of an ``inspect_pcap`` result — it
+          cannot lose a nibble, and it re-resolves against a re-captured
+          session. List the ids with ``inspect_pcap(include_fields=True)`` and
+          pick one whose ``searchable`` is true; a non-searchable field is
+          refused because it matches everywhere. ``client_random`` is required
+          only when the capture holds several sessions (guessing is refused).
+          The result reports the resolved ``field_id`` in ``secret_type`` and
+          the session in ``client_random``.
 
         ONE dump is enough (unlike every other N-dump tool here).
 
@@ -683,8 +771,86 @@ def create_server():
             key_hex=key_hex,
             keylog_line=keylog_line,
             secret=secret,
+            pcap_field=pcap_field,
             view=view,
             max_offsets=max_offsets,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def locate_field_across_pairs(
+        pairs: Optional[List[dict]] = None,
+        dump_paths: Optional[List[str]] = None,
+        field_id: str = "client_random",
+        view: Optional[str] = None,
+        max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+        pcap_max_records: Optional[int] = None,
+        pcap_max_challenges: Optional[int] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Search N dumps for a handshake field, each from ITS OWN capture.
+
+        ``locate_key`` searches N dumps for ONE needle — right for a single
+        session, wrong for a corpus: 40 runs of the same client each negotiated
+        their own handshake, so one client random answers about 39 runs it was
+        never in. This tool asks the scalable question instead: *for each dump,
+        is the ``field_id`` of the capture belonging to THAT dump present in it,
+        and where?* The needle varies per pair.
+
+        NO KEY LOG IS READ — the needle comes off the wire — so this works on a
+        corpus that ships captures but no ground truth.
+
+        Supply the pairing in exactly ONE of two forms (both is an error, with
+        no precedence, because a disagreement would yield a confident census
+        read from the wrong capture):
+
+        * ``pairs`` — explicit: [{"dump_path": ..., "pcap_path": ...,
+          "client_random": <optional>}, ...]. ``client_random`` picks a session
+          when a capture holds several.
+        * ``dump_paths`` — discovery: each dump finds the capture of the run it
+          lives in (``meta.capture``, then ``run_data/traffic.pcap*``, then a
+          capture sitting beside the dumps).
+
+        ``field_id`` defaults to ``client_random`` (32 bytes, unique per
+        handshake, present in every TLS version). Browse the alternatives with
+        ``inspect_pcap(include_fields=True)`` and pick one whose ``searchable``
+        is true; a non-searchable field is refused because it matches
+        everywhere.
+
+        READ ``verdict`` FIRST: ``"found"`` / ``"absent"`` (a measured absence)
+        / ``"not_searched"`` (NOTHING was read — claims neither).
+
+        Each row in ``pairs`` carries a three-valued ``status`` you must read
+        before its numbers:
+
+        * ``"searched"`` — ``location`` holds a ``locate_key``-shaped census
+          over that one dump.
+        * ``"unpaired"`` — no capture belongs to this dump, so nothing was
+          searched. ``location`` is null and ``needle_hex`` is "". This is a ROW,
+          not an omission: it keeps the denominator honest.
+        * ``"field_unresolved"`` — a capture was found but yields no usable
+          ``field_id``; ``detail`` says why. Also not an absence.
+
+        ``counts.captures_distinct`` / ``counts.needles_distinct`` tell you
+        whether this was a real pairing or one needle wearing N hats, and
+        ``offsets_agree`` / ``common_offset`` whether the field lands at the same
+        offset across the dumps that hold it.
+
+        Nothing is persisted. Supply key_file / passphrase / kem_key_file for
+        encrypted ``.msl`` inputs.
+        """
+        return json.dumps(tools_pipeline.locate_field_across_pairs(
+            pairs=pairs,
+            dump_paths=dump_paths,
+            field_id=field_id,
+            view=view,
+            max_offsets=max_offsets,
+            pcap_max_records=pcap_max_records,
+            pcap_max_challenges=pcap_max_challenges,
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -762,6 +928,8 @@ def create_server():
         pcap_path: str,
         pcap_max_records: Optional[int] = None,
         pcap_max_challenges: Optional[int] = None,
+        include_fields: bool = False,
+        detect_protocols: bool = False,
     ) -> str:
         """Summarise the TLS sessions in a capture (the pcap arm/validate step).
 
@@ -777,11 +945,34 @@ def create_server():
         actually in force rather than the resource defaults. Leave both unset
         for the defaults. A cap below 1 is rejected: it would verify nothing and
         so could only turn a real key into an unexplained "0 confirmed".
+
+        Set ``include_fields`` to also get the byte-addressed view of each
+        handshake: per session a ``fields`` list (``field_id``, ``value_hex``,
+        ``length``, ``source``, wire ``provenance``, ``searchable``) plus
+        ``field_notes``, and a top-level ``field_index`` cataloguing the ids the
+        capture offers. That is how you find the ``field_id`` to hand to
+        ``locate_key``'s ``pcap_field`` form — the way to search dumps for a
+        handshake value without transcribing its hex. Read ``searchable`` first:
+        a false one matches everywhere, so a hit on it means nothing, and
+        ``locate_key`` refuses it. Off by default because it re-reads the
+        capture; leave it off when you only want the session facts.
+
+        Set ``detect_protocols`` when ``session_count`` comes back 0 (or a
+        ``brute_force`` run refuses the capture): it adds a top-level
+        ``protocols`` list saying what the capture actually holds — per protocol
+        the ``resource_type`` that would read it, whether anything installed can
+        ``decrypt`` it, the connection count, and sample endpoints as
+        ``evidence``. That is how you find the ``resource_type`` to pass to
+        ``brute_force`` / ``n_sweep``. Never errors: an unreadable or
+        unrecognisable capture yields an empty list. Off by default (it costs
+        two extra reads of the capture, one of them a UDP pass for QUIC/DTLS).
         """
         return json.dumps(tools_pipeline.inspect_pcap(
             pcap_path=pcap_path,
             pcap_max_records=pcap_max_records,
             pcap_max_challenges=pcap_max_challenges,
+            include_fields=include_fields,
+            detect_protocols=detect_protocols,
         ))
 
     # ------------------------------------------------------------------

@@ -5,11 +5,19 @@ import logging
 import sys
 from pathlib import Path
 
-# The one app-layer import in this module: the parser's --max-returned default
-# must be the SAME number the producer applies, or the CLI would advertise a
-# cap the library does not use. numpy is already resolved by ``cli.consensus``
-# above, so this costs no additional startup time.
-from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
+# The one app-layer import in this module: parser defaults that must be the
+# SAME numbers/names the producers apply, or the CLI would advertise a cap or a
+# field the library does not use. numpy is already resolved by
+# ``cli.consensus`` above, so this costs no additional startup time.
+# ``DEFAULT_PAIR_FIELD_ID`` is locate-field-pairs' --field-id: the producer
+# picks ``client_random`` because it is the one field every TLS version carries
+# and is unique per handshake, so the flag advertises that choice rather than
+# re-spelling it.
+from memdiver.app.tools_pipeline import (
+    DEFAULT_MAX_RETURNED_REGIONS,
+    DEFAULT_PAIR_FIELD_ID,
+    DEFAULT_RESOURCE_TYPE,
+)
 from memdiver.core.service_errors import CapabilityError
 # Same reasoning for --neighborhood-pad: the flag must advertise the SAME pad
 # the engine applies, so it imports the canonical constant instead of repeating
@@ -55,6 +63,7 @@ from .pipeline import (
     _cmd_gen_kem_key,
     _cmd_import_dir,
     _cmd_inspect_pcap,
+    _cmd_locate_field_pairs,
     _cmd_locate_key,
     _cmd_n_sweep,
     _cmd_search_reduce,
@@ -259,6 +268,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Cap the total challenges the pcap oracle keeps across "
                     "all sessions (default: uncapped). A cap silently discards "
                     "verification work, so it is set explicitly, never by default")
+    bf.add_argument("--resource-type", default=DEFAULT_RESOURCE_TYPE,
+                    help="Registered verification resource the capture is read "
+                    "through (default: tls-pcap, the first-party TLS-over-TCP "
+                    "one). Only change it when the capture holds a protocol "
+                    "another installed resource handles: "
+                    "'inspect-pcap --protocols' lists what a capture holds and "
+                    "which resource_type can decrypt each")
     bf.add_argument("--persist-ground-truth", action="store_true",
                     help="Record confirmed hits in the project ground-truth ledger "
                     "(opt-in; no-op if the DuckDB backend is unavailable)")
@@ -291,8 +307,29 @@ def _build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--entropy-window", type=int, default=32)
     ns.add_argument("--entropy-threshold", type=float, default=4.5)
     ns.add_argument("--min-region", type=int, default=16)
-    ns.add_argument("--oracle", required=True, help="Path to user oracle script")
+    ns.add_argument("--oracle", help="Path to user oracle script "
+                    "(mutually exclusive with --pcap)")
     ns.add_argument("--oracle-config", help="Optional TOML config")
+    ns.add_argument("--pcap", help="pcap/pcapng of the same TLS session; the sweep "
+                    "re-verifies against real captured records through the "
+                    "first-party trusted oracle at every N (mutually exclusive "
+                    "with --oracle)")
+    ns.add_argument("--tls-client-random", help="Hex TLS client_random restricting "
+                    "the pcap oracle to one session")
+    ns.add_argument("--pcap-max-records", type=int, default=None,
+                    help="Cap the encrypted application-data records each direction "
+                    "of a captured session contributes to the pcap oracle "
+                    "(default: 16); same knob 'brute-force' takes")
+    ns.add_argument("--pcap-max-challenges", type=int, default=None,
+                    help="Cap the total challenges the pcap oracle keeps across "
+                    "all sessions (default: uncapped)")
+    ns.add_argument("--resource-type", default=DEFAULT_RESOURCE_TYPE,
+                    help="Registered verification resource the capture is read "
+                    "through (default: tls-pcap, the first-party TLS-over-TCP "
+                    "one). Only change it when the capture holds a protocol "
+                    "another installed resource handles: "
+                    "'inspect-pcap --protocols' lists what a capture holds and "
+                    "which resource_type can decrypt each")
     ns.add_argument("--key-sizes", default="32")
     ns.add_argument("--stride", type=int, default=1,
                     help="Candidate offset step in bytes. Only offsets that are multiples of the stride are tested, so a secret that is not stride-aligned is never reached; the default 1 walks every offset (full coverage). Raise it to trade coverage for speed (default: 1)")
@@ -422,6 +459,23 @@ def _build_parser() -> argparse.ArgumentParser:
     lk_form.add_argument("--keylog-line",
                          help="One NSS key-log row: "
                               "'<LABEL> <client_random_hex> <secret_hex>'")
+    # The SYMBOLIC form (C2): name a handshake field instead of pasting its
+    # bytes. In the same mutually-exclusive group as the two hex forms, so the
+    # parser refuses a mixture before the producer is ever reached.
+    lk_form.add_argument("--pcap-field", metavar="FIELD_ID",
+                         help="Read the needle off the wire instead of pasting "
+                              "it: a field id from --pcap, e.g. 'client_random' "
+                              "or 'sni'. List them with "
+                              "'inspect-pcap --fields'. Only searchable fields "
+                              "are accepted (a short field matches everywhere)")
+    lk.add_argument("--pcap",
+                    help="Capture --pcap-field is read from (required with it). "
+                         "Same spelling as brute-force's --pcap")
+    lk.add_argument("--pcap-session", metavar="CLIENT_RANDOM",
+                    help="Which session's --pcap-field to take, by client_random "
+                         "hex. Needed only when the capture holds several: "
+                         "there is no default, because the wrong session's field "
+                         "is a valid-looking needle from another handshake")
     lk.add_argument("--view", default=None,
                     help="Byte view to search (default: the format's own — "
                          "'raw' for raw dumps, 'vas' for .msl)")
@@ -431,6 +485,45 @@ def _build_parser() -> argparse.ArgumentParser:
                          f"true total either way")
     lk.add_argument("-o", "--output", help="Output JSON file")
     lk.add_argument("-v", "--verbose", action="store_true")
+    # locate-field-pairs (N (dump, capture) pairs, each with its OWN needle)
+    lfp = sub.add_parser(
+        "locate-field-pairs",
+        help="Locate a handshake FIELD across N dumps, each dump taking the "
+             "field from its own capture (exit 0 found / 3 absent / 2 nothing "
+             "searched)",
+        parents=[_decrypt_parent_parser()],
+    )
+    lfp.add_argument("dumps", nargs="*",
+                     help="Dump file paths or directories. Each finds the "
+                          "capture of the run it lives in (run_data/traffic."
+                          "pcap*, meta.json's 'capture', or a capture beside "
+                          "the dumps). Mutually exclusive with --pairs")
+    lfp.add_argument("--pairs", metavar="JSON",
+                     help="Explicit pairings instead of discovery: a JSON file "
+                          "(or inline JSON) holding a list of "
+                          "{'dump_path', 'pcap_path', 'client_random'?} dicts. "
+                          "There is no precedence between this and the "
+                          "positional dumps -- supply exactly one")
+    lfp.add_argument("--field-id", default=DEFAULT_PAIR_FIELD_ID,
+                     help=f"Handshake field to search for (default "
+                          f"{DEFAULT_PAIR_FIELD_ID}). List a capture's ids with "
+                          f"'inspect-pcap --fields'; only searchable ones are "
+                          f"accepted")
+    lfp.add_argument("--view", default=None,
+                     help="Byte view to search (default: the format's own — "
+                          "'raw' for raw dumps, 'vas' for .msl)")
+    lfp.add_argument("--max-offsets", type=int, default=DEFAULT_MAX_KEY_OFFSETS,
+                     help=f"Offsets RETURNED per dump (default "
+                          f"{DEFAULT_MAX_KEY_OFFSETS}); hit_count stays the "
+                          f"true total either way")
+    lfp.add_argument("--pcap-max-records", type=int, default=None,
+                     help="Cap the encrypted application-data records each "
+                          "direction contributes when the capture is parsed")
+    lfp.add_argument("--pcap-max-challenges", type=int, default=None,
+                     help="Cap the total decryption challenges kept ACROSS all "
+                          "sessions when the capture is parsed")
+    lfp.add_argument("-o", "--output", help="Output JSON file")
+    lfp.add_argument("-v", "--verbose", action="store_true")
     # export-key-pattern (a signature anchored on an already-known secret)
     ekp = sub.add_parser(
         "export-key-pattern",
@@ -498,6 +591,20 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Cap the total decryption challenges kept ACROSS all "
                           "sessions (default: uncapped). TLS 1.3 yields several "
                           "challenges per record, so this is not a record count")
+    ipc.add_argument("--fields", action="store_true",
+                     help="Also report each session's byte-addressable protocol "
+                          "fields (randoms, session ids, SNI, key shares, "
+                          "certificates) with their wire provenance, plus a "
+                          "top-level field_index. These field ids are what "
+                          "'locate-key --pcap-field' takes. Costs a second read "
+                          "of the capture, so it is off by default")
+    ipc.add_argument("--protocols", action="store_true",
+                     help="Also report what protocols the capture holds "
+                          "(TLS/QUIC/DTLS/SSH/HTTP), which resource_type would "
+                          "read each, and whether anything installed can "
+                          "decrypt it. Read this when session_count is 0: the "
+                          "capture is not empty, it is something else. Never "
+                          "errors -- an unrecognisable capture reports none")
     ipc.add_argument("-o", "--output",
                      help="Output JSON file (default: stdout)")
     ipc.add_argument("-v", "--verbose", action="store_true")
@@ -574,8 +681,8 @@ def _build_parser() -> argparse.ArgumentParser:
     insp = sub.add_parser(
         "inspect",
         help="Low-level dump / structured-MSL inspection views (hex, entropy, "
-             "strings, byte-search, page-states, session-info, vas, processes, "
-             "modules, handles, xref, structure)",
+             "region, strings, byte-search, page-states, session-info, vas, "
+             "processes, modules, handles, xref, structure)",
     )
     insp_sub = insp.add_subparsers(dest="inspect_action")
     # inspect hex
@@ -606,6 +713,20 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="High-entropy region threshold (default: 7.5)")
     ie.add_argument("-o", "--output", help="Output JSON file")
     ie.add_argument("-v", "--verbose", action="store_true")
+    # inspect region — the per-offset investigation view. Sibling of `entropy`
+    # (which profiles a whole range); this answers "what is at THIS offset?".
+    ireg = insp_sub.add_parser("region", parents=[dp],
+                               help="Investigate one offset: byte value, "
+                                    "entropy band, neighbourhood strings")
+    ireg.add_argument("dump_path", help="Dump or .msl file path")
+    ireg.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                      help="Offset to investigate (hex or decimal, default: 0)")
+    ireg.add_argument("--window", type=int, default=64,
+                      help="Neighbourhood window size (default: 64)")
+    ireg.add_argument("--view", choices=["raw", "vas"], default="raw",
+                      help="MSL byte source: raw container or flattened VAS")
+    ireg.add_argument("-o", "--output", help="Output JSON file")
+    ireg.add_argument("-v", "--verbose", action="store_true")
     # inspect strings
     istr = insp_sub.add_parser("strings", parents=[dp],
                                help="Extract printable strings")
@@ -719,6 +840,7 @@ def main():
         "emit-plugin": _cmd_emit_plugin,
         "export-keylog": _cmd_export_keylog,
         "locate-key": _cmd_locate_key,
+        "locate-field-pairs": _cmd_locate_field_pairs,
         "export-key-pattern": _cmd_export_key_pattern,
         "inspect-pcap": _cmd_inspect_pcap,
         "gen-kem-key": _cmd_gen_kem_key,

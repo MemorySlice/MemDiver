@@ -6,8 +6,9 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
-from memdiver.core.service_errors import CapabilityError
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 from ._shared import (
     _key_material_from_args,
@@ -168,7 +169,7 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
     import shutil
     import tempfile
 
-    from memdiver.app.tools_pipeline import brute_force
+    from memdiver.app.tools_pipeline import DEFAULT_RESOURCE_TYPE, brute_force
     from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
 
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
@@ -183,6 +184,10 @@ def _cmd_brute_force(args: argparse.Namespace) -> int:
             tls_client_random=args.tls_client_random,
             pcap_max_records=args.pcap_max_records,
             pcap_max_challenges=args.pcap_max_challenges,
+            # getattr for the same reason ``persist_ground_truth`` below uses
+            # it: these handlers are also driven with a hand-built
+            # argparse.Namespace that need not carry every flag.
+            resource_type=getattr(args, "resource_type", DEFAULT_RESOURCE_TYPE),
             persist_ground_truth=getattr(args, "persist_ground_truth", False),
             key_sizes=key_sizes,
             stride=args.stride,
@@ -238,8 +243,12 @@ def _cmd_n_sweep(args: argparse.Namespace) -> int:
     ``report.{json,md,html}`` artifacts. The AEAD warning is relayed per source
     through the producer's ``on_source`` hook; stderr headline + exit code are
     preserved.
+
+    Takes the same two mutually-exclusive oracle sources ``brute-force`` takes:
+    ``--oracle`` (a BYO script) or ``--pcap`` (a capture of the same session,
+    re-verified through the first-party pcap oracle at every N).
     """
-    from memdiver.app.tools_pipeline import n_sweep
+    from memdiver.app.tools_pipeline import DEFAULT_RESOURCE_TYPE, n_sweep
 
     runs_dir = Path(args.runs_dir)
     dump_paths = sorted(runs_dir.glob(f"*/{args.dump_glob}"))
@@ -253,7 +262,14 @@ def _cmd_n_sweep(args: argparse.Namespace) -> int:
     key_sizes = tuple(int(k.strip()) for k in args.key_sizes.split(",") if k.strip())
     result = n_sweep(
         source_paths=[str(p) for p in dump_paths],
+        # Exactly one oracle source; the producer raises on both/neither, so the
+        # CLI does not restate the guard (same shape as ``brute-force``).
         oracle_path=args.oracle,
+        pcap_path=args.pcap,
+        tls_client_random=args.tls_client_random,
+        pcap_max_records=args.pcap_max_records,
+        pcap_max_challenges=args.pcap_max_challenges,
+        resource_type=getattr(args, "resource_type", DEFAULT_RESOURCE_TYPE),
         output_dir=args.output_dir,
         n_values=n_values,
         reduce_kwargs=dict(
@@ -528,6 +544,12 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
     The full payload is written in ALL THREE cases. A non-zero exit is a verdict,
     not a failure, and the census that produced it is exactly what the operator
     needs to see.
+
+    Three spellings of the secret reach the producer from here: ``--key-hex``,
+    ``--keylog-line`` and — C2's symbolic form — ``--pcap-field FIELD_ID``
+    together with ``--pcap`` (and ``--pcap-session`` when the capture holds more
+    than one session). All three are one mutually-exclusive group, so a mixture
+    is refused by the parser rather than by the producer.
     """
     from memdiver.app.tools_pipeline import locate_key
 
@@ -535,6 +557,7 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
         dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
         key_hex=args.key_hex or "",
         keylog_line=args.keylog_line or "",
+        pcap_field=_pcap_field_from_args(args),
         view=args.view,
         max_offsets=args.max_offsets,
         key_file=args.key_file,
@@ -554,11 +577,133 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
     return _LOCATE_KEY_EXIT.get(payload["verdict"], 2)
 
 
+def _pcap_field_from_args(args: argparse.Namespace) -> Optional[dict]:
+    """Assemble ``locate-key``'s ``--pcap-field`` trio into the producer's dict.
+
+    Three flags rather than one packed value (``PATH:FIELD``) because a capture
+    path can itself contain a colon, and splitting one wrong is how a "capture
+    not found" error ends up blaming the field name.
+
+    ``None`` when ``--pcap-field`` was not given, so the other three input forms
+    reach the producer exactly as before. When it WAS given, the dict is built
+    even if ``--pcap`` is absent: the producer owns the "missing pcap_path"
+    message, so the CLI and the other three surfaces report that mistake in the
+    same words instead of each inventing their own.
+    """
+    field_id = getattr(args, "pcap_field", None)
+    if not field_id:
+        return None
+    pcap_field = {
+        "pcap_path": getattr(args, "pcap", None) or "",
+        "field_id": field_id,
+    }
+    session = getattr(args, "pcap_session", None)
+    if session:
+        pcap_field["client_random"] = session
+    return pcap_field
+
+
 #: Verdict -> process exit code. ``3`` is ``_CLI_EXIT[NOT_FOUND]``; ``2`` is the
 #: shared caller-correctable code. Kept as a dict so a new verdict in
 #: ``engine.key_location.KEY_LOCATION_VERDICTS`` fails loudly at the ``.get``
 #: default (2) rather than silently exiting 0.
 _LOCATE_KEY_EXIT = {"found": 0, "absent": 3, "not_searched": 2}
+
+
+def _cmd_locate_field_pairs(args: argparse.Namespace) -> int:
+    """Locate a handshake FIELD across N dumps, each from its OWN capture.
+
+    Routes through ``app.tools_pipeline.locate_field_across_pairs`` -- the same
+    producer the HTTP ``POST /api/pcaps/locate-field`` route and the MCP
+    ``locate_field_across_pairs`` tool use. The full payload (verdict, the pair
+    census, per-pair ``location`` blocks, diagnostics) goes to ``--output``; the
+    verdict line and the diagnostics go to STDERR, so an operator piping the
+    JSON onward still sees the qualifications.
+
+    Where ``locate-key`` takes ONE needle for N dumps, this takes N pairs and a
+    field NAME. No key log is read -- the needle comes off the wire -- which is
+    what makes it usable on a corpus that ships captures but no ground truth.
+
+    Exit codes are ``locate-key``'s, deliberately: ``0`` found, ``3`` absent
+    (``_CLI_EXIT[NOT_FOUND]``), ``2`` nothing searched. The full payload is
+    written in all three cases -- a non-zero exit is a verdict, not a failure.
+    """
+    from memdiver.app.tools_pipeline import locate_field_across_pairs
+
+    pairs = _pcap_pairs_from_args(args)
+    # The positional dumps are dropped to ``None`` when --pairs was given, so
+    # the producer sees exactly one input form and owns the "both / neither"
+    # message. Passing an empty list instead would read as "supplied, empty" and
+    # trip the both-forms guard with a confusing pair of names.
+    dumps = (None if pairs is not None
+             else [str(p) for p in _resolve_dump_paths(args.dumps)])
+
+    payload = locate_field_across_pairs(
+        pairs=pairs,
+        dump_paths=dumps,
+        field_id=args.field_id,
+        view=args.view,
+        max_offsets=args.max_offsets,
+        pcap_max_records=args.pcap_max_records,
+        pcap_max_challenges=args.pcap_max_challenges,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    counts = payload["counts"]
+    print(
+        f"memdiver: verdict={payload['verdict']} field={payload['field_id']} "
+        f"present={counts['pairs_present']}/{counts['pairs_searched']} "
+        f"searched (of {counts['pairs_total']} pairs; "
+        f"{counts['pairs_unpaired']} unpaired, "
+        f"{counts['pairs_field_unresolved']} field-unresolved) "
+        f"across {counts['captures_distinct']} capture(s)",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
+    # Reuses ``locate-key``'s verdict -> exit map rather than a second copy:
+    # both producers speak ``engine.key_location.KEY_LOCATION_VERDICTS``, so a
+    # divergence here could only be a bug.
+    return _LOCATE_KEY_EXIT.get(payload["verdict"], 2)
+
+
+def _pcap_pairs_from_args(args: argparse.Namespace) -> Optional[list]:
+    """Read ``--pairs`` as a JSON file path, or as inline JSON.
+
+    ``None`` when the flag was not given, which is what selects the producer's
+    discovery form. A path is tried first (the ordinary case -- an explicit
+    pairing for a real corpus is far too long to type), and the value is parsed
+    as inline JSON only when no such file exists, so a filename that happens to
+    look like JSON is never silently reinterpreted.
+
+    The per-entry key validation is deliberately NOT done here: the producer
+    owns it, so the CLI and the other three surfaces report a misspelt
+    ``pcap`` in the same words.
+    """
+    raw = getattr(args, "pairs", None)
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    text = path.read_text() if path.is_file() else raw
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"--pairs is neither a readable JSON file nor valid inline JSON: "
+            f"{exc}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+    if not isinstance(parsed, list):
+        raise CapabilityError(
+            f"--pairs must hold a JSON list of "
+            f"{{'dump_path', 'pcap_path'}} objects, got "
+            f"{type(parsed).__name__}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return parsed
 
 
 def _cmd_export_key_pattern(args: argparse.Namespace) -> int:
@@ -650,6 +795,17 @@ def _cmd_inspect_pcap(args: argparse.Namespace) -> int:
     JSON summary to ``--output`` (or stdout). A missing ``pcap`` extra or an
     unreadable capture raises a ``CapabilityError`` the main-loop backstop
     renders to stderr + a category exit code.
+
+    ``--fields`` additionally reports each session's byte-addressable protocol
+    fields with their wire provenance, plus the top-level ``field_index`` — the
+    catalogue an operator reads to pick a ``locate-key --pcap-field`` id. Off by
+    default, so the plain summary costs one read of the capture as before.
+
+    ``--protocols`` adds the top-level ``protocols`` inventory — what the
+    capture holds and which ``--resource-type`` (if any) can decrypt each. It is
+    the flag to reach for when ``session_count`` is 0: that zero says the
+    capture has no TLS, not that it is empty. Also off by default, and it never
+    fails the command — an unrecognisable capture simply reports no candidates.
     """
     from memdiver.app.tools_pipeline import inspect_pcap
 
@@ -657,6 +813,8 @@ def _cmd_inspect_pcap(args: argparse.Namespace) -> int:
         pcap_path=args.pcap,
         pcap_max_records=args.pcap_max_records,
         pcap_max_challenges=args.pcap_max_challenges,
+        include_fields=bool(getattr(args, "fields", False)),
+        detect_protocols=bool(getattr(args, "protocols", False)),
     )
     _write_output(result, getattr(args, "output", None))
     return 0

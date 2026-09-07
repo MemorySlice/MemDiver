@@ -21,6 +21,14 @@ stub. It owns:
 Progress flows workers → mp.Queue → asyncio drain task →
 :class:`ProgressBus` → WebSocket clients. The drain task belongs to the
 FastAPI event loop and is spawned from :meth:`TaskManager.startup`.
+
+That flow is a SEPARATE channel from the pool's own result channel, which is
+what carries a runner's return value home. The terminal ``done`` / ``error``
+publish therefore has to wait for the progress channel to catch up, or the
+tail of the stream is published after the bus channel closes and no live
+client ever sees it. :func:`_worker_entry` posts a flush sentinel as its last
+act and :meth:`TaskManager._drain_barrier` waits for it — see those two for
+the full story.
 """
 
 from __future__ import annotations
@@ -45,6 +53,17 @@ from memdiver.core.artifact_util import atomic_write_text
 logger = logging.getLogger("memdiver.api.services.task_manager")
 
 SCHEMA_VERSION = 1
+
+# Key of the drain-barrier sentinel a worker puts on the progress queue as its
+# very last act (see :func:`_worker_entry` and :meth:`TaskManager._drain_barrier`).
+# Namespaced so it can never collide with a real event field.
+DRAIN_FLUSH_KEY = "__memdiver_drain_flush__"
+
+# How long the terminal transition waits for that sentinel before giving up and
+# publishing anyway. Generous (the queue is already fully written by the time we
+# wait; this only covers drain-task scheduling), but bounded: a task must never
+# hang because a sentinel went missing.
+DRAIN_FLUSH_TIMEOUT_S = 10.0
 
 
 class TaskStatus(str, Enum):
@@ -175,7 +194,31 @@ def _worker_entry(
         progress_queue=progress_queue,
         cancel_event=cancel_event,
     )
-    return fn(params, ctx)
+    try:
+        return fn(params, ctx)
+    finally:
+        # Drain barrier. The runner's progress events travel on
+        # ``progress_queue``, but the RETURN VALUE travels home on the pool's
+        # own result channel — a completely separate pipe. The parent therefore
+        # learns the task finished while the tail of the progress stream is
+        # still in flight, and ``ProgressBus.subscribe`` stops iterating the
+        # instant it yields ``done``/``error``: every event that lands after
+        # the terminal publish is invisible to the live client. That is how the
+        # final ``stage_end`` (and now every ``artifact`` event registered by
+        # the last stage) got silently dropped.
+        #
+        # Posting the sentinel from HERE — the same process that emitted the
+        # events — is what makes the barrier sound. ``mp.Queue`` guarantees
+        # ordering only among items enqueued by one process, so a sentinel put
+        # by the parent could legally overtake the child's backlog. Posted here
+        # it strictly follows every emit the runner made.
+        #
+        # ``finally`` covers the failure path too: a run that raises has the
+        # same right to have its last real events delivered before ``error``.
+        try:
+            progress_queue.put({DRAIN_FLUSH_KEY: task_id})
+        except Exception:  # pragma: no cover - best effort
+            logger.debug("drain flush sentinel emit failed", exc_info=True)
 
 
 @dataclass
@@ -229,6 +272,10 @@ class TaskManager:
         self._drain_queue: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._run_lock: Optional[asyncio.Semaphore] = None
+        # task_id -> asyncio.Event set when the drain task observes that task's
+        # flush sentinel. Touched only from the event loop (the drain task and
+        # ``_gated_submit`` both run there), so it needs no lock.
+        self._flush_barriers: Dict[str, asyncio.Event] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -324,6 +371,10 @@ class TaskManager:
             self._publish(Event(task_id=task_id, type="stage_start",
                                 stage=record.kind, msg="task started"))
 
+            # Arm the drain barrier BEFORE the worker can post its sentinel,
+            # otherwise a very fast task could flush before we are listening.
+            self._flush_barriers[task_id] = asyncio.Event()
+
             future = self._pool.submit(
                 _worker_entry,
                 runner_dotted,
@@ -337,12 +388,21 @@ class TaskManager:
 
             loop = asyncio.get_running_loop()
             try:
-                result = await loop.run_in_executor(None, future.result)
-                self._on_success(task_id, result or {})
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                self._on_error(task_id, repr(exc))
+                try:
+                    result = await loop.run_in_executor(None, future.result)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    await self._drain_barrier(task_id)
+                    self._on_error(task_id, repr(exc))
+                else:
+                    # Let the progress stream catch up first: the terminal
+                    # ``done`` closes the bus channel and ends every live
+                    # subscriber, so anything still queued would be lost.
+                    await self._drain_barrier(task_id)
+                    self._on_success(task_id, result or {})
+            finally:
+                self._flush_barriers.pop(task_id, None)
 
     # ------------------------------------------------------------------
     # terminal transitions
@@ -544,7 +604,39 @@ class TaskManager:
                 return
             if payload is None:
                 continue
+            flushed_task = payload.get(DRAIN_FLUSH_KEY)
+            if flushed_task:
+                # Barrier sentinel, not an event: everything this task's worker
+                # emitted has now been handled, so the terminal publish waiting
+                # in ``_drain_barrier`` may proceed.
+                barrier = self._flush_barriers.get(flushed_task)
+                if barrier is not None:
+                    barrier.set()
+                continue
             self._handle_worker_event(payload)
+
+    async def _drain_barrier(self, task_id: str) -> None:
+        """Wait until this task's worker events have all been drained.
+
+        Called on the terminal path, just before ``done``/``error`` is
+        published. See the long note in :func:`_worker_entry` for why the
+        barrier is needed and why the sentinel is posted by the worker.
+
+        Deliberately forgiving: a missing or late sentinel logs and proceeds.
+        Losing the tail of a progress stream is a cosmetic bug; refusing to
+        finalise the task would be a hang.
+        """
+        barrier = self._flush_barriers.get(task_id)
+        if barrier is None:
+            return
+        try:
+            await asyncio.wait_for(barrier.wait(), timeout=DRAIN_FLUSH_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "drain barrier timed out for task %s after %.1fs; "
+                "publishing terminal event anyway",
+                task_id, DRAIN_FLUSH_TIMEOUT_S,
+            )
 
     def _handle_worker_event(self, payload: Dict[str, Any]) -> None:
         task_id = payload.get("task_id")

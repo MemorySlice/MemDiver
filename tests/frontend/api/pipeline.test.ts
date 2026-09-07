@@ -2,6 +2,15 @@ import { describe, it, expect } from "vitest";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import type {
+  LocateFieldPairsResult,
+  PcapField,
+  PcapFieldIndexEntry,
+  PcapFieldSource,
+  PcapFieldType,
+  PcapPair,
+  PcapPairRow,
+  PcapPairStatus,
+  PcapPairing,
   PcapSkipReason,
   PcapValidateResult,
   PipelineRunRequest,
@@ -233,5 +242,233 @@ describe("PipelineRunRequest pcap work caps", () => {
     };
     expect(capped.pcap_max_records).toBe(64);
     expect(defaulted.pcap_max_challenges).toBeNull();
+  });
+});
+
+/**
+ * The C2 field vocabulary. Both unions are CLOSED, mirroring the ``SOURCE_*``
+ * and ``TYPE_*`` constants in ``engine/resources/protocol_fields.py``, and are
+ * pinned here for the same reason ``PcapSkipReason`` above is: a wrong literal
+ * in a closed union type-checks and then never matches a real response, so the
+ * UI silently cannot label a row that arrives every time.
+ */
+describe("PcapFieldSource / PcapFieldType", () => {
+  const sources: PcapFieldSource[] = [
+    "client_hello",
+    "server_hello",
+    "certificate",
+    "record_layer",
+  ];
+  const types: PcapFieldType[] = ["bytes", "uint", "string", "uint[]", "bytes[]"];
+
+  it("covers every source the extractor emits", () => {
+    expect(sources).toHaveLength(4);
+    expect(new Set(sources).size).toBe(sources.length);
+  });
+
+  it("covers the whole type vocabulary, reserved members included", () => {
+    // ``bytes[]`` is emitted by nothing today (certificates come out one per
+    // field so each keeps its own provenance) but is part of the agreed
+    // vocabulary, so a consumer must tolerate it rather than narrow it away.
+    expect(types).toHaveLength(5);
+    expect(types).toContain("bytes[]");
+  });
+});
+
+describe("PcapField", () => {
+  it("carries wire provenance a dump hit can be cross-checked against", () => {
+    // ``stream_offset - record_offset - 5 == the record header's offset``: the
+    // 5-byte TLS record header relates the pair, so the shape is self-checking.
+    const field: PcapField = {
+      field_id: "client_random",
+      label: "ClientHello.random",
+      type: "bytes",
+      value_hex: "aa".repeat(32),
+      value: null,
+      length: 32,
+      source: "client_hello",
+      provenance: {
+        direction: "client",
+        record_index: 0,
+        stream_offset: 16,
+        record_offset: 11,
+      },
+      searchable: true,
+    };
+    expect(field.provenance!.stream_offset - field.provenance!.record_offset - 5).toBe(0);
+    expect(field.searchable).toBe(true);
+  });
+
+  it("allows a null provenance for a field with no wire position", () => {
+    // The record-sequence lists: TLS never transmits the sequence number, each
+    // side counts it, so there is no offset to point at and inventing
+    // ``record_index: -1`` would be worse than admitting it.
+    const seq: PcapField = {
+      field_id: "client_record_seq",
+      label: "client record sequence numbers",
+      type: "uint[]",
+      value_hex: "",
+      value: [0, 1, 2],
+      length: 3,
+      source: "record_layer",
+      provenance: null,
+      searchable: false,
+    };
+    expect(seq.provenance).toBeNull();
+    expect(seq.searchable).toBe(false);
+  });
+
+  it("rides on the session as an OPTIONAL key, like app_records_seen", () => {
+    // A response that did not ask for fields (the arm request) must still
+    // type-check, which is why ``fields`` is optional rather than defaulted.
+    const armed: PcapValidateResult = {
+      pcap_path: "/tmp/traffic.pcap",
+      session_count: 1,
+      sessions: [
+        {
+          client_random: "aa".repeat(32),
+          server_random: "bb".repeat(32),
+          version: "13",
+          cipher_suite: 0x1301,
+          cipher_name: "TLS_AES_128_GCM_SHA256",
+          client_app_records: 2,
+          server_app_records: 3,
+          has_app_records: true,
+        },
+      ],
+    };
+    expect(armed.sessions[0].fields).toBeUndefined();
+    expect(armed.field_index).toBeUndefined();
+  });
+});
+
+describe("field_index", () => {
+  it("is a catalogue of ids, never a map of values", () => {
+    // Two sessions both have a ``client_random`` with DIFFERENT bytes, so an
+    // id-keyed map of values could only be right for one of them. What the
+    // index carries instead is where to look each id up.
+    const index: Record<string, PcapFieldIndexEntry> = {
+      client_random: {
+        label: "ClientHello.random",
+        type: "bytes",
+        source: "client_hello",
+        searchable: true,
+        sessions: [0, 1],
+      },
+    };
+    expect(index.client_random.sessions).toEqual([0, 1]);
+    expect(Object.keys(index.client_random)).not.toContain("value_hex");
+  });
+});
+
+/**
+ * The C3 pairing vocabulary. Two more CLOSED unions, mirroring the
+ * ``PAIRINGS`` and ``PAIR_STATUSES`` tuples in ``app/tools_pipeline.py``, and
+ * pinned for the same reason as every union above.
+ *
+ * The load-bearing part is the ``status``/``location`` biconditional: the
+ * backend enforces it (``_pair_row`` raises a ValueError otherwise), and these
+ * cases pin that a consumer can rely on it -- because a row that was never
+ * searched, rendered as a zero-hit row, is an absence claim over bytes nobody
+ * read.
+ */
+describe("PcapPairing / PcapPairStatus", () => {
+  const pairings: PcapPairing[] = ["explicit", "discovered", "unpaired"];
+  const statuses: PcapPairStatus[] = [
+    "searched",
+    "unpaired",
+    "field_unresolved",
+  ];
+
+  it("covers every way a capture can be arrived at", () => {
+    expect(pairings).toHaveLength(3);
+    expect(new Set(pairings).size).toBe(pairings.length);
+  });
+
+  it("covers all three pair outcomes, so an unsearched pair has a name", () => {
+    expect(statuses).toHaveLength(3);
+    expect(statuses).toContain("unpaired");
+    expect(statuses).toContain("field_unresolved");
+  });
+});
+
+describe("PcapPairRow", () => {
+  it("carries a location for a searched pair", () => {
+    const row: PcapPairRow = {
+      dump_path: "/dumps/a.dump",
+      dump_name: "a.dump",
+      pcap_path: "/caps/a.pcap",
+      pairing: "discovered",
+      capture_status: "present",
+      field_id: "client_random",
+      needle_hex: "aa".repeat(32),
+      status: "searched",
+      detail: "",
+      location: { verdict: "found", first_offset: 583560 },
+    };
+    expect(row.location).not.toBeNull();
+    expect(row.needle_hex).toHaveLength(64);
+  });
+
+  it("carries a NULL location and an empty needle for an unpaired dump", () => {
+    // The distinction the whole type exists for: "" is not the empty needle
+    // and a null location is not a zero-hit census.
+    const row: PcapPairRow = {
+      dump_path: "/dumps/orphan.dump",
+      dump_name: "orphan.dump",
+      pcap_path: "",
+      pairing: "unpaired",
+      capture_status: "absent",
+      field_id: "client_random",
+      needle_hex: "",
+      status: "unpaired",
+      detail: "no capture for this dump's run (capture_status=absent)",
+      location: null,
+    };
+    expect(row.location).toBeNull();
+    expect(row.needle_hex).toBe("");
+    expect(row.detail).not.toBe("");
+  });
+});
+
+describe("LocateFieldPairsResult", () => {
+  it("keeps every ratio's denominator on counts, not on pairs.length", () => {
+    // Two pairs, one of them never searched. ``pairs.length`` would make the
+    // survival ratio 1/2; the honest one is 1/1 over a stated denominator,
+    // with the second dump's content UNKNOWN.
+    const pair: PcapPair = {
+      dump_path: "/dumps/a.dump",
+      pcap_path: "/caps/a.pcap",
+    };
+    const result: LocateFieldPairsResult = {
+      verdict: "found",
+      mode: "explicit",
+      field_id: "client_random",
+      view: null,
+      caps: { pcap_max_records: null, pcap_max_challenges: null },
+      counts: {
+        pairs_total: 2,
+        pairs_searched: 1,
+        pairs_unpaired: 1,
+        pairs_field_unresolved: 0,
+        pairs_present: 1,
+        pairs_absent: 0,
+        dumps_searched: 1,
+        dumps_unreadable: 0,
+        dumps_too_small: 0,
+        captures_distinct: 1,
+        needles_distinct: 1,
+      },
+      offsets_agree: true,
+      common_offset: 583560,
+      pairs: [],
+      elapsed_s: 0.2,
+      diagnostics: [],
+    };
+    expect(pair.client_random).toBeUndefined();
+    expect(result.counts.pairs_searched).toBeLessThan(result.counts.pairs_total);
+    expect(
+      result.counts.pairs_present + result.counts.pairs_absent,
+    ).toBe(result.counts.pairs_searched);
   });
 });

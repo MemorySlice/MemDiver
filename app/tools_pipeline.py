@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
@@ -29,9 +30,11 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     NamedTuple,
     Optional,
     Sequence,
+    Tuple,
 )
 
 import numpy as np
@@ -763,6 +766,187 @@ def _validate_pcap_caps(
             )
 
 
+#: The verification resource every pcap run uses unless told otherwise -- the
+#: first-party TLS-over-TCP one. Named here, once, because it is now the default
+#: of four things that must agree: :func:`_pcap_oracle_config`,
+#: :func:`brute_force`, :func:`n_sweep`, and the MCP/CLI spellings of the last
+#: two. (``builtin_oracle.build_resource`` keeps its own identical default for
+#: the config-file path, which never passes through a producer.)
+DEFAULT_RESOURCE_TYPE = "tls-pcap"
+
+
+def _pcap_oracle_config(
+    pcap_path: str,
+    tls_client_random: Optional[str],
+    pcap_max_records: Optional[int],
+    pcap_max_challenges: Optional[int],
+    resource_type: str = DEFAULT_RESOURCE_TYPE,
+) -> Dict[str, Any]:
+    """Assemble the pcap oracle's resource spec.
+
+    Shared by :func:`brute_force` and :func:`n_sweep` so both reach the pcap
+    oracle through ONE spelling of the spec. A sweep that verified under a
+    different config than the brute force would report a different confirmed
+    set for the same key, and the divergence would look like a key that only
+    sometimes survives -- exactly the false signal this harness exists to rule
+    out.
+
+    ``resource_type`` names the registered verification resource
+    (``engine.resources.builtin_oracle.RESOURCE_FACTORIES``). It defaults to the
+    first-party ``"tls-pcap"``, so behaviour is unchanged, but it is an explicit
+    parameter rather than a literal buried in this body: the resource registry
+    is now extensible out-of-tree (the ``memdiver.oracles`` entry-point group),
+    and a hardcoded type would make every such resource unreachable from here.
+    Trust is NOT inherited from this argument -- see
+    :func:`_pcap_oracle_trusted`.
+
+    Only a cap the caller actually asked for is forwarded: an absent key leaves
+    the resource/oracle defaults untouched (see builtin_oracle's config).
+    :func:`_validate_pcap_caps` runs here so every caller of the pcap oracle
+    rejects a sub-1 cap identically.
+    """
+    config: Dict[str, Any] = {"resource_type": resource_type, "pcap": pcap_path}
+    if tls_client_random:
+        config["client_random"] = tls_client_random
+    _validate_pcap_caps(pcap_max_records, pcap_max_challenges)
+    if pcap_max_records is not None:
+        config["max_records_per_direction"] = int(pcap_max_records)
+    if pcap_max_challenges is not None:
+        config["max_challenges"] = int(pcap_max_challenges)
+    return config
+
+
+def _validate_resource_type(resource_type: str) -> None:
+    """Refuse an unregistered ``resource_type`` before any oracle is loaded.
+
+    Reachable only because C4a promoted ``resource_type`` to a real
+    :func:`brute_force` / :func:`n_sweep` parameter (and a ``--resource-type``
+    CLI flag), which also made a typo reachable. Left unchecked, an unknown name
+    reaches ``build_resource``'s ``ValueError`` inside the oracle LOADER, where
+    it is re-wrapped as ``OracleLoadError`` -- a bare ``RuntimeError`` no
+    surface funnels -- and the user gets a traceback instead of the list of
+    names they could have typed. That is precisely the failure mode C4a exists
+    to remove, so it is caught here, fail-fast, with the registry in the
+    message.
+
+    NOT folded into :func:`_pcap_oracle_config`: that builder is also the
+    documented way to construct a spec for a type that is deliberately absent
+    (the provenance tests do exactly that), and a builder that refused unknown
+    names could no longer express "what if this were installed". Two call sites
+    share this one function for the same reason they share
+    :func:`_pcap_oracle_trusted`.
+    """
+    from memdiver.engine.resources.builtin_oracle import (
+        is_registered_resource_type,
+        registered_resource_types,
+    )
+
+    if not is_registered_resource_type(resource_type):
+        raise CapabilityError(
+            f"unknown resource_type {resource_type!r}; registered: "
+            f"{list(registered_resource_types())}. Out-of-tree resources are "
+            f"registered by installing a package that advertises the "
+            f"'memdiver.oracles' entry-point group; "
+            f"inspect_pcap(detect_protocols=True) reports which resource_type "
+            f"a given capture needs.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+
+def _pcap_oracle_trusted(config: Dict[str, Any]) -> bool:
+    """Whether *config*'s resource may skip the untrusted-code load sandbox.
+
+    THE one place the trusted-load decision is made for the builtin resource
+    oracle, shared by :func:`brute_force` (``oracle_trusted=``) and
+    :func:`n_sweep` (``load_oracle(sandbox=)``) so the two surfaces cannot
+    disagree about whether the same spec is trusted.
+
+    The exemption exists for our own in-tree factories, whose input is a pcap --
+    data, not executable -- and whose parse of a large capture would be
+    misread as a hang under the sandbox's tight caps. It is granted per
+    RESOURCE TYPE and not per config, because ``resource_type`` may now name an
+    out-of-tree factory from the ``memdiver.oracles`` entry-point group. Passing
+    the exemption on to one of those would make merely installing a package an
+    arbitrary-code-execution path: the plugin's import and ``build_oracle``
+    would run unsandboxed in this process and in every brute-force worker.
+    """
+    from memdiver.engine.resources.builtin_oracle import is_first_party_resource_type
+
+    return is_first_party_resource_type(str(config.get("resource_type", "")))
+
+
+def _pcap_protocol_refusal(
+    pcap_path: str, resource_type: str, exc: Exception
+) -> CapabilityError:
+    """Turn a pcap-oracle parse failure into an error that says what IS there.
+
+    The oracle's own message is honest but one-sided: ``no complete TLS
+    handshake found in 'capture.pcap'`` describes what was LOOKED FOR. A user
+    who captured QUIC, or captured the wrong interface, reads it as "MemDiver
+    is broken" because it never mentions the two QUIC associations sitting in
+    the file. So the message is kept verbatim (it is the precise diagnosis
+    whenever the capture really is TLS) and the detector's answer is appended to
+    it.
+
+    THE refusal rule -- ask, never guess:
+
+    * **Several decryptable protocols** -> ``PRECONDITION``, listing them and
+      demanding an explicit ``resource_type``. Picking one would verify against
+      a different protocol's records than the caller meant and report a real key
+      as unconfirmed, which looks exactly like a key that is not there. Mirrors
+      :func:`_select_pcap_field_session`'s multi-session refusal, for the same
+      reason and in the same shape.
+    * **Exactly one, and it is not the type we were told to use** ->
+      ``PRECONDITION`` naming it, because the fix is a single argument away and
+      the caller cannot be expected to know the registry.
+    * **Otherwise** (nothing registered can decrypt what is there, or the one
+      thing that can is already what we tried) -> ``INVALID_INPUT``, the
+      category this path has always used, carrying the original message plus the
+      inventory and the registered types.
+
+    Shared by :func:`brute_force` and :func:`n_sweep` so the two cannot describe
+    the same capture differently. Detection never raises (see
+    :func:`~memdiver.engine.resources.protocol_detect.detect_protocols`), so
+    this helper cannot fail on top of the failure it is explaining.
+    """
+    from memdiver.engine.resources.builtin_oracle import registered_resource_types
+    from memdiver.engine.resources.protocol_detect import detect_protocols
+
+    candidates = detect_protocols(pcap_path)
+    decryptable = tuple(c for c in candidates if c.decryptable)
+    registered = list(registered_resource_types())
+
+    if len(decryptable) > 1:
+        return CapabilityError(
+            f"capture {pcap_path!r} carries {len(decryptable)} protocols this "
+            f"build can decrypt; name one with "
+            f"resource_type ({[c.resource_type for c in decryptable]}). There "
+            f"is no default on purpose: verifying a key against the wrong "
+            f"protocol's records reports a real key as unconfirmed. Found: "
+            f"{'; '.join(c.describe() for c in decryptable)}.",
+            category=ErrorCategory.PRECONDITION,
+        )
+    if len(decryptable) == 1 and decryptable[0].resource_type != resource_type:
+        only = decryptable[0]
+        return CapabilityError(
+            f"capture {pcap_path!r} holds no {resource_type!r} session, but it "
+            f"does hold {only.protocol} ({only.detail}); re-run with "
+            f"resource_type={only.resource_type!r}. Original parse error: {exc}",
+            category=ErrorCategory.PRECONDITION,
+        )
+    inventory = (
+        "; ".join(c.describe() for c in candidates)
+        if candidates
+        else "no protocol MemDiver can name (an unreadable capture, or one with "
+        "no IP traffic)"
+    )
+    return CapabilityError(
+        f"Invalid input: {exc}. Detected in {pcap_path!r}: {inventory}. "
+        f"Registered resource types: {registered}.",
+        category=ErrorCategory.INVALID_INPUT,
+    )
+
+
 def _corpus_axes_kwargs(dump_path: str) -> Dict[str, Any]:
     """Resolve the corpus axes the analysed dump is an instance of.
 
@@ -946,6 +1130,7 @@ def brute_force(
     tls_client_random: Optional[str] = None,
     pcap_max_records: Optional[int] = None,
     pcap_max_challenges: Optional[int] = None,
+    resource_type: str = DEFAULT_RESOURCE_TYPE,
     persist_ground_truth: bool = False,
     key_sizes: Sequence[int] = (32,),
     stride: int = 1,
@@ -983,6 +1168,17 @@ def brute_force(
     ``records_truncated`` / ``challenges_truncated`` flags for that capture, so
     the truncation a cap will cause is visible before the sweep runs.
 
+    ``resource_type`` names the registered verification resource the capture is
+    read through (``engine.resources.builtin_oracle.RESOURCE_FACTORIES``). It
+    defaults to the first-party ``"tls-pcap"``, so behaviour is unchanged, and it
+    is a real parameter rather than a literal for one reason: when a capture
+    turns out to hold more than one protocol this build can decrypt, the refusal
+    DEMANDS an explicit ``resource_type`` (see
+    :func:`_pcap_protocol_refusal`) — and an error that demands what the caller
+    has no way to supply is not an error, it is a dead end. Trust is NOT
+    inherited from it: an out-of-tree type keeps the load sandbox (see
+    :func:`_pcap_oracle_trusted`).
+
     ``persist_ground_truth`` (opt-in, default off) records the confirmed hits in
     the project database's ``ground_truth`` ledger (labelled ``"pcap"`` or
     ``"oracle"``) — the trusted denominator for later corpus/precision stats. It
@@ -1018,18 +1214,15 @@ def brute_force(
         from memdiver.engine.resources.builtin_oracle import BUILTIN_ORACLE_PATH
         resolved_oracle_path = BUILTIN_ORACLE_PATH
         oracle_label = Path(pcap_path).name
-        pcap_config: Dict[str, Any] = {"resource_type": "tls-pcap", "pcap": pcap_path}
-        if tls_client_random:
-            pcap_config["client_random"] = tls_client_random
-        # Only forward a cap the caller actually asked for: an absent key leaves
-        # the resource/oracle defaults untouched (see builtin_oracle's config).
-        _validate_pcap_caps(pcap_max_records, pcap_max_challenges)
-        if pcap_max_records is not None:
-            pcap_config["max_records_per_direction"] = int(pcap_max_records)
-        if pcap_max_challenges is not None:
-            pcap_config["max_challenges"] = int(pcap_max_challenges)
+        _validate_resource_type(resource_type)
+        pcap_config = _pcap_oracle_config(
+            pcap_path, tls_client_random, pcap_max_records, pcap_max_challenges,
+            resource_type,
+        )
         bf_oracle_kwargs["oracle_config"] = pcap_config
-        bf_oracle_kwargs["oracle_trusted"] = True
+        # Not an unconditional True: the sandbox exemption belongs to
+        # first-party resource types only (see :func:`_pcap_oracle_trusted`).
+        bf_oracle_kwargs["oracle_trusted"] = _pcap_oracle_trusted(pcap_config)
     else:
         resolved_oracle_path = oracle_path
         oracle_label = Path(oracle_path).name
@@ -1078,10 +1271,19 @@ def brute_force(
         raise  # pragma: no cover - _raise_cancelled always raises
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
-    except (OSError, ValueError, PcapParseError) as exc:
+    except PcapParseError as exc:
         # PcapParseError (a bare ``Exception`` subclass) can surface eagerly from
         # a pcap oracle's ``ResourceOracle.__init__`` — e.g. a ``tls_client_random``
-        # that matches no captured session — so it must be funnelled too.
+        # that matches no captured session, or a capture holding no TLS handshake
+        # at all. Caught ahead of the generic funnel below so the refusal can say
+        # what the capture DOES hold instead of only what was looked for; the
+        # oracle's own message is carried through verbatim.
+        if not pcap_path:  # pragma: no cover - only a BYO oracle raising ours
+            raise CapabilityError(
+                f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+            ) from exc
+        raise _pcap_protocol_refusal(str(pcap_path), resource_type, exc) from exc
+    except (OSError, ValueError) as exc:
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
@@ -1167,9 +1369,14 @@ def brute_force(
 def n_sweep(
     *,
     source_paths: List[str],
-    oracle_path: str,
     output_dir: str,
     n_values: List[int],
+    oracle_path: Optional[str] = None,
+    pcap_path: Optional[str] = None,
+    tls_client_random: Optional[str] = None,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
+    resource_type: str = DEFAULT_RESOURCE_TYPE,
     reduce_kwargs: Optional[Dict[str, Any]] = None,
     key_sizes: Sequence[int] = (32,),
     stride: int = 1,
@@ -1186,6 +1393,24 @@ def n_sweep(
 ) -> Dict[str, Any]:
     """Run the N-scaling harness and emit report.{json,md,html}.
 
+    The same two mutually-exclusive oracle sources :func:`brute_force` accepts:
+      * ``oracle_path`` — a user-supplied BYO decryption oracle script
+        (sandboxed), optionally configured by ``oracle_config_path``.
+      * ``pcap_path`` — a pcap/pcapng of the same TLS session, verified through
+        MemDiver's first-party pcap oracle. ``tls_client_random`` (hex)
+        optionally restricts matching to one session, and ``pcap_max_records`` /
+        ``pcap_max_challenges`` size the oracle's work exactly as they do for
+        ``brute_force``. Requires the ``pcap`` extra.
+
+    The sweep re-runs whichever oracle it was given at every N, so a pcap run
+    answers the same question a BYO-oracle run does — at what N does the key
+    first survive the consensus filter — without needing an oracle FILE.
+
+    ``resource_type`` names the registered verification resource, exactly as it
+    does for :func:`brute_force` (default ``"tls-pcap"``, trust never inherited)
+    — the two share ONE config builder, so a sweep and a brute force cannot read
+    the same capture through different resources.
+
     Encrypted ``.msl`` inputs are decrypted when key material is supplied.
     When ``escalate`` is set and no checkpoint found a hit, a floor-free
     sweep at the terminal N runs and its verdict surfaces under
@@ -1199,7 +1424,26 @@ def n_sweep(
     from memdiver.app.composition import open_dump
     from memdiver.engine.nsweep import run_nsweep
     from memdiver.engine.oracle import load_oracle, load_oracle_config
+    from memdiver.engine.resources.tls_pcap import PcapParseError
     from memdiver.presentation.reports import nsweep_headline
+
+    if bool(oracle_path) == bool(pcap_path):
+        raise CapabilityError(
+            "Provide exactly one of oracle_path or pcap_path",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    # Built (and both the caps and the resource type validated) BEFORE any dump
+    # is opened, so bad input fails fast instead of after an expensive fold.
+    if pcap_path:
+        _validate_resource_type(resource_type)
+    pcap_config = (
+        _pcap_oracle_config(
+            pcap_path, tls_client_random, pcap_max_records, pcap_max_challenges,
+            resource_type,
+        )
+        if pcap_path
+        else None
+    )
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     sources = []
@@ -1211,8 +1455,23 @@ def n_sweep(
             if on_source is not None:
                 on_source(src)
             _raise_if_locked(src)
-        config = load_oracle_config(Path(oracle_config_path) if oracle_config_path else None)
-        oracle = load_oracle(Path(oracle_path), config=config)
+        if pcap_config is not None:
+            from memdiver.engine.resources.builtin_oracle import BUILTIN_ORACLE_PATH
+
+            # Same trusted-load contract ``run_brute_force`` applies to the
+            # builtin oracle: for a FIRST-PARTY resource type it is our own
+            # module and the pcap it reads is data, not executable, so the
+            # untrusted-code load sandbox is skipped. Sandboxing it would also
+            # misclassify a slow parse of a large capture as a hang. An
+            # out-of-tree resource type keeps the sandbox -- one predicate,
+            # shared with ``brute_force`` (see :func:`_pcap_oracle_trusted`).
+            oracle = load_oracle(Path(BUILTIN_ORACLE_PATH), config=pcap_config,
+                                 sandbox=not _pcap_oracle_trusted(pcap_config))
+        else:
+            config = load_oracle_config(
+                Path(oracle_config_path) if oracle_config_path else None
+            )
+            oracle = load_oracle(Path(oracle_path), config=config)
         _emit(on_progress, "stage_start", stage="nsweep", pct=0.0,
               msg=f"N values: {n_values}")
         _experiment_check_cancelled(is_cancelled, on_progress)
@@ -1234,6 +1493,18 @@ def n_sweep(
         )
     except FileNotFoundError as exc:
         raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
+    except PcapParseError as exc:
+        # PcapParseError (a bare ``Exception`` subclass) surfaces eagerly from the
+        # pcap oracle's ``ResourceOracle.__init__`` — e.g. a ``tls_client_random``
+        # matching no captured session, or a capture holding no TLS handshake at
+        # all. Routed through the SAME refusal ``brute_force`` uses, so a sweep
+        # and a brute force describe the same capture identically instead of one
+        # naming the QUIC in it and the other not.
+        if not pcap_path:  # pragma: no cover - only a BYO oracle raising ours
+            raise CapabilityError(
+                f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+            ) from exc
+        raise _pcap_protocol_refusal(str(pcap_path), resource_type, exc) from exc
     except (OSError, ValueError) as exc:
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
@@ -1897,13 +2168,27 @@ class _KeyNeedle(NamedTuple):
 #: error message lists them.
 KEY_INPUT_FORMS = ("key_hex", "keylog_line", "secret")
 
+#: :func:`locate_key`'s forms: the three above plus C2's SYMBOLIC one, which
+#: names a handshake field in a capture instead of pasting its bytes.
+#:
+#: A separate tuple rather than four entries in ``KEY_INPUT_FORMS`` because
+#: :func:`export_key_pattern` shares the resolver but NOT this form: a signature
+#: anchored on a public handshake field is not a key pattern (the field is on the
+#: wire, so wildcarding it proves nothing), and its "supply exactly ONE of ..."
+#: message must therefore keep naming three forms rather than advertising a
+#: fourth it would refuse.
+LOCATE_KEY_INPUT_FORMS = KEY_INPUT_FORMS + ("pcap_field",)
+
 
 def _resolve_key_needle(
     key_hex: str,
     keylog_line: str,
     secret: Optional[Dict[str, str]],
+    pcap_field: Optional[Dict[str, str]] = None,
+    *,
+    accepted_forms: Sequence[str] = KEY_INPUT_FORMS,
 ) -> _KeyNeedle:
-    """Resolve EXACTLY ONE of the three input forms into needle bytes.
+    """Resolve EXACTLY ONE of the accepted input forms into needle bytes.
 
     Shared by :func:`locate_key` and :func:`export_key_pattern` so the two
     cannot disagree about what a given input means.
@@ -1916,21 +2201,41 @@ def _resolve_key_needle(
     trip. The precedent is :func:`brute_force`'s ``--oracle`` / ``--pcap``
     mutual exclusion, made for the same reason.
 
+    ``accepted_forms`` is which spellings THIS caller takes — the three-form
+    :data:`KEY_INPUT_FORMS` by default, :data:`LOCATE_KEY_INPUT_FORMS` from
+    :func:`locate_key`. It is a parameter rather than a global so the error
+    message can only ever name forms the call would actually honour.
+
     Raises:
-        CapabilityError: INVALID_INPUT when zero or more than one form is
-            supplied (the message names what WAS supplied), for malformed hex,
-            for a key-log line that does not parse, and for an empty secret.
+        CapabilityError: INVALID_INPUT when zero or more than one accepted form
+            is supplied (the message names what WAS supplied), when a form this
+            caller does not accept is supplied, for malformed hex, for a key-log
+            line that does not parse, for an unresolvable ``pcap_field``, and for
+            an empty secret.
     """
-    supplied = [
-        name for name, value in (
-            ("key_hex", bool(key_hex and key_hex.strip())),
-            ("keylog_line", bool(keylog_line and keylog_line.strip())),
-            ("secret", secret is not None),
-        ) if value
-    ]
+    present = {
+        "key_hex": bool(key_hex and key_hex.strip()),
+        "keylog_line": bool(keylog_line and keylog_line.strip()),
+        "secret": secret is not None,
+        "pcap_field": pcap_field is not None,
+    }
+    # A form this caller does not accept is refused BY NAME rather than
+    # dropped. Silently ignoring a ``pcap_field`` passed to
+    # ``export_key_pattern`` would answer about whichever OTHER form came with
+    # it — the same confident-wrong-secret failure the exactly-one rule exists
+    # to prevent, just arrived at from the other side.
+    unaccepted = [name for name, given in present.items()
+                  if given and name not in accepted_forms]
+    if unaccepted:
+        raise CapabilityError(
+            f"Input form(s) {unaccepted} are not accepted here; this call takes "
+            f"exactly ONE of {list(accepted_forms)}.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    supplied = [name for name in accepted_forms if present[name]]
     if len(supplied) != 1:
         raise CapabilityError(
-            f"Supply exactly ONE of {list(KEY_INPUT_FORMS)}; got "
+            f"Supply exactly ONE of {list(accepted_forms)}; got "
             f"{supplied or 'none'}. There is no precedence between them on "
             f"purpose: two forms naming different bytes would otherwise yield a "
             f"confident per-dump answer about the wrong secret.",
@@ -1946,6 +2251,8 @@ def _resolve_key_needle(
         needle = bytes(crypto_secret.secret_value)
         secret_type = str(crypto_secret.secret_type)
         client_random = bytes(crypto_secret.identifier).hex()
+    elif form == "pcap_field":
+        needle, secret_type, client_random = _needle_from_pcap_field(pcap_field or {})
     else:
         crypto_secret = _crypto_secret_from_dict(secret)
         needle = bytes(crypto_secret.secret_value)
@@ -2042,6 +2349,181 @@ def _secret_from_keylog_line(keylog_line: str) -> Any:
     raise CapabilityError(
         f"keylog_line is well-formed but did not parse: {line!r}",
         category=ErrorCategory.INTERNAL,
+    )
+
+
+#: The keys a ``pcap_field`` mapping may carry. ``client_random`` is the only
+#: optional one: it selects ONE session out of a capture that holds several.
+PCAP_FIELD_KEYS = ("pcap_path", "field_id", "client_random")
+
+
+def _needle_from_pcap_field(
+    pcap_field: Mapping[str, str],
+    *,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
+) -> Tuple[bytes, str, str]:
+    """Resolve ``{pcap_path, field_id, client_random?}`` into needle bytes.
+
+    C2's SYMBOLIC input form: instead of pasting 64 hex characters, the caller
+    says *"use this capture's ``client_random``"* (or its ``sni``, or its
+    ``certificate.0``) and the bytes are read off the wire. That matters for two
+    reasons. It removes the transcription step — the single most common way a
+    hunt ends in a confident, fully-populated census of the wrong bytes — and it
+    makes the request REPRODUCIBLE: ``field_id="client_random"`` re-resolves
+    against a re-captured session, whereas a pasted hex string is frozen to one
+    handshake.
+
+    The field catalogue comes from :func:`inspect_pcap` with
+    ``include_fields=True`` — not from ``TlsPcapResource`` directly — so the
+    dpkt guard, the cap validation and the unreadable-capture funnel are the
+    ones a caller already gets from the arm step, spelled once.
+
+    Returns ``(needle, field_id, client_random)``. The ``field_id`` rides home in
+    the payload's ``secret_type`` slot and the resolved session's
+    ``client_random`` in its own, which keeps :func:`_locate_key_payload`'s shape
+    frozen while still recording WHICH field of WHICH session produced the bytes
+    (``input_form == "pcap_field"`` is what tells a reader to read
+    ``secret_type`` as a field id rather than an NSS secret label).
+
+    ``pcap_max_records`` / ``pcap_max_challenges`` are forwarded to that arm
+    step so the caps the caller asked for are the caps the needle was read
+    under; both default to ``None`` (the resource defaults), which is what
+    :func:`locate_key` passes.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for an unknown key, a missing
+            ``pcap_path`` / ``field_id``, a capture with no parsed session, a
+            ``client_random`` no session carries, an unknown ``field_id``, and a
+            field whose ``searchable`` is False. PRECONDITION when the capture
+            holds several sessions and no ``client_random`` picks one — the one
+            case where guessing would silently answer about another handshake.
+    """
+    unknown = [key for key in pcap_field if key not in PCAP_FIELD_KEYS]
+    if unknown:
+        raise CapabilityError(
+            f"pcap_field has unknown key(s) {sorted(unknown)}; expected "
+            f"{list(PCAP_FIELD_KEYS)} (client_random optional)",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    pcap_path = str(pcap_field.get("pcap_path") or "").strip()
+    field_id = str(pcap_field.get("field_id") or "").strip()
+    missing = [name for name, value in
+               (("pcap_path", pcap_path), ("field_id", field_id)) if not value]
+    if missing:
+        raise CapabilityError(
+            f"pcap_field is missing required key(s) {missing}; it takes "
+            f"{{'pcap_path': ..., 'field_id': ..., 'client_random': <optional>}}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    # ``include_fields=True`` is the only extra work this asks for; every other
+    # part of the arm step (caps, dpkt probe, error funnel) is unchanged. The
+    # two caps default to ``None`` -- i.e. every existing caller reaches exactly
+    # the call it always made -- and are forwarded for one reason:
+    # :func:`locate_field_across_pairs` accepts them, and a cap it honoured for
+    # the search but dropped for the needle extraction would silently answer
+    # about a different parse of the capture than the one it reported.
+    inspected = inspect_pcap(
+        pcap_path=pcap_path,
+        pcap_max_records=pcap_max_records,
+        pcap_max_challenges=pcap_max_challenges,
+        include_fields=True,
+    )
+    session = _select_pcap_field_session(
+        inspected["sessions"], str(pcap_field.get("client_random") or "").strip()
+    )
+    field = _select_pcap_field(session.get("fields") or [], field_id)
+    if not field["searchable"]:
+        # Function-local so this ``app`` module still pulls no ``engine`` at
+        # import time (the repo-wide idiom); the floor is quoted rather than
+        # restated so the message cannot drift from the rule that set the flag.
+        from memdiver.engine.resources.protocol_fields import MIN_SEARCHABLE_LEN
+
+        raise CapabilityError(
+            f"pcap_field {field_id!r} is not searchable (type "
+            f"{field['type']}, length {field['length']}). A needle must be a "
+            f"literal run of at least {MIN_SEARCHABLE_LEN} bytes: shorter runs "
+            f"and wire-encoding artifacts (uint / uint[]) match everywhere, so "
+            f"a hit on one carries no information. Searchable in this session: "
+            f"{_searchable_field_ids(session)}.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return bytes.fromhex(field["value_hex"]), field_id, session["client_random"]
+
+
+def _select_pcap_field_session(
+    sessions: Sequence[Dict[str, Any]], client_random: str,
+) -> Dict[str, Any]:
+    """Pick the ONE session a ``pcap_field`` request refers to.
+
+    Pure over ``inspect_pcap``'s session dicts so the selection rule is testable
+    without a capture. The rule, in order:
+
+    * an explicit ``client_random`` selects that session (hex, case-insensitive,
+      a leading ``0x`` tolerated exactly as :func:`_needle_from_key_hex` does);
+    * with no selector, a single-session capture — the overwhelmingly common
+      case — selects itself;
+    * with no selector and several sessions, REFUSE. Defaulting to the first
+      would answer about a different handshake than the one the caller meant,
+      and the answer would look completely healthy.
+    """
+    if not sessions:
+        raise CapabilityError(
+            "capture holds no parsed TLS session, so it has no fields to name",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    wanted = client_random.strip().lower()
+    if wanted.startswith("0x"):
+        wanted = wanted[2:]
+    if wanted:
+        for session in sessions:
+            if str(session["client_random"]).lower() == wanted:
+                return session
+        raise CapabilityError(
+            f"no session in this capture has client_random {client_random!r}; "
+            f"it holds {[s['client_random'] for s in sessions]}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if len(sessions) == 1:
+        return sessions[0]
+    raise CapabilityError(
+        f"capture holds {len(sessions)} sessions; name one with "
+        f"pcap_field['client_random'] "
+        f"({[s['client_random'] for s in sessions]}). There is no default on "
+        f"purpose: the wrong session's field is a valid-looking needle from "
+        f"another handshake.",
+        category=ErrorCategory.PRECONDITION,
+    )
+
+
+def _select_pcap_field(
+    fields: Sequence[Dict[str, Any]], field_id: str,
+) -> Dict[str, Any]:
+    """Look one ``field_id`` up in a session's field list.
+
+    Id-keyed, which is why C1 prefixes extension ids ``client_ext.``/
+    ``server_ext.``: extension 0x000b appears in BOTH hellos of a real
+    handshake, so a bare ``ext.0x000b`` would resolve to whichever came last.
+    The not-found message lists the SEARCHABLE ids rather than all of them,
+    because those are the only ones this form can go on to use.
+    """
+    for field in fields:
+        if field["field_id"] == field_id:
+            return field
+    available = sorted(f["field_id"] for f in fields if f["searchable"])
+    raise CapabilityError(
+        f"unknown pcap field_id {field_id!r}; searchable ids in this session: "
+        f"{available}",
+        category=ErrorCategory.INVALID_INPUT,
+    )
+
+
+def _searchable_field_ids(session: Mapping[str, Any]) -> List[str]:
+    """The field ids of one session that a dump search can usefully take."""
+    return sorted(
+        field["field_id"]
+        for field in (session.get("fields") or [])
+        if field["searchable"]
     )
 
 
@@ -2223,6 +2705,7 @@ def locate_key(
     key_hex: str = "",
     keylog_line: str = "",
     secret: Optional[Dict[str, str]] = None,
+    pcap_field: Optional[Dict[str, str]] = None,
     view: Optional[str] = None,
     max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
     key_file: Optional[str] = None,
@@ -2239,13 +2722,24 @@ def locate_key(
     a key log, a confirmed brute-force hit, or a paste into the key-log composer
     — and wants to know which dumps still contain it and where.
 
-    Supply the secret in exactly ONE of three forms:
+    Supply the secret in exactly ONE of four forms:
 
     * ``key_hex`` — bare hex bytes (``"aa bb cc"`` and ``"0xaabbcc"`` both work).
     * ``keylog_line`` — one NSS key-log row, ``"<LABEL> <client_random> <secret>"``.
       This form additionally reports ``secret_type`` and ``client_random``.
     * ``secret`` — a ``{secret_type, client_random, secret}`` dict, validated by
       the same helper ``export_keylog`` uses.
+    * ``pcap_field`` — the SYMBOLIC form (C2):
+      ``{"pcap_path": ..., "field_id": ..., "client_random": <optional>}``. The
+      needle is read off the wire instead of pasted: ``field_id="client_random"``
+      means *"whatever this capture's ClientHello.random actually is"*. Browse
+      the available ids with ``inspect_pcap(include_fields=True)``. Only
+      ``searchable`` fields are accepted — a 2-byte extension payload occurs
+      everywhere in any real dump, so offering it as a needle could only produce
+      a guaranteed false-positive sweep. ``secret_type`` carries the resolved
+      ``field_id`` and ``client_random`` the session it came from; the
+      ``input_form: "pcap_field"`` in the payload is what says to read the first
+      as a field id rather than an NSS label.
 
     Zero or two-or-more forms is INVALID_INPUT, with no precedence between them
     — see :func:`_resolve_key_needle` for why silence would be worse.
@@ -2279,7 +2773,10 @@ def locate_key(
     # import time (the repo-wide idiom; see ``analyze_candidates``).
     from memdiver.engine.key_location import locate_key_across_dumps
 
-    resolved = _resolve_key_needle(key_hex, keylog_line, secret)
+    resolved = _resolve_key_needle(
+        key_hex, keylog_line, secret, pcap_field,
+        accepted_forms=LOCATE_KEY_INPUT_FORMS,
+    )
 
     paths = [Path(p).expanduser() for p in dump_paths]
     if not paths:
@@ -2318,6 +2815,659 @@ def locate_key(
         view=view,
         max_offsets=max_offsets,
     )
+
+
+#: The keys ONE explicit ``pairs`` entry may carry. ``client_random`` is the
+#: only optional one and does exactly the job it does in ``pcap_field``: it
+#: picks one session out of a capture that holds several.
+PCAP_PAIR_KEYS = ("dump_path", "pcap_path", "client_random")
+
+#: How a pair's capture was arrived at. ``"unpaired"`` is a VALUE here, not an
+#: absence: a dump whose capture could not be found is a row, because dropping
+#: it would shrink the denominator every ratio in the result is computed over.
+PAIRING_EXPLICIT = "explicit"
+PAIRING_DISCOVERED = "discovered"
+PAIRING_UNPAIRED = "unpaired"
+PAIRINGS = (PAIRING_EXPLICIT, PAIRING_DISCOVERED, PAIRING_UNPAIRED)
+
+#: What HAPPENED to a pair, three-valued for the same reason
+#: :attr:`engine.key_location.DumpKeyLocation.status` is:
+#:
+#: * ``"searched"`` — a needle was resolved and the dump was read. ``location``
+#:   is non-NULL and carries the honest per-dump verdict.
+#: * ``"unpaired"`` — no capture belongs to this dump, so there was no needle to
+#:   search for. ``location`` is NULL.
+#: * ``"field_unresolved"`` — a capture was found but it does not yield the
+#:   requested field (no session, no such id, or the id is not searchable).
+#:   ``location`` is NULL.
+#:
+#: The last two are the whole point of the type. A pair that was never searched
+#: rendered as a zero-hit row is an absence claim over bytes nobody read.
+PAIR_SEARCHED = "searched"
+PAIR_UNPAIRED = "unpaired"
+PAIR_FIELD_UNRESOLVED = "field_unresolved"
+PAIR_STATUSES = (PAIR_SEARCHED, PAIR_UNPAIRED, PAIR_FIELD_UNRESOLVED)
+
+#: The field every real pairing hunt starts from: the ClientHello random is 32
+#: bytes, unique per handshake, and present in every TLS version, which makes it
+#: the one field that is both a usable needle and guaranteed to exist.
+DEFAULT_PAIR_FIELD_ID = "client_random"
+
+LOCATE_PAIRS_UNPAIRED_CODE = "analysis.locate_field_pairs.unpaired"
+LOCATE_PAIRS_FIELD_UNRESOLVED_CODE = "analysis.locate_field_pairs.field_unresolved"
+LOCATE_PAIRS_NOT_SEARCHED_CODE = "analysis.locate_field_pairs.not_searched"
+LOCATE_PAIRS_ABSENT_CODE = "analysis.locate_field_pairs.absent"
+LOCATE_PAIRS_PARTIAL_CODE = "analysis.locate_field_pairs.partial"
+LOCATE_PAIRS_OFFSET_DRIFT_CODE = "analysis.locate_field_pairs.offset_drift"
+LOCATE_PAIRS_SHARED_CAPTURE_CODE = "analysis.locate_field_pairs.shared_capture"
+
+
+class _PcapPair(NamedTuple):
+    """One ``(dump, capture)`` pairing, however it was arrived at.
+
+    The single internal shape both input forms normalise into, so the search
+    loop below cannot behave differently for an explicit pair than for a
+    discovered one. ``pcap_path`` is ``""`` exactly when ``pairing`` is
+    ``"unpaired"``.
+    """
+
+    dump_path: str
+    pcap_path: str
+    client_random: str
+    pairing: str
+    capture_status: str
+
+
+def _normalise_explicit_pairs(
+    pairs: Sequence[Mapping[str, str]],
+) -> List[_PcapPair]:
+    """Validate the explicit ``pairs`` form into :class:`_PcapPair` records.
+
+    Every entry is checked BEFORE anything is read, so a typo in pair 9 is
+    reported instead of arriving after eight dumps have been swept. An unknown
+    key is refused by name rather than ignored, mirroring
+    :func:`_needle_from_pcap_field`'s guard over :data:`PCAP_FIELD_KEYS`: a
+    misspelt ``pcap`` silently dropped would leave the pair looking unpaired,
+    which reads as a finding about the corpus rather than a mistake in the
+    request.
+
+    ``capture_status`` is ``"supplied"`` on this path — the caller asserted the
+    pairing, so there is no probe whose three-state verdict could be reported.
+    """
+    normalised: List[_PcapPair] = []
+    for index, entry in enumerate(pairs):
+        if not isinstance(entry, Mapping):
+            raise CapabilityError(
+                f"pairs[{index}] is {type(entry).__name__}, expected a mapping "
+                f"{{'dump_path': ..., 'pcap_path': ...}}",
+                category=ErrorCategory.INVALID_INPUT,
+            )
+        unknown = [key for key in entry if key not in PCAP_PAIR_KEYS]
+        if unknown:
+            raise CapabilityError(
+                f"pairs[{index}] has unknown key(s) {sorted(unknown)}; expected "
+                f"{list(PCAP_PAIR_KEYS)} (client_random optional)",
+                category=ErrorCategory.INVALID_INPUT,
+            )
+        dump_path = str(entry.get("dump_path") or "").strip()
+        pcap_path = str(entry.get("pcap_path") or "").strip()
+        missing = [name for name, value in
+                   (("dump_path", dump_path), ("pcap_path", pcap_path))
+                   if not value]
+        if missing:
+            raise CapabilityError(
+                f"pairs[{index}] is missing required key(s) {missing}; each "
+                f"pair takes {{'dump_path': ..., 'pcap_path': ..., "
+                f"'client_random': <optional>}}",
+                category=ErrorCategory.INVALID_INPUT,
+            )
+        normalised.append(_PcapPair(
+            dump_path=dump_path,
+            pcap_path=pcap_path,
+            client_random=str(entry.get("client_random") or "").strip(),
+            pairing=PAIRING_EXPLICIT,
+            capture_status="supplied",
+        ))
+    return normalised
+
+
+def _discover_pcap_pairs(dump_paths: Sequence[str]) -> List[_PcapPair]:
+    """Let each dump find its OWN capture, via the run-discovery walker.
+
+    The pairing this producer exists for: N dumps go in, and each comes back
+    matched to the capture of the run it belongs to — not to one capture chosen
+    for all of them. The probe is
+    :meth:`core.discovery.RunDiscovery.find_capture_for`, i.e. the SAME
+    ``_find_capture`` the dataset scanner uses, so a dump and its run can never
+    disagree about which capture is theirs.
+
+    A dump with no capture becomes a ``"unpaired"`` record rather than being
+    dropped. ``capture_status`` carries the walker's own three-state verdict, so
+    ``"absent"`` (there is no capture here) stays distinguishable from
+    ``"unreadable"`` (there is one and we could not use it) — a zero-byte
+    ``traffic.pcap`` is a corpus defect, not a corpus fact.
+    """
+    # Function-local, matching every other engine/core import in this module.
+    from memdiver.core.discovery import RunDiscovery
+
+    pairs: List[_PcapPair] = []
+    for dump_path in dump_paths:
+        capture, status = RunDiscovery.find_capture_for(dump_path)
+        if capture is None or status != "present":
+            pairs.append(_PcapPair(
+                dump_path=dump_path,
+                pcap_path="" if capture is None else str(capture),
+                client_random="",
+                pairing=PAIRING_UNPAIRED,
+                capture_status=status,
+            ))
+            continue
+        pairs.append(_PcapPair(
+            dump_path=dump_path,
+            pcap_path=str(capture),
+            client_random="",
+            pairing=PAIRING_DISCOVERED,
+            capture_status=status,
+        ))
+    return pairs
+
+
+def _resolve_pair_inputs(
+    pairs: Optional[Sequence[Mapping[str, str]]],
+    dump_paths: Optional[Sequence[str]],
+) -> Tuple[List[_PcapPair], str]:
+    """Take EXACTLY ONE of the two input forms and normalise it.
+
+    The same discipline — and for the same reason — as
+    :func:`_resolve_key_needle`'s exactly-one-of guard. There is deliberately no
+    precedence: a caller sending ``pairs`` together with ``dump_paths`` believes
+    something specific about which capture each dump will be matched against,
+    and honouring one of them silently would produce a fully-populated,
+    confident census against the wrong captures. Refusing costs one round trip.
+
+    Returns ``(pairs, mode)`` where mode is ``"explicit"`` or ``"discovery"``.
+    """
+    supplied = [name for name, value in
+                (("pairs", pairs), ("dump_paths", dump_paths))
+                if value is not None]
+    if len(supplied) != 1:
+        raise CapabilityError(
+            f"Supply exactly ONE of ['pairs', 'dump_paths']; got "
+            f"{supplied or 'none'}. 'pairs' names the capture for each dump "
+            f"explicitly; 'dump_paths' lets each dump discover its own run's "
+            f"capture. There is no precedence between them on purpose: the two "
+            f"forms disagreeing about a pairing would yield a confident census "
+            f"read from the wrong capture.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if pairs is not None:
+        if not pairs:
+            raise CapabilityError(
+                "Need at least 1 (dump, pcap) pair to search, got 0",
+                category=ErrorCategory.PRECONDITION,
+            )
+        return _normalise_explicit_pairs(pairs), "explicit"
+    resolved = list(dump_paths or [])
+    if not resolved:
+        raise CapabilityError(
+            "Need at least 1 dump to search, got 0",
+            category=ErrorCategory.PRECONDITION,
+        )
+    return _discover_pcap_pairs(resolved), "discovery"
+
+
+def _pair_row(
+    pair: _PcapPair,
+    *,
+    field_id: str,
+    status: str,
+    needle_hex: str = "",
+    detail: str = "",
+    location: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble ONE pair row, with the status/location biconditional enforced.
+
+    ``location`` is non-NULL if and ONLY IF ``status == "searched"``. That is the
+    same invariant :meth:`engine.key_location.DumpKeyLocation.__post_init__`
+    enforces over ``status`` / ``present``, lifted one level up: a ``location``
+    on an unsearched pair is a census over bytes nobody read, and a NULL one on
+    a searched pair is a row that contributes to neither a presence nor an
+    absence in the consumer that renders it.
+
+    Unlike :func:`_locate_key_payload`, this DOES echo ``needle_hex``. The
+    contrast is deliberate and is the same distinction ``export_key_pattern``
+    draws when it refuses the ``pcap_field`` form: a handshake field is public
+    wire material, so disclosing it in a ticket or an agent transcript leaks
+    nothing, and it is the one value that makes the row reproducible — without
+    it a reader cannot tell whether two pairs searched for the same bytes.
+    ``""`` means no needle was resolved, never "the empty needle".
+    """
+    if status not in PAIR_STATUSES:
+        raise ValueError(
+            "unknown pair status " + repr(status) + "; expected one of "
+            + ", ".join(repr(s) for s in PAIR_STATUSES))
+    if (status == PAIR_SEARCHED) != (location is not None):
+        raise ValueError(
+            "pair status " + repr(status) + " contradicts location "
+            + ("present" if location is not None else "NULL") + " for "
+            + repr(pair.dump_path))
+    return {
+        "dump_path": pair.dump_path,
+        "dump_name": Path(pair.dump_path).name,
+        "pcap_path": pair.pcap_path,
+        "pairing": pair.pairing,
+        "capture_status": pair.capture_status,
+        "field_id": field_id,
+        "needle_hex": needle_hex,
+        "status": status,
+        "detail": detail,
+        "location": location,
+    }
+
+
+def _locate_field_pairs_diagnostics(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    verdict: str,
+    field_id: str,
+    pairs_present: int,
+    pairs_absent: int,
+    captures: Sequence[str],
+    first_offsets: Sequence[int],
+) -> List[Diagnostic]:
+    """The honest qualifications on one paired-field search.
+
+    Every one is a QUALIFICATION, not an error, exactly as in
+    :func:`_locate_key_diagnostics`: the census is already computed and the
+    caller is entitled to it. What these encode is the gap between the verdict
+    and what the pairing actually supports.
+    """
+    diagnostics: List[Diagnostic] = []
+    total = len(rows)
+
+    unpaired = [r for r in rows if r["status"] == PAIR_UNPAIRED]
+    if unpaired:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_UNPAIRED_CODE,
+            message=(
+                f"{len(unpaired)} of {total} dump(s) have no capture to take a "
+                f"needle from ("
+                + "; ".join(
+                    f"{r['dump_name']}: {r['capture_status']}"
+                    for r in unpaired[:5])
+                + f"). They were never searched, so their content is UNKNOWN "
+                f"for {field_id!r} — not absent."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "pairs_unpaired": len(unpaired),
+                "pairs_total": total,
+                "capture_statuses": {
+                    r["dump_path"]: r["capture_status"] for r in unpaired
+                },
+            },
+        ))
+
+    unresolved = [r for r in rows if r["status"] == PAIR_FIELD_UNRESOLVED]
+    if unresolved:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_FIELD_UNRESOLVED_CODE,
+            message=(
+                f"{len(unresolved)} of {total} pair(s) have a capture that "
+                f"yields no usable {field_id!r} ("
+                + "; ".join(
+                    f"{r['dump_name']}: {r['detail']}" for r in unresolved[:3])
+                + "). Their needle_hex is empty and no search was run, so these "
+                "are not absences."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "pairs_field_unresolved": len(unresolved),
+                "pairs_total": total,
+                "details": {r["dump_path"]: r["detail"] for r in unresolved},
+            },
+        ))
+
+    if verdict == "not_searched":
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_NOT_SEARCHED_CODE,
+            message=(
+                f"NOTHING was searched: none of the {total} pair(s) produced "
+                f"both a needle and a readable dump. This result claims no "
+                f"presence and no absence — fix the pairing before reading it "
+                f"as a finding."
+            ),
+            severity=Severity.WARNING,
+            details={"pairs_total": total},
+        ))
+    elif verdict == "absent":
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_ABSENT_CODE,
+            message=(
+                f"Each searched dump was read for the {field_id!r} of ITS OWN "
+                f"capture, and none of the {pairs_absent} contains it. That is "
+                f"a measured absence over a known denominator, not a failure "
+                f"to look."
+            ),
+            severity=Severity.INFO,
+            details={"pairs_absent": pairs_absent},
+        ))
+    elif pairs_absent:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_PARTIAL_CODE,
+            message=(
+                f"{field_id!r} survives in {pairs_present} of the "
+                f"{pairs_present + pairs_absent} searched dump(s) and is "
+                f"provably absent from {pairs_absent}. Partial survival is the "
+                f"normal shape of a real value across a process lifecycle — "
+                f"the absent dumps are evidence, not a shortfall."
+            ),
+            severity=Severity.INFO,
+            details={
+                "pairs_present": pairs_present,
+                "pairs_absent": pairs_absent,
+                "present_dumps": [
+                    r["dump_path"] for r in rows
+                    if r["location"] and r["location"]["verdict"] == "found"
+                ],
+            },
+        ))
+
+    distinct_captures = sorted({c for c in captures if c})
+    if len(distinct_captures) == 1 and total > 1:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_SHARED_CAPTURE_CODE,
+            message=(
+                f"All {total} pair(s) resolved to the SAME capture "
+                f"({Path(distinct_captures[0]).name}), so this is one session's "
+                f"{field_id!r} traced across N dumps — not N independently "
+                f"paired sessions. The per-dump verdicts are still per-dump; "
+                f"only the needle is shared."
+            ),
+            severity=Severity.INFO,
+            details={"capture": distinct_captures[0], "pairs_total": total},
+        ))
+
+    if len(set(first_offsets)) > 1:
+        diagnostics.append(Diagnostic(
+            code=LOCATE_PAIRS_OFFSET_DRIFT_CODE,
+            message=(
+                f"The field sits at DIFFERENT offsets across the "
+                f"{len(first_offsets)} dump(s) that hold it "
+                f"({sorted(set(first_offsets))}). No single offset "
+                f"generalises, so an offset-based rule derived from one of "
+                f"them will not locate it in the others."
+            ),
+            severity=Severity.INFO,
+            details={
+                "first_offsets": {
+                    r["dump_path"]: r["location"]["first_offset"]
+                    for r in rows
+                    if r["location"] and r["location"]["first_offset"] is not None
+                },
+            },
+        ))
+    return diagnostics
+
+
+def locate_field_across_pairs(
+    *,
+    pairs: Optional[Sequence[Dict[str, str]]] = None,
+    dump_paths: Optional[Sequence[str]] = None,
+    field_id: str = DEFAULT_PAIR_FIELD_ID,
+    view: Optional[str] = None,
+    max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """Search N dumps for a handshake field, each dump taking it from ITS OWN capture.
+
+    The single implementation behind the CLI ``locate-field-pairs`` command, the
+    HTTP ``POST /api/pcaps/locate-field`` route, the MCP
+    ``locate_field_across_pairs`` tool and
+    ``memdiver.services.locate_field_across_pairs``.
+
+    :func:`locate_key` already searches N dumps — for ONE needle. That is the
+    right question when a single session is under investigation and the wrong
+    one for a corpus: 40 runs of the same client each negotiated their own
+    handshake, so "is *this* client random in these 400 dumps" answers about 39
+    runs it was never in. This producer asks the question that scales instead:
+    *for each dump, is the ``field_id`` of the capture that belongs to that dump
+    present in it, and where?* The needle varies per pair; the verdict is over
+    the pairs.
+
+    Supply the pairing in exactly ONE of two forms:
+
+    * ``pairs`` — explicit: ``[{"dump_path": ..., "pcap_path": ...,
+      "client_random": <optional>}, ...]``. The caller asserts each pairing, and
+      ``client_random`` picks a session when a capture holds several.
+    * ``dump_paths`` — discovery: each dump finds the capture of the run it
+      lives in, via :meth:`core.discovery.RunDiscovery.find_capture_for` (the
+      same ``_find_capture`` probe the dataset scanner uses:
+      ``meta.capture``, then ``run_data/traffic.pcap*``, then a capture sitting
+      beside the dumps).
+
+    Both forms is INVALID_INPUT with no precedence — see
+    :func:`_resolve_pair_inputs`.
+
+    NO KEY LOG IS READ. That is the point of the capability, and it is what
+    separates it from ``app.pipeline.corpus_pcap_runner.prove_run`` (which stays
+    keylog-driven): the needle comes off the wire, so the search works on a
+    corpus that ships captures but no ground truth. Only ``searchable`` fields
+    are accepted, and that gate is C2's — a short field or a wire-encoding
+    artifact matches everywhere, so a hit on one carries no information.
+
+    Nothing is PERSISTED, for the same reason :func:`locate_key` persists
+    nothing: the only table this would fit holds ORACLE-CONFIRMED hits, and a
+    handshake field found in memory is a location, not a confirmation.
+
+    Returns:
+        A bare dict carrying ``verdict``, ``counts``, one row per pair in the
+        SUPPLIED (or discovered) order, and ``diagnostics``. Read ``verdict``
+        before any count: ``"not_searched"`` claims NOTHING.
+
+        Each row carries ``pairing`` (``"explicit"`` / ``"discovered"`` /
+        ``"unpaired"``), ``capture_status``, the resolved ``needle_hex``, a
+        three-valued ``status`` (see :data:`PAIR_STATUSES`) and — only when that
+        status is ``"searched"`` — a ``location`` block in exactly
+        :func:`locate_key`'s shape, over that one dump.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for zero or both input forms and for a
+            malformed ``pairs`` entry; PRECONDITION for an empty sequence.
+        FileNotFoundServiceError: when any supplied dump — or any explicitly
+            paired capture — does not exist. Checked up front, so a typo is
+            reported before N dumps are swept.
+        EncryptedDumpLockedError: for a locked encrypted container; every
+            answer in the set would otherwise be a confident absence over bytes
+            nobody decrypted.
+    """
+    # Function-local so the ``app`` layer does not pull ``engine`` at module
+    # import time (the repo-wide idiom; see ``locate_key``). ELAPSED_PRECISION
+    # is imported rather than re-literalled so this producer's ``elapsed_s``
+    # rounds exactly as every per-pair ``location.elapsed_s`` inside it does.
+    from memdiver.engine.key_location import (
+        ELAPSED_PRECISION,
+        locate_key_across_dumps,
+    )
+
+    _validate_pcap_caps(pcap_max_records, pcap_max_challenges)
+    resolved_field_id = field_id.strip()
+    if not resolved_field_id:
+        raise CapabilityError(
+            "Empty field_id; name the handshake field to search for (browse "
+            "them with inspect_pcap(include_fields=True))",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    pair_records, mode = _resolve_pair_inputs(pairs, dump_paths)
+
+    # Existence up front, over BOTH sides of every pair, so a mistyped path is
+    # a NOT_FOUND rather than eight sweeps followed by one. Same posture as
+    # ``locate_key``; a discovered capture is skipped here because the walker
+    # already classified it (an "unreadable" one becomes an unpaired row).
+    missing = [p.dump_path for p in pair_records
+               if not Path(p.dump_path).expanduser().exists()]
+    missing += [p.pcap_path for p in pair_records
+                if p.pairing == PAIRING_EXPLICIT
+                and not Path(p.pcap_path).expanduser().exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+
+    def _observe(source: Any) -> None:
+        # A locked encrypted dump reads back EMPTY, which would otherwise be
+        # reported as a confident absence in every locked dump.
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    started = time.perf_counter()
+    rows: List[Dict[str, Any]] = []
+    # Memoised per CALL, not globally: N dumps of one run share one capture, and
+    # ``inspect_pcap(include_fields=True)`` re-reads the file every time, so
+    # without this a 10-dump run parses the same 6 KB capture ten times. The key
+    # includes the session selector because two pairs may legitimately name
+    # different sessions of the SAME capture.
+    needles: Dict[Tuple[str, str], Any] = {}
+
+    for pair in pair_records:
+        if pair.pairing == PAIRING_UNPAIRED:
+            rows.append(_pair_row(
+                pair, field_id=resolved_field_id, status=PAIR_UNPAIRED,
+                detail=(
+                    f"no capture for this dump's run "
+                    f"(capture_status={pair.capture_status})"),
+            ))
+            continue
+
+        cache_key = (str(Path(pair.pcap_path).expanduser()), pair.client_random)
+        if cache_key not in needles:
+            request = {"pcap_path": pair.pcap_path, "field_id": resolved_field_id}
+            if pair.client_random:
+                request["client_random"] = pair.client_random
+            try:
+                needles[cache_key] = _needle_from_pcap_field(
+                    request,
+                    pcap_max_records=pcap_max_records,
+                    pcap_max_challenges=pcap_max_challenges,
+                )
+            except CapabilityError as exc:
+                # CAUGHT, not propagated. One capture that lacks the field is a
+                # fact about that pair; raising would discard the census for
+                # every other pair in the set, which is the same
+                # all-or-nothing failure the three-valued row model exists to
+                # avoid. The resolver's own message is carried through verbatim
+                # so the remedy (a different field_id, a client_random
+                # selector) reads identically to ``locate_key``'s.
+                needles[cache_key] = exc
+        cached = needles[cache_key]
+        if isinstance(cached, CapabilityError):
+            rows.append(_pair_row(
+                pair, field_id=resolved_field_id,
+                status=PAIR_FIELD_UNRESOLVED, detail=str(cached),
+            ))
+            continue
+
+        needle, resolved_id, session_random = cached
+        result = locate_key_across_dumps(
+            [pair.dump_path],
+            needle,
+            view=view,
+            key_material=km,
+            max_offsets=max_offsets,
+            on_source=_observe,
+        )
+        rows.append(_pair_row(
+            pair, field_id=resolved_field_id, status=PAIR_SEARCHED,
+            needle_hex=needle.hex(),
+            location=_locate_key_payload(
+                result,
+                needle=needle,
+                # ``secret_type`` carries the resolved field id and
+                # ``input_form`` says to read it as one — the same convention
+                # ``locate_key``'s pcap_field form uses, so a reader parses one
+                # ``location`` block, not two.
+                secret_type=resolved_id,
+                client_random=session_random,
+                input_form="pcap_field",
+                view=view,
+                max_offsets=max_offsets,
+            ),
+        ))
+
+    searched = [r for r in rows if r["status"] == PAIR_SEARCHED]
+    present = [r for r in searched if r["location"]["verdict"] == "found"]
+    absent = [r for r in searched if r["location"]["verdict"] == "absent"]
+    dumps_searched = sum(r["location"]["dumps_searched"] for r in searched)
+    # Verdict, in the SAME three-valued vocabulary
+    # ``engine.key_location.KEY_LOCATION_VERDICTS`` uses, so a consumer that
+    # already renders a ``locate_key`` verdict renders this one unchanged.
+    # ``dumps_searched`` and not ``len(searched)`` gates the absence: a pair can
+    # hold a needle and still read nothing (an unreadable or too-small dump).
+    if present:
+        verdict = "found"
+    elif dumps_searched:
+        verdict = "absent"
+    else:
+        verdict = "not_searched"
+
+    first_offsets = [r["location"]["first_offset"] for r in present
+                     if r["location"]["first_offset"] is not None]
+    return {
+        "verdict": verdict,
+        "mode": mode,
+        "field_id": resolved_field_id,
+        "view": view,
+        "caps": {
+            "pcap_max_records": pcap_max_records,
+            "pcap_max_challenges": pcap_max_challenges,
+        },
+        "counts": {
+            "pairs_total": len(rows),
+            "pairs_searched": len(searched),
+            "pairs_unpaired": sum(
+                1 for r in rows if r["status"] == PAIR_UNPAIRED),
+            "pairs_field_unresolved": sum(
+                1 for r in rows if r["status"] == PAIR_FIELD_UNRESOLVED),
+            "pairs_present": len(present),
+            "pairs_absent": len(absent),
+            "dumps_searched": dumps_searched,
+            "dumps_unreadable": sum(
+                r["location"]["dumps_unreadable"] for r in searched),
+            "dumps_too_small": sum(
+                r["location"]["dumps_too_small"] for r in searched),
+            # The two facts that say whether this was a real PAIRING or one
+            # needle wearing N hats: how many distinct captures were consulted,
+            # and how many distinct needles they yielded.
+            "captures_distinct": len({r["pcap_path"] for r in rows
+                                      if r["pcap_path"]}),
+            "needles_distinct": len({r["needle_hex"] for r in rows
+                                     if r["needle_hex"]}),
+        },
+        # Only meaningful across pairs that FOUND the field; ``None`` /``False``
+        # when fewer than two did, exactly as ``KeyLocationResult`` treats them.
+        "offsets_agree": len(set(first_offsets)) <= 1,
+        "common_offset": (
+            first_offsets[0] if len(set(first_offsets)) == 1 else None),
+        "pairs": rows,
+        "elapsed_s": round(time.perf_counter() - started, ELAPSED_PRECISION),
+        "diagnostics": [
+            d.to_dict() for d in _locate_field_pairs_diagnostics(
+                rows,
+                verdict=verdict,
+                field_id=resolved_field_id,
+                pairs_present=len(present),
+                pairs_absent=len(absent),
+                captures=[r["pcap_path"] for r in rows],
+                first_offsets=first_offsets,
+            )
+        ],
+    }
 
 
 def _key_pattern_anchors(result: Any) -> Dict[str, int]:
@@ -2897,6 +4047,8 @@ def inspect_pcap(
     pcap_path: str,
     pcap_max_records: Optional[int] = None,
     pcap_max_challenges: Optional[int] = None,
+    include_fields: bool = False,
+    detect_protocols: bool = False,
 ) -> Dict[str, Any]:
     """Summarise the TLS sessions a capture contains, without decrypting.
 
@@ -2960,6 +4112,58 @@ def inspect_pcap(
 
     These keys are purely additive; every key this producer returned before is
     unchanged, including a zero-session capture's ``session_count: 0``.
+
+    ``include_fields`` (C2) opts into the byte-addressed view of each handshake
+    — "which bytes of this session could I go looking for in a memory dump, and
+    where on the wire did each come from?". It is OFF by default and the default
+    response is byte-identical to the one above, because every existing caller
+    (the arm step, the run's cap echo, the corpus sweep) wants the session facts
+    and would only pay for a second parse. Switched on, three keys appear:
+
+    * ``fields`` on each session — one
+      :meth:`~memdiver.engine.resources.protocol_fields.ProtocolField.as_dict`
+      per extractable field, carrying ``field_id``, ``value_hex``, ``length``,
+      ``source``, wire ``provenance`` and ``searchable``. Read ``searchable``
+      before using a field as a dump needle: it is DERIVED (a byte/string run of
+      at least ``MIN_SEARCHABLE_LEN``), and a field with ``searchable: false``
+      matches everywhere, so a hit on it means nothing.
+    * ``field_notes`` on each session — ``{"code", "detail"}`` entries saying why
+      a field a caller might reasonably expect is legitimately absent. The
+      load-bearing one is TLS 1.3: RFC 8446 encrypts the Certificate message, so
+      no TLS 1.3 capture can carry one, and an empty ``certificate.0`` would
+      claim a parse failure where there was nothing to parse.
+    * ``field_index`` at the top level — a CATALOGUE, not values: ``field_id`` ->
+      ``{label, type, source, searchable, sessions: [<session_index>, ...]}``, so
+      a picker can offer "the ids this capture has" without walking every
+      session. Field ids are unique per session by construction (C1 prefixes
+      extension ids ``client_ext.``/``server_ext.`` precisely because 0x000b
+      appears in both hellos), which is what makes an id-keyed index safe.
+
+    Turning it on costs a second read of the capture: ``describe_fields`` parses
+    independently of ``describe_capture`` and the resource caches nothing. That
+    is the whole reason the flag exists rather than the fields always being
+    there.
+
+    ``detect_protocols`` (C4a) answers the question this producer could not
+    answer before: **"if this capture has no TLS sessions, what does it have?"**
+    A parseable capture with zero TLS handshakes already returns
+    ``session_count: 0`` rather than erroring, and that zero was the whole
+    report — true, and no help at all to someone who captured QUIC. Switched on,
+    one additive key appears:
+
+    * ``protocols`` — one dict per protocol the capture was found to carry
+      (``protocol``, ``resource_type``, ``decryptable``, ``flows``, ``detail``,
+      ``evidence``), decryptable ones first. See
+      :func:`~memdiver.engine.resources.protocol_detect.detect_protocols`;
+      ``decryptable`` is read from the LIVE resource registry, so a third-party
+      oracle installed through the ``memdiver.oracles`` entry-point group makes
+      its protocol report as decryptable with no change here.
+
+    Detection NEVER raises: an unreadable or unrecognisable capture yields an
+    empty ``protocols`` list, because this is the key a caller reads while
+    working out why something else failed. Like ``include_fields`` it is off by
+    default and costs an extra read of the capture (two, for the UDP peek QUIC
+    and DTLS need), and the default response is byte-identical without it.
     """
     from memdiver.engine.resources.tls_pcap import (
         _PCAP_MISSING,
@@ -2988,7 +4192,13 @@ def inspect_pcap(
         resource_caps["max_challenges"] = int(pcap_max_challenges)
 
     try:
-        capture = TlsPcapResource(pcap_path, **resource_caps).describe_capture()
+        resource = TlsPcapResource(pcap_path, **resource_caps)
+        capture = resource.describe_capture()
+        # Inside the SAME funnel as the summary parse: a capture that survives
+        # ``describe_capture`` can still fail the second read (a file replaced
+        # underneath us), and that has to surface as INVALID_INPUT rather than a
+        # bare PcapParseError escaping the producer.
+        described_fields = resource.describe_fields() if include_fields else []
     except (PcapParseError, OSError, ValueError) as exc:
         raise CapabilityError(
             f"could not parse capture {pcap_path!r}: {exc}",
@@ -2996,7 +4206,9 @@ def inspect_pcap(
         ) from exc
 
     sessions = capture["sessions"]
-    return {
+    if include_fields:
+        sessions = _sessions_with_fields(sessions, described_fields)
+    payload: Dict[str, Any] = {
         "pcap_path": pcap_path,
         "session_count": len(sessions),
         "sessions": sessions,
@@ -3008,6 +4220,81 @@ def inspect_pcap(
         "challenges_returned": capture["challenges_returned"],
         "challenges_truncated": capture["challenges_truncated"],
     }
+    if include_fields:
+        # Added only under the flag, so ``include_fields=False`` leaves the
+        # response byte-identical rather than growing an always-empty key.
+        payload["field_index"] = _pcap_field_index(sessions)
+    if detect_protocols:
+        # Same rule, same reason: additive under the flag only. Aliased on
+        # import because the parameter shadows the function name, and imported
+        # lazily so a caller that never asks pays nothing for the UDP pass.
+        from memdiver.engine.resources.protocol_detect import (
+            detect_protocols as _detect_protocols,
+        )
+
+        payload["protocols"] = [
+            candidate.as_dict() for candidate in _detect_protocols(pcap_path)
+        ]
+    return payload
+
+
+def _sessions_with_fields(
+    sessions: Sequence[Dict[str, Any]],
+    described_fields: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Attach each session's C2 fields + notes, WITHOUT mutating the input.
+
+    ``describe_capture`` and ``describe_fields`` are two independent parses of
+    the same file, so they are joined on ``client_random`` — the session's
+    identity — rather than on list position. Position would work today (both
+    walk ``_parse_sessions`` in flow order) and would silently mis-attribute a
+    capture's fields the day either walk changes.
+
+    A session with no matching entry gets an EMPTY ``fields`` list, not a
+    missing key: a caller that asked for fields must be able to tell "this
+    session yielded none" from "this response predates the flag".
+    """
+    by_random = {entry["client_random"]: entry for entry in described_fields}
+    enriched: List[Dict[str, Any]] = []
+    for session in sessions:
+        entry = by_random.get(session["client_random"], {})
+        enriched.append({
+            **session,
+            "fields": entry.get("fields", []),
+            "field_notes": entry.get("notes", []),
+        })
+    return enriched
+
+
+def _pcap_field_index(sessions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Catalogue the field IDS a capture offers, and which sessions carry each.
+
+    Values are deliberately NOT in here: a capture's two sessions both have a
+    ``client_random`` field with different bytes, so an id-keyed map of values
+    could only be wrong. What a caller needs before it can name a field
+    symbolically is the id, whether it is worth searching for, and where to look
+    it up — which is exactly this.
+
+    ``searchable`` here means "searchable in AT LEAST ONE of the listed
+    sessions", because the flag is derived from a length and two sessions can
+    legitimately disagree (one 3-byte SNI, one 12-byte). The authoritative
+    per-session flag stays on the session's own field, and that is the one
+    ``_needle_from_pcap_field`` checks — this key is a hint for a picker, not a
+    permission.
+    """
+    index: Dict[str, Any] = {}
+    for position, session in enumerate(sessions):
+        for field in session.get("fields", []):
+            entry = index.setdefault(field["field_id"], {
+                "label": field["label"],
+                "type": field["type"],
+                "source": field["source"],
+                "searchable": False,
+                "sessions": [],
+            })
+            entry["searchable"] = entry["searchable"] or field["searchable"]
+            entry["sessions"].append(position)
+    return index
 
 
 # _emit/_progress_bridge/_experiment_check_cancelled MOVED to memdiver.app._progress (P3.1)

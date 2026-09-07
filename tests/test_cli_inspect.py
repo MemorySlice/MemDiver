@@ -64,7 +64,9 @@ def test_parser_inspect_all_actions_build():
         args = parser.parse_args(["inspect", action, "/tmp/x.msl"])
         assert args.inspect_action == action
     assert set(_INSPECT_HANDLERS) == {
-        "hex", "entropy", "strings", "byte-search",
+        # P2.4 added "region" — the per-offset investigation view, wired on all
+        # four surfaces so its producer could leave EXEMPT_PRODUCERS.
+        "hex", "entropy", "region", "strings", "byte-search",
         "page-states", "session-info", "vas", "processes", "modules", "handles",
         "xref", "structure",
     }

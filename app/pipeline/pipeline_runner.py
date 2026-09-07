@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+from memdiver.app.pipeline.artifact_events import EmittingArtifactList
 
 from memdiver.core.artifact_util import register_artifact, sha256_streamed
 
@@ -439,9 +440,13 @@ def _run_brute_force(
 
 def _run_nsweep(
     source_paths: List[str],
-    oracle_path: Path,
+    oracle_path: Optional[Path],
     nsweep_params: Dict[str, Any],
     *,
+    pcap_path: Optional[str] = None,
+    tls_client_random: Optional[str] = None,
+    pcap_max_records: Optional[int] = None,
+    pcap_max_challenges: Optional[int] = None,
     ctx,
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
@@ -456,6 +461,12 @@ def _run_nsweep(
     ``total_dumps``) and writes the same ``report.{json,md,html}`` via
     ``app.reports.write_nsweep_artifacts``.
 
+    Both oracle sources are forwarded verbatim, exactly as
+    :func:`_run_brute_force` forwards them: a pcap run passes ``oracle_path``
+    as ``None`` and the producer routes the sweep through the first-party
+    trusted pcap oracle instead. The producer raises if both or neither is
+    given.
+
     The per-stage summary is read back from ``report.json`` (which
     ``write_nsweep_artifacts`` fills with ``NSweepResult.to_dict()`` plus the
     injected ``headline``) so it stays equal to the pre-refactor
@@ -468,7 +479,13 @@ def _run_nsweep(
     _run_producer(
         tools_pipeline.n_sweep,
         source_paths=list(source_paths),
-        oracle_path=str(oracle_path),
+        # Exactly one oracle source — mirrors _run_brute_force's forwarding so
+        # both stages of a pcap run verify against the same capture.
+        oracle_path=str(oracle_path) if oracle_path is not None else None,
+        pcap_path=pcap_path,
+        tls_client_random=tls_client_random,
+        pcap_max_records=pcap_max_records,
+        pcap_max_challenges=pcap_max_challenges,
         output_dir=str(out_dir),
         n_values=list(nsweep_params["n_values"]),
         reduce_kwargs=dict(nsweep_params.get("reduce_kwargs") or {}),
@@ -666,10 +683,10 @@ class PipelineState:
     ctx: Any
     artifact_dir: Path
     reduce_kwargs: Dict[str, Any]
-    # ``None`` for a pcap-oracle run: the brute_force stage routes through the
-    # first-party trusted pcap oracle (``pcap_path`` / ``tls_client_random``)
-    # instead of a BYO oracle file. Oracle-file stages (nsweep / escalate) are
-    # unavailable on a pcap run.
+    # ``None`` for a pcap-oracle run: the brute_force and nsweep stages both
+    # route through the first-party trusted pcap oracle (``pcap_path`` /
+    # ``tls_client_random``) instead of a BYO oracle file. Only the ``escalate``
+    # stage still requires an oracle FILE and stays off on a pcap run.
     oracle_path: Optional[Path]
     bf_kwargs: Dict[str, Any]
     nsweep_params: Optional[Dict[str, Any]]
@@ -704,6 +721,14 @@ def _always_enabled(state: "PipelineState") -> bool:
 
 
 def _nsweep_enabled(state: "PipelineState") -> bool:
+    """Fire whenever nsweep params were supplied, on EITHER oracle source.
+
+    Deliberately blind to which source is armed: the sweep reaches the BYO
+    oracle file and the first-party pcap oracle alike, so gating it on
+    ``oracle_path`` would silently drop the stage from a pcap run. A request
+    carrying neither source is not skipped here either — the producer's
+    exactly-one guard reports that as an error, which beats a silent no-op.
+    """
     return state.nsweep_params is not None
 
 
@@ -815,6 +840,10 @@ def _stage_nsweep(state: "PipelineState") -> None:
         state.source_paths,
         state.oracle_path,
         state.nsweep_params,
+        pcap_path=state.pcap_path,
+        tls_client_random=state.tls_client_random,
+        pcap_max_records=state.pcap_max_records,
+        pcap_max_challenges=state.pcap_max_challenges,
         ctx=state.ctx,
         artifact_dir=state.artifact_dir,
         artifacts=state.artifacts,
@@ -1036,8 +1065,9 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     * ``pcap_path`` (str, optional): pcap/pcapng of the same TLS session;
       routes the brute_force stage through the first-party trusted pcap
       oracle. Mutually exclusive with ``oracle_path``. ``tls_client_random``
-      (hex) optionally restricts pcap matching to one session. Oracle-file
-      stages (``nsweep`` / ``escalate``) are unavailable on a pcap run.
+      (hex) optionally restricts pcap matching to one session. The ``nsweep``
+      stage runs on a pcap run too (same pcap oracle at every N); only
+      ``escalate`` still needs an oracle FILE and stays off.
     * ``pcap_max_records`` / ``pcap_max_challenges`` (int, optional): pcap-oracle
       work caps (records per direction / total challenges). ``None`` keeps the
       defaults; both are silent truncations of coverage when set.
@@ -1098,6 +1128,11 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     state = PipelineState(
         ctx=ctx,
         artifact_dir=artifact_dir,
+        # An emitting list, not the plain default: every register_artifact call
+        # below (there are a dozen, across every stage) then streams one live
+        # ``artifact`` event to the UI instead of the artifact only surfacing in
+        # the task record at completion. See app.pipeline.artifact_events.
+        artifacts=EmittingArtifactList(ctx),
         source_paths=source_paths,
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,

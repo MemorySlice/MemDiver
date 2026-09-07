@@ -192,7 +192,6 @@ describe("StageThresholds nsweep on a pcap-oracle run", () => {
         sourcePaths: DUMPS,
         oracleId: null,
         pcapPath: "/pcaps/session.pcapng",
-        // A stale opt-in carried over from an earlier BYO-oracle run.
         nsweep: { n_values: [1, 2] },
       },
     });
@@ -202,18 +201,32 @@ describe("StageThresholds nsweep on a pcap-oracle run", () => {
     usePipelineStore.setState(PRISTINE, true);
   });
 
-  it("hard-gates the sweep, because the harness needs a BYO oracle file", async () => {
+  it("offers the sweep and posts it alongside the capture", async () => {
     await renderStage();
 
-    expect(screen.getByTestId("nsweep-enable")).toBeDisabled();
-    expect(screen.getByTestId("nsweep-enable")).not.toBeChecked();
+    // P2.2: the sweep re-runs whichever oracle the run armed, so a pcap run
+    // reaches it too — the checkbox that used to be hard-gated is live.
+    expect(screen.getByTestId("nsweep-enable")).toBeEnabled();
+    expect(screen.getByTestId("nsweep-enable")).toBeChecked();
     expect(
-      screen.getByText(/unavailable on a pcap-oracle run/i),
+      screen.getByText(/through the same pcap oracle/i),
     ).toBeInTheDocument();
 
     const body = await submit();
-    expect("nsweep" in body).toBe(false);
+    expect(body.nsweep).toEqual({ n_values: [1, 2] });
     expect(body.pcap_path).toBe("/pcaps/session.pcapng");
+    // Still exactly one oracle source: no BYO oracle id rides along.
+    expect(body.oracle_id).toBeUndefined();
+  });
+
+  it("still lets the sweep be turned off on a pcap run", async () => {
+    await renderStage();
+
+    fireEvent.click(screen.getByTestId("nsweep-enable"));
+    expect(screen.getByTestId("nsweep-enable")).not.toBeChecked();
+
+    const body = await submit();
+    expect("nsweep" in body).toBe(false);
   });
 });
 

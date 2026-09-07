@@ -39,7 +39,18 @@ but :meth:`TlsPcapResource.challenges` raises a clear, actionable error
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.kdf_tls import (
@@ -48,6 +59,20 @@ from memdiver.core.kdf_tls import (
     Tls12SuiteParams,
 )
 from memdiver.engine.resources.challenge import DecryptionChallenge, DerivationContext
+from memdiver.engine.resources.protocol_fields import (
+    ProtocolField,
+    absent_certificate_note,
+    certificate_fields,
+    client_hello_fields,
+    missing_sni_note,
+    parse_certificate_list,
+    parse_hello_layout,
+    parse_server_name_list,
+    record_seq_field,
+    server_hello_fields,
+    tls13_certificate_note,
+    truncated_hello_note,
+)
 
 logger = logging.getLogger("memdiver.engine.resources.tls_pcap")
 
@@ -74,6 +99,9 @@ _CT_APPLICATION_DATA = 23
 # Handshake message types.
 _HS_CLIENT_HELLO = 1
 _HS_SERVER_HELLO = 2
+# Certificate (RFC 5246 s7.4.2). Cleartext in TLS 1.2 only -- RFC 8446 moved it
+# inside the protected handshake epoch, so a TLS 1.3 capture never yields one.
+_HS_CERTIFICATE = 11
 
 # The record header prefix (opaque_type=application_data || legacy_version=0x0303)
 # that both the TLS 1.2 AEAD additional-data and the TLS 1.3 record AAD begin
@@ -92,6 +120,40 @@ class PcapParseError(Exception):
     """Raised when a capture cannot be read or contains no usable TLS session."""
 
 
+# The record-header size the whole module counts in: content_type(1) ||
+# version(2) || length(2). Named because the cumulative offset walk and the
+# provenance arithmetic must agree on it, and a bare `5` in two places is how
+# they stop agreeing.
+_RECORD_HEADER_LEN = 5
+
+# The handshake message header the hello/certificate bodies sit behind:
+# msg_type(1) || length(3).
+_HANDSHAKE_HEADER_LEN = 4
+
+
+class _MessageLocation(NamedTuple):
+    """Where one handshake message body sits, in both frames of reference.
+
+    Produced by :func:`_find_hello_with_offset` / :func:`_find_certificate_with_offset`
+    and consumed by the field extractors, which need *offsets* and not only
+    values -- see ``protocol_fields`` for why. Deliberately a plain NamedTuple:
+    it is a coordinate, and it must stay cheap enough to build on every parse.
+
+    ``fragment_base`` is the body's offset inside the record fragment (the
+    message's position in the fragment plus its 4-byte header), which is what a
+    field's ``record_offset`` is measured from. ``record_header_offset`` is where
+    the enclosing record's 5-byte header starts in the reassembled direction
+    stream.
+    """
+
+    direction: str          #: ``"client"`` or ``"server"``
+    record_index: int       #: index into that direction's record list
+    record_header_offset: int
+    fragment_base: int
+    raw: bytes              #: the message body, WITHOUT its handshake header
+    parsed: Any = None      #: dpkt's parse of the same body, when it produced one
+
+
 class _TlsSession:
     """One TLS session recovered from a paired pair of TCP flows.
 
@@ -106,6 +168,18 @@ class _TlsSession:
         "version",
         "client_records",
         "server_records",
+        # -- C1 protocol-field locations ---------------------------------- #
+        # Byte coordinates for the handshake messages the field extractor
+        # reads, filled by :meth:`TlsPcapResource._build_session` because that
+        # is where the messages are already in hand. KEYWORD-ONLY WITH
+        # DEFAULTS on purpose: tests (and any library caller) construct
+        # ``_TlsSession`` positionally with the original six arguments, so a
+        # required seventh would break them. A ``None`` here means "nobody
+        # recorded a location", and :func:`session_fields` re-derives from the
+        # record lists rather than silently reporting no fields.
+        "client_hello",
+        "server_hello",
+        "certificates",
     )
 
     def __init__(
@@ -116,6 +190,10 @@ class _TlsSession:
         version: str,
         client_records: list,
         server_records: list,
+        *,
+        client_hello: Optional[_MessageLocation] = None,
+        server_hello: Optional[_MessageLocation] = None,
+        certificates: Optional[_MessageLocation] = None,
     ) -> None:
         self.client_random = client_random
         self.server_random = server_random
@@ -123,6 +201,9 @@ class _TlsSession:
         self.version = version
         self.client_records = client_records
         self.server_records = server_records
+        self.client_hello = client_hello
+        self.server_hello = server_hello
+        self.certificates = certificates
 
 
 class TlsPcapResource:
@@ -339,6 +420,73 @@ class TlsPcapResource:
             "challenges_truncated": challenges_returned < challenges_available,
         }
 
+    def describe_fields(self) -> List[dict]:
+        """Report the byte-addressable protocol fields of every parsed session.
+
+        The third read-only companion to :meth:`challenges`, alongside
+        :meth:`describe_sessions` (what session is this?) and
+        :meth:`describe_capture` (what did the parser have to drop?). This one
+        answers "which bytes of this handshake could I go looking for in a
+        memory dump, and where on the wire did each come from?" -- see
+        ``protocol_fields`` for why that is a different question.
+
+        It is a NEW method rather than an extra key on ``describe_sessions``
+        because that dict's key set is a frozen contract the web router and the
+        React frontend read; adding to it fails the build by design. Nothing
+        here mutates state or changes what either existing method returns.
+
+        Returns one dict per session::
+
+            {"client_random": <hex>,      # the session's identity, as elsewhere
+             "session_index": <int>,      # position in the parse order
+             "fields": [<ProtocolField.as_dict()>, ...],
+             "notes": [{"code", "detail"}, ...]}
+
+        ``notes`` explains every field a caller might reasonably expect and not
+        find -- most importantly that TLS 1.3 encrypts the Certificate message,
+        so its absence is by design and not a parse failure.
+        """
+        if not HAS_PCAP:
+            raise PcapParseError(_PCAP_MISSING)
+        return [
+            {
+                "client_random": session.client_random.hex(),
+                "session_index": index,
+                "fields": [
+                    field.as_dict()
+                    for field in session_fields(
+                        session, record_sequences=self._record_sequences(session)
+                    )
+                ],
+                "notes": session_notes(session),
+            }
+            for index, session in enumerate(self._parse_sessions())
+        ]
+
+    def _record_sequences(self, session: _TlsSession) -> Dict[str, List[int]]:
+        """The record sequence numbers each direction's challenges will carry.
+
+        Read straight out of the emitter's own gates -- never re-derived from
+        record counts -- for exactly the reason :meth:`describe_capture`'s
+        coverage numbers are: the gates encode the TLS 1.2 ChangeCipherSpec
+        condition and the per-direction cap, so any independent derivation
+        eventually disagrees with the stream it claims to describe.
+
+        For TLS 1.2 these are true sequence numbers (position in the post-CCS
+        run). For TLS 1.3 they are the *wire indices* the gate reports, which the
+        module docstring's sequence rule makes an upper bound on the true
+        sequence number rather than the number itself -- the handshake-to-
+        application epoch change is invisible, so the challenge stream probes a
+        window below each one.
+        """
+        sequences: Dict[str, List[int]] = {}
+        for direction, records in _directions(session):
+            if session.version == "12":
+                sequences[direction] = [seq for _rec, seq, _n in self._tls12_gated(records)]
+            else:  # "13" -- wire indices; see the docstring
+                sequences[direction] = [index for _rec, index in self._tls13_gated(records)]
+        return sequences
+
     def _excluded_by_filter(self, session: _TlsSession) -> bool:
         """True when ``client_random`` restricts this run to a different session.
 
@@ -414,26 +562,18 @@ class TlsPcapResource:
         return sessions
 
     def _read_flows(self) -> Dict[Tuple[str, int, str, int], List[Tuple[int, bytes]]]:
-        """Group TCP payloads by directional 4-tuple: key -> [(seq, payload)]."""
-        streams: Dict[Tuple[str, int, str, int], List[Tuple[int, bytes]]] = {}
-        try:
-            with open(self.pcap_path, "rb") as handle:
-                reader = _open_reader(handle)
-                datalink = reader.datalink()
-                for _ts, buf in reader:
-                    endpoints = _extract_tcp(datalink, buf)
-                    if endpoints is None:
-                        continue
-                    key, seq, payload = endpoints
-                    if payload:
-                        streams.setdefault(key, []).append((seq, payload))
-        except FileNotFoundError as exc:
-            raise PcapParseError(f"capture not found: {self.pcap_path!r}") from exc
-        except (OSError, ValueError, *_DpktError) as exc:
-            raise PcapParseError(
-                f"could not read capture {self.pcap_path!r}: {exc}"
-            ) from exc
-        return streams
+        """Group TCP payloads by directional 4-tuple: key -> [(seq, payload)].
+
+        A thin shim over the module-level :func:`read_flows`, which is where the
+        reader loop actually lives. The split is deliberate: protocol DETECTION
+        (``protocol_detect.py``) needs the very same flow grouping for a capture
+        it has no resource for, and duplicating the loop there would mean a
+        capture whose flows the detector reads differently from the ones the TLS
+        parse reads -- i.e. a report about a different capture than the one that
+        failed. The method stays because every caller in this class spells it
+        this way and it carries the instance's path.
+        """
+        return read_flows(self.pcap_path)
 
     # -- TCP stream -> TLS session ---------------------------------------- #
 
@@ -498,6 +638,22 @@ class TlsPcapResource:
             version=version,
             client_records=client_records,
             server_records=server_records,
+            # Coordinates only -- the hello BODIES are not parsed into fields
+            # here. Locating is a cheap walk over already-parsed records,
+            # whereas the field walk is only ever wanted by
+            # :meth:`describe_fields`; doing it here would tax every
+            # ``challenges()`` call for nothing.
+            #
+            # These locate a SECOND time rather than reusing the
+            # ``_find_hello`` calls above, deliberately. The value path above is
+            # left exactly as it was -- byte for byte, including being the seam
+            # existing tests monkeypatch ``_find_hello`` at -- so nothing about
+            # how a session is *built* changed when the field model arrived. The
+            # cost is one extra pass over a record list a handful of entries
+            # long, which is not worth buying back with a behaviour change.
+            client_hello=_hello_location("client", client_records, _HS_CLIENT_HELLO),
+            server_hello=_hello_location("server", server_records, _HS_SERVER_HELLO),
+            certificates=_certificate_location("server", server_records),
         )
         if self._excluded_by_filter(session):
             # Parsed fine, but this run is pinned to another session, so nothing
@@ -733,6 +889,44 @@ class TlsPcapResource:
 # --------------------------------------------------------------------------- #
 
 
+def read_flows(
+    pcap_path: Any,
+) -> Dict[Tuple[str, int, str, int], List[Tuple[int, bytes]]]:
+    """Group a capture's TCP payloads by directional 4-tuple: key -> [(seq, payload)].
+
+    The capture-reading half of :meth:`TlsPcapResource._read_flows`, lifted to
+    module level so a caller that has no resource -- protocol detection, which
+    runs precisely when building one has already failed -- reads the capture
+    through the SAME loop rather than a second copy of it.
+
+    Every read failure is funnelled to :class:`PcapParseError`, including dpkt's
+    own ``dpkt.dpkt.Error`` hierarchy (see :data:`_DpktError`); a missing file
+    keeps its own distinct message because "not found" and "unreadable" call for
+    different fixes. UDP is not here by design: :func:`_extract_tcp` drops it,
+    and this function exists to be reused, not to change what the TLS parser
+    sees.
+    """
+    streams: Dict[Tuple[str, int, str, int], List[Tuple[int, bytes]]] = {}
+    try:
+        with open(pcap_path, "rb") as handle:
+            reader = _open_reader(handle)
+            datalink = reader.datalink()
+            for _ts, buf in reader:
+                endpoints = _extract_tcp(datalink, buf)
+                if endpoints is None:
+                    continue
+                key, seq, payload = endpoints
+                if payload:
+                    streams.setdefault(key, []).append((seq, payload))
+    except FileNotFoundError as exc:
+        raise PcapParseError(f"capture not found: {pcap_path!r}") from exc
+    except (OSError, ValueError, *_DpktError) as exc:
+        raise PcapParseError(
+            f"could not read capture {pcap_path!r}: {exc}"
+        ) from exc
+    return streams
+
+
 def _open_reader(handle):
     """Return a dpkt pcap or pcapng reader by sniffing the file's magic."""
     magic = handle.read(4)
@@ -824,18 +1018,129 @@ def _parse_records(raw: bytes) -> list:
 
 
 def _find_hello(records: list, hs_type: int):
-    """Return the first ClientHello/ServerHello body across handshake records."""
-    for record in records:
-        if record.type != _CT_HANDSHAKE:
-            continue
-        for message in _iter_handshake_messages(bytes(record.data)):
-            if message.type == hs_type:
-                return message.data
-    return None
+    """Return the first ClientHello/ServerHello body across handshake records.
+
+    A thin wrapper over :func:`_find_hello_with_offset`, kept because it is the
+    long-standing spelling every existing caller uses and its value-only answer
+    is all they need. The two can never disagree: this one simply drops the
+    coordinates the other reports.
+    """
+    return _find_hello_with_offset(records, hs_type)[0]
+
+
+def _find_hello_with_offset(
+    records: list, hs_type: int
+) -> Tuple[Any, int, int, bytes]:
+    """:func:`_find_hello`, plus *where* the hello was.
+
+    Returns ``(body, record_index, stream_offset, raw)``:
+
+    * ``body`` -- dpkt's parse of the message (a ``TLSClientHello`` /
+      ``TLSServerHello``), exactly what :func:`_find_hello` returns;
+    * ``record_index`` -- index of the carrying record in ``records``;
+    * ``stream_offset`` -- the byte offset of the message *body* in the
+      reassembled direction stream, derived from a cumulative walk of
+      ``_RECORD_HEADER_LEN + record.length`` over the preceding records plus the
+      message's position inside this record's fragment and its 4-byte handshake
+      header;
+    * ``raw`` -- the message body bytes, without that handshake header.
+
+    ``(None, -1, -1, b"")`` when no such message is present -- a sentinel rather
+    than ``None`` so the wrapper above stays a one-liner and callers that only
+    want the body are unaffected.
+
+    Offsets exist because a field value without a wire position cannot be
+    cross-checked against a hit in a memory dump; see ``protocol_fields``.
+    """
+    record_header_offset = 0
+    for index, record in enumerate(records):
+        if record.type == _CT_HANDSHAKE:
+            fragment = bytes(record.data)
+            for message, message_offset in _iter_handshake_messages_with_offset(fragment):
+                if message.type != hs_type:
+                    continue
+                body_start = message_offset + _HANDSHAKE_HEADER_LEN
+                return (
+                    message.data,
+                    index,
+                    record_header_offset + _RECORD_HEADER_LEN + body_start,
+                    fragment[body_start : body_start + _message_body_len(message)],
+                )
+        record_header_offset += _RECORD_HEADER_LEN + _record_length(record)
+    return None, -1, -1, b""
+
+
+def _find_certificate_with_offset(records: list) -> Tuple[int, int, bytes]:
+    """Locate the cleartext Certificate handshake message, if the capture has one.
+
+    Returns ``(record_index, stream_offset, raw)`` with the same meaning as
+    :func:`_find_hello_with_offset`, or ``(-1, -1, b"")`` when there is none.
+    Absence is the *normal* TLS 1.3 outcome (RFC 8446 encrypts this message), so
+    this must never be treated as a parse failure -- ``session_notes`` reports it
+    instead. It is also the normal outcome for a TLS 1.2 capture that starts
+    after the server's flight.
+    """
+    record_header_offset = 0
+    for index, record in enumerate(records):
+        if record.type == _CT_HANDSHAKE:
+            fragment = bytes(record.data)
+            for message, message_offset in _iter_handshake_messages_with_offset(fragment):
+                if message.type != _HS_CERTIFICATE:
+                    continue
+                body_start = message_offset + _HANDSHAKE_HEADER_LEN
+                return (
+                    index,
+                    record_header_offset + _RECORD_HEADER_LEN + body_start,
+                    fragment[body_start : body_start + _message_body_len(message)],
+                )
+        record_header_offset += _RECORD_HEADER_LEN + _record_length(record)
+    return -1, -1, b""
+
+
+def _record_length(record) -> int:
+    """The record's fragment length, as the offset walk must count it.
+
+    Reads dpkt's parsed ``length`` header field, falling back to the fragment it
+    actually produced. The fallback matters for the same reason every other
+    ``getattr`` in this module does: the attribute exists only after a
+    successful unpack, and an offset walk that raises would take the whole
+    field extraction down over one odd record.
+    """
+    length = getattr(record, "length", None)
+    if isinstance(length, int):
+        return length
+    return len(bytes(getattr(record, "data", b"")))
+
+
+def _message_body_len(message) -> int:
+    """A handshake message's declared body length (``length``), defensively read."""
+    length = getattr(message, "length", None)
+    if isinstance(length, int):
+        return length
+    return max(0, len(message) - _HANDSHAKE_HEADER_LEN)
 
 
 def _iter_handshake_messages(body: bytes) -> Iterable:
-    """Yield each TLSHandshake message packed in one handshake record's fragment."""
+    """Yield each TLSHandshake message packed in one handshake record's fragment.
+
+    A thin wrapper over :func:`_iter_handshake_messages_with_offset`, kept for
+    the callers that only need the messages.
+    """
+    for message, _offset in _iter_handshake_messages_with_offset(body):
+        yield message
+
+
+def _iter_handshake_messages_with_offset(body: bytes) -> Iterator[Tuple[Any, int]]:
+    """Yield ``(message, offset_in_fragment)`` for each packed handshake message.
+
+    Several handshake messages may share one record fragment (a server's
+    ServerHello + Certificate + ServerKeyExchange flight routinely does), so a
+    message's byte position is its offset within the fragment -- not zero. That
+    offset is the missing half of every field coordinate this module reports,
+    which is why the offset-carrying form is the real implementation and the
+    value-only one above is the wrapper.
+    """
+    offset = 0
     while body:
         try:
             message = dpkt.ssl.TLSHandshake(body)
@@ -844,8 +1149,73 @@ def _iter_handshake_messages(body: bytes) -> Iterable:
         consumed = len(message)
         if consumed <= 0 or consumed > len(body):
             return
-        yield message
+        yield message, offset
+        offset += consumed
         body = body[consumed:]
+
+
+def _record_header_offset(records: list, record_index: int) -> int:
+    """Where record ``record_index``'s 5-byte header starts in the direction stream.
+
+    The cumulative ``_RECORD_HEADER_LEN + record.length`` walk, stated once. The
+    locators above walk it as they search; this recovers it for a record whose
+    index is already known, which is how ``fragment_base`` is separated back out
+    of the ``stream_offset`` the locators return (see :func:`_message_location`).
+    """
+    return sum(
+        _RECORD_HEADER_LEN + _record_length(record)
+        for record in records[:record_index]
+    )
+
+
+def _message_location(
+    direction: str, records: list, found: Tuple[Any, int, int, bytes]
+) -> Optional[_MessageLocation]:
+    """Turn a :func:`_find_hello_with_offset` result into a full coordinate.
+
+    ``found`` reports the body's ``stream_offset``; a field's ``record_offset``
+    is measured from the *fragment*, so the two are separated here using the
+    identity the record header defines::
+
+        fragment_base = stream_offset - record_header_offset - _RECORD_HEADER_LEN
+
+    Doing it in one place -- rather than at each of the three call sites that
+    need a coordinate -- is what keeps an off-by-five from existing in only one
+    of them. ``None`` when the message was not found.
+    """
+    body, record_index, stream_offset, raw = found
+    if record_index < 0:
+        return None
+    header_offset = _record_header_offset(records, record_index)
+    return _MessageLocation(
+        direction=direction,
+        record_index=record_index,
+        record_header_offset=header_offset,
+        fragment_base=stream_offset - header_offset - _RECORD_HEADER_LEN,
+        raw=raw,
+        parsed=body,
+    )
+
+
+def _hello_location(
+    direction: str, records: list, hs_type: int
+) -> Optional[_MessageLocation]:
+    """:func:`_message_location` for a ClientHello/ServerHello, or ``None``."""
+    return _message_location(
+        direction, records, _find_hello_with_offset(records, hs_type)
+    )
+
+
+def _certificate_location(
+    direction: str, records: list
+) -> Optional[_MessageLocation]:
+    """:func:`_message_location` for the Certificate message, or ``None``.
+
+    ``None`` is the expected TLS 1.3 answer and a legitimate TLS 1.2 one; see
+    :func:`_find_certificate_with_offset`.
+    """
+    record_index, stream_offset, raw = _find_certificate_with_offset(records)
+    return _message_location(direction, records, (None, record_index, stream_offset, raw))
 
 
 def _server_hello_cipher_code(server_hello) -> Optional[int]:
@@ -965,6 +1335,169 @@ def _summarise_session(session: _TlsSession) -> dict:
         # verifiable (the frontend disables such rows).
         "has_app_records": bool(client_app_records + server_app_records > 0),
     }
+
+
+# --------------------------------------------------------------------------- #
+# C1 protocol field model -- the byte-addressed view of a parsed session.
+#
+# Deliberately NOT folded into ``_summarise_session`` above. That dict's key set
+# is a frozen contract (``tests/test_tls_pcap_resource.py``
+# ::test_describe_sessions_shape_is_unchanged asserts it exactly, because the web
+# router and the React frontend read it), so a ``fields`` key there would fail
+# the build. Fields ride on their own function and their own method instead, and
+# ``describe_sessions`` / ``describe_capture`` output is byte-identical to what
+# it was before this model existed.
+# --------------------------------------------------------------------------- #
+
+
+def session_fields(
+    session: _TlsSession,
+    *,
+    record_sequences: Optional[Mapping[str, Sequence[int]]] = None,
+) -> Tuple[ProtocolField, ...]:
+    """Every :class:`ProtocolField` a parsed session yields.
+
+    Ordered by source -- ClientHello fields, then ServerHello, then the
+    certificate chain, then the record layer -- with each hello's extensions in
+    wire order inside its group. Grouped rather than strictly wire-ordered
+    because that is the order a reader scans them in, and because the record-seq
+    fields have no wire position to be ordered by at all.
+
+    Handshake fields are read from the locations :meth:`_build_session` recorded;
+    when a session was constructed without them (a positional construction in a
+    test, or a library caller building one by hand) the locations are re-derived
+    from the record lists, so this function is total rather than silently empty.
+
+    ``record_sequences`` is the one thing this function will not derive itself.
+    Record sequence numbers come out of the emitter's own gates
+    (:meth:`TlsPcapResource._tls12_gated` / :meth:`_tls13_gated`), which depend
+    on the resource's ``max_records_per_direction`` cap -- so re-deriving them
+    here would produce a list the challenge stream does not actually use. That
+    is precisely the drift ``describe_capture`` was rewritten to eliminate, so
+    the numbers are *passed in* by :meth:`TlsPcapResource.describe_fields` or
+    omitted. Map keys are ``"client"`` / ``"server"``.
+    """
+    fields: List[ProtocolField] = []
+
+    client = _client_hello_location(session)
+    if client is not None:
+        fields.extend(
+            client_hello_fields(
+                parse_hello_layout(client.raw, is_client=True),
+                record_index=client.record_index,
+                record_header_offset=client.record_header_offset,
+                fragment_base=client.fragment_base,
+                direction=client.direction,
+            )
+        )
+
+    server = _server_hello_location(session)
+    if server is not None:
+        fields.extend(
+            server_hello_fields(
+                parse_hello_layout(server.raw, is_client=False),
+                record_index=server.record_index,
+                record_header_offset=server.record_header_offset,
+                fragment_base=server.fragment_base,
+                # The suite code the CHALLENGE STREAM uses, read through
+                # ``_server_hello_cipher_code``'s defensive dpkt path, not the
+                # hand-rolled one -- so the field and the derivation can never
+                # report different suites for one session.
+                negotiated_cipher=session.cipher_code,
+                direction=server.direction,
+            )
+        )
+
+    certificates = _certificate_message_location(session)
+    if certificates is not None:
+        fields.extend(
+            certificate_fields(
+                parse_certificate_list(certificates.raw),
+                record_index=certificates.record_index,
+                record_header_offset=certificates.record_header_offset,
+                fragment_base=certificates.fragment_base,
+                direction=certificates.direction,
+            )
+        )
+
+    for direction, _records in _directions(session):
+        sequences = None if record_sequences is None else record_sequences.get(direction)
+        if sequences is not None:
+            fields.append(record_seq_field(direction, sequences))
+    return tuple(fields)
+
+
+def session_notes(session: _TlsSession) -> List[dict]:
+    """Why a field a caller expected is legitimately absent from this session.
+
+    The same discipline as ``describe_capture``'s ``skipped`` list: an
+    unexplained absence is indistinguishable from a bug to the person least able
+    to tell the difference. Each entry is ``{"code", "detail"}`` -- machine
+    readable first, human readable second.
+    """
+    notes: List[dict] = []
+    client = _client_hello_location(session)
+    if client is not None:
+        layout = parse_hello_layout(client.raw, is_client=True)
+        if layout.truncated:
+            notes.append(truncated_hello_note("ClientHello"))
+        # Asked of the LAYOUT, not of ``session_fields``: re-running the whole
+        # extraction just to look for one field id would double the work of
+        # ``describe_fields``, and the question ("did the ClientHello carry a
+        # non-empty server_name list?") is answerable right here.
+        if not _has_server_name(layout):
+            notes.append(missing_sni_note())
+
+    if session.version == "13":
+        # Unconditional for TLS 1.3, and NOT contingent on having looked:
+        # RFC 8446 encrypts the Certificate message, so no TLS 1.3 capture can
+        # ever carry one. Saying so is the whole point -- an empty
+        # ``certificate.0`` would imply a parse that failed.
+        notes.append(tls13_certificate_note())
+    elif _certificate_message_location(session) is None:
+        notes.append(absent_certificate_note())
+    return notes
+
+
+def _has_server_name(layout) -> bool:
+    """True when a hello layout carries a non-empty SNI host_name entry."""
+    return any(
+        ext_type == 0x0000 and parse_server_name_list(ext_data) is not None
+        for ext_type, ext_data, _offset in layout.extensions
+    )
+
+
+def _client_hello_location(session: _TlsSession) -> Optional[_MessageLocation]:
+    """The session's recorded ClientHello coordinate, re-derived if absent.
+
+    The three ``_*_location`` helpers exist so the "use the cache, else walk the
+    records" fallback is written once. That fallback is what makes
+    :func:`session_fields` total for a ``_TlsSession`` built positionally --
+    which existing tests and library callers do, and which leaves the new
+    keyword-only slots at ``None``.
+    """
+    if session.client_hello is not None:
+        return session.client_hello
+    return _hello_location("client", session.client_records, _HS_CLIENT_HELLO)
+
+
+def _server_hello_location(session: _TlsSession) -> Optional[_MessageLocation]:
+    """The session's recorded ServerHello coordinate, re-derived if absent."""
+    if session.server_hello is not None:
+        return session.server_hello
+    return _hello_location("server", session.server_records, _HS_SERVER_HELLO)
+
+
+def _certificate_message_location(session: _TlsSession) -> Optional[_MessageLocation]:
+    """The session's recorded Certificate coordinate, re-derived if absent.
+
+    ``None`` means "this capture has no cleartext Certificate message" in both
+    the cached and the re-derived case, which is why the caller turns it into a
+    note rather than an error.
+    """
+    if session.certificates is not None:
+        return session.certificates
+    return _certificate_location("server", session.server_records)
 
 
 def _cipher_name(cipher_code: int, version: str) -> str:

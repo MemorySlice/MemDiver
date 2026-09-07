@@ -666,6 +666,7 @@ def run_corpus_proof(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     ``corpus_proof.md`` (the rendered report, ``## Not counted`` included).
     The summary carries BOTH denominators and never a single collapsed rate.
     """
+    from memdiver.app.pipeline.artifact_events import EmittingArtifactList
     from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
     from memdiver.core.artifact_util import register_artifact
 
@@ -703,7 +704,9 @@ def run_corpus_proof(params: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     write_outcomes(report, artifact_dir / OUTCOMES_FILENAME)
     (artifact_dir / REPORT_FILENAME).write_text(render_markdown(report))
 
-    artifacts: List[Dict[str, Any]] = []
+    # Emitting list: both registrations below stream a live ``artifact`` event
+    # (see app.pipeline.artifact_events).
+    artifacts: List[Dict[str, Any]] = EmittingArtifactList(ctx)
     register_artifact(artifacts, artifact_dir, name="corpus_proof_outcomes",
                       relpath=OUTCOMES_FILENAME, media_type="application/json")
     register_artifact(artifacts, artifact_dir, name="corpus_proof_report",
