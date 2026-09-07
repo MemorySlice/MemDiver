@@ -5,7 +5,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.9.1",
     "@playwright/test": "^1.47.0",
-    "typescript": "^5.5.0",
+    "typescript": "^7.0.2",
     "get-port": "^7.1.0"
   },
   "scripts": {
