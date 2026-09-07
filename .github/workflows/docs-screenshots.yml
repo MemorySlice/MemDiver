@@ -93,7 +93,7 @@ jobs:
         run: python -m sphinx -W --keep-going -b html docs docs/_build/html
 
       - name: Open PR on drift
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           # Fine-grained PAT (Contents: write, Pull requests: write) on
           # MemorySlice/MemDiver. Needed because the org disables
