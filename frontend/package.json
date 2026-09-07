@@ -14,31 +14,31 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.2.2",
-    "@tanstack/react-virtual": "^3.13.23",
-    "driver.js": "^1.4.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-virtual": "^3.14.10",
+    "driver.js": "^1.8.0",
     "i18next": "^24.2.3",
     "plotly.js": "^2.35.3",
     "plotly.js-basic-dist-min": "^2.35.3",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-i18next": "^15.7.4",
     "react-plotly.js": "^2.6.0",
-    "react-resizable-panels": "^4.8.0",
+    "react-resizable-panels": "^4.12.3",
     "tailwindcss": "^4.2.2",
-    "zustand": "^5.0.12"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.12.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
     "@types/react-plotly.js": "^2.6.4",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^29.1.1",
     "typescript": "~5.9.3",
-    "vite": "^8.0.1",
+    "vite": "^8.2.2",
     "vitest": "^4.1.10"
   }
 }
