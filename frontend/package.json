@@ -17,7 +17,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-virtual": "^3.13.23",
     "driver.js": "^1.4.0",
-    "i18next": "^24.2.3",
+    "i18next": "^26.4.2",
     "plotly.js": "^2.35.3",
     "plotly.js-basic-dist-min": "^2.35.3",
     "react": "^19.2.4",
