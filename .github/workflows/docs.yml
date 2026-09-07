@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload PR preview artifact
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sphinx-html-pr-${{ github.event.pull_request.number }}
           path: docs/_build/html

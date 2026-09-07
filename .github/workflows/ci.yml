@@ -71,7 +71,7 @@ jobs:
         run: python -m pytest -q -m slow
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
@@ -440,7 +440,7 @@ jobs:
         run: npx playwright test specs/a11y- --reporter=line
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: a11y-playwright-report
           path: tests/e2e/playwright-report/
