@@ -686,3 +686,332 @@ def test_matched_hex_is_capped_by_libyara_but_length_is_not(tmp_path):
     assert hit.length == 600
     assert len(bytes.fromhex(hit.matched_hex)) == 512
     assert long_pattern.startswith(bytes.fromhex(hit.matched_hex))
+
+
+# ---------------------------------------------------------------------------
+# Silent-miss defects: a degraded scan has to SAY it is degraded
+#
+# The three tests below each pin a bug that produced no error, no warning and
+# no field on ScanResult -- only a match list that was quietly incomplete or a
+# rule file that quietly did not exist. Every one of them fails against the
+# code as it stood before this section was written.
+# ---------------------------------------------------------------------------
+
+
+def _lengthless_pattern(reference: bytes) -> dict:
+    """A pattern dict shaped like an HTTP ``/architect/export`` body: no length.
+
+    ``PatternGenerator.generate`` always sets ``length``, so in-tree emission
+    never hits this. ``YaraExporter.export`` takes an untyped dict though, and
+    the web route hands it a request body in which ``length`` is optional --
+    which is the whole reason the meta can go missing.
+    """
+    return {
+        "name": "lengthless",
+        "wildcard_pattern": " ".join(f"{b:02X}" for b in reference),
+        "static_ratio": 1.0,
+    }
+
+
+def test_unknown_length_omits_the_pattern_length_meta_entirely():
+    """An unknown length must be ABSENT from the meta, never spelled ``0``.
+
+    ``_meta_int`` clamps an absent/garbage value to ``0``, and the exporter
+    used to emit that verbatim: ``pattern_length = 0`` -- a claim that the rule
+    matches a zero-byte pattern, which is not a thing. Absent says "not known",
+    which is the truth and is what every consumer already handles.
+    """
+    rule = YaraExporter.export(_lengthless_pattern(bytes(range(16))))
+    assert "pattern_length" not in rule
+    # Still a compilable rule, and still carrying the metas it DOES know.
+    rules = compile_rules(source=rule)
+    assert rule_names(rules) == ("lengthless",)
+    assert max_pattern_length(rules) is None
+
+
+@pytest.mark.parametrize("bad_length", [0, -5, None, "not a number", 1.5e3])
+def test_garbage_length_also_omits_the_meta(bad_length):
+    """Every route to "no usable length" produces the same absent meta.
+
+    ``_meta_int`` funnels ``None``/non-numeric/negative all to a non-positive
+    int, so all of them used to emit the same ``pattern_length = 0`` lie. The
+    float is in the list because ``1.5e3`` DOES coerce (to 1500) and therefore
+    must still be emitted -- the parametrization would pass vacuously if the
+    fix had simply dropped the meta unconditionally.
+    """
+    pattern = _lengthless_pattern(bytes(range(8)))
+    pattern["length"] = bad_length
+    rule = YaraExporter.export(pattern)
+    if bad_length == 1.5e3:
+        assert "pattern_length = 1500" in rule
+    else:
+        assert "pattern_length" not in rule
+    compile_rules(source=rule)  # never emit something that will not compile
+
+
+def test_export_survives_an_unloggable_length_at_info_level(caplog):
+    """The export must not blow up merely because logging is turned up.
+
+    Found by the parametrization above, and only under a full-suite run: the
+    exporter's closing ``logger.info(... %d bytes ...)`` interpolated the RAW
+    ``pattern["length"]``, so a ``None`` or a string from an HTTP body raised
+    ``TypeError`` inside logging. The stdlib's ``handleError`` hides that, so
+    it was invisible at the default WARNING level -- but any handler that
+    re-raises formatting failures (pytest's own log capture, and every
+    ``logging.raiseExceptions`` setup) turned an export into a crash. Pinned
+    with the level forced, so ambient log configuration cannot hide it again.
+    """
+    for bad_length in (None, "not a number", object()):
+        pattern = _lengthless_pattern(bytes(range(4)))
+        pattern["length"] = bad_length
+        with caplog.at_level("INFO", logger="memdiver.architect.yara_exporter"):
+            rule = YaraExporter.export(pattern)
+        assert "pattern_length" not in rule
+    assert any("Exported YARA rule" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_overlap_reports_the_fallback_when_no_pattern_length_meta(tmp_path):
+    """The silent one: auto overlap with nothing to size itself from.
+
+    ``max_pattern_length`` returns ``None``, ``_resolve_overlap`` drops to the
+    flat ``DEFAULT_OVERLAP_BYTES`` floor, and a pattern wider than that floor
+    becomes missable at a chunk boundary -- previously with no signal at all.
+    The chunk here is large enough that the CEILING case does not fire, so the
+    only note in ``errors`` is the new one.
+    """
+    reference = bytes(range(64))
+    rules = compile_rules(source=YaraExporter.export(_lengthless_pattern(reference)))
+    assert max_pattern_length(rules) is None
+    big_chunk = DEFAULT_OVERLAP_BYTES * 4  # ceiling (chunk // 2) > the floor
+    dump = _write_dump(tmp_path / "nolen.dump", big_chunk * 2, {100: reference})
+
+    with open_dump(dump) as source:
+        result = scan_chunked(source, rules, chunk_bytes=big_chunk, overlap_bytes=0)
+
+    assert 100 in _offsets(result)          # the scan still works
+    assert result.errors, "a degraded overlap must be reported"
+    note = result.errors[0]
+    assert "pattern_length" in note
+    assert str(DEFAULT_OVERLAP_BYTES) in note
+    assert not any("overlap capped" in e for e in result.errors)
+
+
+def test_no_fallback_note_when_the_meta_is_present(tmp_path):
+    """The negative twin: a real ``pattern_length`` must stay silent.
+
+    Without this, the test above could be satisfied by a note that fires on
+    every auto-overlap scan, which would make ``errors`` noise instead of
+    signal.
+    """
+    reference, mask, key_at, key_len = _keyish_reference(random.Random(4242))
+    rules = compile_rules(
+        source=_emitted_rule(reference, mask, name="has_len",
+                             key_offset=key_at, key_length=key_len)
+    )
+    assert max_pattern_length(rules) == len(reference)
+    big_chunk = DEFAULT_OVERLAP_BYTES * 4
+    dump = _write_dump(tmp_path / "haslen.dump", big_chunk * 2, {100: reference})
+
+    with open_dump(dump) as source:
+        result = scan_chunked(source, rules, chunk_bytes=big_chunk, overlap_bytes=0)
+
+    assert 100 in _offsets(result)
+    assert result.errors == ()
+
+
+@pytest.mark.parametrize("bad_cap", [0, -1, -10_000])
+@pytest.mark.parametrize("entry", ["scan_source", "scan_chunked"])
+def test_non_positive_max_matches_is_rejected_not_treated_as_unlimited(
+    tmp_path, bad_cap, entry
+):
+    """``max_matches=0`` used to mean "unlimited", with ``truncated=False``.
+
+    That is the trap: a cap computed as ``budget - already_seen`` reaching
+    ``0`` means STOP, and handing back the entire match list instead is the
+    opposite of the request -- reported as untruncated, so nothing downstream
+    could tell. It is now rejected like every other bad numeric input on this
+    module (``yara.bad_chunk_size``, ``yara.bad_overlap``, ...).
+    """
+    blob = bytes.fromhex("5eed0fca11ed0ff5")
+    rules = compile_rules(source=_static_rule(blob, name="capped_probe"))
+    dump = _write_dump(tmp_path / "cap.dump", 8192, _repeated_plants(4, blob))
+    scan = scan_source if entry == "scan_source" else scan_chunked
+
+    with open_dump(dump) as source:
+        with pytest.raises(CapabilityError) as exc:
+            scan(source, rules, max_matches=bad_cap)
+
+    assert exc.value.code == "yara.bad_max_matches"
+    assert str(bad_cap) in str(exc.value)
+    # And the message points at the supported spelling rather than just saying no.
+    assert "max_matches=None" in str(exc.value)
+
+
+def test_max_matches_none_is_the_explicit_uncapped_spelling(tmp_path):
+    """"No cap" is still available -- it just has to be said out loud."""
+    blob = bytes.fromhex("11223344556677ff")
+    rules = compile_rules(source=_static_rule(blob, name="uncapped"))
+    plants = _repeated_plants(12, blob, stride=397, base=100)
+    dump = _write_dump(tmp_path / "uncapped.dump", 16384, plants)
+
+    with open_dump(dump) as source:
+        by_file = scan_source(source, rules, max_matches=None)
+        by_chunk = scan_chunked(
+            source, rules, chunk_bytes=CHUNK, overlap_bytes=64, max_matches=None
+        )
+
+    for result in (by_file, by_chunk):
+        assert len(result.matches) == len(plants)
+        assert result.truncated is False
+
+
+# ---------------------------------------------------------------------------
+# The vol3 emit path must produce a rule this scanner can actually LOAD
+# ---------------------------------------------------------------------------
+
+
+def test_emitted_vol3_plugin_has_a_loadable_yar_sibling(tmp_path):
+    """``emit_plugin_for_hit`` wrote its best rule where nothing could read it.
+
+    The rule it builds carries the EXACT ``key_offset``/``key_length`` (the hit
+    defined the window), making it the highest-quality detector MemDiver
+    emits -- and it existed only as a Python string literal inside the
+    generated plugin, so ``compile_rules(paths=...)`` could never consume it.
+    The pins here are the two halves of "usable": the file exists beside the
+    plugin, and libyara loads it FROM DISK.
+    """
+    from memdiver.engine.vol3_emit import emit_plugin_for_hit
+    from tests._emit_pins import synth_hit
+
+    reference, hit, _nb_len = synth_hit()
+    plugin_path = emit_plugin_for_hit(
+        hit, reference, "SiblingProbe", tmp_path / "plugin.py",
+    )
+    rule_path = plugin_path.with_suffix(".yar")
+
+    assert plugin_path.is_file()
+    assert rule_path.is_file(), "the plugin's YARA rule must also stand alone"
+
+    # The load that was impossible before: rule text off disk, through the
+    # scanner's own file intake (namespaced compile + content-addressed cache).
+    rules = compile_rules(paths=[rule_path])
+    assert rule_names(rules) == ("SiblingProbe",)
+    # And it is the GOOD rule: the exact locator survived to the sidecar, so an
+    # overlap can be sized from it and a hit can be scored for containment.
+    assert max_pattern_length(rules) == len(hit["neighborhood_variance"])
+    metas = {k: v for rule in rules for k, v in rule.meta.items()}
+    assert metas["key_offset"] == int(hit["offset"]) - int(hit["neighborhood_start"])
+    assert metas["key_length"] == int(hit["length"])
+
+
+def test_the_yar_sibling_is_byte_identical_to_the_plugins_embedded_rule(tmp_path):
+    """One rule, two files -- they can never drift.
+
+    Both are rendered from the same ``yara_rule`` string, and this asserts it
+    rather than trusting it: a future refactor that re-derives one of the two
+    would reintroduce exactly the disagreement
+    ``test_vol3_plugin_constants_agree_with_its_embedded_yara_rule`` exists to
+    prevent, one layer down.
+    """
+    from memdiver.engine.vol3_emit import emit_plugin_for_hit
+    from tests.test_vol3_emit_golden import _embedded_yara_rule
+    from tests._emit_pins import synth_hit
+
+    reference, hit, _nb_len = synth_hit()
+    plugin_path = emit_plugin_for_hit(
+        hit, reference, "DriftProbe", tmp_path / "drift.py",
+    )
+    embedded = _embedded_yara_rule(plugin_path.read_text())
+    # ``.strip()`` on both sides: the vol3 template wraps its ``$yara_rule``
+    # slot in newlines of its own, and the sidecar is a text file with exactly
+    # one trailing newline. The RULE is what must match, not the padding.
+    assert plugin_path.with_suffix(".yar").read_text().strip() == embedded.strip()
+    assert embedded.strip(), "the embedded rule must not be empty"
+
+
+def test_the_sibling_never_overwrites_the_plugin(tmp_path):
+    """A ``*.yar`` output path must not make the sidecar eat the plugin.
+
+    ``Path.with_suffix`` would collapse onto the plugin itself; the plugin is
+    the primary artifact and its bytes are what every caller returns, so the
+    sidecar appends instead of replacing in that one case.
+    """
+    from memdiver.engine.vol3_emit import emit_plugin_for_hit
+    from tests._emit_pins import synth_hit
+
+    reference, hit, _nb_len = synth_hit()
+    plugin_path = emit_plugin_for_hit(
+        hit, reference, "OddSuffix", tmp_path / "oddly_named.yar",
+    )
+    assert "volatility3" in plugin_path.read_text()
+    sidecar = tmp_path / "oddly_named.yar.yar"
+    assert sidecar.is_file()
+    assert rule_names(compile_rules(paths=[sidecar])) == ("OddSuffix",)
+
+
+# ---------------------------------------------------------------------------
+# I/O failure degrades; a CapabilityError never does
+# ---------------------------------------------------------------------------
+
+
+class _RaisingSource:
+    """A source whose ``size_for``/``read_range`` raise whatever it was given."""
+
+    format_name = "synthetic"
+
+    def __init__(self, path: Path, size: int, exc: BaseException, *, on: str):
+        self.path = path
+        self._size = size
+        self._exc = exc
+        self._on = on
+
+    def size_for(self, view: str = "vas") -> int:
+        if self._on == "size":
+            raise self._exc
+        return self._size
+
+    def read_range(self, offset: int, length: int, view: str = "vas") -> bytes:
+        if self._on == "read":
+            raise self._exc
+        return b"\x00" * length
+
+
+@pytest.mark.parametrize("on", ["size", "read"])
+def test_io_errors_are_reported_not_raised(tmp_path, on):
+    """A genuine OSError is one dump's bad news, so it lands in ``errors``.
+
+    Both call sites were previously unwrapped, so a truncated core or a
+    revoked mount took the whole corpus sweep down with a raw OSError -- the
+    one thing :class:`ScanResult`'s docstring says must not happen.
+    """
+    rules = compile_rules(source=_static_rule(b"\xde\xad\xbe\xef", name="io_probe"))
+    source = _RaisingSource(
+        tmp_path / "broken.msl", CHUNK, OSError("stale file handle"), on=on,
+    )
+    result = scan_chunked(source, rules, chunk_bytes=CHUNK, overlap_bytes=64)
+
+    assert result.matches == ()
+    assert result.chunks == 0
+    assert any("stale file handle" in e for e in result.errors)
+
+
+@pytest.mark.parametrize("on", ["size", "read"])
+def test_a_locked_dump_propagates_instead_of_scanning_to_zero_matches(tmp_path, on):
+    """The false negative that must never be degraded into ``errors``.
+
+    A locked ``.msl`` reads back EMPTY rather than failing, so swallowing
+    :class:`EncryptedDumpLockedError` would turn "we could not decrypt this"
+    into "this dump contains no keys" -- reported as a clean, zero-match,
+    zero-error scan. That is the exact class of silent miss
+    ``test_g9_producers_surface_locked_dump`` guards one layer up, and the
+    reason the I/O funnel above catches only ``OSError``.
+    """
+    from memdiver.core.service_errors import EncryptedDumpLockedError
+
+    rules = compile_rules(source=_static_rule(b"\xca\xfe\xba\xbe", name="locked"))
+    source = _RaisingSource(
+        tmp_path / "locked.msl", CHUNK,
+        EncryptedDumpLockedError("missing key for locked.msl"), on=on,
+    )
+    with pytest.raises(EncryptedDumpLockedError):
+        scan_chunked(source, rules, chunk_bytes=CHUNK, overlap_bytes=64)

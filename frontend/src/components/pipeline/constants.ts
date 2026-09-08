@@ -15,6 +15,8 @@ export const ARTIFACT_NAMES = {
   NSWEEP_MD: "nsweep_md",
   NSWEEP_HTML: "nsweep_html",
   VOL3_PLUGIN: "vol3_plugin",
+  /** Standalone `.yar` sibling of the plugin; loadable by yara.compile. */
+  VOL3_YARA_RULE: "vol3_yara_rule",
 } as const;
 
 /** Names surfaced in primary result tabs; everything else is "Raw". */

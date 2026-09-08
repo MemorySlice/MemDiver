@@ -51,7 +51,9 @@ class YaraExporter:
         *tags* become identifiers (see :func:`_sanitize_identifier`),
         *description* is escaped for a double-quoted meta string (see
         :func:`_escape_meta`), and the integer metas are coerced and clamped
-        (see :func:`_meta_int`).
+        (see :func:`_meta_int`). An unknown ``pattern['length']`` omits the
+        ``pattern_length`` meta line entirely rather than emitting ``0``, for
+        the reason spelled out at the meta block below.
 
         The hex byte string is the one input that cannot be *normalised* into
         something meaningful -- a malformed token stream has no correct
@@ -111,11 +113,28 @@ class YaraExporter:
         # produced an uncompilable rule -- and nothing caught it, because the
         # export surface never compiles what it emits. ``_meta_int`` coerces and
         # clamps to a YARA-representable signed-64-bit range instead.
+        #
+        # ``pattern_length`` is OMITTED rather than emitted as ``0`` when the
+        # length is absent or unparseable. A zero-byte pattern is not a thing
+        # that exists, so ``pattern_length = 0`` is a false claim about the
+        # rule -- and a load-bearing one: ``engine.yara_scan.max_pattern_length``
+        # reads exactly this meta to size the chunk overlap of a chunked scan,
+        # and treats a non-positive value as absent anyway. Emitting the lie
+        # bought nothing and cost the reader the ability to tell "the emitter
+        # did not know" apart from "the emitter measured zero". Absent is
+        # honest, and every consumer already tolerates absence: ``yara_scan``
+        # falls back (and now says so), while ``Volatility3Exporter``'s
+        # ``$pattern_length`` template slot is fed from the pattern dict
+        # directly, never from this meta.
+        pattern_length = _meta_int(pattern.get("length", 0))
         meta_lines = [
             f'        description = "{_escape_meta(desc)}"',
-            f'        pattern_length = {_meta_int(pattern.get("length", 0))}',
-            f'        static_ratio = "{_escape_meta(str(pattern.get("static_ratio", 0)))}"',
         ]
+        if pattern_length > 0:
+            meta_lines.append(f'        pattern_length = {pattern_length}')
+        meta_lines.append(
+            f'        static_ratio = "{_escape_meta(str(pattern.get("static_ratio", 0)))}"'
+        )
         if key_offset is not None:
             meta_lines.append(f'        key_offset = {_meta_int(key_offset)}')
         if key_length is not None:
@@ -137,7 +156,13 @@ class YaraExporter:
         ]
         rule = "\n".join(lines)
 
-        logger.info("Exported YARA rule: %s (%d bytes)", name, pattern.get("length", 0))
+        # ``pattern_length``, not the raw ``pattern["length"]``: the dict is
+        # caller-supplied, so the raw value can be None or a string, and ``%d``
+        # against one of those raises inside logging -- silently under the
+        # stdlib's handleError, but as a hard TypeError under any handler that
+        # re-raises formatting failures (pytest's log capture does). The
+        # coerced int is the same number in every case that used to work.
+        logger.info("Exported YARA rule: %s (%d bytes)", name, pattern_length)
         return rule
 
 

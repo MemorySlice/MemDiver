@@ -513,6 +513,15 @@ def _resolve_overlap(
     A non-zero *overlap_bytes* is honoured verbatim. That is deliberate: it
     lets a caller trade recall for speed knowingly, and it keeps the
     limitation testable.
+
+    The auto path has a SECOND degraded state, and it is the quiet one: rules
+    that carry no usable ``pattern_length`` meta at all. There is then nothing
+    to size the overlap from, so it stays at the flat
+    :data:`DEFAULT_OVERLAP_BYTES` floor -- and a pattern wider than that floor
+    becomes missable at a chunk boundary. That used to happen with no signal
+    whatsoever; it is now reported the same way the ceiling case is, because
+    "we do not know how wide your patterns are" is exactly as consequential
+    for recall as "we could not make the overlap that wide".
     """
     notes: List[str] = []
     if chunk_bytes <= 0:
@@ -542,6 +551,17 @@ def _resolve_overlap(
     longest = max_pattern_length(rules)
     if longest is not None and longest - 1 > wanted:
         wanted = longest - 1
+    elif longest is None:
+        notes.append(
+            f"no usable pattern_length meta on any of "
+            f"{len(rule_names(rules))} rule(s), so the auto overlap fell back "
+            f"to the default {DEFAULT_OVERLAP_BYTES}-byte floor; boundary "
+            f"recall is only guaranteed for matches up to "
+            f"{DEFAULT_OVERLAP_BYTES} bytes wide. Emit the rules through "
+            f"YaraExporter (which sets pattern_length) or pass an explicit "
+            f"overlap_bytes at least as wide as the widest pattern."
+        )
+        logger.warning("yara scan: %s", notes[-1])
     ceiling = max(1, chunk_bytes // 2)
     if wanted > ceiling:
         notes.append(
@@ -554,6 +574,35 @@ def _resolve_overlap(
     return wanted, notes
 
 
+def _validate_max_matches(max_matches: Optional[int]) -> None:
+    """Reject a non-positive match cap; ``None`` is the way to say "no cap".
+
+    Every other numeric knob on this module's entry points is validated
+    up front and raises (``yara.bad_chunk_size``, ``yara.bad_overlap``,
+    ``yara.rules_too_large``, ...). ``max_matches`` was the one that was not,
+    and ``0`` or a negative meant *unlimited* -- with :attr:`ScanResult.truncated`
+    left ``False``, which is technically true and practically a trap: a
+    ``max_matches`` computed as ``limit - already_seen`` that reaches ``0``
+    means "stop", and being handed the entire multi-GB match list instead is
+    the opposite of what the caller asked for. A typo'd or arithmetic zero is
+    therefore an error, exactly like a zero ``chunk_bytes``.
+
+    "No cap" is still available, because a recall measurement legitimately
+    wants every match -- it just has to be *said*, as ``max_matches=None``,
+    rather than arrived at by accident. That keeps the unlimited branch of
+    :func:`_apply_cap` reachable under an unambiguous spelling.
+    """
+    if max_matches is None:
+        return
+    if max_matches <= 0:
+        raise CapabilityError(
+            f"max_matches must be positive, got {max_matches}; pass "
+            f"max_matches=None to scan without a cap",
+            category=ErrorCategory.INVALID_INPUT,
+            code="yara.bad_max_matches",
+        )
+
+
 def scan_source(
     source: Any,
     rules: "yara.Rules",
@@ -561,7 +610,7 @@ def scan_source(
     view: Optional[str] = None,
     chunk_bytes: int = CHUNK_BYTES,
     overlap_bytes: int = 0,
-    max_matches: int = DEFAULT_MAX_MATCHES,
+    max_matches: Optional[int] = DEFAULT_MAX_MATCHES,
     timeout_s: int = DEFAULT_TIMEOUT_S,
 ) -> ScanResult:
     """Scan one :class:`~core.dump_source.DumpSource` with compiled *rules*.
@@ -586,7 +635,9 @@ def scan_source(
         chunk_bytes: Chunked strategy only; bytes scanned per libyara call.
         overlap_bytes: Chunked strategy only; ``0`` means auto (see
             :func:`_resolve_overlap`).
-        max_matches: Stop after this many matches and set ``truncated``.
+        max_matches: Stop after this many matches and set ``truncated``. Must
+            be positive; ``None`` means "no cap" (see
+            :func:`_validate_max_matches`).
         timeout_s: libyara budget, per chunk (chunked) or per file (filepath).
 
     Returns:
@@ -595,6 +646,7 @@ def scan_source(
         abort a corpus sweep; argument and rule errors still raise.
     """
     _require_yara()
+    _validate_max_matches(max_matches)
     resolved_view = view if view is not None else _default_view(source)
     if getattr(source, "format_name", None) == "raw" and resolved_view == "raw":
         return _scan_filepath(
@@ -620,10 +672,11 @@ def _scan_filepath(
     rules: "yara.Rules",
     *,
     view: str,
-    max_matches: int,
+    max_matches: Optional[int],
     timeout_s: int,
 ) -> ScanResult:
     """Hand the file to libyara and let it do its own zero-copy mapping."""
+    _validate_max_matches(max_matches)
     path = Path(source.path)
     errors: List[str] = []
     matches: List[RuleMatch] = []
@@ -670,15 +723,21 @@ def _scan_filepath(
 def _apply_cap(
     new_matches: List[RuleMatch],
     kept: List[RuleMatch],
-    max_matches: int,
+    max_matches: Optional[int],
 ) -> Tuple[List[RuleMatch], bool]:
     """Append *new_matches* to *kept* up to *max_matches*.
 
     Returns the (possibly unchanged) list plus whether the cap bit. The cap is
     a reporting decision, not a silent one -- the boolean travels out to
     :attr:`ScanResult.truncated`.
+
+    ``max_matches=None`` is the uncapped path and reports ``truncated=False``,
+    which is the truth: nothing was dropped. A non-positive *max_matches*
+    cannot reach here from a public entry point -- all three validate it via
+    :func:`_validate_max_matches` -- but it is still handled the same way, so
+    this helper stays total rather than dividing by a cap of zero.
     """
-    if max_matches <= 0:
+    if max_matches is None or max_matches <= 0:
         kept.extend(new_matches)
         return kept, False
     room = max_matches - len(kept)
@@ -698,7 +757,7 @@ def scan_chunked(
     view: Optional[str] = None,
     chunk_bytes: int = CHUNK_BYTES,
     overlap_bytes: int = 0,
-    max_matches: int = DEFAULT_MAX_MATCHES,
+    max_matches: Optional[int] = DEFAULT_MAX_MATCHES,
     timeout_s: int = DEFAULT_TIMEOUT_S,
 ) -> ScanResult:
     """Scan any dump source chunk-by-chunk through :meth:`read_range`.
@@ -715,13 +774,40 @@ def scan_chunked(
     it whole, and such a match is simply not found. The automatic overlap sizes
     itself from the rules' ``pattern_length`` meta precisely to avoid this, but
     a rule set without that meta, or an explicit undersized *overlap_bytes*,
-    reopens the gap.
+    reopens the gap. Both of those now land in :attr:`ScanResult.errors` rather
+    than passing unremarked.
+
+    *max_matches* must be positive; ``None`` asks for no cap at all (see
+    :func:`_validate_max_matches`).
     """
     _require_yara()
+    _validate_max_matches(max_matches)
     resolved_view = view if view is not None else _default_view(source)
     overlap, errors = _resolve_overlap(overlap_bytes, chunk_bytes, rules)
 
-    size = int(source.size_for(resolved_view) or 0)
+    # Genuine I/O failure degrades into ``errors`` (consistent with the
+    # empty-read handling in the loop below, and with this module's rule that
+    # one bad dump must not abort a corpus sweep) -- but ONLY OSError does.
+    #
+    # ``CapabilityError`` is deliberately not caught, and that is load-bearing
+    # rather than incidental: ``EncryptedDumpLockedError`` is a
+    # ``CapabilityError``, and a locked ``.msl`` reads back EMPTY instead of
+    # failing, so degrading it here would report a locked dump as an honest
+    # zero-match scan -- the exact false negative
+    # ``test_g9_producers_surface_locked_dump`` exists to prevent. It is not an
+    # ``OSError``, so the narrow ``except`` already lets it through; the
+    # explicit re-raise says so out loud and keeps that true if the hierarchy
+    # ever moves.
+    try:
+        size = int(source.size_for(resolved_view) or 0)
+    except CapabilityError:
+        raise
+    except OSError as exc:
+        size = 0
+        message = f"cannot size view {resolved_view!r}: {exc}"
+        errors.append(message)
+        logger.warning("yara scan: %s", message)
+
     matches: List[RuleMatch] = []
     seen: set = set()
     truncated = False
@@ -732,7 +818,20 @@ def scan_chunked(
     for chunk_start in range(0, size, chunk_bytes):
         own_len = min(chunk_bytes, size - chunk_start)
         read_len = min(own_len + overlap, size - chunk_start)
-        data = source.read_range(chunk_start, read_len, resolved_view)
+        # Same narrow funnel as the sizing call above: an unreadable region is
+        # one chunk's bad news, a CapabilityError is the whole scan's.
+        try:
+            data = source.read_range(chunk_start, read_len, resolved_view)
+        except CapabilityError:
+            raise
+        except OSError as exc:
+            message = (
+                f"failed read of {read_len} bytes at offset {chunk_start} "
+                f"(view {resolved_view!r}): {exc}"
+            )
+            errors.append(message)
+            logger.warning("yara scan: %s", message)
+            continue
         if not data:
             message = (
                 f"empty read of {read_len} bytes at offset {chunk_start} "

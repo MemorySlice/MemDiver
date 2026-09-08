@@ -129,7 +129,15 @@ def emit_plugin_for_hit(
     variance_threshold: Optional[float] = None,
     progress_callback: ProgressFn = noop_progress,
 ) -> Path:
-    """Emit a vol3 plugin anchored on the neighborhood around a brute-force hit."""
+    """Emit a vol3 plugin anchored on the neighborhood around a brute-force hit.
+
+    Writes TWO files and returns the first: ``output_path`` (the Volatility 3
+    plugin) and a sibling ``<stem>.yar`` holding the same YARA rule the plugin
+    embeds, so the rule is loadable by ``yara.compile`` /
+    :func:`engine.yara_scan.compile_rules` and not only readable inside the
+    generated Python. The return value is unchanged (the plugin path) because
+    the plugin is still the primary artifact.
+    """
     safe_emit(
         progress_callback,
         ProgressEvent(stage="emit_plugin:load", pct=0.0, msg=f"plugin={name}"),
@@ -207,13 +215,45 @@ def emit_plugin_for_hit(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(source)
     logger.info("wrote vol3 plugin %s (%d bytes)", output_path, len(source))
+
+    # The same rule text, ALSO as a standalone ``.yar`` beside the plugin.
+    #
+    # Until now this rule existed only *inside* the generated Python -- the
+    # exporter drops it into the template's ``YARA_RULE`` string -- so nothing
+    # could load it: ``yara.compile`` and ``engine.yara_scan.compile_rules``
+    # take rule text or rule FILES, and a ``.py`` is neither. The rule emitted
+    # here carries the exact ``key_offset``/``key_length`` (the hit is what
+    # defined the window, so these are the highest-confidence locator metas
+    # MemDiver produces anywhere), which made it the one rule most worth
+    # scanning with and the one rule that could not be. The plugin's bytes are
+    # untouched; this is purely an additional file, and the two can never
+    # disagree because both render the same ``yara_rule`` string.
+    # ``with_suffix`` would collapse onto the plugin itself if a caller ever
+    # named the output ``*.yar``; the plugin is the primary artifact and must
+    # never be overwritten by its own sidecar, so append instead of replace.
+    rule_path = output_path.with_suffix(".yar")
+    if rule_path == output_path:
+        rule_path = output_path.with_name(output_path.name + ".yar")
+    # One trailing newline, so the file is a well-formed POSIX text file a
+    # user can ``cat`` into a larger rule set. Nothing else is added: the
+    # plugin's embedded copy differs only in the surrounding whitespace the
+    # Python template puts around the ``$yara_rule`` slot.
+    rule_text = yara_rule.rstrip("\n") + "\n"
+    rule_path.write_text(rule_text)
+    logger.info("wrote YARA rule %s (%d bytes)", rule_path, len(rule_text))
+
     safe_emit(
         progress_callback,
         ProgressEvent(
             stage="emit_plugin:write",
             pct=1.0,
             msg=f"wrote {output_path.name}",
-            extra={"path": str(output_path), "size": len(source)},
+            extra={
+                "path": str(output_path),
+                "size": len(source),
+                "yara_rule_path": str(rule_path),
+                "yara_rule_size": len(rule_text),
+            },
         ),
     )
     return output_path

@@ -577,6 +577,22 @@ def _run_emit_plugin(
         relpath=f"emit_plugin/{name}_fields.json",
         media_type="application/json",
     )
+    # The standalone YARA rule the emitter now writes beside the plugin
+    # (``engine.vol3_emit.emit_plugin_for_hit``). Registered rather than merely
+    # left on disk: the artifact store is the ONLY way a web-UI run's output
+    # leaves the worker's artifact_dir (the download route resolves a
+    # registered name), so an unregistered file would be a rule the user
+    # cannot get at -- the same "emitted but unusable" shape the sidecar was
+    # written to fix. Registration also gets it sized + sha256'd and streamed
+    # as a live ``artifact`` event like every other output. It is deliberately
+    # NOT in the frontend's PRIMARY_ARTIFACT_NAMES, so it lands in the Raw
+    # download list instead of claiming a result tab of its own.
+    register_artifact(
+        artifacts, artifact_dir,
+        name="vol3_yara_rule",
+        relpath=f"emit_plugin/{output_path.stem}.yar",
+        media_type="text/plain",
+    )
     return output_path
 
 
