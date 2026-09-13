@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+import random
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -399,6 +401,241 @@ def max_pattern_length(rules: "yara.Rules") -> Optional[int]:
         if key == "pattern_length" and isinstance(value, int) and value > 0
     ]
     return max(lengths) if lengths else None
+
+
+# ---------------------------------------------------------------------------
+# libyara's regexp verification limit
+# ---------------------------------------------------------------------------
+#
+# A hex string containing a ``??`` wildcard is not a literal to libyara: it is
+# compiled to a regexp. libyara matches a regexp by picking ONE literal atom
+# out of it, finding that atom with Aho-Corasick, and then *verifying* the rest
+# of the pattern backward and forward from the atom with its own RE VM. That
+# verification is bounded by a compile-time constant, ``YR_RE_SCAN_LIMIT``, and
+# when a pattern is wider than the bound the verification simply stops -- so
+# libyara reports NO MATCH for a pattern that is present in the data, byte for
+# byte, with no error, no warning and no diagnostic of any kind.
+#
+# That constant regressed from 4096 to 1024 in yara 4.5.3/4.5.4 (upstream PR
+# #2144). It is reverted upstream but UNRELEASED: 4.5.4 is the newest wheel on
+# PyPI, so no dependency floor can route around it. See the module-level
+# discussion in ``tests/test_libyara_scan_limit.py``.
+#
+# We probe for the limit instead of hardcoding 1024, for the same reason
+# ``tests/test_yara_exporter_compiles.py`` asks libyara for its reserved-word
+# set rather than trusting a literal list: a number baked in here is silently
+# WRONG the day a fixed libyara lands, and wrong in the dangerous direction --
+# we would keep calling perfectly good 2 KiB rules dead. A probe self-corrects.
+
+#: Wildcard placements, as a fraction of the pattern, used by one probe round.
+#: Which atom libyara picks depends on the byte content, and therefore so does
+#: how far it has to verify in each direction -- so a single placement measures
+#: that placement's luck, not the limit. Probing several and requiring ALL of
+#: them to match is what makes the answer a property of libyara.
+_PROBE_WILDCARD_FRACTIONS = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+#: Two fixed seeds, so the probe is deterministic (a cached number must not
+#: depend on which random bytes a process happened to draw) and so a single
+#: unlucky byte draw cannot decide the result.
+_PROBE_SEEDS = (0xC0FFEE, 0x5EED)
+
+#: Bracket for the search. The floor is small enough that any sane libyara
+#: clears it; the ceiling is far past any limit libyara has ever shipped.
+_PROBE_MIN_BYTES = 64
+_PROBE_MAX_BYTES = 1 << 16
+
+#: Memoized probe result. ``None`` means "not probed yet"; the probe itself
+#: stores an ``Optional[int]``, so the sentinel has to be distinct from a
+#: legitimately-unknown ``None`` outcome. Never computed at import -- see
+#: :func:`regexp_scan_limit`.
+_SCAN_LIMIT_PROBED = False
+_SCAN_LIMIT: Optional[int] = None
+
+
+def _probe_matches_at(length: int) -> bool:
+    """Does libyara match a wildcarded *length*-byte pattern planted verbatim?
+
+    Builds a pattern of exactly *length* bytes from deterministic pseudorandom
+    data, plants those same bytes in a buffer, wildcards one token so the
+    string compiles as a regexp rather than a literal, and asks libyara. True
+    only when EVERY (seed, wildcard placement) combination matches; one miss is
+    enough to call the length unsafe, because a rule a user emits will have its
+    wildcards wherever the volatile bytes happened to fall.
+    """
+    for seed in _PROBE_SEEDS:
+        # nosec B311 - a DETERMINISTIC PRNG is the requirement here, not a
+        # weakness: the probe's answer is memoized and must not depend on which
+        # bytes a process happened to draw, so a seeded Mersenne Twister is
+        # correct and ``secrets``/``os.urandom`` would be wrong. These bytes are
+        # haystack filler for a capability probe and are never a key, a nonce,
+        # an IV or any other security material.
+        rng = random.Random(seed ^ length)  # nosec B311
+        body = bytes(rng.randrange(256) for _ in range(length))
+        # Pad both sides so the pattern is genuinely interior to the buffer and
+        # libyara cannot match it by running off either end.
+        pad = bytes(rng.randrange(256) for _ in range(64))
+        data = pad + body + pad
+        for fraction in _PROBE_WILDCARD_FRACTIONS:
+            position = min(length - 1, max(0, int(fraction * (length - 1))))
+            tokens = ["%02x" % b for b in body]
+            tokens[position] = "??"
+            source = "rule memdiver_probe { strings: $a = { %s } condition: $a }" % (
+                " ".join(tokens),
+            )
+            try:
+                if not yara.compile(source=source).match(data=data):
+                    return False
+            except _YaraError as exc:  # pragma: no cover - defensive
+                # A compiler that refuses the probe rule tells us nothing about
+                # the verification limit, so treat the length as unsafe rather
+                # than let an exception escape a capability probe.
+                logger.debug("scan-limit probe failed to compile at %d: %s", length, exc)
+                return False
+    return True
+
+
+def _probe_regexp_scan_limit() -> Optional[int]:
+    """Measure libyara's regexp verification limit, in bytes.
+
+    Geometric bracket, then bisect, then floor to a power of two. The floor is
+    the part worth explaining: right above the true limit libyara's behaviour
+    is *flaky* rather than cleanly monotone -- a lucky atom placement can carry
+    a pattern a few bytes past the cliff -- so a bisect can land slightly high.
+    ``YR_RE_SCAN_LIMIT`` has only ever been a power of two (4096, then 1024),
+    and rounding down is the conservative direction: it can only ever make us
+    warn about a rule that would in fact have worked, never stay silent about
+    one that is dead.
+
+    Returns ``None`` when the limit cannot be established -- yara-python
+    absent, or a libyara so broken that even the 64-byte floor does not match.
+    ``None`` means "unknown", and every caller treats it as "cannot prove this
+    rule is dead", never as "the rule is fine".
+    """
+    if not HAS_YARA:
+        return None
+    if not _probe_matches_at(_PROBE_MIN_BYTES):
+        # Not a limit we can characterise: if a 64-byte wildcard pattern does
+        # not match bytes planted verbatim, something far more basic is wrong.
+        logger.warning(
+            "yara scan: libyara did not match a %d-byte wildcard pattern planted "
+            "verbatim; cannot establish its regexp verification limit",
+            _PROBE_MIN_BYTES,
+        )
+        return None
+    low = _PROBE_MIN_BYTES
+    while low * 2 <= _PROBE_MAX_BYTES and _probe_matches_at(low * 2):
+        low *= 2
+    if low * 2 > _PROBE_MAX_BYTES:
+        # Cleared the whole bracket; report the ceiling rather than pretend to
+        # a precision we did not measure.
+        return low
+    high = low * 2
+    while high - low > 8:
+        mid = (low + high) // 2
+        if _probe_matches_at(mid):
+            low = mid
+        else:
+            high = mid
+    return 1 << (low.bit_length() - 1)
+
+
+def regexp_scan_limit() -> Optional[int]:
+    """Widest wildcard pattern the installed libyara will actually verify.
+
+    A pattern longer than this compiles and scans without complaint and
+    matches NOTHING, so every caller that is about to emit or trust such a
+    pattern has to consult this first. ``None`` means the limit could not be
+    established; see :func:`_probe_regexp_scan_limit`.
+
+    Lazy and memoized: the probe costs a few dozen small ``yara.compile``
+    calls (~20 ms here), which is nothing once but is not something to spend at
+    import time, in every process, whether or not any rule is ever scanned.
+    """
+    global _SCAN_LIMIT_PROBED, _SCAN_LIMIT
+    if not _SCAN_LIMIT_PROBED:
+        _SCAN_LIMIT = _probe_regexp_scan_limit()
+        _SCAN_LIMIT_PROBED = True
+        logger.debug("libyara regexp verification limit probed as %r", _SCAN_LIMIT)
+    return _SCAN_LIMIT
+
+
+def clear_scan_limit_cache() -> None:
+    """Forget the memoized probe result. For tests; harmless in production."""
+    global _SCAN_LIMIT_PROBED, _SCAN_LIMIT
+    _SCAN_LIMIT_PROBED = False
+    _SCAN_LIMIT = None
+
+
+#: Tokens that put a hex string outside :func:`measure_hex_string_widths`'s
+#: competence: jumps (``[4-6]``), alternation (``( 41 | 42 )``) and negation
+#: (``~41``) all make the width variable or the parse non-trivial. A block
+#: holding any of them is reported as UNMEASURED rather than guessed at.
+_HEX_BLOCK_UNSUPPORTED = set("[]()|~")
+
+#: A YARA hex string is brace-delimited and introduced by ``=``. Text strings
+#: and regexps are quote/slash-delimited, and a rule body's own brace is not
+#: preceded by ``=``, so this does not collide with either.
+_HEX_BLOCK_RE = re.compile(r"=\s*\{(.*?)\}", re.S)
+
+#: ``//`` to end of line, or ``/* ... */``. Stripped before looking for hex
+#: blocks so a commented-out string cannot be measured as a live one.
+_COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+
+
+def measure_hex_string_widths(text: str) -> Tuple[Tuple[int, ...], int]:
+    """Measure the WILDCARDED hex strings in *text*, from the rule source.
+
+    Returns ``(widths, unmeasured)``: the byte width of every brace-delimited
+    hex string that contains a wildcard (``??`` or a nibble like ``4?``), plus
+    a count of the wildcarded blocks whose syntax this function declines to
+    parse. A block with no wildcard at all is neither measured nor counted --
+    it compiles to a literal, and the regexp verification limit does not apply
+    to literals (verified: an 8 KiB pure-literal hex string matches fine).
+
+    Why this exists alongside :func:`max_pattern_length`. That function reads
+    the ``pattern_length`` meta, which only rules MemDiver emitted carry. A
+    third-party ``.yar`` has no such meta, so the meta route cannot tell a
+    harmless rule from one that is silently dead -- and answering "fine"
+    because we did not know would be the same false all-clear this whole
+    mechanism exists to prevent. The rule TEXT is available at every call site
+    that compiles one, so for the common shape (a flat run of hex pairs and
+    wildcards, which is exactly what a memory signature looks like) the width
+    can simply be measured instead of asked for.
+
+    Deliberately CONSERVATIVE, not clever: anything carrying a jump,
+    alternation or negation is counted as unmeasured and reported as such,
+    rather than parsed with a half-right grammar whose mistakes would be
+    invisible. A wrong width here would produce exactly the confident-wrong
+    answer the function is meant to replace.
+    """
+    widths: List[int] = []
+    unmeasured = 0
+    for block in _HEX_BLOCK_RE.findall(_COMMENT_RE.sub(" ", text)):
+        compact = "".join(block.split())
+        if "?" not in compact:
+            continue  # a literal; the regexp limit does not apply
+        if set(compact) & _HEX_BLOCK_UNSUPPORTED or len(compact) % 2:
+            unmeasured += 1
+            continue
+        if any(c not in "0123456789abcdefABCDEF?" for c in compact):
+            unmeasured += 1
+            continue
+        widths.append(len(compact) // 2)
+    return tuple(widths), unmeasured
+
+
+def pattern_exceeds_scan_limit(pattern_length: Optional[int]) -> bool:
+    """Is a *pattern_length*-byte wildcard pattern too wide for this libyara?
+
+    ``False`` for an unknown length (``None``) and for an unknown limit: a
+    warning nobody can substantiate is worse than none. The callers that must
+    NOT conclude "fine" from an unknown length say so themselves, with their
+    own diagnostic -- this predicate answers only the question it can answer.
+    """
+    limit = regexp_scan_limit()
+    if pattern_length is None or limit is None:
+        return False
+    return pattern_length > limit
 
 
 # ---------------------------------------------------------------------------

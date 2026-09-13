@@ -5,7 +5,7 @@
  *
  *  - **Blank**: empty form, user fills in everything. The default for
  *    power users who already know what they're pointing at.
- *  - **Replicate gocryptfs DFRWS**: pre-populated with the thresholds
+ *  - **Replicate gocryptfs IMF**: pre-populated with the thresholds
  *    from the paper's section 4.2 so a peer reviewer can reproduce
  *    the published numbers in one click. Dump paths remain empty —
  *    they need to come from disk.
@@ -33,7 +33,7 @@ const GOCRYPTFS_RECIPE = {
   bruteForce: {
     key_sizes: [32],
     // Deliberately pinned: the product default is stride 1 (full coverage),
-    // but the published DFRWS gocryptfs result was produced at stride 8, so
+    // but the published IMF gocryptfs result was produced at stride 8, so
     // this recipe keeps 8 in order to keep reproducing that paper.
     stride: 8,
     // Pinned alongside the stride above for the same reason: the published

@@ -3,9 +3,35 @@
 import json
 import logging
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("memdiver.mcp_server")
+
+
+def _resolve_key_material_by_path(
+    raw: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """``{path: {key_file|passphrase|kem_key_file}}`` -> ``{path: open_dump kw}``.
+
+    Per-dump on purpose: an aligned window routinely spans a corpus that mixes
+    plaintext captures with containers encrypted under DIFFERENT keys, and one
+    flat key triple for the whole call would silently try dump A's key on dump
+    B. Entries naming no material at all are dropped so the producer sees a
+    mapping with only real keys in it.
+    """
+    if not raw:
+        return None
+    from memdiver.app.key_material import has_key_material, key_material_kwargs
+
+    resolved = {}
+    for path, spec in raw.items():
+        spec = spec or {}
+        km = key_material_kwargs(
+            spec.get("key_file"), spec.get("passphrase"), spec.get("kem_key_file"),
+        )
+        if has_key_material(km):
+            resolved[str(path)] = km
+    return resolved or None
 
 
 def create_server():
@@ -19,12 +45,36 @@ def create_server():
     from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
     # Same reason again: the pcap verification resource default is the app
     # layer's constant, so the MCP spelling cannot drift from the producer's.
-    from memdiver.app.tools_pipeline import DEFAULT_RESOURCE_TYPE
+    # ``DEFAULT_INCLUDE_MATCHES`` is ``scan_yara_rule``'s payload verbosity and
+    # lives in the app layer rather than the engine because the engine's
+    # ``scan_source`` has no such notion — the shape of the ANSWER is the
+    # producer's concern.
+    # ``DEFAULT_INCLUDE_HITS`` / ``VOL3_*`` are ``verify_vol3_plugin``'s
+    # equivalents, and live in the app layer for the same reason: the shape of
+    # the ANSWER and the mode vocabulary are the producer's concern, and an
+    # agent must see the defaults the library actually applies.
+    from memdiver.app.tools_pipeline import (
+        DEFAULT_INCLUDE_HITS,
+        DEFAULT_INCLUDE_MATCHES,
+        DEFAULT_RESOURCE_TYPE,
+        VOL3_MAX_HITS,
+        VOL3_MODE_AUTO,
+        VOL3_SUBPROC_TIMEOUT_S,
+    )
     # Same reason: the key-location tool defaults must be the engine's numbers.
     from memdiver.engine.key_location import (
         DEFAULT_KEY_CONTEXT,
         DEFAULT_MAX_KEY_OFFSETS,
     )
+    # Same reason once more: ``scan_yara_rule``'s match cap and libyara budget
+    # must be the engine's numbers, so the MCP surface cannot advertise a
+    # different ceiling from the one the library applies.
+    from memdiver.engine.yara_scan import DEFAULT_MAX_MATCHES, DEFAULT_TIMEOUT_S
+    # And the same for ``score_detector_matches``'s alignment slack: the
+    # tolerance an agent sees advertised must be the one the scorer applies.
+    from memdiver.engine.detector_metrics import DEFAULT_TOLERANCE_BYTES
+
+    from memdiver.app import tools_consensus
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
@@ -611,6 +661,43 @@ def create_server():
 
     @mcp.tool()
     @mcp_error_funnel
+    def aligned_window(
+        dump_paths: List[str],
+        anchor_path: Optional[str] = None,
+        anchor_view: str = "va",
+        offset: int = 0,
+        slab_offset: Optional[int] = None,
+        length: int = 1024,
+        normalize: bool = False,
+        classify: bool = True,
+        include_bytes: bool = True,
+        key_material_by_path: Optional[dict] = None,
+    ) -> str:
+        """Read ONE window in EVERY dump at the address the consensus aligned.
+
+        The agent-facing form of the N-dump differential view. Every returned
+        ``dumps[d].bytes`` is already in WINDOW coordinates — byte ``i`` of
+        each dump is the byte that dump holds at the address put in
+        correspondence with the anchor's byte at ``offset + i``, and
+        ``classes[i]`` is that correspondence's ByteClass (``-1`` where there
+        is none). Do NOT apply ``segments[].dumps[].va``/``offset``: those are
+        provenance, and under module-offset alignment two adjacent pages can
+        carry different relocation deltas.
+
+        ``key_material_by_path`` is ``{dump_path: {key_file|passphrase|
+        kem_key_file}}`` — per dump, because a corpus routinely mixes plaintext
+        captures with containers encrypted under different keys.
+        """
+        return json.dumps(tools_consensus.aligned_window_result(
+            _session, dump_paths=dump_paths, anchor_path=anchor_path,
+            anchor_view=anchor_view, offset=offset, slab_offset=slab_offset,
+            length=length, normalize=normalize, classify=classify,
+            include_bytes=include_bytes,
+            key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
+        ).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
     def auto_floor(
         variance_path: str, reference_path: str, oracle_path: str,
         output_dir: str, num_dumps: int,
@@ -854,6 +941,323 @@ def create_server():
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def scan_yara_rule(
+        dump_paths: List[str],
+        rule_source: Optional[str] = None,
+        rule_paths: Optional[List[str]] = None,
+        view: Optional[str] = None,
+        max_matches: Optional[int] = DEFAULT_MAX_MATCHES,
+        timeout_s: int = DEFAULT_TIMEOUT_S,
+        overlap_bytes: int = 0,
+        include_matches: bool = DEFAULT_INCLUDE_MATCHES,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Compile ONE YARA rule set and scan N dumps with it.
+
+        The other half of ``export_key_pattern`` / ``export_pattern``, which
+        only ever WROTE a signature. Until this tool existed an emitted
+        detector was unevaluated by construction: you could publish a rule and
+        never learn whether it fires on the corpus it came from, let alone on a
+        held-out one. Point this at the rule and the dumps and you get a census.
+
+        Supply the rules in exactly ONE of two forms (both is an error, with no
+        precedence, because silently preferring one would hand you a confident
+        census produced by rules you did not intend):
+
+        * ``rule_source`` — inline YARA rule text, e.g. the ``content`` field
+          ``export_key_pattern(fmt="yara")`` just handed you.
+        * ``rule_paths`` — ``.yar`` files, each compiled into its OWN namespace
+          so two files may define the same rule name.
+
+        A precompiled ``.yarc`` is NOT accepted in any form and will not be
+        added: a compiled rule file is executable libyara bytecode, so loading
+        one has the trust properties of importing a module.
+
+        The rule set is compiled ONCE and reused across every dump, which is
+        both what makes a corpus sweep affordable and what makes the rows
+        comparable.
+
+        READ ``verdict`` FIRST, because only ONE of its four values is an
+        absence:
+
+        * ``"matched"``      — at least one dump matched.
+        * ``"clean"``        — at least one dump was scanned end to end with no
+          match, and NO scanned dump was degraded. The only value you may
+          report as "the rule does not fire here".
+        * ``"inconclusive"`` — nothing matched, but every zero came from a scan
+          that timed out or hit a read error, so the zeros are UNPROVEN. Raise
+          ``timeout_s`` or widen ``overlap_bytes`` and ask again.
+        * ``"not_scanned"``  — no dump was readable. Claims nothing.
+
+        Then read each row's ``status`` before its numbers: ``"scanned"`` rows
+        carry a ``scan`` block (``match_count``, ``matches`` with absolute
+        ``offset``s in ``scan.view`` coordinates, plus ``truncated`` /
+        ``timed_out`` / ``errors``), and ``"unreadable"`` rows carry
+        ``scan: null`` and a ``detail``. An unreadable dump is a ROW, not an
+        omission: it keeps the denominator honest, and every rate in ``counts``
+        is over ``dumps_scanned`` rather than ``dumps_total``.
+
+        Each match's ``offset`` is the start of the matched WINDOW, not of the
+        key. ``key_offset`` / ``key_length`` (lifted from the rule's meta when
+        MemDiver emitted it) say where the key sits inside that window, so the
+        key is expected at ``offset + key_offset``.
+
+        ``max_matches`` caps the matches kept per dump and sets that row's
+        ``scan.truncated``; it must be positive, and ``null`` (not ``0``) is how
+        you ask for no cap at all. Nothing is persisted. Supply key_file /
+        passphrase / kem_key_file for encrypted ``.msl`` inputs — a locked
+        container is refused rather than reported as a clean scan.
+
+        ``include_matches=False`` is the COUNT-ONLY census, and on this surface
+        it is the difference between an answerable question and an unusable one:
+        a tool result is a single JSON string you have to hold in context, and
+        an unselective rule can fire hundreds of thousands of times per dump,
+        each firing carrying up to 512 bytes of ``matched_hex``. Ask for counts
+        whenever the question is "how selective is this rule?" rather than
+        "where exactly did it fire?". Every count and flag survives —
+        ``match_count`` per row, ``counts.matches_total``, ``truncated``,
+        ``timed_out``, ``errors``, ``scanned_bytes``, ``chunks``, ``strategy``
+        and the ``verdict`` are all identical to the full form's; only each
+        row's ``matches`` list is gone, replaced by ``matches_omitted: true``
+        (ABSENT rather than empty, so an empty-list check cannot misread a
+        count-only row as a proven absence).
+
+        Two things it does NOT do. It does not make the scan faster or smaller
+        in memory — libyara still finds every match; only the payload is
+        bounded. And it does not touch ``max_matches``: the two are orthogonal,
+        so a count-only run still stops at the cap and its ``matches_total`` is
+        then a FLOOR. Pass ``max_matches=null`` with it for the honest census;
+        the ``analysis.yara_scan.count_only`` diagnostic says which of the two
+        you got. A count-only payload cannot be fed to
+        ``score_detector_matches``, which reads ``dumps[].scan.matches``.
+        """
+        return json.dumps(tools_pipeline.scan_yara_rule(
+            dump_paths=dump_paths,
+            rule_source=rule_source,
+            rule_paths=rule_paths,
+            view=view,
+            max_matches=max_matches,
+            timeout_s=timeout_s,
+            overlap_bytes=overlap_bytes,
+            include_matches=include_matches,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def verify_vol3_plugin(
+        dump_paths: List[str],
+        plugin_source: Optional[str] = None,
+        plugin_path: Optional[str] = None,
+        mode: str = VOL3_MODE_AUTO,
+        view: Optional[str] = None,
+        expected_offset: Optional[int] = None,
+        key_hex: Optional[str] = None,
+        pid: Optional[int] = None,
+        vol_bin: Optional[str] = None,
+        vol_python: Optional[str] = None,
+        timeout_s: int = VOL3_SUBPROC_TIMEOUT_S,
+        max_hits: int = VOL3_MAX_HITS,
+        include_hits: bool = DEFAULT_INCLUDE_HITS,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """RUN a MemDiver-emitted Volatility3 plugin over N dumps.
+
+        The Volatility3 half of what ``scan_yara_rule`` is for YARA, and the
+        thing that makes ``emit_plugin`` / ``export_pattern`` claims checkable:
+        an emitted plugin that has not been RUN is not evidence. For most of
+        this repo's life such a plugin was checked only by parsing its
+        generated text, so one that could not even be imported passed every
+        test there was.
+
+        Supply the plugin in exactly ONE of two forms (both is an error, with
+        no precedence, because silently preferring one would hand you a
+        confident verification of a plugin you did not mean to test):
+
+        * ``plugin_source`` — the plugin's Python TEXT, e.g. the ``content``
+          field ``export_key_pattern(fmt="vol3")`` just handed you.
+        * ``plugin_path`` — a ``.py`` file on disk.
+
+        **Pick the mode deliberately; the two answer different questions.**
+
+        * ``"in_process"`` execs the plugin here, constructs it through
+          Volatility3's own requirement gate, and scans bytes MemDiver
+          PROJECTED. It is the only mode that can address an ``.msl``.
+        * ``"subprocess"`` runs ``vol -p <dir> -f <dump> <module>.<Class>``
+          against a real launcher — the way a plugin is actually used, often
+          against a different framework version than MemDiver's own.
+        * ``"auto"`` (the default) prefers in-process and falls back.
+
+        Point ``vol_bin`` / ``vol_python`` at a specific launcher and the
+        interpreter that owns its Volatility3. They beat the
+        ``MEMDIVER_VOL3_BIN`` / ``MEMDIVER_VOL3_PYTHON`` env vars, and on this
+        surface they are the ONLY way to select a launcher — you cannot set an
+        environment variable through a tool call.
+
+        READ ``verdict`` FIRST, because only ONE of its four values is an
+        absence:
+
+        * ``"hit"``          — the plugin fired on at least one dump.
+        * ``"no_hit"``       — it ran end to end and fired on nothing, and no
+          zero was degraded. The only value you may report as "this plugin does
+          not fire here".
+        * ``"inconclusive"`` — nothing fired, but every zero came off a run
+          that covered 0 bytes, so the zeros are UNPROVEN.
+        * ``"not_run"``      — nothing ran at all. Claims NOTHING, and it is
+          in particular what ``mode="subprocess"`` returns for an ``.msl``:
+          ``vol`` takes a bare file path and would scan the CONTAINER, which on
+          the ground-truth run puts the key at 371752 where every MemDiver
+          coordinate says 370672. That row is REFUSED as ``"unsupported"``
+          rather than reported, because a confident wrong offset is worse than
+          no answer. Re-run with ``mode="in_process"``.
+
+        Then read ``runtime`` and each row's ``framework_version``. This is not
+        bookkeeping: three Volatility3 trees commonly coexist on one machine
+        and they disagree, and a hit at 370672 that does not say which
+        framework found it cannot be reproduced. ``runtime.versions_agree``
+        states whether the two runtimes match (``null`` when either is
+        unknown), and ``runtime.subprocess`` carries the launcher's path, cwd
+        and interpreter, all three of which affect which framework loads.
+
+        Each row's ``status`` comes before its numbers: ``"verified"`` rows
+        carry a ``run`` block, and ``"unreadable"`` / ``"unsupported"`` rows
+        carry ``run: null`` plus a ``detail``. Those are ROWS, not omissions —
+        every rate in ``counts`` is over ``dumps_verified``.
+
+        Inside ``run``, three claims of increasing strength:
+        ``match_count`` (it fired), ``expected_offset_reported`` (it fired at
+        the byte you named — EXACT, no tolerance), and ``key_recovered`` (it
+        handed the key's own bytes back). That last one is the sharpest
+        instrument here and it is ``null``, never ``false``, when you supply no
+        ``key_hex``. Expect it to disagree with ``match_count`` on a real
+        corpus: an emitted pattern WILDCARDS the key, so its window still
+        matches a dump the key was wiped from. Measured on the 8-dump
+        ground-truth run, a pad-256 plugin fires on 8 of 8 at offset 370672 and
+        ``key_recovered`` is true on exactly the 2 dumps that still hold the
+        secret. Reading ``match_count`` alone would have called that 8 of 8.
+
+        ``max_hits`` caps the RETAINED list, never ``match_count``; when
+        ``hits_capped`` is true, ``key_recovered`` and
+        ``expected_offset_reported`` may be false negatives.
+        ``include_hits=False`` is the count-only census — ask for it whenever
+        the question is "how selective is this plugin?" rather than "where
+        exactly did it fire?"; ``anchor_distinct_bytes`` is the number to read
+        for selectivity, and an anchor of 128 zero bytes has 1.
+
+        ``pid`` is passed through to the plugin's ``--pid`` and is EXPLICITLY
+        UNPROVEN: narrowing needs a kernel image plus a matching ISF, a flat
+        process dump has neither, and the emitted plugin then warns and scans
+        the whole layer anyway. Do not report the rows as restricted to that
+        process.
+
+        Nothing is persisted. Supply key_file / passphrase / kem_key_file for
+        encrypted ``.msl`` inputs — a locked container is refused in BOTH modes
+        rather than reported as a clean run.
+        """
+        return json.dumps(tools_pipeline.verify_vol3_plugin(
+            dump_paths=dump_paths,
+            plugin_source=plugin_source,
+            plugin_path=plugin_path,
+            mode=mode,
+            view=view,
+            expected_offset=expected_offset,
+            key_hex=key_hex,
+            pid=pid,
+            vol_bin=vol_bin,
+            vol_python=vol_python,
+            timeout_s=timeout_s,
+            max_hits=max_hits,
+            include_hits=include_hits,
+            key_file=key_file,
+            passphrase=passphrase,
+            kem_key_file=kem_key_file,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def score_detector_matches(
+        matches: Optional[List[Dict[str, Any]]] = None,
+        truths: Optional[List[Dict[str, Any]]] = None,
+        detector: Optional[str] = None,
+        dump: Optional[str] = None,
+        truth_sources: Optional[List[str]] = None,
+        rows: Optional[List[Dict[str, Any]]] = None,
+        tolerance_bytes: int = DEFAULT_TOLERANCE_BYTES,
+    ) -> str:
+        """Score detector firings against the key's known-true intervals.
+
+        The second half of ``scan_yara_rule``. That tool tells you the rule
+        FIRED; it cannot tell you the rule was RIGHT, and those are different
+        facts — a rule that matches every page gives you a perfect
+        ``dumps_matched`` and is worthless. Take a scan's
+        ``dumps[].scan.matches``, put them beside the intervals you know the
+        key occupies, and this returns interval precision/recall.
+
+        Nothing is opened and nothing is persisted: both sides arrive as data,
+        so there are no paths and no key-material parameters here.
+
+        Supply the work in exactly ONE of two intakes (both is an error, with
+        no precedence):
+
+        * ``matches`` + ``truths`` — one detector, one dump. ``detector`` /
+          ``dump`` / ``truth_sources`` are optional labels on this form.
+        * ``rows`` — N objects, each with those same keys. Rows are scored
+          INDEPENDENTLY and only the counts are summed, so a firing from one
+          dump can never pair with a truth from another whose offsets happen to
+          line up.
+
+        Each match needs ``offset`` and ``length`` (absolute, in the same view
+        the scan ran in) and MAY carry ``key_offset`` / ``key_length``. A
+        firing without ``key_offset`` makes no positional claim, so it is
+        excluded from the ``key_offset``/``exact`` precision denominators
+        rather than charged as a false positive. Each truth needs ``start``
+        (or ``offset``) and ``length``, and should carry ``source``
+        (``"keylog"`` / ``"ledger"``) so sparse ledger corroboration is not
+        mistaken for complete key-log truth. A match or truth with NO byte
+        position is REFUSED rather than defaulted to 0.
+
+        Three CRITERIA come back for every row and for the roll-up, always
+        together, because reading them side by side is what distinguishes
+        "found the neighbourhood" from "found the key":
+
+        * ``containment`` — the firing's window enclosed the key. This is what
+          a wildcarded-window rule actually claims.
+        * ``key_offset``  — the firing's PREDICTED key position was right to
+          within ``tolerance_bytes`` (default 16, the alignment slack).
+        * ``exact``       — right to the byte.
+
+        Precision is match-indexed and recall truth-indexed (they are NOT two
+        views of one confusion matrix), so ALSO read
+        ``max_truths_per_match``: a recall of 1.0 reached by one enormous
+        window that swallowed every key shows up there, and the diagnostics
+        say so out loud.
+
+        READ ``verdict`` FIRST — only one of the three is a measurement:
+
+        * ``"scored"``     — rows had both keys and firings; the numbers mean
+          something.
+        * ``"no_matches"`` — there were keys to find and the detector fired on
+          none of them. This zero is REAL.
+        * ``"no_truths"``  — no row carried a truth interval, so nothing was
+          scorable, ``report`` is null, and the result says nothing at all
+          about the firings — least of all that they were wrong.
+        """
+        return json.dumps(tools_pipeline.score_detector_matches(
+            matches=matches,
+            truths=truths,
+            detector=detector,
+            dump=dump,
+            truth_sources=truth_sources,
+            rows=rows,
+            tolerance_bytes=tolerance_bytes,
         ))
 
     @mcp.tool()

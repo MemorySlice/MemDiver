@@ -107,6 +107,16 @@ EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
         "would add a new KNOWN_PARITY_GAPS entry to a shrink-only baseline.",
     ),
     (
+        "memdiver.app.tools_consensus.aligned_window_from_vector",
+        "The SAME compute as the registered consensus.aligned_window, entered "
+        "with a vector the caller already holds instead of building one. Web "
+        "(the consensus_id branch of POST /consensus/aligned-window) and "
+        "library reach it; CLI and MCP have no vector to hand it, so "
+        "registering it would GROW KNOWN_PARITY_GAPS by two entries on a "
+        "shrink-only baseline for a function that is not a separate "
+        "capability.",
+    ),
+    (
         "memdiver.app.tools.import_raw_dump",
         "Back-compat alias that just calls import_dump — same compute, not a "
         "distinct capability. The MCP import_raw_dump tool routes here.",
@@ -134,6 +144,12 @@ EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
         "(begin / add-path / add-upload / get / finalize / delete) — session "
         "lifecycle, not compute. The origination producer is "
         "pipeline.consensus.",
+    ),
+    (
+        "docs",
+        "GET /{doc_path} reads one bundled markdown file off disk for the "
+        "in-app documentation panel. Static prose delivery, not analysis "
+        "compute -- there is no app-layer producer and never will be.",
     ),
     (
         "dumps",

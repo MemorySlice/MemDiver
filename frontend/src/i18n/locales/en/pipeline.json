@@ -25,10 +25,10 @@
       "subtitle": "Pick a starting point. You can still edit every field on the following steps.",
       "blankTitle": "Start blank",
       "blankBody": "Empty form. Bring your own dumps and oracle; set every threshold yourself. Best for power users running on a new target.",
-      "gocryptfsTitle": "Replicate gocryptfs DFRWS result",
-      "gocryptfsBody": "Loads the thresholds from the DFRWS paper's section 4.2 (variance ≥ 1500, 8-byte alignment, entropy ≥ 4.5). Point it at",
+      "gocryptfsTitle": "Replicate gocryptfs IMF result",
+      "gocryptfsBody": "Loads the thresholds from the IMF paper's section 4.2 (variance ≥ 1500, 8-byte alignment, entropy ≥ 4.5). Point it at",
       "gocryptfsBodyTail": "and upload the gocryptfs oracle on the next step to reproduce both verified hits.",
-      "saveLoadNote": "Recipe save / load / share is planned for a later release; for now the two presets above cover the DFRWS demo and the blank starting point."
+      "saveLoadNote": "Recipe save / load / share is planned for a later release; for now the two presets above cover the IMF demo and the blank starting point."
     },
     "dumps": {
       "title": "Select memory dumps",
@@ -98,7 +98,7 @@
     },
     "thresholds": {
       "title": "Configure thresholds",
-      "subtitlePrefix": "Tune the variance / alignment / entropy filter chain. Defaults come from the gocryptfs DFRWS case study; hover the",
+      "subtitlePrefix": "Tune the variance / alignment / entropy filter chain. Defaults come from the gocryptfs IMF case study; hover the",
       "subtitleTail": "icons for per-field rationale.",
       "searchReduce": "Search-reduce",
       "bruteForce": "Brute-force",
@@ -119,7 +119,7 @@
       "runTitle": "Start consensus → reduce → verify{{optional}}",
       "fields": {
         "minVariance": "min variance",
-        "minVarianceHelp": "Per-byte variance threshold. Higher values keep only very volatile bytes; in the DFRWS paper 1500 separated real crypto material from noise at N≥20.",
+        "minVarianceHelp": "Per-byte variance threshold. Higher values keep only very volatile bytes; in the IMF paper 1500 separated real crypto material from noise at N≥20.",
         "alignment": "alignment",
         "alignmentHelp": "Byte alignment the key must land on. Go's allocator places keys on 8-byte boundaries; most allocators use 8 or 16.",
         "blockSize": "block size",
@@ -201,7 +201,7 @@
       "dropBodyMid": ") and Shape 2 (stateful",
       "dropBodyTail": ") are auto-detected.",
       "descriptionLabel": "Description (optional)",
-      "descriptionPlaceholder": "e.g. gocryptfs DFRWS oracle",
+      "descriptionPlaceholder": "e.g. gocryptfs IMF oracle",
       "sizeError": "Oracle file is {{size}} bytes; the server cap is {{cap}}.",
       "processing": "Processing upload…",
       "uploadedHeading": "Uploaded oracles",

@@ -24,6 +24,12 @@
   --md-accent-cyan: #1a8a70;
   --md-accent-yellow: #a68a00;
   --md-focus-ring: var(--md-accent-blue);
+  /* Generic accent alias. Components referenced var(--md-accent) long
+     before it existed, which made every `border`/`background` shorthand
+     using it INVALID -- the focused DumpList row had no border at all and
+     StructureEditor's Save button rendered light text on no background.
+     Defined here as an alias so those sites repair without touching them. */
+  --md-accent: var(--md-accent-blue);
 
   --md-byte-key: #cc2222;
   --md-byte-static: #1a8a70;
@@ -113,6 +119,12 @@
   --md-accent-cyan: #4ec9b0;
   --md-accent-yellow: #dcdcaa;
   --md-focus-ring: var(--md-accent-blue);
+  /* Generic accent alias. Components referenced var(--md-accent) long
+     before it existed, which made every `border`/`background` shorthand
+     using it INVALID -- the focused DumpList row had no border at all and
+     StructureEditor's Save button rendered light text on no background.
+     Defined here as an alias so those sites repair without touching them. */
+  --md-accent: var(--md-accent-blue);
 
   --md-byte-key: #ff6b6b;
   --md-byte-static: #4ec9b0;
@@ -206,6 +218,13 @@ body {
 
 /* === Text / background utility classes === */
 .md-text-accent { color: var(--md-accent-blue); }
+/* Selected-state pair used by HexToolbar's Raw/VAS/VA tabs. Neither class
+   was ever defined, so the active view tab had no accent fill. Text uses
+   --md-bg-primary, which inverts correctly in both themes: the light theme's
+   accent is dark blue (needs light text), the dark theme's is light blue
+   (needs dark text). Same pairing DumpList already uses for its MSL badge. */
+.md-bg-accent { background-color: var(--md-accent); }
+.md-text-on-accent { color: var(--md-bg-primary); }
 .md-text-secondary { color: var(--md-text-secondary); }
 .md-text-muted { color: var(--md-text-muted); }
 .md-text-error { color: var(--md-accent-red); }

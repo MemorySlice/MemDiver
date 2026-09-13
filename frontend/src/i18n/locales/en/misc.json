@@ -11,6 +11,19 @@
     "highContrastOff": "OFF",
     "highContrastAbbr": "HC"
   },
+  "docs": {
+    "title": "Docs · {{path}}",
+    "close": "Close",
+    "loading": "Loading documentation…",
+    "errorTitle": "This documentation page could not be loaded.",
+    "errorFallback": "It may not be bundled with this install. Read it on the published docs site:",
+    "admonitionNote": "Note",
+    "admonitionTip": "Tip",
+    "admonitionWarning": "Warning",
+    "admonitionCaution": "Caution",
+    "admonitionImportant": "Important",
+    "figure": "Figure"
+  },
   "verification": {
     "loadDumpHint": "Load a dump file to verify candidate key bytes against a known ciphertext.",
     "heading": "Key Verification",
@@ -70,12 +83,22 @@
   "upload": {
     "heading": "Import Dump",
     "uploading": "Uploading...",
-    "dropHint": "Drop a dump file here or click to browse",
+    "dropHint": "Drop one or more dump files here or click to browse",
     "acceptedTypes": ".dump, .bin, .raw, .msl",
     "failed": "Upload failed",
     "importSuccessful": "Import successful",
     "output": "Output:",
-    "regionsSize": "Regions: {{regions}} | Size: {{size}} KB"
+    "regionsSize": "Regions: {{regions}} | Size: {{size}} KB",
+    "queueHeading": "Import queue",
+    "statusPending": "Waiting",
+    "statusUploading": "Uploading…",
+    "statusFailed": "Failed",
+    "batchProgress": "Importing {{current}} of {{total}}…",
+    "batchSummary_one": "{{count}} file imported.",
+    "batchSummary_other": "{{count}} files imported.",
+    "batchFailed_one": "{{count}} file failed.",
+    "batchFailed_other": "{{count}} files failed.",
+    "multiDumpHeading": "Compare the dumps you just imported"
   },
   "strings": {
     "encodingAscii": "ASCII",

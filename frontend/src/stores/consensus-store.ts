@@ -24,6 +24,14 @@ interface VaOverview {
   level: number[];
 }
 
+/** A finalized incremental session, as the consensus store sees it. */
+export interface IncrementalAdoption {
+  consensusId: string;
+  size: number;
+  numDumps: number;
+  counts: Record<string, number> | null;
+}
+
 interface ConsensusState {
   available: boolean;
   loading: boolean;
@@ -48,6 +56,23 @@ interface ConsensusState {
   vaOverview: VaOverview | null;
 
   runConsensus: (dumpPaths: string[], normalize: boolean) => Promise<void>;
+  /**
+   * Adopt a FINALIZED incremental session as the consensus the rest of the app
+   * reads.
+   *
+   * `ConsensusSessionManager` is one process-wide singleton shared by
+   * `api/routers/consensus.py` and `api/routers/analysis.py`, and
+   * `/analysis/consensus/range` resolves its `consensus_id` through
+   * `manager.get(...)`. So a finalized incremental `session_id` IS a valid
+   * `consensus_id` — without this, Finalize was a dead end: the id landed in
+   * `consensus-incremental-store.finalResult` and nothing ever read it.
+   *
+   * Note the fold is FLAT (offset-keyed Welford), so `staticRegions` /
+   * `volatileRegions` / the VA caches stay empty: there is no alignment to
+   * report and the VA endpoints reject a non-aligned build.
+   */
+  adoptIncremental: (adoption: IncrementalAdoption) => void;
+  setOverlayEnabled: (enabled: boolean) => void;
   fetchRange: (offset: number, length: number) => Promise<number[]>;
   fetchVaRange: (dumpPath: string, va: number, length: number) => Promise<number[]>;
   fetchVaOverview: (dumpPath: string, bins: number) => Promise<void>;
@@ -104,6 +129,24 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       });
     }
   },
+
+  adoptIncremental: ({ consensusId, size, numDumps, counts }) =>
+    set({
+      available: true,
+      loading: false,
+      error: null,
+      size,
+      numDumps,
+      counts,
+      staticRegions: [],
+      volatileRegions: [],
+      consensusId,
+      pageClassifications: new Map(),
+      vaClassifications: new Map(),
+      vaOverview: null,
+    }),
+
+  setOverlayEnabled: (enabled) => set({ overlayEnabled: enabled }),
 
   fetchRange: async (offset, length) => {
     const state = get();

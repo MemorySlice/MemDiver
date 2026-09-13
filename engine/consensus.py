@@ -13,7 +13,7 @@ import logging
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -54,10 +54,14 @@ __all__ = [
     "VarianceThresholds",
     "ByteClass",
     "AlignmentReport",
+    "AlignedSegment",
+    "WindowProjection",
     "ALIGNMENT_METHODS",
     "ALIGNMENT_MODULE_OFFSET",
     "ALIGNMENT_VIRTUAL_ADDRESS",
     "ALIGNMENT_FILE_OFFSET",
+    "MAX_CONSENSUS_WINDOW",
+    "flat_alignment_report",
     "_is_native_msl",
 ]
 
@@ -82,6 +86,16 @@ __all__ = [
 #: cannot be compared — but past this point the variance describes a corner of
 #: the dumps rather than the dumps.
 SIGNIFICANT_DISCARD_FRACTION = 0.10
+
+#: Hard ceiling on the byte length of ONE consensus/hex window, in bytes.
+#:
+#: The same 16 KiB literal was written out three times — twice in
+#: ``api/routers/analysis.py`` (``/consensus/range``, ``/consensus/va-range``)
+#: and once in ``app/tools_inspect.py`` (``read_hex_raw_result``) — which meant
+#: the cap a window request was actually held to depended on which door it came
+#: through. It lives here, next to the coordinate math every windowed read is
+#: expressed in, and every call site imports it.
+MAX_CONSENSUS_WINDOW = 16384
 
 
 @dataclass(frozen=True)
@@ -117,6 +131,105 @@ class AlignmentReport:
             "sizes_differed": self.sizes_differed,
             "n_sources": self.n_sources,
             "warnings": list(self.warnings),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Window projection (slab <-> VA)
+# ---------------------------------------------------------------------------
+#
+# The consensus indexes an aligned SLAB: a concatenation of the pages every
+# dump had in common. A slab index is therefore not a position in any one
+# dump's byte stream, and a viewer that jumps to it lands on real bytes at the
+# wrong address -- a failure this repo has already shipped twice. These two
+# records are the honest answer: they say, for one requested window, exactly
+# which sub-ranges are in correspondence, where each one sits in EVERY dump,
+# and which sub-ranges are in no correspondence at all.
+
+
+@dataclass(frozen=True)
+class AlignedSegment:
+    """One maximal run of a window that the consensus put into correspondence.
+
+    ``window_offset``/``length`` index the REQUESTED window, not any dump.
+    ``vas[d]`` is the absolute virtual address, in dump ``d``, of the byte at
+    ``window_offset`` -- parallel to ``ConsensusVector.dump_paths``.
+    """
+
+    window_offset: int
+    length: int
+    slab_offset: int
+    layout_row: int
+    vas: Tuple[int, ...]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-ready form for the CLI / API / MCP surfaces."""
+        return {
+            "window_offset": self.window_offset,
+            "length": self.length,
+            "slab_offset": self.slab_offset,
+            "layout_row": self.layout_row,
+            "vas": list(self.vas),
+        }
+
+
+@dataclass(frozen=True)
+class WindowProjection:
+    """A requested window resolved into aligned segments and gaps.
+
+    ``segments`` and ``gaps`` partition ``[0, length)``: ascending, disjoint,
+    and summing to ``length``. That invariant is what lets a caller paint the
+    window without doing any coordinate arithmetic of its own -- which is
+    where the two shipped overlay bugs came from.
+
+    ``anchor_index`` is the dump whose virtual address ``start`` is, or ``-1``
+    when the window was anchored on the slab (then ``start`` is a slab offset).
+    """
+
+    anchor_index: int
+    start: int
+    length: int
+    segments: Tuple[AlignedSegment, ...]
+    gaps: Tuple[Tuple[int, int], ...]
+    classes: Tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        """Check the partition invariant every consumer is allowed to assume.
+
+        Cheap relative to the walk that produced these, and it turns a
+        coordinate slip into a loud failure here rather than a silently
+        misplaced highlight three layers up. ``nosec B101`` throughout: these
+        guard an internally-constructed invariant, not untrusted input.
+        """
+        spans = sorted(
+            [(s.window_offset, s.length) for s in self.segments] + list(self.gaps),
+        )
+        cursor = 0
+        for offset, run in spans:
+            gap_msg = f"not a partition: expected a span at {cursor}, got one at {offset}"
+            assert offset == cursor, f"window projection {gap_msg}"  # nosec B101
+            assert run > 0, f"window projection has an empty span at {offset}"  # nosec B101
+            cursor += run
+        covers = f"covers {cursor} of {self.length} bytes"
+        assert cursor == self.length, f"window projection {covers}"  # nosec B101
+        counted = f"has {len(self.classes)} classes for {self.length} bytes"
+        assert len(self.classes) == self.length, f"window projection {counted}"  # nosec B101
+
+    @property
+    def covered(self) -> int:
+        """Bytes of the window that are in cross-dump correspondence."""
+        return sum(s.length for s in self.segments)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-ready form for the CLI / API / MCP surfaces."""
+        return {
+            "anchor_index": self.anchor_index,
+            "start": self.start,
+            "length": self.length,
+            "covered": self.covered,
+            "segments": [s.to_dict() for s in self.segments],
+            "gaps": [list(g) for g in self.gaps],
+            "classes": list(self.classes),
         }
 
 
@@ -172,12 +285,25 @@ def _build_report(method: str, coverage: AlignmentCoverage) -> AlignmentReport:
     )
 
 
-def _flat_report(sizes: Sequence[int], bytes_compared: int) -> AlignmentReport:
-    """Report for a flat-offset build, from the N input sizes."""
+def flat_alignment_report(
+    sizes: Sequence[int], bytes_compared: int,
+) -> AlignmentReport:
+    """Report for a flat-offset build, from the N input sizes.
+
+    Public because the aligned-window producer's NO-CONSENSUS path
+    (``app.tools_consensus``) has to publish the very same coverage/warning
+    report from sizes alone — it reads no bytes and builds no vector, but the
+    client still has to be told that byte 0 was compared to byte 0 without
+    ASLR correction. Reproducing that wording there would let the two drift.
+    """
     return _build_report(
         ALIGNMENT_FILE_OFFSET,
         AlignmentCoverage.from_sizes(sizes, bytes_compared),
     )
+
+
+#: Private alias kept for the three in-module build paths that already call it.
+_flat_report = flat_alignment_report
 
 # String-to-ByteClass mapping for backward-compat setter
 _STR_TO_BYTECLASS = {
@@ -220,6 +346,12 @@ class ConsensusVector:
         self.msl_layout: Union[List[Tuple[int, int, List[int]]], None] = None
         self.dump_paths: List[str] = []
         self._va_index_cache: Dict[int, List[Tuple[int, int, int]]] = {}
+        # Ascending slab_offset per msl_layout row — the bisect key for the
+        # slab->VA direction. Same lifetime as _va_index_cache: both are
+        # derived from msl_layout and both are dropped when a build replaces
+        # it. None means "not computed yet", which an empty layout would be
+        # indistinguishable from if this were a list.
+        self._slab_starts_cache: Union[List[int], None] = None
         # How this vector's dumps were put into correspondence. Populated by
         # every build path; the default describes an unbuilt vector.
         self.alignment_report: AlignmentReport = AlignmentReport()
@@ -308,6 +440,7 @@ class ConsensusVector:
         # map a viewed dump's path -> index -> VA layout for this build.
         self.dump_paths = [str(getattr(s, "path", "") or "") for s in sources]
         self._va_index_cache = {}
+        self._slab_starts_cache = None
         if all(_is_native_msl(s) for s in sources):
             from .consensus_msl import build_msl_consensus_result
             result = build_msl_consensus_result(sources)
@@ -352,18 +485,50 @@ class ConsensusVector:
     # ------------------------------------------------------------------
 
     def dump_index_for_path(self, dump_path: str) -> int:
-        """Index of ``dump_path`` within this build's source order, or -1."""
+        """Index of ``dump_path`` within this build's source order, or -1.
+
+        Compared on RESOLVED paths, so ``/a/c/../b.msl``, a symlinked parent
+        and a relative spelling all find the build that stored ``/a/b.msl``.
+        Pure ``Path`` equality collapses ``.`` but cannot collapse ``..`` or a
+        symlink without touching the filesystem, so it answered -1 for paths
+        naming the very dump that was built.
+
+        NOTE: this widens what ``/consensus/va-range`` and
+        ``/consensus/va-overview`` accept — requests those endpoints used to
+        reject as "not one of this consensus' dumps" now resolve to a dump
+        index. That is the intent: the caller named the right file.
+        """
         target = Path(dump_path)
+        literal = str(target)
         for i, p in enumerate(self.dump_paths):
-            if p == str(target) or Path(p) == target:
+            if p == literal or Path(p) == target:
                 return i
+        # Only pay for the filesystem round-trip when the cheap comparison
+        # found nothing.
+        try:
+            resolved = target.resolve()
+        except OSError:
+            return -1
+        for i, p in enumerate(self.dump_paths):
+            try:
+                if Path(p).resolve() == resolved:
+                    return i
+            except OSError:
+                continue
         return -1
 
     def _va_index_for(self, dump_index: int) -> List[Tuple[int, int, int]]:
         """Sorted ``[(va_start, slab_offset, page_size)]`` for one dump (cached).
 
-        Sorted by ``va_start`` so a viewed dump's virtual address can be
-        binary-searched to the slab index the classification array uses.
+        Sorted by ``(va_start, slab_offset)`` so a viewed dump's virtual
+        address can be binary-searched to the slab index the classification
+        array uses. ``slab_offset`` is in the key, not just ``va_start``,
+        because two layout rows CAN resolve to the same VA in one dump —
+        overlapping modules, which ``core.region_align.build_module_lookup``
+        already warns about. Ordering those ties by slab offset makes the
+        run of duplicates deterministic, which is what lets
+        :meth:`_walk_va_window` back its cursor up onto the first of them
+        instead of silently dropping every row but the last.
         """
         if not self.msl_layout:
             return []
@@ -375,9 +540,222 @@ class ConsensusVector:
             for (slab, ps, vaddrs) in self.msl_layout
             if 0 <= dump_index < len(vaddrs)
         ]
-        idx.sort(key=lambda e: e[0])
+        idx.sort(key=lambda e: (e[0], e[1]))
         self._va_index_cache[dump_index] = idx
         return idx
+
+    def _slab_starts(self) -> List[int]:
+        """Cached ascending ``slab_offset`` per ``msl_layout`` row (bisect key).
+
+        Both aligned builders append rows in slab order, so this is already
+        sorted; it is materialized once because every slab-anchored lookup
+        bisects it.
+        """
+        if not self.msl_layout:
+            return []
+        if self._slab_starts_cache is None:
+            self._slab_starts_cache = [int(slab) for (slab, _ps, _v) in self.msl_layout]
+        return self._slab_starts_cache
+
+    def _layout_row_for_slab(self, slab_offset: int) -> int:
+        """Index of the ``msl_layout`` row containing ``slab_offset``, or -1."""
+        starts = self._slab_starts()
+        i = bisect.bisect_right(starts, slab_offset) - 1
+        if i < 0 or not self.msl_layout:
+            return -1
+        row_slab, page_size, _vaddrs = self.msl_layout[i]
+        if slab_offset >= int(row_slab) + int(page_size):
+            return -1
+        return i
+
+    # -- the two walks -------------------------------------------------
+    #
+    # Every coordinate answer this class gives comes out of one of these two
+    # generators, so a fix to a walk is a fix to every consumer at once.
+
+    def _walk_va_window(
+        self, dump_index: int, va: int, length: int,
+    ) -> Iterator[Tuple[int, int, int, int]]:
+        """Yield ``(window_offset, run_length, slab_offset, layout_row)`` per aligned run.
+
+        THE single VA->slab walk. :meth:`class_window_va` and
+        :meth:`project_va_window` both consume it, so a fix to one is a fix to
+        both. Yields nothing for a raw build (``msl_layout is None``) or a
+        window wholly outside the aligned span.
+        """
+        idx = self._va_index_for(dump_index)
+        length = max(0, int(length))
+        if not idx or length == 0:
+            return
+        va = int(va)
+        end = va + length
+        starts = [e[0] for e in idx]
+        # First entry that could overlap [va, end).
+        i = max(0, bisect.bisect_right(starts, va) - 1)
+        # bisect lands past the LAST entry sharing a va_start; back up onto the
+        # first of them or overlapping rows before it would never be visited.
+        while i > 0 and starts[i - 1] == starts[i]:
+            i -= 1
+        while i < len(idx) and idx[i][0] < end:
+            va_start, slab, page_size = idx[i]
+            seg_start = max(va, va_start)
+            seg_end = min(end, va_start + page_size)
+            if seg_end > seg_start:
+                run_slab = slab + (seg_start - va_start)
+                yield (
+                    seg_start - va,
+                    seg_end - seg_start,
+                    run_slab,
+                    self._layout_row_for_slab(run_slab),
+                )
+            i += 1
+
+    def _walk_slab_window(
+        self, slab_offset: int, length: int,
+    ) -> Iterator[Tuple[int, int, int, int]]:
+        """Same tuples for a slab-anchored window.
+
+        The slab is dense — the aligned builders lay rows end to end — so
+        within the slab this yields one run per layout row touched and NEVER
+        a gap. Only the part of a window that runs off the end of the slab is
+        uncovered.
+        """
+        if not self.msl_layout:
+            return
+        length = max(0, int(length))
+        slab_offset = int(slab_offset)
+        if length == 0:
+            return
+        end = slab_offset + length
+        starts = self._slab_starts()
+        i = max(0, bisect.bisect_right(starts, slab_offset) - 1)
+        while i < len(self.msl_layout) and starts[i] < end:
+            row_slab, page_size, _vaddrs = self.msl_layout[i]
+            row_slab = int(row_slab)
+            seg_start = max(slab_offset, row_slab)
+            seg_end = min(end, row_slab + int(page_size))
+            if seg_end > seg_start:
+                yield (seg_start - slab_offset, seg_end - seg_start, seg_start, i)
+            i += 1
+
+    # -- the inverse ---------------------------------------------------
+
+    def slab_to_va(self, dump_index: int, slab_offset: int) -> int:
+        """Absolute VA in ``dump_index`` of slab byte ``slab_offset``, or -1.
+
+        THE INVERSE of what :meth:`_va_index_for` / :meth:`class_window_va`
+        do. Returns -1 — never a plausible-looking address — for a raw build,
+        an out-of-range ``dump_index``, or a ``slab_offset`` past the end of
+        the aligned slab. A wrong-but-plausible address is worse than no
+        address here: it sends a viewer to real bytes that mean nothing.
+        """
+        if not self.msl_layout:
+            return -1
+        slab_offset = int(slab_offset)
+        if slab_offset < 0:
+            return -1
+        row = self._layout_row_for_slab(slab_offset)
+        if row < 0:
+            return -1
+        row_slab, _page_size, vaddrs = self.msl_layout[row]
+        dump_index = int(dump_index)
+        if not 0 <= dump_index < len(vaddrs):
+            return -1
+        return int(vaddrs[dump_index]) + (slab_offset - int(row_slab))
+
+    # -- projections ---------------------------------------------------
+
+    def _project(
+        self,
+        anchor_index: int,
+        start: int,
+        length: int,
+        runs: Iterator[Tuple[int, int, int, int]],
+    ) -> "WindowProjection":
+        """Turn one walk into a :class:`WindowProjection`.
+
+        Shared by both ``project_*`` entry points so the partition invariant
+        is established in exactly one place.
+
+        Ownership is recorded per byte rather than per yielded run because
+        runs CAN overlap: two layout rows may resolve to the same VA in the
+        anchor dump (overlapping modules). ``class_window_va`` resolves that
+        by letting the later row win, and the segments have to describe the
+        same final state — otherwise they would report bytes whose classes
+        came from somewhere else. Deriving maximal runs from final ownership
+        makes segments non-overlapping by construction.
+        """
+        length = max(0, int(length))
+        classes = np.full(length, -1, dtype=np.int16)
+        owner_slab = np.full(length, -1, dtype=np.int64)
+        owner_row = np.full(length, -1, dtype=np.int32)
+        cls = np.asarray(self._classifications)
+        for window_offset, run, slab, row in runs:
+            stop = window_offset + run
+            classes[window_offset:stop] = cls[slab:slab + run].astype(np.int16)
+            owner_slab[window_offset:stop] = np.arange(slab, slab + run)
+            owner_row[window_offset:stop] = row
+
+        # A span breaks where the owning row changes, or where a covered run
+        # stops being slab-contiguous. Gap bytes carry row -1 and are left
+        # alone by the slab test, so a gap stays one span.
+        segments: List[AlignedSegment] = []
+        gaps: List[Tuple[int, int]] = []
+        if length:
+            breaks = np.ones(length, dtype=bool)
+            if length > 1:
+                same_row = owner_row[1:] == owner_row[:-1]
+                contiguous = owner_slab[1:] == owner_slab[:-1] + 1
+                breaks[1:] = ~(same_row & (contiguous | (owner_row[1:] < 0)))
+            bounds = np.flatnonzero(breaks).tolist() + [length]
+            n_dumps = len(self.msl_layout[0][2]) if self.msl_layout else 0
+            for begin, stop in zip(bounds, bounds[1:]):
+                row = int(owner_row[begin])
+                if row < 0:
+                    gaps.append((begin, stop - begin))
+                    continue
+                slab = int(owner_slab[begin])
+                segments.append(AlignedSegment(
+                    window_offset=begin,
+                    length=stop - begin,
+                    slab_offset=slab,
+                    layout_row=row,
+                    vas=tuple(self.slab_to_va(d, slab) for d in range(n_dumps)),
+                ))
+        return WindowProjection(
+            anchor_index=int(anchor_index),
+            start=int(start),
+            length=length,
+            segments=tuple(segments),
+            gaps=tuple(gaps),
+            classes=tuple(int(c) for c in classes.tolist()),
+        )
+
+    def project_va_window(
+        self, anchor_index: int, va: int, length: int,
+    ) -> "WindowProjection":
+        """Resolve ``[va, va+length)`` in dump ``anchor_index`` to segments+gaps.
+
+        The full answer behind :meth:`class_window_va`: same classes, plus
+        where each covered run lives in the slab and in every OTHER dump.
+        """
+        return self._project(
+            anchor_index, va, length,
+            self._walk_va_window(anchor_index, va, length),
+        )
+
+    def project_slab_window(
+        self, slab_offset: int, length: int,
+    ) -> "WindowProjection":
+        """Resolve ``[slab_offset, +length)`` into segments+gaps, per dump.
+
+        Anchored on the slab, so :attr:`WindowProjection.anchor_index` is -1
+        and :attr:`WindowProjection.start` is the slab offset.
+        """
+        return self._project(
+            -1, slab_offset, length,
+            self._walk_slab_window(slab_offset, length),
+        )
 
     def class_window_va(self, dump_index: int, va: int, length: int) -> List[int]:
         """Per-byte ByteClass codes for ``[va, va+length)`` in a dump's VA space.
@@ -385,24 +763,10 @@ class ConsensusVector:
         Entries are ByteClass codes for aligned/captured bytes and ``-1`` for VA
         gaps not present in the consensus (unmapped / not-captured-in-all-dumps).
         """
-        idx = self._va_index_for(dump_index)
-        length = max(0, int(length))
-        out = np.full(length, -1, dtype=np.int16)
-        if not idx or length == 0:
-            return out.tolist()
-        starts = [e[0] for e in idx]
+        out = np.full(max(0, int(length)), -1, dtype=np.int16)
         cls = np.asarray(self._classifications)
-        # First slice that could overlap [va, va+length).
-        i = max(0, bisect.bisect_right(starts, va) - 1)
-        while i < len(idx) and idx[i][0] < va + length:
-            va_start, slab, ps = idx[i]
-            seg_start = max(va, va_start)
-            seg_end = min(va + length, va_start + ps)
-            if seg_end > seg_start:
-                s0 = slab + (seg_start - va_start)
-                s1 = slab + (seg_end - va_start)
-                out[seg_start - va:seg_end - va] = cls[s0:s1].astype(np.int16)
-            i += 1
+        for w, n, slab, _row in self._walk_va_window(dump_index, va, length):
+            out[w:w + n] = cls[slab:slab + n].astype(np.int16)
         return out.tolist()
 
     def va_overview(self, dump_index: int, bins: int = 256) -> Dict[str, Any]:

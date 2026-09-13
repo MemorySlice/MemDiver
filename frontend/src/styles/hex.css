@@ -176,6 +176,18 @@
   font-weight: bold;
 }
 
+/* --- Cross-dump disagreement (N-dump aligned overlay) --- */
+/* A RING, not a background: background is already spoken for by the variance
+   heatmap, the search highlight and the "va"-view page-state tint, and this has
+   to compose with all three on the same byte. Declared after the consensus
+   colours above so it reads as a ring drawn on top of the class colour.
+   Mirrors `.md-ring-differs` in globals.css, inset so it stays inside the
+   22px byte cell. */
+.hex-byte.cross-dump-differs,
+.hex-char.cross-dump-differs {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-accent-yellow) 60%, transparent);
+}
+
 /* --- Neighborhood overlay: field semantic colors --- */
 .hex-byte.nb-static,
 .hex-char.nb-static {

@@ -963,6 +963,32 @@ def test_cli_accepts_inline_pairs_json(tmp_path):
     assert payload["mode"] == "explicit"
 
 
+def test_cli_accepts_an_inline_pairing_longer_than_a_path(tmp_path):
+    """The inline form must survive a pairing too long to be a path at all.
+
+    ``Path(raw).is_file()`` RAISES ``OSError`` ENAMETOOLONG rather than
+    returning ``False`` once the value exceeds the filesystem's limits, so
+    before the guard a legitimate multi-pair ``--pairs '[{...}]'`` — the very
+    case the flag's "far too long to type" doc describes — died with a
+    traceback instead of parsing. Eight pairs of real absolute paths clears
+    ``PATH_MAX`` comfortably; the assertion on the length keeps the test from
+    passing vacuously if a future tmp layout got shorter.
+    """
+    pairs = []
+    for index in range(8):
+        run = make_run(tmp_path, f"cli_long_{index}", _random(index + 20))
+        pairs.append({"dump_path": str(run / "phase_a.dump"),
+                      "pcap_path": str(run / "run_data" / "traffic.pcap")})
+    inline = json.dumps(pairs)
+    assert len(inline) > 255
+
+    code, payload = _run_cli(["--pairs", inline], tmp_path)
+
+    assert code == 0
+    assert payload["mode"] == "explicit"
+    assert payload["counts"]["pairs_present"] == 8
+
+
 def test_cli_rejects_unparseable_pairs(tmp_path):
     from memdiver.cli import build_parser, _cmd_locate_field_pairs
 

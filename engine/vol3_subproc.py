@@ -133,13 +133,21 @@ def _shebang_interpreter(path: Path) -> Optional[str]:
     return candidate if Path(candidate).is_file() else None
 
 
-def _launcher_for_path(path: Path, source: str) -> Optional[Vol3Launcher]:
+def _launcher_for_path(
+    path: Path, source: str, *, python_override: Optional[str] = None,
+) -> Optional[Vol3Launcher]:
     path = path.expanduser()
     if not path.is_file():
         logger.warning("vol3 launcher %s does not exist", path)
         return None
     cwd = path.parent.resolve()
-    configured = os.environ.get(VOL3_PYTHON_ENV)
+    # *python_override* is an explicit PARAMETER beating the env var, not a
+    # replacement for it: env-only configuration is unreachable from the web
+    # and MCP surfaces (nobody sets an environment variable through an HTTP
+    # body), so a producer parameter has to be able to say which interpreter
+    # owns the framework under test. ``None`` keeps the historical env-var
+    # behaviour byte-for-byte.
+    configured = python_override or os.environ.get(VOL3_PYTHON_ENV)
     if path.suffix == ".py":
         # A checkout's vol.py belongs to that checkout's venv; falling back to
         # OUR interpreter is a last resort and is worth being loud about,
@@ -160,22 +168,65 @@ def _launcher_for_path(path: Path, source: str) -> Optional[Vol3Launcher]:
     )
 
 
-def find_vol3_launcher() -> Optional[Vol3Launcher]:
+#: :attr:`Vol3Launcher.source` for a launcher named by the ``vol_bin=``
+#: PARAMETER rather than by the environment. Distinct from
+#: :data:`VOL3_BIN_ENV` on purpose: "which rule produced this launcher" is part
+#: of every verification report, and "the caller told us" and "the environment
+#: told us" are different provenance.
+VOL3_BIN_PARAM = "vol_bin="
+
+
+def find_vol3_launcher(
+    *, python_override: Optional[str] = None,
+) -> Optional[Vol3Launcher]:
     """Resolve a usable ``vol`` launcher, or ``None``.
 
     Order: :data:`VOL3_BIN_ENV`, then ``which("vol")``, then ``which("vol.py")``.
     The env var wins so that a machine holding several Volatility3 trees --
     which is the normal state of a forensics workstation -- can pin the proof to
     a chosen one instead of whichever ``PATH`` happens to expose.
+
+    *python_override* pins the INTERPRETER without pinning the launcher, for a
+    caller that found ``vol`` on ``PATH`` but knows which venv owns its
+    framework. ``None`` (the default) is the historical behaviour exactly.
     """
     explicit = os.environ.get(VOL3_BIN_ENV)
     if explicit:
-        return _launcher_for_path(Path(explicit), source=VOL3_BIN_ENV)
+        return _launcher_for_path(
+            Path(explicit), source=VOL3_BIN_ENV, python_override=python_override,
+        )
     for name in ("vol", "vol.py"):
         found = shutil.which(name)
         if found:
-            return _launcher_for_path(Path(found), source=f'which("{name}")')
+            return _launcher_for_path(
+                Path(found), source=f'which("{name}")',
+                python_override=python_override,
+            )
     return None
+
+
+def resolve_launcher(
+    *, vol_bin: Optional[str] = None, vol_python: Optional[str] = None,
+) -> Optional[Vol3Launcher]:
+    """The launcher for an explicit request, falling back to the environment.
+
+    The parameter form of :func:`find_vol3_launcher`, and the entry point every
+    surface uses. *vol_bin* / *vol_python* are the first-class equivalents of
+    :data:`VOL3_BIN_ENV` / :data:`VOL3_PYTHON_ENV` and BEAT them, because an
+    environment variable is not a channel a web request or an MCP tool call
+    has: leaving launcher selection env-only would mean the "point me at my own
+    vol.py" requirement was satisfiable from the shell alone.
+
+    An explicit *vol_bin* that does not exist resolves to ``None`` rather than
+    falling back to ``PATH`` -- honouring a request INCLUDING its failure is
+    what keeps a report header truthful, exactly as
+    :func:`find_vol3_launcher` already does for the env var.
+    """
+    if vol_bin:
+        return _launcher_for_path(
+            Path(vol_bin), source=VOL3_BIN_PARAM, python_override=vol_python,
+        )
+    return find_vol3_launcher(python_override=vol_python)
 
 
 def _run(
@@ -262,6 +313,7 @@ def run_plugin(
     dump: Path,
     *,
     extra_args: Sequence[str] = (),
+    plugin_args: Sequence[str] = (),
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> List[dict]:
     """Run the emitted plugin at *plugin_path* over *dump*, returning its rows.
@@ -269,6 +321,24 @@ def run_plugin(
     Raises ``RuntimeError`` when the launcher exits non-zero, with its stderr
     attached -- a silently-empty list would be indistinguishable from a scan
     that legitimately found nothing.
+
+    **The two argument slots are not interchangeable, and putting a flag in the
+    wrong one is a hard error rather than a subtlety.** ``vol``'s CLI is an
+    argparse SUBCOMMAND parser: global options belong before the plugin target
+    and the plugin's own options belong after it. Measured against the author's
+    2.27.1 checkout::
+
+        vol.py ... --virtual  Pad256.MemDiverScanPad256   -> exit 2,
+                                          "unrecognized arguments: --virtual"
+        vol.py ... Pad256.MemDiverScanPad256 --virtual     -> exit 0, [] rows
+        vol.py ... Pad256.MemDiverScanPad256 --pid 1       -> exit 0, 1 row
+
+    So *extra_args* (kept exactly where it has always been, ahead of the
+    target) is for GLOBAL ``vol`` options, and *plugin_args* -- appended after
+    the target -- is the only slot a plugin flag such as ``--pid`` or
+    ``--virtual`` can be passed in. No caller in the repo was using
+    *extra_args* for a plugin flag, so nothing changes behaviour here; the new
+    slot exists because there was previously no working one.
     """
     plugin_path = Path(plugin_path).resolve()
     dump = Path(dump).resolve()
@@ -281,6 +351,7 @@ def run_plugin(
         "-f", str(dump),
         *extra_args,
         target,
+        *plugin_args,
     )
     result = _run(argv, launcher.cwd, timeout=timeout)
     banner = _BANNER_VERSION.search(result.stdout)
@@ -297,13 +368,21 @@ def run_plugin(
     return _parse_json_rows(result.stdout)
 
 
-def launcher_report() -> str:
-    """One line naming the resolved launcher and its version, for a test header."""
-    launcher = find_vol3_launcher()
+def launcher_report(
+    *, vol_bin: Optional[str] = None, vol_python: Optional[str] = None,
+) -> str:
+    """One line naming the resolved launcher and its version, for a test header.
+
+    Also the wording of the "neither mode is available" refusal every surface
+    raises, which is why the not-found branch names the ``vol_bin`` PARAMETER
+    beside the env var: on web and MCP the env var is not something the caller
+    can reach.
+    """
+    launcher = resolve_launcher(vol_bin=vol_bin, vol_python=vol_python)
     if launcher is None:
         return (
-            f"not found (set {VOL3_BIN_ENV}, or put vol/vol.py on PATH; "
-            f"a .py launcher also wants {VOL3_PYTHON_ENV})"
+            f"not found (set {VOL3_BIN_ENV} or pass vol_bin=, or put vol/vol.py "
+            f"on PATH; a .py launcher also wants {VOL3_PYTHON_ENV} / vol_python=)"
         )
     version = probe_version(launcher)
     rendered = ".".join(map(str, version)) if version else "version unknown"

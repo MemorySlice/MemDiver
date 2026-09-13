@@ -1,5 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
-import { datasetAvailable, RUN_0001, DATASET_DIR, MSL } from "../fixtures/dataset";
+import {
+  datasetAvailable,
+  datasetRunCount,
+  DATASET_PAGE_SIZE,
+  RUN_0001,
+  DATASET_DIR,
+  MSL,
+} from "../fixtures/dataset";
 import {
   enterWorkspaceWithDataset,
   enterWorkspaceWithMsl,
@@ -220,7 +227,7 @@ test.describe("huge dumps + large datasets (bounded-window + pagination)", () =>
     test.skip(!datasetAvailable, "real dataset not present");
     test.setTimeout(120_000);
     const guards = installErrorGuards(page);
-    await enterWorkspaceWithDataset(page, DATASET_DIR); // 100 runs
+    await enterWorkspaceWithDataset(page, DATASET_DIR);
 
     await expect(page.locator('[data-testid="dataset-run"]').first()).toBeVisible({
       timeout: 45_000,
@@ -232,7 +239,11 @@ test.describe("huge dumps + large datasets (bounded-window + pagination)", () =>
       await loadMore.click().catch(() => {});
       await page.waitForTimeout(400);
     }
-    await expect(page.locator('[data-testid="dataset-run"]')).toHaveCount(100, {
+    // Every run accumulated -- counted from the corpus on disk, not hardcoded.
+    // A fixed 100 here was a fact about a private corpus, so it went red the
+    // moment that corpus changed size, hiding the regressions this spec exists
+    // to catch. See `datasetRunCount` in ../fixtures/dataset.
+    await expect(page.locator('[data-testid="dataset-run"]')).toHaveCount(datasetRunCount, {
       timeout: 45_000,
     });
 
@@ -263,7 +274,10 @@ test.describe("huge dumps + large datasets (bounded-window + pagination)", () =>
     const resp = await firstPage;
     const ms = resp.request().timing().responseEnd;
     // eslint-disable-next-line no-console
-    console.log(`[timing] first /api/dataset/runs page (50 of 100): ${ms.toFixed(0)} ms`);
+    console.log(
+      `[timing] first /api/dataset/runs page ` +
+        `(${Math.min(DATASET_PAGE_SIZE, datasetRunCount)} of ${datasetRunCount}): ${ms.toFixed(0)} ms`,
+    );
     expect(ms).toBeLessThan(25_000);
   });
 });

@@ -17,7 +17,9 @@
     "run": "Run Consensus",
     "running": "Running...",
     "computing": "Computing consensus...",
-    "overlayLabel": "Show overlay in hex view"
+    "overlayLabel": "Show overlay in hex view",
+    "runScoped_one": "Run consensus on {{count}} dump",
+    "runScoped_other": "Run consensus on {{count}} dumps"
   },
   "tagStatus": {
     "valid": {
@@ -39,5 +41,24 @@
     "busy": "...",
     "wrongKey": "Wrong key or tampered file",
     "failed": "Unlock failed"
+  },
+  "selection": {
+    "stripLabel": "Loaded dumps",
+    "participateLabel": "Include {{name}} in the analysis",
+    "focusLabel": "Focus {{name}}",
+    "originBadge": "ORIGIN",
+    "originTitle": "The dump this session started from",
+    "focusBadge": "FOCUS",
+    "focusTitle": "The focused dump — the alignment anchor for every comparison",
+    "selectAll": "Select all",
+    "selectNone": "Select none",
+    "selectOnlyFocused": "Only focused",
+    "selectOnlyFocusedTitle": "Narrow the analysis to just the focused dump",
+    "selectOnlyFocusedAlreadyTitle": "The focused dump is already the only one selected",
+    "selectOnlyFocusedNoFocusTitle": "Focus a dump first — it becomes the only one selected",
+    "countLabel": "{{selected}} of {{total}} selected",
+    "viewSideBySide": "View side by side",
+    "viewOverlay": "View overlay",
+    "needTwoTitle": "Select at least 2 dumps to use this layout"
   }
 }

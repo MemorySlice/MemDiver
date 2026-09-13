@@ -1,19 +1,48 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { DocPanel } from "@/components/common/DocPanel";
+
+/** An ordinary link out of the empty state. Unchanged, byte for byte. */
+export interface EmptyStateHrefLink {
+  label: string;
+  href: string;
+}
+
+/**
+ * A link into the in-app documentation panel.
+ *
+ * `doc` is a `docs/`-relative markdown path (`visualizations/consensus.md`),
+ * NOT a URL. The four call sites that used to pass `href: "/docs/..."` pass
+ * this instead: no environment has ever served `/docs/<path>.md` — FastAPI's
+ * Swagger UI owns `/docs`, and the Vite dev server's `server.fs.allow`
+ * excludes the repo-root `docs/` tree — so every one of those links 404'd.
+ */
+export interface EmptyStateDocLink {
+  label: string;
+  doc: string;
+}
+
+export type EmptyStateSecondary = EmptyStateHrefLink | EmptyStateDocLink;
 
 export interface EmptyStateProps {
   icon?: ReactNode;
   title: string;
   description?: ReactNode;
   primaryCta?: { label: string; onClick: () => void; disabled?: boolean };
-  secondary?: { label: string; href: string };
+  secondary?: EmptyStateSecondary;
   className?: string;
   children?: ReactNode;
   "data-testid"?: string;
 }
 
+function isDocLink(link: EmptyStateSecondary): link is EmptyStateDocLink {
+  return "doc" in link;
+}
+
 export function EmptyState(props: EmptyStateProps) {
   const { icon, title, description, primaryCta, secondary, className, children } = props;
-  const isExternal = secondary?.href?.startsWith("http");
+  const [openDoc, setOpenDoc] = useState<string | null>(null);
+  const isExternal =
+    secondary !== undefined && !isDocLink(secondary) && secondary.href.startsWith("http");
   return (
     <div
       role="status"
@@ -55,19 +84,34 @@ export function EmptyState(props: EmptyStateProps) {
               {primaryCta.label}
             </button>
           )}
-          {secondary && (
-            <a
-              href={secondary.href}
-              {...(isExternal ? { target: "_blank", rel: "noreferrer" } : {})}
-              className="text-[var(--text-xs)] underline-offset-2 hover:underline"
-              style={{ color: "var(--md-accent-blue)" }}
-            >
-              {secondary.label}
-            </a>
-          )}
+          {secondary &&
+            (isDocLink(secondary) ? (
+              <button
+                type="button"
+                onClick={() => setOpenDoc(secondary.doc)}
+                className="text-[var(--text-xs)] underline-offset-2 hover:underline bg-transparent p-0"
+                style={{ color: "var(--md-accent-blue)" }}
+              >
+                {secondary.label}
+              </button>
+            ) : (
+              <a
+                href={secondary.href}
+                {...(isExternal ? { target: "_blank", rel: "noreferrer" } : {})}
+                className="text-[var(--text-xs)] underline-offset-2 hover:underline"
+                style={{ color: "var(--md-accent-blue)" }}
+              >
+                {secondary.label}
+              </a>
+            ))}
         </div>
       )}
       {children}
+      {openDoc !== null && (
+        // `key` so a different page always gets a fresh panel: DocPanel seeds
+        // its own path state from this prop and then owns it.
+        <DocPanel key={openDoc} doc={openDoc} onClose={() => setOpenDoc(null)} />
+      )}
     </div>
   );
 }

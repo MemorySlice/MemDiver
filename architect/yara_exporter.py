@@ -18,6 +18,22 @@ _YARA_KEYWORDS = frozenset({
     "them", "for", "of", "at", "in", "filesize", "entrypoint", "import",
     "include", "private", "global", "true", "false", "ascii", "wide",
     "nocase", "fullword", "xor", "base64", "base64wide",
+    # The quantifier/operator and integer-reader words below were MISSING, so
+    # ``_sanitize_identifier`` passed them through and the exporter emitted an
+    # uncompilable ``rule none { ... }``. libyara rejects each of these as an
+    # identifier; ``none`` is merely the one a hypothesis draw happened to find
+    # (``tests/test_yara_exporter_compiles.py``), and the other 21 were the same
+    # latent bug waiting for a differently-named pattern. Over-listing is safe --
+    # a false positive here only prefixes a name that did not need it, which is
+    # why ``include`` stays even though this libyara accepts it. Under-listing
+    # emits a rule that will not compile. The gap cannot silently reopen:
+    # ``test_no_reserved_word_is_missing_from_the_keyword_set`` asks the INSTALLED
+    # libyara which words it rejects rather than trusting this literal.
+    "none", "defined", "matches", "contains",
+    "startswith", "endswith", "icontains", "istartswith", "iendswith",
+    "iequals",
+    "int8", "int16", "int32", "uint8", "uint16", "uint32",
+    "int8be", "int16be", "int32be", "uint8be", "uint16be", "uint32be",
 })
 
 #: libyara caps an identifier at 128 characters; a longer one is truncated by
@@ -162,6 +178,33 @@ class YaraExporter:
         # stdlib's handleError, but as a hard TypeError under any handler that
         # re-raises formatting failures (pytest's log capture does). The
         # coerced int is the same number in every case that used to work.
+        # A pattern wider than libyara's regexp verification limit compiles
+        # cleanly and matches NOTHING -- see
+        # ``engine.yara_scan.regexp_scan_limit``. This exporter returns a bare
+        # string and has no diagnostics channel of its own (its callers in
+        # ``app.tools_pipeline`` attach ``export.pattern.over_scan_limit``), so
+        # the log is the only voice it has; it is still worth having, because
+        # ``export`` is a public static method that other code paths and tests
+        # call directly. Imported lazily and guarded so this module keeps its
+        # zero-import-cost, yara-optional character.
+        if pattern_length > 0 and "?" in yara_hex:
+            try:
+                from memdiver.engine.yara_scan import (
+                    pattern_exceeds_scan_limit,
+                    regexp_scan_limit,
+                )
+            except ImportError:  # pragma: no cover - defensive
+                pass
+            else:
+                if pattern_exceeds_scan_limit(pattern_length):
+                    logger.warning(
+                        "Exported YARA rule %s has a %d-byte wildcard pattern, "
+                        "over the %s-byte limit the installed libyara will "
+                        "verify: this rule will match NOTHING, not even the "
+                        "dump its bytes came from. Re-emit with a smaller "
+                        "context window.",
+                        name, pattern_length, regexp_scan_limit(),
+                    )
         logger.info("Exported YARA rule: %s (%d bytes)", name, pattern_length)
         return rule
 

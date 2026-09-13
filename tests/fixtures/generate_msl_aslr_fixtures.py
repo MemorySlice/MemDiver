@@ -31,6 +31,12 @@ MODULE_BASE_RUN1 = 0x00400000
 MODULE_BASE_RUN2 = 0x00500000
 HEAP_BASE_RUN1 = 0x7FFF00000000
 HEAP_BASE_RUN2 = 0x7FFF10000000
+#: Optional second region (``extra_region=True``). One all-CAPTURED page whose
+#: run-to-run shift (4 KiB) is deliberately NOT the heap's shift (0x10000000),
+#: so a consumer that assumes one scalar VA delta per dump cannot pass.
+EXTRA_BASE_RUN1 = 0x10000000
+EXTRA_BASE_RUN2 = 0x10001000
+EXTRA_REGION_PAGES = 1
 
 SECRET_VALUES_BY_RUN = {
     1: _xor_secret(SECRET_BASE, 1),
@@ -66,8 +72,18 @@ def _build_memory_region_mixed(base_addr, num_pages, page_state_map,
     return _build_block(0x0001, payload)
 
 
-def _build_single_run(run_num, module_base, heap_base, pad_byte):
-    """Assemble one complete MSL blob for a single ASLR-shifted run."""
+def _build_single_run(run_num, module_base, heap_base, pad_byte,
+                      extra_base=None):
+    """Assemble one complete MSL blob for a single ASLR-shifted run.
+
+    ``extra_base`` — when given, a second, one-page, all-CAPTURED region is
+    emitted at that virtual address. It exists so the pair has TWO regions
+    that move by DIFFERENT amounts between runs: with a single region the
+    va-view span starts at the heap base in both runs, and every
+    coordinate question has the same answer whether you reason per-region
+    or per-dump. A second region with its own shift makes those two answers
+    diverge, which is what a slab->VA mapping has to get right.
+    """
     global _RNG
     # Deterministic per-run UUID stream (seed 99 + run_num)
     _RNG = random.Random(99 + run_num)
@@ -98,6 +114,15 @@ def _build_single_run(run_num, module_base, heap_base, pad_byte):
     )
     blob += region_block
 
+    # Optional second region — 1 page, all CAPTURED (2 bits per page, 00).
+    # Its base moves by a different delta than the heap's, on purpose.
+    if extra_base is not None:
+        extra_block, _ = _build_memory_region_mixed(
+            extra_base, EXTRA_REGION_PAGES, b"\x00",
+            bytes([pad_byte] * PAGE_SIZE * EXTRA_REGION_PAGES),
+        )
+        blob += extra_block
+
     # End of Capture
     eoc_block, _ = _build_end_of_capture(timestamp_ns + 1_000_000_000)
     blob += eoc_block
@@ -105,10 +130,17 @@ def _build_single_run(run_num, module_base, heap_base, pad_byte):
     return blob
 
 
-def generate_aslr_msl_pair():
-    """Return ``(run1_bytes, run2_bytes)`` — two ASLR-shifted MSL blobs."""
-    run1 = _build_single_run(1, MODULE_BASE_RUN1, HEAP_BASE_RUN1, 0x00)
-    run2 = _build_single_run(2, MODULE_BASE_RUN2, HEAP_BASE_RUN2, 0xFE)
+def generate_aslr_msl_pair(extra_region: bool = False):
+    """Return ``(run1_bytes, run2_bytes)`` — two ASLR-shifted MSL blobs.
+
+    With ``extra_region=True`` each run carries a second one-page region
+    (see :func:`_build_single_run`) whose run-to-run shift differs from the
+    heap's. Default False keeps every existing caller byte-identical.
+    """
+    extra1 = EXTRA_BASE_RUN1 if extra_region else None
+    extra2 = EXTRA_BASE_RUN2 if extra_region else None
+    run1 = _build_single_run(1, MODULE_BASE_RUN1, HEAP_BASE_RUN1, 0x00, extra1)
+    run2 = _build_single_run(2, MODULE_BASE_RUN2, HEAP_BASE_RUN2, 0xFE, extra2)
     return run1, run2
 
 

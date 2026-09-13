@@ -89,8 +89,11 @@ from memdiver.app.tools_pipeline import (
     locate_key,
     manual_export_pattern,
     n_sweep,
+    scan_yara_rule,
+    score_detector_matches,
     search_reduce,
     verify_key_result,
+    verify_vol3_plugin,
 )
 
 # --- dataset / analysis -----------------------------------------------------
@@ -101,6 +104,9 @@ from memdiver.app.tools import (
     list_protocols,
     scan_dataset,
 )
+
+# --- consensus: the aligned window (the N-dump differential viewer) --------
+from memdiver.app.tools_consensus import aligned_window_from_vector, aligned_window_result
 
 # --- frontend-serving producers (field inference / algorithm availability) --
 from memdiver.app.tools_algorithms import algorithm_availability
@@ -145,8 +151,25 @@ __all__ = [
     "export_key_pattern",
     # C3 — the paired field search (N (dump, capture) pairs, one needle each).
     "locate_field_across_pairs",
+    # D1 — RUN an emitted YARA rule over N dumps. The other side of
+    # ``export_pattern`` / ``export_key_pattern``, which only ever wrote one.
+    "scan_yara_rule",
+    # D2 — SCORE what D1 found. ``scan_yara_rule`` says the rule fired; this
+    # says whether it was right, which is a different fact.
+    "score_detector_matches",
+    # D3 — RUN the Volatility3 plugin we emit, in BOTH of the ways a user runs
+    # one: in-process against the framework MemDiver imports, and out-of-process
+    # through the operator's own ``vol`` launcher. Every row names the runtime
+    # and the RESOLVED framework version that produced it, because three
+    # Volatility3 trees commonly coexist on one machine and they disagree.
+    "verify_vol3_plugin",
     "keylog_result",
     "inspect_pcap",
+    # consensus — one window, read in every dump at the address the consensus
+    # aligned. ``aligned_window_from_vector`` is the same compute over a vector
+    # the caller already has (no rebuild); ``aligned_window_result`` builds one.
+    "aligned_window_result",
+    "aligned_window_from_vector",
     # verify / experiment
     "verify_key_result",
     "experiment_result",

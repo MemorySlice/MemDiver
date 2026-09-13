@@ -160,6 +160,15 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("pipeline.manual_export_pattern",
          "memdiver.app.tools_pipeline.manual_export_pattern",
          ("library", "cli", "web", "mcp")),
+    # -- consensus: the aligned window (the N-dump differential viewer) -----
+    # The ONE place N dumps are read in correspondence. Registered on all four
+    # surfaces in the change that introduced it, precisely so it never joins
+    # KNOWN_PARITY_GAPS: a capability that ships web-only is how the CLI and
+    # MCP surfaces end up re-deriving slab->VA arithmetic of their own, which
+    # is the class of bug this producer exists to delete.
+    _cap("consensus.aligned_window",
+         "memdiver.app.tools_consensus.aligned_window_result",
+         ("library", "cli", "web", "mcp")),
     # -- pcap arm/validate (the pcap verification oracle's first step) -------
     # Wired on all four surfaces since Phase 1 (services.py, CLI `inspect-pcap`,
     # POST /api/pcaps/validate, MCP `inspect_pcap`) but never registered here, so
@@ -215,6 +224,61 @@ CAPABILITIES: Tuple[Capability, ...] = (
     # and could not have one, since that baseline is shrink-only.
     _cap("analysis.locate_field_pairs",
          "memdiver.app.tools_pipeline.locate_field_across_pairs",
+         ("library", "cli", "web", "mcp")),
+    # -- running the rules we EMIT (D1) -------------------------------------
+    # ``export.key_pattern`` / ``export_pattern`` above write a signature;
+    # until this capability landed nothing could RUN one, so every emitted
+    # detector was unevaluated BY CONSTRUCTION. ``engine/yara_scan.py`` was
+    # fully built and tested and reachable from no surface at all -- the same
+    # hole ``pcap.inspect`` sat in, and the reason
+    # ``tests/test_capability_completeness.py`` exists. Named
+    # ``analysis.yara_scan`` and NOT ``scan.yara``: ``dataset.scan`` above is a
+    # dataset WALK, and a ``scan.*`` family beside it would read as a sibling of
+    # that rather than of the analysis producers it actually belongs with.
+    # Wired on all four surfaces in the change that introduced it (services.py
+    # re-export, CLI ``scan-yara``, POST /api/scan/yara, MCP ``scan_yara_rule``),
+    # so it needs no KNOWN_PARITY_GAPS entry -- and could not have one, since
+    # that baseline is shrink-only.
+    _cap("analysis.yara_scan",
+         "memdiver.app.tools_pipeline.scan_yara_rule",
+         ("library", "cli", "web", "mcp")),
+    # -- and scoring what those rules found (D2) ---------------------------
+    # The second half of ``analysis.yara_scan``, and the half that makes it
+    # mean anything: a scan says the rule FIRED, and a census of firings with
+    # no ground truth beside it measures nothing (a rule matching every page
+    # scores a perfect dumps_matched). ``engine/detector_metrics.py`` was the
+    # same shape of hole as ``engine/yara_scan.py`` before it -- 472 lines,
+    # fully tested, reachable from NO surface. Named ``analysis.score_detector``
+    # rather than ``analysis.detector_metrics``: the capability is the act of
+    # scoring, and the module name is an implementation detail. Wired on all
+    # four surfaces in the change that introduced it (services.py re-export,
+    # CLI ``score-detector``, POST /api/scan/score, MCP
+    # ``score_detector_matches``), so it needs no KNOWN_PARITY_GAPS entry --
+    # and could not have one, since that baseline is shrink-only.
+    _cap("analysis.score_detector",
+         "memdiver.app.tools_pipeline.score_detector_matches",
+         ("library", "cli", "web", "mcp")),
+    # -- and RUNNING the Volatility3 plugin we emit (D3) --------------------
+    # The vol3 half of ``analysis.yara_scan``. Emitting a plugin was never
+    # evidence that it works: for most of this repo's life an emitted plugin
+    # was checked only by ``ast.parse`` and substring assertions over its
+    # generated text, so one that could not even be IMPORTED passed the whole
+    # suite -- and Phase B's four real bugs were all found by RUNNING things,
+    # one of them a vol3 export that disagreed with the YARA rule it embedded.
+    # ``engine/vol3_verify.py`` (in-process) and ``engine/vol3_subproc.py`` (a
+    # real ``vol`` launcher) were written to close that loop and were reachable
+    # from NO surface at all -- the same hole ``engine/yara_scan.py`` sat in.
+    #
+    # Named ``analysis.verify_plugin`` and not ``analysis.vol3_verify``: the
+    # capability is the act of verifying an emitted detector, and which of the
+    # two engine modules answers is a MODE of the request rather than a
+    # different capability. Wired on all four surfaces in the change that
+    # introduced it (services.py re-export, CLI ``verify-plugin``,
+    # POST /api/scan/verify-plugin, MCP ``verify_vol3_plugin``), so it needs no
+    # KNOWN_PARITY_GAPS entry -- and could not have one, since that baseline is
+    # shrink-only.
+    _cap("analysis.verify_plugin",
+         "memdiver.app.tools_pipeline.verify_vol3_plugin",
          ("library", "cli", "web", "mcp")),
     # -- frontend-serving producers (Phase 9) -------------------------------
     # Field inference + algorithm-availability gating were duplicated in the

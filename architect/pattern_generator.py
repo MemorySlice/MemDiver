@@ -117,8 +117,16 @@ class PatternGenerator:
         This is not hypothetical. On the real 8-dump OpenSSL TLS 1.2 corpus the
         48-byte master secret at offset 370,672 sits inside a run of zeros: at
         the default 64 bytes of context the resulting mask has 128 static bytes
-        carrying exactly ONE distinct value, and the emitted rule matches 5,311
-        positions in its own source dump.
+        carrying exactly ONE distinct value, and that rule fires **825,779**
+        times in its own 11 MB source dump under **libyara** -- or **5,311**
+        times under **Volatility3's** ``RegExScanner``, which walks with
+        non-overlapping ``re.finditer`` and so reports one hit per ~176-byte
+        stride (``tests/test_vol3_verify.py`` pins the 5,311 for that engine;
+        ``tests/test_detector_loop_corpus.py`` pins the 825,779 for this one).
+        Both numbers describe the SAME rule on the SAME dump, 155x apart: a
+        selectivity figure is meaningless without naming the engine that
+        produced it, so a caller should measure its own rule -- ``memdiver
+        scan-yara --count-only --no-max-matches`` -- rather than reuse either.
 
         Only bytes inside a static RUN of at least *min_anchor_length* count —
         the same anchors :meth:`find_anchors` reports, because a lone static

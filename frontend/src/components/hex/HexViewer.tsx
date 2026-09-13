@@ -10,13 +10,10 @@ import { HexStatusBar } from "./HexStatusBar";
 import { SearchMinimap } from "./SearchMinimap";
 import { ConsensusVarianceMinimap } from "./ConsensusVarianceMinimap";
 import { buildRegionIndex } from "./highlight-utils";
-import {
-  windowCount,
-  clampWindowStart,
-  recenterWindow,
-  isRowInWindow,
-} from "./window-utils";
+import { windowCount, clampWindowStart } from "./window-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
+import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
+import { useMslViewSizes } from "@/hooks/useMslViewSizes";
 
 const BYTES_PER_ROW = 16;
 
@@ -36,7 +33,6 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // object on every set()) do not re-render the TanStack Virtual loop
   // unless a field this component actually reads has changed.
   const setDumpPath = useHexStore((s) => s.setDumpPath);
-  const setViewSizes = useHexStore((s) => s.setViewSizes);
   const storeFileSize = useHexStore((s) => s.fileSize);
   const viewMode = useHexStore((s) => s.viewMode);
   const setViewMode = useHexStore((s) => s.setViewMode);
@@ -54,10 +50,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
   const searchOffsets = useHexStore((s) => s.searchOffsets);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
-  const scrollTarget = useHexStore((s) => s.scrollTarget);
-  const clearScrollTarget = useHexStore((s) => s.clearScrollTarget);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
-  const setWindowStart = useHexStore((s) => s.setWindowStart);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
   const extendSelection = useHexStore((s) => s.extendSelection);
@@ -93,29 +86,12 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // For MSL dumps, probe the backend once to learn both the raw file
   // size and the VAS projection size so the toolbar toggle and the
   // virtualizer row count can switch between them without re-fetching.
-  useEffect(() => {
-    if (!dumpPath || format !== "msl") return;
-    let cancelled = false;
-    const base = `/api/inspect/hex-raw?dump_path=${encodeURIComponent(dumpPath)}&offset=0&length=1`;
-    (async () => {
-      try {
-        const [rawJson, vasJson, vaJson] = await Promise.all([
-          fetch(`${base}&view=raw`).then((r) => r.json()),
-          fetch(`${base}&view=vas`).then((r) => r.json()),
-          fetch(`${base}&view=va`).then((r) => r.json()),
-        ]);
-        if (cancelled) return;
-        setViewSizes(
-          rawJson.file_size ?? 0,
-          vasJson.file_size ?? 0,
-          vaJson.file_size ?? 0,
-        );
-      } catch {
-        /* leave sizes at defaults on network failure */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [dumpPath, format, setViewSizes]);
+  //
+  // The probe itself now lives in `useMslViewSizes`, shared with the N-pane
+  // layouts: they never mount this component, so while it owned the effect,
+  // re-anchoring inside side-by-side left all three sizes at the container
+  // placeholder. Behaviour here is unchanged.
+  useMslViewSizes(dumpPath, format);
 
   // On reload the persisted (localStorage) view mode may already be "va"
   // without setViewMode ever firing, so page-state tinting (CAPTURED/
@@ -259,21 +235,9 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     dumpPath,
   ]);
 
-  // scrollTarget is an ABSOLUTE row (set by scrollToOffset). If it already
-  // falls inside the current window, scroll to its window-relative index.
-  // Otherwise slide the window to recenter on it — the effect re-fires on the
-  // resulting `safeStart` change and then takes the in-window branch, so it
-  // terminates thanks to recenterWindow's in-window guarantee.
-  useEffect(() => {
-    if (scrollTarget === null) return;
-    const c = windowCount(safeStart, totalRows);
-    if (c > 0 && isRowInWindow(scrollTarget, safeStart, c)) {
-      virtualizer.scrollToIndex(scrollTarget - safeStart, { align: "center" });
-      clearScrollTarget();
-    } else {
-      setWindowStart(recenterWindow(scrollTarget, totalRows));
-    }
-  }, [scrollTarget, safeStart, totalRows, virtualizer, clearScrollTarget, setWindowStart]);
+  // Jump-to-row lives in `useHexScrollTarget`, shared with `MultiHexViewer` so
+  // bookmarks / search / CandidatePanel behave identically in both layouts.
+  useHexScrollTarget(virtualizer, safeStart, totalRows);
 
   const selectionStart = selection
     ? Math.min(selection.anchor, selection.active)

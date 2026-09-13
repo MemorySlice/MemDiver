@@ -45,6 +45,13 @@ _PIPELINE_PRODUCERS = [
     "locate_key", "export_key_pattern",
     # C3 — the paired field search built on top of it.
     "locate_field_across_pairs",
+    # D1 — running an emitted YARA rule, the other half of export_pattern.
+    "scan_yara_rule",
+    # D2 — scoring what D1 found against known-true key intervals.
+    "score_detector_matches",
+    # D3 — running the Volatility3 plugin we emit, the other half of
+    # emit_plugin / export_pattern's vol3 format.
+    "verify_vol3_plugin",
 ]
 _DATASET_PRODUCERS = [
     "scan_dataset", "list_protocols", "list_phases", "analyze_library",

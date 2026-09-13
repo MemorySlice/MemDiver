@@ -31,6 +31,10 @@ EXPECTED_TOOLS = {
     "search_reduce", "brute_force", "n_sweep", "emit_plugin",
     "read_hex_raw", "resolve_va", "search_bytes", "get_page_states",
     "consensus", "auto_floor", "export_pattern",
+    # The N-dump differential view: ONE window, read in EVERY dump at the
+    # address the consensus aligned. Wired on all four surfaces in the change
+    # that introduced it, so it never needed a KNOWN_PARITY_GAPS entry.
+    "aligned_window",
     # P2.3: the manual complement of export_pattern — "I know the offset, I do
     # not have the key bytes". Wired on web + MCP + library in one atomic change
     # so the producer could leave EXEMPT_PRODUCERS and be registered truthfully
@@ -64,6 +68,24 @@ EXPECTED_TOOLS = {
     # read. Registered on all four surfaces in the change that added it, so it
     # needs no _MCP_ALLOWED_OMISSIONS / KNOWN_PARITY_GAPS entry.
     "locate_field_across_pairs",
+    # D1: RUN a rule MemDiver emitted. ``engine/yara_scan.py`` was fully built
+    # and tested and reachable from NO surface, so every emitted detector was
+    # unevaluated by construction; this tool is the agent-facing half of the fix
+    # (CLI ``scan-yara``, POST /api/scan/yara and the services re-export are the
+    # other three, all landed in the same change).
+    "scan_yara_rule",
+    # D2: SCORE what that rule found. ``engine/detector_metrics.py`` sat in the
+    # identical hole -- fully tested, reachable from nowhere -- and without it
+    # an agent gets detector firings with no way to judge them, which is how a
+    # rule that matches every page gets reported as a success.
+    "score_detector_matches",
+    # D3: RUN the Volatility3 plugin MemDiver emits, in-process and/or through
+    # the operator's own ``vol``. ``engine/vol3_verify.py`` and
+    # ``engine/vol3_subproc.py`` sat in the identical hole D1's scanner did --
+    # both fully built, both reachable from NO surface -- and the agent surface
+    # needs this one most: it is the only place an emitted plugin's claims can
+    # be checked without a human reading a TreeGrid.
+    "verify_vol3_plugin",
 }
 
 

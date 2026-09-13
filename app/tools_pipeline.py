@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import tempfile
 import time
 from collections import Counter
 from contextlib import ExitStack
@@ -47,6 +49,12 @@ from memdiver.core.service_errors import (
 )
 from memdiver.core.service_result import Diagnostic, KeyStatus, Severity
 from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
+# One more of the same kind, for ``score_detector_matches``'s
+# ``tolerance_bytes`` keyword default. The scoring COMPUTE (score_intervals /
+# aggregate_detector_report) stays function-local inside that producer; only
+# this number has to resolve at import time, so the CLI flag and the Pydantic
+# model advertise the SAME alignment slack the library applies.
+from memdiver.engine.detector_metrics import DEFAULT_TOLERANCE_BYTES
 # Two DEFAULT VALUES, imported (never re-literalled) exactly as
 # DEFAULT_NEIGHBORHOOD_PAD above is: they are keyword defaults in this module's
 # signatures, so they must resolve at import time. The key-location COMPUTE is
@@ -56,8 +64,29 @@ from memdiver.engine.key_location import (
     DEFAULT_KEY_CONTEXT,
     DEFAULT_MAX_KEY_OFFSETS,
 )
+# Two more of the same kind, for ``scan_yara_rule``'s keyword defaults. The
+# scanning COMPUTE (compile_rules / scan_source) stays function-local inside
+# that producer; only these two numbers have to resolve at import time so the
+# CLI parser and the Pydantic model can advertise the SAME cap and budget the
+# library applies.
+from memdiver.engine.yara_scan import (
+    DEFAULT_MAX_MATCHES,
+    DEFAULT_TIMEOUT_S,
+)
+# And two more for ``verify_vol3_plugin``'s keyword defaults, from the two
+# runtimes it drives. ``vol3_subproc`` deliberately imports no ``volatility3``
+# at all, and ``vol3_verify``'s import of it is soft-probed, so pulling these
+# names costs the optional ``vol`` extra nothing and cannot break an install
+# that lacks it. The COMPUTE in both modules stays function-local inside the
+# producer, as everywhere else in this file.
+from memdiver.engine.vol3_subproc import (
+    DEFAULT_TIMEOUT_SECONDS as _VOL3_DEFAULT_TIMEOUT_SECONDS,
+)
+from memdiver.engine.vol3_verify import (
+    DEFAULT_MAX_HITS as _VOL3_DEFAULT_MAX_HITS,
+)
 
-from .composition import raise_if_locked
+from .composition import open_dump_source, raise_if_locked
 
 from ._progress import (
     _cancel_bridge,
@@ -340,15 +369,107 @@ KEY_PATTERN_DEGENERATE_ANCHORS_CODE = "export.key_pattern.degenerate_anchors"
 KEY_PATTERN_SUBSET_CODE = "export.key_pattern.mask_subset"
 KEY_PATTERN_NO_ANCHORS_CODE = "export.key_pattern.no_static_anchors"
 
-#: ``degenerate_anchors`` thresholds. Four distinct byte values is the point
-#: below which a "static anchor" is a run of padding; 1.0 bit/byte is what a
-#: fair coin over two values carries, and anything below it cannot distinguish
-#: this region from any other stretch of the same filler. Both are measured
-#: against the real corpus: the key at offset 370,672 has 1 distinct anchor byte
-#: and 0.0 bits at the default 64-byte context, and reaches 1.26 bits only at
-#: context=256.
-KEY_PATTERN_MIN_ANCHOR_BYTES = 4
-KEY_PATTERN_MIN_ANCHOR_BITS = 1.0
+#: The emitted pattern is WIDER than the installed libyara will verify, so the
+#: artifact about to be written matches nothing at all. Shared by the
+#: key-anchored export and the auto/manual pattern exports, because all three
+#: can write a dead rule and none of them used to say so.
+#:
+#: Emit-time rather than scan-time is the point: ``scan_yara_rule`` can only
+#: refuse to call a dead rule "clean" AFTER someone runs it, and a signature
+#: written to disk outlives the session that made it. Note the trap this
+#: closes: ``degenerate_anchors`` above advises raising ``--context`` to reach
+#: structural bytes, and following that advice to ``--context 512`` produces a
+#: ~1072-byte pattern that is silently dead. The two diagnostics are meant to
+#: be read together.
+PATTERN_OVER_SCAN_LIMIT_CODE = "export.pattern.over_scan_limit"
+
+#: ``degenerate_anchors`` thresholds, CALIBRATED ON MEASURED SELECTIVITY.
+#:
+#: The previous values (4 distinct bytes / 1.0 bit per byte) were reasoned from
+#: two points on one run -- pad 64 on the OpenSSL TLS 1.2 anchor key carries 0.0
+#: bits, pad 256 carries 1.26 -- so 1.0 looked like a boundary. Pad 128 was never
+#: measured. It is 0.6502 bits and its rule is PERFECT (one firing per dump,
+#: ``key_offset`` precision 1.0), so the 1.0-bit floor warned about a flawless
+#: rule. That is the worst failure mode a diagnostic has: it teaches the reader
+#: to skip the firing that matters. ``engine/candidate_stats.py`` is this repo's
+#: standing scar for calibrating on reasoning instead of data, so these two
+#: numbers were re-derived by measuring.
+#:
+#: THE SWEEP. 99 ``(run, pad)`` cells: pads 64/128/256/512 over 25 runs spanning
+#: all 13 corpus TLS libraries and both TLS 1.2 and 1.3. Each cell was emitted
+#: through the real ``export_key_pattern`` -> ``PatternGenerator`` ->
+#: ``YaraExporter`` chain from the run's own ``keylog.csv``, then scanned with
+#: ``scan_yara_rule(max_matches=None, include_matches=False)`` -- the uncapped
+#: COUNT-ONLY census, the only affordable way to ask the question (an uncapped
+#: pad-64 scan of eight dumps materialises 6.6M matches of 352 hex characters
+#: each: a 4.0 GB JSON). Precision came from ``score_detector_matches`` on the
+#: ``key_offset`` criterion. 92 cells were judgeable; 7 are excluded because
+#: libyara declines to match the pattern at all (see the last note below).
+#:
+#: THE RESULT. Selectivity is governed by ``distinct_bytes``, and the outcome is
+#: in three sharply separated groups -- there is nothing between 6 firings and
+#: 750,000:
+#:
+#: ============  =====  ====================  ==============  =================
+#: distinct       cells  firings / dump        precision       verdict
+#: ============  =====  ====================  ==============  =================
+#: 1                20  752,908 - 1,000,000   1.0e-06         non-detector
+#: 2                 2  2 and 6               0.5 and 0.167   imprecise
+#: >= 3             70  exactly 1, all 70     1.0             perfect
+#: ============  =====  ====================  ==============  =================
+#:
+#: So ``distinct_bytes < 3`` is a PERFECT classifier over all 92 judgeable
+#: cells: 22 true alarms, **0 false alarms**, 0 missed, 70 correctly quiet. The
+#: old gate scored 22 true and **21 FALSE** on the same cells -- it cried wolf
+#: on nearly half of its firings. The boundary is measured on BOTH sides:
+#: ``distinct_bytes == 2`` fires 2-6 times per dump (TLS13 libressl pads 64/128)
+#: and ``== 3`` fires exactly once (5 cells, mbedtls and libressl).
+#:
+#: WHY BYTES IS 3 AND NOT 2. An earlier, narrower sweep (36 cells, 9 runs) saw
+#: only ``distinct_bytes`` 1 and >= 3 and would have justified 2. Widening the
+#: sweep to every library turned up the two ``== 2`` cells, which are imprecise.
+#: A threshold of 2 would have gone silent on them -- the exact mistake of
+#: fitting a boundary to a value nothing had measured.
+#:
+#: WHY THE BITS FLOOR IS RETIRED (set to 0.0, and doing no work).
+#: ``shannon_bits`` was measured to be a POOR PREDICTOR -- not merely
+#: mis-calibrated. The failing cells span ``[0.0, 0.2623]`` and the passing ones
+#: span ``[0.0521, 6.7383]``: those ranges OVERLAP, so no floor of any value can
+#: separate them. A cell at 0.2623 bits is unselective while one at 0.0521 is
+#: perfect, because per-byte entropy says nothing about how much anchor there is
+#: or whether a real process image contains the same filler. Nor can a positive
+#: floor even express "more than one distinct value": the smallest non-zero
+#: entropy an anchor can carry shrinks with its size -- 0.1068 at 71 static
+#: bytes, 0.0659 at 128, 0.0261 at 385, 0.0107 at 1072 -- and ``context`` is
+#: unbounded, so every positive constant becomes a false alarm at some window
+#: width. 0.0 is therefore not a tuned value but the retirement of the signal:
+#: it fires only on "the anchors carry no information whatsoever", which is
+#: arithmetically identical to ``distinct_bytes == 1`` and hence already inside
+#: the bytes clause. Measured confusion is byte-for-byte identical with and
+#: without it. It is KEPT rather than dropped because the payload publishes
+#: ``shannon_bits`` in ``details``, and a gate that ignored a number it shows
+#: the operator would be free to drift from it.
+#:
+#: A SEPARATE DEFECT THE SWEEP TURNED UP, unrelated to these thresholds and NOT
+#: fixed here: 7 cells at pad 512 emitted a ~1056-1072-byte pattern that libyara
+#: matches ZERO times, even in the dump the bytes were read from (verified
+#: byte-identical at ``region["offset"]``). The cause is ``YR_RE_SCAN_LIMIT``,
+#: which yara-python 4.5.3/4.5.4 regressed from 4096 to **1024** (upstream PR
+#: #2144, reverted in 4.5.5): a hex string containing ``??`` compiles to a
+#: regexp, and libyara verifies backward and forward from one chosen atom with
+#: each direction clamped to that limit, silently reporting no match on overrun.
+#: A rule therefore matches only while both ``atom_offset`` and
+#: ``pattern_length - atom_offset`` stay under 1024, and the atom's position is
+#: content-chosen -- which is why pad 512 works on wolfssl (atom at ~496) and
+#: fails on openssl and gnutls. Recall 0 is worse than a false-positive storm,
+#: ``scan_yara_rule`` reports it as a confident ``clean``, and no emit-time
+#: signal sees it. Those cells are EXCLUDED above rather than counted as
+#: "selective". Guarding it means checking ``pattern_length`` against the
+#: engine's reachable span at emit time -- a different diagnostic than this one.
+#:
+#: ``tests/test_degenerate_anchor_calibration.py`` re-derives every claim here.
+KEY_PATTERN_MIN_ANCHOR_BYTES = 3
+KEY_PATTERN_MIN_ANCHOR_BITS = 0.0
 
 
 def _dominant_byte_class(class_counts: Dict[str, int]) -> str:
@@ -2036,7 +2157,12 @@ def export_pattern(
         paths, fmt=fmt, name=name, align=align, context=context,
         min_static_ratio=min_static_ratio, key_material=km,
     )
-    return _export_payload(result, name=name, output_dir=output_dir)
+    # Checked BEFORE the caller sees it (and before ``output_dir`` writes it):
+    # an emitted pattern wider than libyara will verify matches nothing at all,
+    # and a signature on disk outlives the session that made it. No ``context``
+    # to name here -- these two producers size their window from a region.
+    return _attach_scan_limit_diagnostic(
+        _export_payload(result, name=name, output_dir=output_dir))
 
 
 def manual_export_pattern(
@@ -2088,7 +2214,12 @@ def manual_export_pattern(
         paths, offset=offset, length=length, fmt=fmt, name=name,
         min_static_ratio=min_static_ratio, key_material=km,
     )
-    return _export_payload(result, name=name, output_dir=output_dir)
+    # Checked BEFORE the caller sees it (and before ``output_dir`` writes it):
+    # an emitted pattern wider than libyara will verify matches nothing at all,
+    # and a signature on disk outlives the session that made it. No ``context``
+    # to name here -- these two producers size their window from a region.
+    return _attach_scan_limit_diagnostic(
+        _export_payload(result, name=name, output_dir=output_dir))
 
 
 def _resolve_key_material(
@@ -2106,6 +2237,99 @@ def _resolve_key_material(
     if key_material is not None:
         return key_material
     return key_material_kwargs(key_file, passphrase, kem_key_file)
+
+
+def _scan_limit_diagnostic(
+    pattern: Dict[str, Any], *, context: Optional[int] = None,
+) -> Optional[Diagnostic]:
+    """Warn when *pattern* is too wide for libyara to verify, else ``None``.
+
+    Consulted by every producer that WRITES a pattern, before the artifact is
+    handed back or written to disk. ``context`` is named in the message when
+    the caller has one (:func:`export_key_pattern`), because the context is the
+    knob that caused the width and the reader needs to know which number to
+    turn down; the auto/manual exports size their window from a region instead
+    and pass ``None``.
+
+    ``None`` is returned for a pattern with NO wildcard, and that exemption is
+    measured rather than assumed: a hex string without ``??`` compiles to a
+    literal, not a regexp, and libyara matches an 8 KiB literal without
+    complaint. Only the regexp path is clamped.
+    """
+    from memdiver.engine.yara_scan import (
+        measure_hex_string_widths,
+        pattern_exceeds_scan_limit,
+        regexp_scan_limit,
+    )
+
+    wildcard_pattern = pattern.get("wildcard_pattern")
+    if not isinstance(wildcard_pattern, str) or "?" not in wildcard_pattern:
+        return None
+    # Prefer the emitter's own measured length; fall back to counting the
+    # tokens actually in the string, so a pattern dict with a missing or
+    # unparseable ``length`` still gets checked instead of skipped.
+    declared = pattern.get("length")
+    width: Optional[int] = declared if isinstance(declared, int) and declared > 0 else None
+    if width is None:
+        measured, _ = measure_hex_string_widths("= {" + wildcard_pattern + "}")
+        width = max(measured) if measured else None
+    if not pattern_exceeds_scan_limit(width):
+        return None
+    limit = regexp_scan_limit()
+    if context is not None and limit is not None:
+        # ``width == 2 * context + key_span``, so the key span falls out of the
+        # two numbers we have. Deriving it beats reading ``key_length`` off the
+        # pattern dict, which does NOT carry it (``YaraExporter.export`` takes
+        # it as a separate argument) -- that gave a key span of 0 and advised
+        # exactly the ``--context`` that had just produced a dead rule.
+        key_span = max(0, width - 2 * context)
+        safe_context = max(0, (limit - key_span) // 2)
+        context_clause = (
+            f"--context {context} produced it; re-emit with --context "
+            f"{safe_context} or less, which keeps the window "
+            f"({2 * safe_context + key_span} bytes for this "
+            f"{key_span}-byte key span) inside the limit. "
+        )
+    else:
+        context_clause = (
+            f"Narrow the exported region until the pattern is at most "
+            f"{limit} bytes wide. "
+        )
+    return Diagnostic(
+        code=PATTERN_OVER_SCAN_LIMIT_CODE,
+        message=(
+            f"This pattern is {width} bytes wide, over the {limit} bytes the "
+            f"installed libyara will verify, so the rule being emitted matches "
+            f"NOTHING — not even the dump its own bytes were read from. "
+            f"libyara compiles a hex string containing '??' to a regexp and "
+            f"verifies it outward from one chosen atom, clamped to "
+            f"YR_RE_SCAN_LIMIT (yara-python 4.5.3/4.5.4 regressed that "
+            f"constant from 4096 to 1024), reporting no match on overrun with "
+            f"no error of any kind. " + context_clause +
+            f"A wider window is NOT available by upgrading: the upstream "
+            f"revert is unreleased, so 4.5.4 is the newest wheel published."
+        ),
+        severity=Severity.WARNING,
+        details={"pattern_length": width, "scan_limit": limit,
+                 "context_requested": context},
+    )
+
+
+def _attach_scan_limit_diagnostic(
+    payload: Dict[str, Any], *, context: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Append :func:`_scan_limit_diagnostic` to *payload*, in place.
+
+    The key is created ONLY when there is something to report, so an export of
+    a normally-sized pattern keeps the exact payload shape it has always had
+    (the auto/manual export bodies carry no ``diagnostics`` list otherwise, and
+    the web ``/auto-export`` response body is asserted against that shape).
+    """
+    diagnostic = _scan_limit_diagnostic(payload.get("pattern") or {},
+                                        context=context)
+    if diagnostic is not None:
+        payload.setdefault("diagnostics", []).append(diagnostic.to_dict())
+    return payload
 
 
 def _export_payload(
@@ -3470,6 +3694,1656 @@ def locate_field_across_pairs(
     }
 
 
+# ---------------------------------------------------------------------------
+# D1 — running the rules MemDiver emits
+# ---------------------------------------------------------------------------
+#
+# ``architect.yara_exporter`` has been able to WRITE a YARA rule since the
+# architect layer landed, and ``engine.yara_scan`` can now RUN one. Between the
+# two sat nothing: no surface could ask "does the detector I just emitted
+# actually fire on my corpus?", which is the only question that makes an
+# emitted detector worth anything. This producer is that missing middle, and it
+# is deliberately shaped like ``locate_field_across_pairs`` — N sources in,
+# one typed row per source out, a roll-up and a verdict — because a scan is the
+# same kind of census as a search and should read like one.
+
+#: What HAPPENED to one dump, two-valued for exactly the reason
+#: :data:`PAIR_STATUSES` is three-valued: "scanned, and nothing matched" and
+#: "could not be scanned" are DIFFERENT facts. Collapsing them deflates the
+#: denominator of every detection rate computed from the result, which is the
+#: precise failure mode a detector evaluation cannot survive.
+YARA_SCANNED = "scanned"
+YARA_UNREADABLE = "unreadable"
+YARA_SCAN_STATUSES = (YARA_SCANNED, YARA_UNREADABLE)
+
+#: The cross-dump verdict. FOUR-valued rather than three, because a YARA scan
+#: has a degraded state a byte search does not: libyara can exhaust its timeout
+#: budget, or a chunk can fail to read, and the dump is then neither "matched"
+#: nor honestly "clean" — part of it was never looked at.
+#:
+#: * ``"matched"``      — at least one dump matched.
+#: * ``"clean"``        — at least one dump was scanned end to end and matched
+#:                        nothing, and NO scanned dump was degraded. This is
+#:                        the only value that may be rendered as an absence.
+#: * ``"inconclusive"`` — every zero-match scan in the set was degraded
+#:                        (timed out, or hit a read error), so the zeros are
+#:                        unproven. Claims nothing.
+#: * ``"not_scanned"``  — no dump was scanned at all. Claims nothing either.
+YARA_MATCHED = "matched"
+YARA_CLEAN = "clean"
+YARA_INCONCLUSIVE = "inconclusive"
+YARA_NOT_SCANNED = "not_scanned"
+YARA_SCAN_VERDICTS = (
+    YARA_MATCHED, YARA_CLEAN, YARA_INCONCLUSIVE, YARA_NOT_SCANNED,
+)
+
+#: How the rule set was supplied. Recorded on the payload so a reader can tell
+#: an inline rule apart from one compiled off disk without re-deriving it from
+#: which request field happened to be set.
+YARA_INTAKE_SOURCE = "source"
+YARA_INTAKE_PATHS = "paths"
+
+YARA_SCAN_NOT_SCANNED_CODE = "analysis.yara_scan.not_scanned"
+YARA_SCAN_INCONCLUSIVE_CODE = "analysis.yara_scan.inconclusive"
+YARA_SCAN_CLEAN_CODE = "analysis.yara_scan.clean"
+YARA_SCAN_PARTIAL_CODE = "analysis.yara_scan.partial"
+YARA_SCAN_UNREADABLE_CODE = "analysis.yara_scan.unreadable"
+YARA_SCAN_TRUNCATED_CODE = "analysis.yara_scan.truncated"
+YARA_SCAN_TIMED_OUT_CODE = "analysis.yara_scan.timed_out"
+YARA_SCAN_ERRORS_CODE = "analysis.yara_scan.scan_errors"
+YARA_SCAN_ZERO_BYTES_CODE = "analysis.yara_scan.zero_bytes"
+YARA_SCAN_COUNT_ONLY_CODE = "analysis.yara_scan.count_only"
+
+#: The rule set cannot match AT ALL, because its widest wildcard pattern is
+#: wider than the installed libyara will verify. Not an error and not a clean
+#: result -- the one verdict such a scan may never be given. See
+#: :func:`engine.yara_scan.regexp_scan_limit`.
+YARA_SCAN_OVER_SCAN_LIMIT_CODE = "analysis.yara_scan.pattern_over_scan_limit"
+
+#: We could not establish how wide the rules' patterns are, so we could not
+#: check them against the limit above. Fires only on an otherwise-CLEAN
+#: verdict, which is the only place the unknown actually costs the reader
+#: anything: a zero they might otherwise trust.
+YARA_SCAN_WIDTH_UNKNOWN_CODE = "analysis.yara_scan.pattern_width_unknown"
+
+#: Whether a scan payload carries its per-match LISTS. ``True`` — the historical
+#: and only previous behaviour — is the default on every surface, so nothing
+#: about an existing call changes.
+#:
+#: It exists as a named constant for the same reason ``DEFAULT_MAX_RETURNED_REGIONS``
+#: does: the CLI flag, the Pydantic model and the MCP tool must advertise the
+#: SAME shape the library produces, and a re-literalled ``True``/``False`` in
+#: four places is exactly how that drifts. The CLI spells its flag as the
+#: negation of this constant rather than a bare ``False``.
+DEFAULT_INCLUDE_MATCHES = True
+
+
+def _yara_scan_payload(
+    scan: Dict[str, Any], *, include_matches: bool
+) -> Dict[str, Any]:
+    """Shape ONE scanned row's payload for the requested verbosity.
+
+    ``include_matches=True`` returns :meth:`engine.yara_scan.ScanResult.to_dict`
+    completely untouched — the same dict object, not a copy — so the default
+    payload is byte-identical to the one this producer has always returned.
+
+    ``include_matches=False`` REMOVES the ``matches`` key and marks the row
+    ``matches_omitted``. Removing it is deliberate, and the alternative is the
+    bug: setting ``matches`` to ``[]`` would make a count-only row with 825,779
+    hits indistinguishable from a proven-clean one to any caller that checks
+    ``len(scan["matches"])`` or ``if scan["matches"]``, which is the same silent
+    false-absence the ``scan: None`` nesting in :func:`_yara_scan_row` exists to
+    prevent. An ABSENT key cannot be misread as an empty one; a ``KeyError`` or
+    an ``undefined`` is a question, while ``[]`` is a confident wrong answer.
+
+    Every COUNT and every degraded flag survives untouched — ``match_count``,
+    ``truncated``, ``timed_out``, ``errors``, ``scanned_bytes``, ``chunks``,
+    ``strategy``, ``view``, ``rule_names`` — because those are the whole point
+    of asking for a count-only census, and the roll-up below reads them (it
+    never reads ``matches``), so the verdict and every number in ``counts`` are
+    identical to the full form's.
+
+    Note that a count-only row is NOT scorable: ``score_detector_matches``
+    consumes ``dumps[].scan.matches``, so a count-only scan has to be re-run in
+    the full form to be measured. The count-only diagnostic says so.
+    """
+    if include_matches:
+        return scan
+    stripped = {k: v for k, v in scan.items() if k != "matches"}
+    stripped["matches_omitted"] = True
+    return stripped
+
+
+def _yara_scan_row(
+    path: Path,
+    *,
+    status: str,
+    scan: Optional[Dict[str, Any]] = None,
+    detail: str = "",
+) -> Dict[str, Any]:
+    """One dump's row, in ONE shape whatever happened to that dump.
+
+    ``scan`` carries :meth:`engine.yara_scan.ScanResult.to_dict` verbatim on a
+    scanned row and is ``None`` on every other, mirroring :func:`_pair_row`'s
+    ``location``. Nesting it — rather than flattening zeros onto an unreadable
+    row — is what keeps "we scanned and found nothing" distinguishable from "we
+    never scanned this": there is simply no ``match_count: 0`` to misread.
+
+    The status/scan biconditional is asserted for the same reason
+    :func:`_pair_row` asserts its own: the roll-up below trusts it, so a
+    ``"scanned"`` row without a payload (or an ``"unreadable"`` one with one) is
+    a programming error rather than a strange result to be tolerated.
+    """
+    if status not in YARA_SCAN_STATUSES:
+        raise ValueError(
+            "unknown yara scan status " + repr(status) + "; expected one of "
+            + ", ".join(repr(s) for s in YARA_SCAN_STATUSES))
+    if (status == YARA_SCANNED) != (scan is not None):
+        raise ValueError(
+            "yara scan status " + repr(status) + " contradicts scan payload "
+            + ("present" if scan is not None else "absent"))
+    return {
+        "dump_path": str(path),
+        "name": path.name,
+        "status": status,
+        # Why this dump could not be scanned; "" on a scanned row. A scanned
+        # row's own degraded state lives in ``scan.errors`` / ``scan.timed_out``
+        # instead, because it is per-chunk and there can be several.
+        "detail": detail,
+        "scan": scan,
+    }
+
+
+def _yara_row_degraded(scan: Dict[str, Any]) -> bool:
+    """True when a scanned row did NOT cover the bytes it claims to have.
+
+    ``timed_out`` means at least one chunk's bytes were never handed to
+    libyara; ``errors`` means at least one chunk could not be read or the
+    overlap could not be sized wide enough for the rules' widest pattern. In
+    both cases a zero match count is unproven, so the roll-up must not fold
+    such a row into ``dumps_clean`` — that fold is precisely how a scan reports
+    a silent miss as an all-clear.
+
+    ``scanned_bytes == 0`` is the MAXIMAL case of the same fault and belongs
+    here for exactly the same reason, even though it arrives by a quieter road:
+    a view that sizes to 0 -- an empty file, or an ``.msl`` whose container
+    holds nothing this view can project -- runs the chunk loop zero times, so it
+    reports no timeout and no error and would otherwise fall straight through
+    into ``dumps_clean``. Declaring a dump clean having compared ZERO bytes
+    against the rules is the same false all-clear the four-valued verdict exists
+    to prevent, and it is the worst instance of it: not "we missed a chunk" but
+    "we looked at nothing at all".
+
+    ``truncated`` is deliberately NOT degradation: it can only occur when
+    matches were found (the cap is a cap on hits), so it never manufactures a
+    zero. It is reported separately, and in its own diagnostic.
+    """
+    return (
+        bool(scan["timed_out"])
+        or bool(scan["errors"])
+        or not scan["scanned_bytes"]
+    )
+
+
+def _yara_scan_diagnostics(
+    rows: List[Dict[str, Any]],
+    *,
+    verdict: str,
+    counts: Dict[str, int],
+    rule_labels: Sequence[str],
+    include_matches: bool = DEFAULT_INCLUDE_MATCHES,
+    max_matches: Optional[int] = DEFAULT_MAX_MATCHES,
+    widest_pattern: Optional[int] = None,
+    scan_limit: Optional[int] = None,
+    exceeds_scan_limit: bool = False,
+    width_unknown: bool = False,
+) -> List[Diagnostic]:
+    """Qualify a scan result — every degraded channel gets a voice.
+
+    The three "bad news" fields on :class:`engine.yara_scan.ScanResult` exist so
+    a caller that ignores them does so knowingly. A caller reading a rendered
+    payload cannot ignore what it never sees, so each one is lifted into a
+    diagnostic here as well as left on the row.
+
+    ``include_matches`` / ``max_matches`` are the shape of the REQUEST rather
+    than of any row, and they are here because the count-only form's honesty
+    depends on both of them together: a count taken under a cap is a FLOOR, and
+    the caller who asked for counts instead of lists is precisely the one most
+    likely to read ``matches_total`` as a census. Both default to the values
+    every pre-existing call used, so a default scan's diagnostic list is
+    unchanged.
+    """
+    diagnostics: List[Diagnostic] = []
+    names = ", ".join(rule_labels) or "(no rules)"
+
+    # FIRST, and unconditional on the verdict, because it disqualifies every
+    # zero in the result at once rather than degrading one dump: a pattern the
+    # installed libyara will not verify matches nothing anywhere, including in
+    # the dump its own bytes were read from.
+    if exceeds_scan_limit:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_OVER_SCAN_LIMIT_CODE,
+            message=(
+                f"{names} carries a {widest_pattern}-byte wildcard pattern, "
+                f"wider than the {scan_limit} bytes the installed libyara will "
+                f"verify — so it matches NOTHING, anywhere, including the dump "
+                f"its own bytes came from. libyara compiles a hex string "
+                f"containing '??' to a regexp and verifies it outward from one "
+                f"chosen atom, clamped to YR_RE_SCAN_LIMIT, reporting no match "
+                f"on overrun without any error. Every zero below is therefore "
+                f"UNPROVEN and this result is not an absence. Re-emit the "
+                f"signature with a smaller --context so the pattern fits under "
+                f"{scan_limit} bytes."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "widest_pattern_length": widest_pattern,
+                "scan_limit": scan_limit,
+            },
+        ))
+    elif width_unknown and verdict == YARA_CLEAN:
+        # Only on a CLEAN verdict. Anywhere else the reader is already being
+        # told not to trust the zeros, and an unknown we cannot act on is
+        # noise; here it is the difference between a proven absence and an
+        # unfalsifiable one.
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_WIDTH_UNKNOWN_CODE,
+            message=(
+                f"{names} declares no pattern_length meta and its hex "
+                f"string(s) use syntax this producer does not measure (jump, "
+                f"alternation or negation), so the widest wildcard pattern is "
+                f"UNKNOWN and could not be checked against the "
+                f"{scan_limit}-byte libyara verification limit. A pattern over "
+                f"that limit matches nothing at all, silently — so read this "
+                f"clean result as unverified rather than as an absence. Emit "
+                f"the rules through YaraExporter (which sets pattern_length), "
+                f"or confirm by hand that no wildcarded hex string exceeds "
+                f"{scan_limit} bytes."
+            ),
+            severity=Severity.WARNING,
+            details={"scan_limit": scan_limit},
+        ))
+
+    if verdict == YARA_NOT_SCANNED:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_NOT_SCANNED_CODE,
+            message=(
+                f"NOTHING was scanned: all {counts['dumps_total']} dump(s) were "
+                f"unreadable. This is not a clean result — no bytes were "
+                f"compared against {names}, so the rule set is neither "
+                f"confirmed nor refuted."
+            ),
+            severity=Severity.WARNING,
+            details={"dumps_total": counts["dumps_total"]},
+        ))
+    elif verdict == YARA_INCONCLUSIVE and (
+        counts["dumps_timed_out"]
+        or counts["dumps_with_errors"]
+        or counts["dumps_zero_bytes"]
+    ):
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_INCONCLUSIVE_CODE,
+            message=(
+                f"No dump matched, and every zero-match scan was DEGRADED "
+                f"({counts['dumps_timed_out']} timed out, "
+                f"{counts['dumps_with_errors']} reported read/overlap errors, "
+                f"{counts['dumps_zero_bytes']} scanned ZERO bytes). "
+                f"Those zeros are unproven — raise timeout_s, widen "
+                f"overlap_bytes, or check that --view names a view these dumps "
+                f"actually have, before reading this as an absence."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps_inconclusive": counts["dumps_inconclusive"],
+                "dumps_timed_out": counts["dumps_timed_out"],
+                "dumps_with_errors": counts["dumps_with_errors"],
+                "dumps_zero_bytes": counts["dumps_zero_bytes"],
+            },
+        ))
+    elif verdict == YARA_CLEAN:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_CLEAN_CODE,
+            message=(
+                f"{names} matched NOTHING in "
+                f"{counts['dumps_clean']} fully-scanned dump(s). For an emitted "
+                f"key signature that is a recall result, not an error: the rule "
+                f"generalises to none of these dumps."
+            ),
+            severity=Severity.INFO,
+            details={"dumps_clean": counts["dumps_clean"]},
+        ))
+
+    if counts["dumps_matched"] and counts["dumps_clean"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_PARTIAL_CODE,
+            message=(
+                f"PARTIAL: matched in {counts['dumps_matched']} of "
+                f"{counts['dumps_scanned']} scanned dump(s) and clean in "
+                f"{counts['dumps_clean']}. Partial coverage is the NORMAL shape "
+                f"of a real signature across a process lifecycle, not a failure."
+            ),
+            severity=Severity.INFO,
+            details={
+                "dumps_matched": counts["dumps_matched"],
+                "dumps_clean": counts["dumps_clean"],
+            },
+        ))
+
+    if counts["dumps_unreadable"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_UNREADABLE_CODE,
+            message=(
+                f"{counts['dumps_unreadable']} of {counts['dumps_total']} dump(s) "
+                f"could not be scanned at all. They are ROWS with "
+                f"status={YARA_UNREADABLE!r} and no scan payload, so every rate "
+                f"below is over dumps_scanned — never over dumps_total."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps": [r["dump_path"] for r in rows
+                          if r["status"] == YARA_UNREADABLE],
+            },
+        ))
+
+    if counts["dumps_truncated"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_TRUNCATED_CODE,
+            message=(
+                f"{counts['dumps_truncated']} dump(s) hit the max_matches cap, so "
+                f"their match lists STOP at the cap and matches_total is a floor, "
+                f"not a total. Pass max_matches=None for an uncapped census."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps": [r["dump_path"] for r in rows
+                          if r["scan"] and r["scan"]["truncated"]],
+            },
+        ))
+
+    if counts["dumps_zero_bytes"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_ZERO_BYTES_CODE,
+            message=(
+                f"{counts['dumps_zero_bytes']} dump(s) were opened but scanned "
+                f"ZERO bytes: the view sized to 0, so the rules were never "
+                f"compared against a single byte. Such a row is INCONCLUSIVE, "
+                f"never clean — check the file is not empty and that the view "
+                f"scanned (see each row's scan.view) is one these dumps have."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps": [r["dump_path"] for r in rows
+                          if r["scan"] and not r["scan"]["scanned_bytes"]],
+            },
+        ))
+
+    if counts["dumps_timed_out"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_TIMED_OUT_CODE,
+            message=(
+                f"{counts['dumps_timed_out']} dump(s) exhausted the "
+                f"libyara timeout budget; the bytes in the affected chunk(s) "
+                f"were NEVER scanned."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps": [r["dump_path"] for r in rows
+                          if r["scan"] and r["scan"]["timed_out"]],
+            },
+        ))
+
+    if counts["dumps_with_errors"]:
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_ERRORS_CODE,
+            message=(
+                f"{counts['dumps_with_errors']} dump(s) reported per-chunk "
+                f"errors (unreadable chunk, or an overlap too narrow for the "
+                f"widest pattern). Read scan.errors on those rows: a match that "
+                f"straddles such a boundary is simply not found."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "errors": {r["dump_path"]: r["scan"]["errors"] for r in rows
+                           if r["scan"] and r["scan"]["errors"]},
+            },
+        ))
+
+    if not include_matches:
+        # ALWAYS emitted in the count-only form, even on a clean or unscanned
+        # result, because the omission is a property of the ANSWER and not of
+        # what was found: a reader handed a row with no ``matches`` key has to
+        # be told that this is a requested shape rather than a truncated
+        # payload or an older version of the producer.
+        #
+        # The message splits on the cap for the reason the truncated diagnostic
+        # above exists at all. Under a cap, a count-only ``matches_total`` is a
+        # floor and the numbers a selectivity question wants ("how many
+        # positions does this rule fire on?") are simply not in the payload —
+        # and unlike the full form there is not even a match list whose length
+        # betrays the cap. Uncapped, it is the honest census, and saying so
+        # explicitly is what stops a cautious reader discounting a real number.
+        capped = max_matches is not None
+        diagnostics.append(Diagnostic(
+            code=YARA_SCAN_COUNT_ONLY_CODE,
+            message=(
+                (
+                    f"COUNT-ONLY under a max_matches={max_matches} cap: every "
+                    f"count and degraded flag is present and the per-match "
+                    f"lists were omitted, but each row's match_count STOPS at "
+                    f"the cap, so matches_total ({counts['matches_total']}) is "
+                    f"a FLOOR, not a census. Pass max_matches=None "
+                    f"(--no-max-matches) for the honest total."
+                ) if capped else (
+                    f"COUNT-ONLY, uncapped: the per-match lists were omitted "
+                    f"and every count and degraded flag is present, so "
+                    f"matches_total ({counts['matches_total']}) is the full "
+                    f"census. Nothing bounds the SCAN — libyara still finds "
+                    f"every match — only the payload."
+                )
+                + " Scoring needs the lists: re-run without count-only to "
+                  "feed score_detector_matches."
+            ),
+            severity=Severity.WARNING if capped else Severity.INFO,
+            details={
+                "matches_total": counts["matches_total"],
+                "max_matches": max_matches,
+                "matches_total_is_floor": capped,
+            },
+        ))
+    return diagnostics
+
+
+def scan_yara_rule(
+    *,
+    dump_paths: Sequence[str],
+    rule_source: Optional[str] = None,
+    rule_paths: Optional[Sequence[str]] = None,
+    view: Optional[str] = None,
+    max_matches: Optional[int] = DEFAULT_MAX_MATCHES,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+    overlap_bytes: int = 0,
+    include_matches: bool = DEFAULT_INCLUDE_MATCHES,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """Compile ONE YARA rule set and scan N dumps with it.
+
+    The single implementation behind the CLI ``scan-yara`` command, the HTTP
+    ``POST /api/scan/yara`` route, the MCP ``scan_yara_rule`` tool and
+    ``memdiver.services.scan_yara_rule``.
+
+    This closes MemDiver's own loop. ``export_key_pattern`` /
+    ``export_pattern`` EMIT a signature; until now nothing could RUN one, so
+    every emitted detector was unevaluated by construction — you could publish
+    a rule and never learn whether it fires on the corpus it was derived from,
+    let alone on a held-out one. Point this at the rule and the dumps and the
+    answer is a census.
+
+    Rules arrive as TEXT or as rule FILES, in exactly ONE of ``rule_source`` /
+    ``rule_paths``, and never as a precompiled ``.yarc``: a compiled rule file
+    is executable libyara bytecode, so loading one has the trust properties of
+    importing a module (see :func:`engine.yara_scan.compile_rules`). Do not add
+    such a form here either.
+
+    The rule set is compiled ONCE and reused for every dump. That is the whole
+    point of the engine's content-addressed rule cache — on a corpus sweep,
+    recompiling per dump dominates the runtime — and it is also what makes the
+    per-dump rows comparable: they were all produced by the same rules.
+
+    Args:
+        dump_paths: The dumps to scan. Rows come back in THIS order.
+        rule_source: Inline YARA rule text. Mutually exclusive with
+            *rule_paths*, with no precedence.
+        rule_paths: Paths to ``.yar`` rule files, each compiled into its own
+            namespace so two files may define the same rule name.
+        view: Byte view to scan. ``None`` keeps each format's own default
+            (``"raw"`` for raw dumps, ``"vas"`` for ``.msl``), so a mixed set
+            is scanned in the coordinates each dump actually has.
+        max_matches: Matches kept per dump; the row's ``scan.truncated`` says
+            when the cap bit. Must be positive, or ``None`` for no cap at all
+            (the engine refuses ``0`` rather than reading it as "unlimited").
+        timeout_s: libyara budget, per chunk on the chunked strategy and once
+            for the whole file on the filepath strategy.
+        overlap_bytes: Bytes stitched between chunks so a straddling match is
+            still seen whole. ``0`` means "size it from the rules'
+            ``pattern_length`` meta", which is what an emitted rule carries.
+        include_matches: Whether each scanned row carries its per-match LIST.
+            ``True`` (the default, and the only previous behaviour) is
+            byte-identical to before. ``False`` — the count-only census — drops
+            the ``matches`` key from every row and marks it ``matches_omitted``,
+            keeping every count and every flag: ``match_count`` per row,
+            ``matches_total``, ``truncated``, ``timed_out``, ``errors``,
+            ``scanned_bytes``, ``chunks``, ``strategy`` and the ``verdict`` are
+            all identical to the full form's.
+
+            This is an OUTPUT bound, not a scan bound, and the distinction
+            matters: libyara still finds every match and the engine still
+            builds every ``RuleMatch``, so count-only is no faster and saves no
+            peak memory — it bounds only what is serialized. That is the part
+            that had run away: a 64-byte-pad rule over an 8-dump corpus emits
+            6.6M matches, each carrying up to 512 bytes of ``matched_hex``
+            (352+ hex characters), for a 4.0 GB JSON. ``max_matches`` bounds
+            MEMORY and never bounded the payload's per-match cost.
+
+            It is deliberately ORTHOGONAL to ``max_matches``: neither implies
+            the other. Asking for counts does not silently uncap the scan (that
+            would change the cost of a request the caller sized on purpose) and
+            a cap does not silently disable the counts. The consequence is that
+            a count-only run UNDER a cap reports a floor, which is why it always
+            carries the ``analysis.yara_scan.count_only`` diagnostic saying so —
+            pass ``max_matches=None`` alongside it for the honest census.
+
+            A count-only payload is not scorable: ``score_detector_matches``
+            reads ``dumps[].scan.matches``.
+        key_file / passphrase / kem_key_file / key_material: Decryption
+            material for encrypted ``.msl`` containers.
+        on_source: Called with each freshly opened source before anything is
+            read from it; runs AFTER the locked-container guard below.
+
+    Returns:
+        A bare dict carrying ``verdict``, the ``rules`` that were compiled, the
+        ``caps`` they ran under, ``counts``, one row per dump in the SUPPLIED
+        order, and ``diagnostics``.
+
+        Read ``verdict`` before any count — only ``"clean"`` is an absence;
+        ``"inconclusive"`` and ``"not_scanned"`` claim NOTHING (see
+        :data:`YARA_SCAN_VERDICTS`) — and read each row's ``status`` before its
+        ``scan``, which is ``None`` on every unreadable row.
+
+        With ``include_matches=False`` the shape is the same one key lighter:
+        each scanned row's ``scan`` has NO ``matches`` key (see
+        :func:`_yara_scan_payload` for why it is absent rather than empty) and
+        carries ``matches_omitted: True`` instead. Everything else — including
+        every number in ``counts`` — is unchanged.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for zero or both rule forms and for the
+            engine's own argument refusals (``yara.bad_max_matches``,
+            ``yara.bad_overlap``, ``yara.rules_too_large``,
+            ``yara.namespace_collision``, a libyara compile error);
+            PRECONDITION for an empty ``dump_paths`` and for a missing
+            ``yara-python`` (a BASE dependency, so its absence is a broken
+            environment — the engine owns that message and it is deliberately
+            not re-categorised here).
+        FileNotFoundServiceError: when any supplied dump or rule file does not
+            exist. Checked up front, so a typo is reported before N dumps are
+            read.
+        EncryptedDumpLockedError: for a locked encrypted container. Non-
+            negotiable: a locked ``.msl`` reads back EMPTY rather than failing,
+            so without the guard every locked dump would be reported as an
+            honest zero-match scan — a silent false negative, and the exact
+            class ``test_g9_producers_surface_locked_dump`` exists to prevent.
+    """
+    # Function-local so the ``app`` layer does not pull the engine's compute at
+    # module import time (the repo-wide idiom; see ``locate_field_across_pairs``
+    # above). Only the two keyword DEFAULTS are imported at module scope, since
+    # those must resolve when this signature is built. ELAPSED_PRECISION is
+    # shared with the key-location producers so ``elapsed_s`` rounds identically
+    # across the whole family.
+    from memdiver.engine.key_location import ELAPSED_PRECISION
+    from memdiver.engine.yara_scan import (
+        compile_rules,
+        max_pattern_length,
+        measure_hex_string_widths,
+        pattern_exceeds_scan_limit,
+        regexp_scan_limit,
+        rule_names,
+        scan_source,
+    )
+
+    # Exactly one rule form, named by BOTH names in the refusal. No precedence:
+    # silently preferring one would mean a caller who set the wrong field gets a
+    # complete, confident census produced by rules they did not intend.
+    if (rule_source is None) == (rule_paths is None):
+        raise CapabilityError(
+            "scan_yara_rule() takes exactly ONE of rule_source= (inline rule "
+            "text) or rule_paths= (.yar files); "
+            + ("both were supplied" if rule_source is not None else "neither was")
+            + ". There is no precedence between them.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+    paths = [Path(p).expanduser() for p in dump_paths]
+    if not paths:
+        raise CapabilityError(
+            "Need at least 1 dump to scan, got 0",
+            category=ErrorCategory.PRECONDITION,
+        )
+    rule_files = [Path(p).expanduser() for p in (rule_paths or ())]
+    # Existence over BOTH the dumps and the rule files, up front, so a mistyped
+    # path is a NOT_FOUND rather than eight scans followed by one. Same posture
+    # as ``locate_key`` / ``locate_field_across_pairs``.
+    missing = [str(p) for p in [*paths, *rule_files] if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+
+    # ONE compile for N dumps. Every ``CapabilityError`` this can raise — a
+    # missing yara-python, oversized rule text, a namespace collision, a libyara
+    # syntax error — propagates verbatim, so all four surfaces report a bad rule
+    # in the engine's own words.
+    if rule_source is not None:
+        rules = compile_rules(source=rule_source)
+        intake = YARA_INTAKE_SOURCE
+    else:
+        rules = compile_rules(paths=rule_files)
+        intake = YARA_INTAKE_PATHS
+    compiled_names = list(rule_names(rules))
+
+    # How wide is the widest WILDCARD pattern in this rule set, and will the
+    # installed libyara actually verify something that wide?
+    #
+    # This is not a nicety. A hex string containing '??' compiles to a regexp,
+    # and libyara verifies a regexp outward from one chosen atom with each
+    # direction clamped to YR_RE_SCAN_LIMIT -- a constant that yara-python
+    # 4.5.3/4.5.4 regressed from 4096 to 1024. Past the clamp libyara reports
+    # NO MATCH, with no error and no warning, for a pattern that is present in
+    # the data byte for byte. Scanning with such a rule and calling the result
+    # "clean" is a false all-clear, so the width has to be known BEFORE the
+    # zeros are interpreted.
+    #
+    # TWO sources, because neither alone covers both kinds of rule set:
+    #
+    # * ``max_pattern_length`` reads the ``pattern_length`` meta, which only
+    #   rules MemDiver emitted carry. Authoritative when present.
+    # * ``measure_hex_string_widths`` measures the rule TEXT, which is what a
+    #   third-party ``.yar`` gives us. Without it, a hand-written rule with a
+    #   2 KiB wildcard pattern would be waved through as "no meta, assume
+    #   fine" -- reopening the hole for exactly the rules MemDiver did not
+    #   write.
+    #
+    # The wider of the two wins, and ``unmeasured`` counts the blocks whose
+    # syntax the measurer declines to parse; together with an absent meta that
+    # is the "we do not know" state, reported as its own diagnostic rather
+    # than resolved in either direction.
+    declared_width = max_pattern_length(rules)
+    if rule_source is not None:
+        rule_text = rule_source
+        unmeasured = 0
+    else:
+        # Re-read rather than thread the text out of ``compile_rules``: the
+        # files are already known to exist (checked above) and a rule file is
+        # kilobytes. An unreadable one cannot have been compiled, but the read
+        # is guarded anyway so a race degrades to "unknown width" instead of
+        # taking down a scan that libyara already accepted.
+        chunks: List[str] = []
+        unmeasured = 0
+        for rule_file in rule_files:
+            try:
+                chunks.append(rule_file.read_text(errors="replace"))
+            except OSError as exc:
+                logger.warning(
+                    "%s: could not re-read rule file to measure its pattern "
+                    "widths (%s); width will be reported as unknown.",
+                    rule_file, exc)
+                unmeasured += 1
+        rule_text = "\n".join(chunks)
+    measured_widths, text_unmeasured = measure_hex_string_widths(rule_text)
+    unmeasured += text_unmeasured
+    # Does this rule set contain a WILDCARDED hex string at all? The limit
+    # clamps libyara's regexp verification, and a wildcard-free hex string
+    # compiles to a literal, which is not clamped (verified: an 8 KiB literal
+    # matches fine). So the declared meta may only be believed once we have
+    # seen a wildcard somewhere -- otherwise a fully-static 2 KiB pattern,
+    # which is a perfectly good rule, gets flagged as dead. The measured
+    # widths already carry that exemption (they skip literal blocks); the meta
+    # does not, because ``pattern_length`` describes the window's width and
+    # says nothing about whether any byte of it is volatile.
+    has_wildcard_string = bool(measured_widths) or unmeasured > 0
+    candidate_widths = [w for w in measured_widths if w]
+    if has_wildcard_string and declared_width:
+        candidate_widths.append(declared_width)
+    widest_pattern = max(candidate_widths) if candidate_widths else None
+    scan_limit = regexp_scan_limit()
+    exceeds_scan_limit = pattern_exceeds_scan_limit(widest_pattern)
+    # "Unknown" means we found no width we trust AND something was there we
+    # could not measure. A rule set of pure literals yields no widths at all
+    # and is NOT unknown: the verification limit does not apply to literals.
+    width_unknown = widest_pattern is None and unmeasured > 0
+
+    def _observe(source: Any) -> None:
+        # FIRST, before a single byte is read. A locked encrypted dump reads
+        # back EMPTY instead of raising, so this is the difference between "we
+        # could not open your container" and N confident zero-match rows over
+        # bytes nobody decrypted.
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    started = time.perf_counter()
+    rows: List[Dict[str, Any]] = []
+
+    for path in paths:
+        try:
+            with open_dump_source(str(path), km) as source:
+                _observe(source)
+                result = scan_source(
+                    source,
+                    rules,
+                    view=view,
+                    overlap_bytes=overlap_bytes,
+                    max_matches=max_matches,
+                    timeout_s=timeout_s,
+                )
+        except (OSError, ValueError) as exc:
+            # NARROW ON PURPOSE, exactly as ``locate_key_across_dumps``'s own
+            # handler is. ``EncryptedDumpLockedError`` is a ``CapabilityError``
+            # and neither an ``OSError`` nor a ``ValueError``, so it propagates
+            # straight through here; widening this tuple to ``Exception`` would
+            # silently convert a forgotten key into N clean scans. The engine's
+            # argument refusals (bad overlap, bad max_matches) propagate for the
+            # same reason: they are a mistake in the request, not a bad dump.
+            logger.warning(
+                "%s: unreadable while scanning with YARA (%s); claiming nothing"
+                " about this dump.", path, exc)
+            rows.append(_yara_scan_row(
+                path, status=YARA_UNREADABLE, detail=str(exc)))
+            continue
+        # ``_yara_scan_payload`` returns ``result.to_dict()`` UNTOUCHED in the
+        # default form, so the shaping hook costs the historical payload
+        # nothing — not even a copy.
+        rows.append(_yara_scan_row(
+            path, status=YARA_SCANNED,
+            scan=_yara_scan_payload(
+                result.to_dict(), include_matches=include_matches)))
+
+    scanned = [r for r in rows if r["status"] == YARA_SCANNED]
+    matched = [r for r in scanned if r["scan"]["match_count"]]
+    # A zero-match scan is only "clean" when the whole view was actually
+    # covered; a timed-out or erroring one is INCONCLUSIVE. See
+    # :func:`_yara_row_degraded` — this split is the silent-miss guard.
+    zero_match = [r for r in scanned if not r["scan"]["match_count"]]
+    if exceeds_scan_limit:
+        # The SECOND way a zero can be unproven, and it is not per-dump like
+        # the first: nothing is wrong with these dumps or with how much of them
+        # we read: the RULE cannot fire, so every zero in the set is
+        # meaningless at once. Folding even one such row into ``dumps_clean``
+        # would let a rule that matches nothing anywhere report an all-clear
+        # over a fully-scanned corpus -- the worst shape of this bug, because
+        # every coverage signal reads perfect.
+        #
+        # A ``matched`` row is left alone deliberately. ``widest_pattern`` is a
+        # MAXIMUM over the set, so a mixed rule file can hold one over-limit
+        # pattern and one that is fine; the fine one's hits are real. Only the
+        # zeros are in doubt.
+        clean = []
+        inconclusive = list(zero_match)
+    else:
+        clean = [r for r in zero_match if not _yara_row_degraded(r["scan"])]
+        inconclusive = [r for r in zero_match if _yara_row_degraded(r["scan"])]
+
+    counts = {
+        "dumps_total": len(rows),
+        "dumps_scanned": len(scanned),
+        "dumps_unreadable": len(rows) - len(scanned),
+        "dumps_matched": len(matched),
+        "dumps_clean": len(clean),
+        "dumps_inconclusive": len(inconclusive),
+        # The degraded-state census, kept as counts of its own rather than
+        # inferred from the verdict: a dump can match AND have timed out, in
+        # which case its match list is real but incomplete.
+        "dumps_truncated": sum(1 for r in scanned if r["scan"]["truncated"]),
+        "dumps_timed_out": sum(1 for r in scanned if r["scan"]["timed_out"]),
+        "dumps_with_errors": sum(1 for r in scanned if r["scan"]["errors"]),
+        # The quiet third degraded channel: a row that was opened and handed to
+        # the scanner but whose view sized to 0. It reports neither a timeout
+        # nor an error, so it is counted here explicitly rather than inferred
+        # from the absence of the other two.
+        "dumps_zero_bytes": sum(
+            1 for r in scanned if not r["scan"]["scanned_bytes"]),
+        # A FLOOR when dumps_truncated is non-zero, which is what that count is
+        # there to tell you.
+        "matches_total": sum(r["scan"]["match_count"] for r in scanned),
+        "scanned_bytes": sum(r["scan"]["scanned_bytes"] for r in scanned),
+    }
+
+    if matched:
+        verdict = YARA_MATCHED
+    elif clean and not inconclusive:
+        verdict = YARA_CLEAN
+    elif scanned:
+        # Something was read, nothing matched, and at least one of the zeros is
+        # unproven. Reporting "clean" here is the all-clear-over-unscanned-bytes
+        # error; reporting "not_scanned" would be equally wrong, because bytes
+        # WERE compared.
+        verdict = YARA_INCONCLUSIVE
+    else:
+        verdict = YARA_NOT_SCANNED
+
+    return {
+        "verdict": verdict,
+        "intake": intake,
+        "view": view,
+        "rules": {
+            "names": compiled_names,
+            "count": len(compiled_names),
+            # Echoed as SUPPLIED (not resolved) so a caller can see which files
+            # it named; the compiled identities are ``names`` above.
+            "paths": [str(p) for p in rule_files],
+            # The widest pattern the rules declare, i.e. exactly the width a
+            # chunk overlap has to cover. ``None`` when the rules carry no
+            # ``pattern_length`` meta — which is itself the signal that the
+            # automatic overlap had nothing to size itself from.
+            "max_pattern_length": declared_width,
+            # The widest wildcard pattern actually in the set, from the meta or
+            # measured off the rule text, and what the installed libyara will
+            # verify. ``exceeds_scan_limit`` true means the rule set matches
+            # nothing at all and every zero above is unproven.
+            "widest_pattern_length": widest_pattern,
+            "scan_limit": scan_limit,
+            "exceeds_scan_limit": exceeds_scan_limit,
+            "pattern_width_unknown": width_unknown,
+        },
+        "caps": {
+            "max_matches": max_matches,
+            "timeout_s": timeout_s,
+            "overlap_bytes": overlap_bytes,
+        },
+        "counts": counts,
+        "dumps": rows,
+        "elapsed_s": round(time.perf_counter() - started, ELAPSED_PRECISION),
+        "diagnostics": [
+            d.to_dict() for d in _yara_scan_diagnostics(
+                rows,
+                verdict=verdict,
+                counts=counts,
+                rule_labels=compiled_names,
+                # The request's shape, so the count-only form can say whether
+                # its matches_total is a census or a floor.
+                include_matches=include_matches,
+                max_matches=max_matches,
+                widest_pattern=widest_pattern,
+                scan_limit=scan_limit,
+                exceeds_scan_limit=exceeds_scan_limit,
+                width_unknown=width_unknown,
+            )
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# D2 — scoring the detectors D1 runs
+# ---------------------------------------------------------------------------
+#
+# ``scan_yara_rule`` above answers "did the rule fire?". It cannot answer "was
+# it RIGHT?", and a census of firings with no ground truth beside it measures
+# nothing: a rule that matches every 4 KiB page produces a beautiful
+# ``dumps_matched`` count and is worthless. ``engine/detector_metrics.py``
+# is the other half — interval precision/recall under three criteria, with the
+# fan-in/fan-out structure kept visible — and until this producer it was, like
+# ``engine/yara_scan.py`` before it, fully built, fully tested, and reachable
+# from NO surface. This is the join: feed a scan's ``dumps[].scan.matches``
+# straight in with the key's known intervals and you get the score.
+#
+# This producer reads NO dump. It takes matches and truths as data, so there is
+# no ``open_dump_source``, no key material and no locked-container guard here —
+# ``_raise_if_locked`` guards producers that read bytes, and adding it to one
+# that reads a list would be cargo cult.
+
+#: What could be established about ONE (detector, dump) row. Two-valued, and
+#: the split is the recall DENOMINATOR: a row with no truth intervals has
+#: nothing to be measured against, so its rates are vacuous zeros rather than
+#: bad ones. See :data:`SCORE_ROW_UNSCORABLE`.
+SCORE_ROW_SCORED = "scored"
+#: The row carried ZERO truth intervals. Its ``metrics`` is ``None`` — not a
+#: block of zeros — and it is left OUT of the roll-up entirely, because
+#: including it would charge its firings to the precision denominator and so
+#: assert they are false positives, which is exactly the claim a row with no
+#: truth set cannot support. Its firing count is still published, so a caller
+#: who KNOWS those dumps hold no key can compute the strict rate themselves.
+SCORE_ROW_UNSCORABLE = "unscorable"
+SCORE_ROW_STATUSES = (SCORE_ROW_SCORED, SCORE_ROW_UNSCORABLE)
+
+#: The cross-row verdict. THREE-valued, and only ONE of the three is a
+#: measurement — read it before any number in the report:
+#:
+#: * ``"scored"``      — at least one row had both truths and firings, so the
+#:                       precision and recall in ``report`` mean something.
+#: * ``"no_matches"``  — rows carried truths and the detector fired on NONE of
+#:                       them. ``recall == 0.0`` here is a MEASURED total miss:
+#:                       a real result, and the one that should hurt.
+#: * ``"no_truths"``   — no row carried a truth interval, so nothing was
+#:                       scorable. ``report`` is ``None`` and every rate that
+#:                       would have been reported would have been a vacuous
+#:                       zero. Claims NOTHING — least of all that the
+#:                       detector's firings were wrong.
+SCORE_SCORED = "scored"
+SCORE_NO_MATCHES = "no_matches"
+SCORE_NO_TRUTHS = "no_truths"
+SCORE_DETECTOR_VERDICTS = (SCORE_SCORED, SCORE_NO_MATCHES, SCORE_NO_TRUTHS)
+
+#: How the work was supplied: ONE (matches, truths) pair, or N pre-grouped
+#: rows. Echoed on the payload so a reader need not re-derive it from which
+#: argument happened to be set.
+SCORE_INTAKE_PAIR = "pair"
+SCORE_INTAKE_ROWS = "rows"
+SCORE_DETECTOR_INTAKES = (SCORE_INTAKE_PAIR, SCORE_INTAKE_ROWS)
+
+SCORE_DETECTOR_SCORED_CODE = "analysis.score_detector.scored"
+SCORE_DETECTOR_NO_TRUTHS_CODE = "analysis.score_detector.no_truths"
+SCORE_DETECTOR_NO_MATCHES_CODE = "analysis.score_detector.no_matches"
+SCORE_DETECTOR_UNSCORABLE_ROWS_CODE = "analysis.score_detector.unscorable_rows"
+SCORE_DETECTOR_FAN_OUT_CODE = "analysis.score_detector.fan_out"
+SCORE_DETECTOR_FAN_IN_CODE = "analysis.score_detector.fan_in"
+SCORE_DETECTOR_NO_KEY_OFFSET_CODE = "analysis.score_detector.no_key_offset"
+
+
+class _ScoredMatch(NamedTuple):
+    """One detector firing, as an ATTRIBUTE-carrying object.
+
+    THIS CLASS IS THE WHOLE POINT of the normalisation below, so it is worth
+    being blunt about why it exists. ``engine/detector_metrics.py`` reads every
+    input through ``getattr`` — deliberately, and documented as such: "anything
+    exposing those attributes works", which is what keeps the metric module
+    independent of whichever scanner produced the hits (see
+    ``engine/detector_metrics.py`` lines 146-152, and the two test modules that
+    rely on it with ad-hoc objects). Combined with ``_int_or(None) -> 0``, that
+    duck typing has one sharp edge:
+
+        getattr({"offset": 370672, "length": 48}, "offset", None)  ->  None
+        _int_or(None)                                              ->  0
+
+    A plain dict therefore scores as ``offset 0, length 0`` — SILENTLY, with
+    nothing raised and a full, plausible-looking report of entirely fictional
+    precision and recall. And dicts are precisely what arrives here:
+    ``scan_yara_rule`` serialises its matches through ``RuleMatch.to_dict()``,
+    and the web and MCP surfaces deliver JSON.
+
+    The fix belongs on THIS side of the boundary — the engine's duck typing is
+    a designed property, not an oversight — so every incoming row is converted
+    into one of these before the engine ever sees it, and a row that cannot be
+    converted is REFUSED (see :func:`_score_offset`) rather than quietly
+    becoming a firing at offset 0.
+    """
+
+    offset: int
+    length: int
+    key_offset: Optional[int]
+    key_length: Optional[int]
+
+
+class _ScoredTruth(NamedTuple):
+    """One known-true key interval, shaped like ``TruthInterval``.
+
+    ``start`` (with ``offset`` accepted as the alias the engine itself falls
+    back to) and ``length`` are the geometry; ``source`` is the provenance the
+    engine reads to keep a sparse ledger corroboration from being mistaken for
+    complete key-log truth. It is carried here for exactly that reason and
+    defaults to ``""``, which the engine drops rather than reporting as a
+    source named "empty string".
+    """
+
+    start: int
+    length: int
+    source: str
+
+
+class _ScoreRow(NamedTuple):
+    """One (detector, dump) row, normalised — the single internal shape.
+
+    Both intakes funnel into a list of these (the pair form is simply a list of
+    one), so the scoring below has exactly one input shape to reason about,
+    exactly as ``_PcapPair`` does for ``locate_field_across_pairs``.
+    """
+
+    detector: str
+    dump: str
+    matches: Tuple[_ScoredMatch, ...]
+    truths: Tuple[_ScoredTruth, ...]
+    truth_sources: Tuple[str, ...]
+
+
+def _score_field(row: Any, name: str) -> Any:
+    """Read *name* off a dict-shaped OR an attribute-shaped input row.
+
+    Both are supported on purpose: the web, MCP and CLI surfaces hand over
+    JSON dicts, while a library caller can pass the real
+    ``engine.yara_scan.RuleMatch`` / ``engine.truth_labels.TruthInterval``
+    objects it already holds and should not have to serialise first.
+    """
+    if isinstance(row, Mapping):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def _score_coerce_int(value: Any, field: str, *, kind: str, index: int) -> int:
+    """``int()`` one incoming field, refusing anything that would only LOOK right.
+
+    ``bool`` is refused explicitly because ``int(True) == 1``: a ``key_offset``
+    of ``true`` would otherwise score as a one-byte prediction instead of as
+    the mistake it is. A non-integral float is refused for the same reason —
+    truncation would move a byte boundary and never say so.
+    """
+    coerced: Optional[int] = None
+    if isinstance(value, bool):
+        coerced = None
+    elif isinstance(value, int):
+        coerced = value
+    elif isinstance(value, float) and value.is_integer():
+        coerced = int(value)
+    elif isinstance(value, str):
+        try:
+            coerced = int(value.strip(), 10)
+        except ValueError:
+            coerced = None
+    if coerced is None:
+        raise CapabilityError(
+            f"{kind}[{index}].{field} must be a whole number of bytes, got "
+            f"{value!r} ({type(value).__name__})",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return coerced
+
+
+def _score_offset(
+    row: Any, field: str, *, kind: str, index: int, alt: Optional[str] = None,
+) -> int:
+    """A REQUIRED, non-negative byte position — absent is an error, not a zero.
+
+    This refusal is the second half of the ``getattr`` guard described on
+    :class:`_ScoredMatch`. The metrics engine coerces a missing field to ``0``,
+    so a row that simply forgot ``offset`` would be scored as a firing at the
+    start of the dump and would contribute real-looking true positives or false
+    positives to the report. There is no safe default for "where did it fire",
+    so the row is refused BY INDEX and BY FIELD and the caller fixes it.
+    """
+    value = _score_field(row, field)
+    used = field
+    if value is None and alt is not None:
+        value, used = _score_field(row, alt), alt
+    if value is None:
+        raise CapabilityError(
+            f"{kind}[{index}] carries no {field!r}"
+            + (f" (nor {alt!r})" if alt else "")
+            + f": every {kind[:-1]} needs an explicit byte position, because a "
+            f"missing one would be scored as {field}=0 — a firing at the very "
+            f"start of the dump — and would produce a plausible-looking report "
+            f"of entirely fictional precision and recall. Supply it, or drop "
+            f"the row.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    coerced = _score_coerce_int(value, used, kind=kind, index=index)
+    if coerced < 0:
+        raise CapabilityError(
+            f"{kind}[{index}].{used} must be >= 0, got {coerced}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return coerced
+
+
+def _score_optional_int(row: Any, field: str, *, kind: str, index: int) -> Optional[int]:
+    """An OPTIONAL field: ``None`` stays ``None``, and that is meaningful.
+
+    A match with no ``key_offset`` makes no positional claim at all, and the
+    engine excludes it from the ``key_offset``/``exact`` precision denominator
+    rather than charging it as a false positive. Defaulting it to ``0`` here
+    would turn "this rule predicts nothing about where the key is" into "this
+    rule predicts the key is at the start of its window", which is a different
+    and much worse claim.
+    """
+    value = _score_field(row, field)
+    if value is None:
+        return None
+    return _score_coerce_int(value, field, kind=kind, index=index)
+
+
+def _as_scored_match(match: Any, index: int) -> _ScoredMatch:
+    """Normalise one incoming firing. See :class:`_ScoredMatch` for the why."""
+    return _ScoredMatch(
+        offset=_score_offset(match, "offset", kind="matches", index=index),
+        length=_score_offset(match, "length", kind="matches", index=index),
+        key_offset=_score_optional_int(
+            match, "key_offset", kind="matches", index=index),
+        key_length=_score_optional_int(
+            match, "key_length", kind="matches", index=index),
+    )
+
+
+def _as_scored_truth(truth: Any, index: int) -> _ScoredTruth:
+    """Normalise one incoming truth interval.
+
+    ``start`` falls back to ``offset`` because the engine's own ``_truth_start``
+    accepts both, and a caller pasting a hit row from ``locate_key`` has
+    ``offset``. The fallback is spelled here so the two sides cannot diverge.
+    """
+    return _ScoredTruth(
+        start=_score_offset(
+            truth, "start", kind="truths", index=index, alt="offset"),
+        length=_score_offset(truth, "length", kind="truths", index=index),
+        source=str(_score_field(truth, "source") or ""),
+    )
+
+
+def _as_score_row(
+    row: Any,
+    index: int,
+    *,
+    matches: Any = None,
+    truths: Any = None,
+    detector: Optional[str] = None,
+    dump: Optional[str] = None,
+    truth_sources: Optional[Sequence[str]] = None,
+) -> _ScoreRow:
+    """Build one :class:`_ScoreRow` from a row mapping, or from loose parts.
+
+    *row* is ``None`` for the single-pair intake, where the parts arrive as the
+    producer's own keyword arguments instead. Either way the geometry goes
+    through the same converters, so the two intakes cannot be scored by
+    different rules.
+    """
+    if row is not None:
+        if not isinstance(row, Mapping):
+            raise CapabilityError(
+                f"rows[{index}] must be an object with 'matches' / 'truths' "
+                f"keys, got {type(row).__name__}",
+                category=ErrorCategory.INVALID_INPUT,
+            )
+        matches = row.get("matches")
+        truths = row.get("truths")
+        detector = row.get("detector")
+        dump = row.get("dump")
+        truth_sources = row.get("truth_sources")
+    scored_truths = tuple(
+        _as_scored_truth(t, i) for i, t in enumerate(truths or ()))
+    # Derived exactly as ``engine.detector_metrics._row_truth_sources`` derives
+    # it, and then handed to the engine EXPLICITLY on every row, so the sources
+    # this payload echoes are the ones the report was actually grouped by —
+    # there is no second derivation to drift from this one.
+    sources = (
+        tuple(str(s) for s in truth_sources) if truth_sources
+        else tuple(sorted({t.source for t in scored_truths} - {""}))
+    )
+    return _ScoreRow(
+        detector=str(detector or "unknown"),
+        dump=str(dump or ""),
+        matches=tuple(_as_scored_match(m, i) for i, m in enumerate(matches or ())),
+        truths=scored_truths,
+        truth_sources=sources,
+    )
+
+
+def _score_detector_row(
+    row: _ScoreRow,
+    *,
+    status: str,
+    metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One row's payload, in ONE shape whatever could be established about it.
+
+    ``metrics`` carries one ``IntervalDetectionMetrics.to_dict()`` per criterion
+    on a scored row and is ``None`` on an unscorable one, mirroring
+    ``_yara_scan_row``'s ``scan``. Nesting it — rather than flattening zeros
+    onto a row that had nothing to be measured against — is what keeps "the
+    detector missed every key" distinguishable from "there were no keys to
+    miss": there is simply no ``recall: 0.0`` to misread.
+
+    The status/metrics biconditional is asserted for the same reason
+    ``_yara_scan_row`` asserts its own: the roll-up and the verdict below trust
+    it, so a violation is a programming error rather than a strange result.
+    """
+    if status not in SCORE_ROW_STATUSES:
+        raise ValueError(
+            "unknown detector-score row status " + repr(status)
+            + "; expected one of "
+            + ", ".join(repr(s) for s in SCORE_ROW_STATUSES))
+    if (status == SCORE_ROW_SCORED) != (metrics is not None):
+        raise ValueError(
+            "detector-score row status " + repr(status)
+            + " contradicts metrics payload "
+            + ("present" if metrics is not None else "absent"))
+    return {
+        "detector": row.detector,
+        "dump": row.dump,
+        "status": status,
+        # Both denominators, on every row including an unscorable one: they are
+        # what the engine's own docstring says a consumer must check before
+        # treating a zero as a failure, so they must be readable without
+        # descending into ``metrics`` (which is ``None`` exactly when the
+        # question is sharpest).
+        "matches": len(row.matches),
+        "truths": len(row.truths),
+        "truth_sources": list(row.truth_sources),
+        "metrics": metrics,
+    }
+
+
+def _score_detector_diagnostics(
+    rows: List[Dict[str, Any]],
+    *,
+    verdict: str,
+    counts: Dict[str, int],
+    tolerance_bytes: int,
+    containment: Optional[Dict[str, Any]],
+    key_offset: Optional[Dict[str, Any]],
+) -> List[Diagnostic]:
+    """Qualify a score — every way these numbers can mislead gets a voice.
+
+    ``engine/detector_metrics.py`` publishes ``max_matches_per_truth`` and
+    ``max_truths_per_match`` "precisely so that structure stays visible rather
+    than being laundered into a single flattering score". A caller reading a
+    rendered payload will not go looking for them, so the two ways they turn a
+    good-looking rate into a meaningless one are lifted into diagnostics here
+    as well as left on the metrics.
+
+    *containment* / *key_offset* are the micro-averaged blocks from the
+    report's ``overall``, or ``None`` when nothing was scorable.
+    """
+    diagnostics: List[Diagnostic] = []
+
+    if verdict == SCORE_NO_TRUTHS:
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_NO_TRUTHS_CODE,
+            message=(
+                f"NOTHING was scorable: none of the {counts['rows_total']} "
+                f"row(s) carried a truth interval, so the "
+                f"{counts['matches_total']} firing(s) are neither confirmed "
+                f"nor refuted. ``report`` is null rather than a block of "
+                f"zeros — a precision of 0.0 here would read as 'every firing "
+                f"was wrong', which is not what an empty truth set says."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "rows_total": counts["rows_total"],
+                "matches_total": counts["matches_total"],
+            },
+        ))
+    elif verdict == SCORE_NO_MATCHES:
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_NO_MATCHES_CODE,
+            message=(
+                f"The detector fired on NONE of the {counts['truths_total']} "
+                f"truth interval(s) across {counts['rows_scored']} scored "
+                f"row(s). Unlike the no_truths case this recall of 0.0 is a "
+                f"MEASURED total miss: the denominator is real, and the rule "
+                f"generalises to none of these dumps."
+            ),
+            severity=Severity.INFO,
+            details={
+                "truths_total": counts["truths_total"],
+                "rows_scored": counts["rows_scored"],
+            },
+        ))
+    elif containment is not None and key_offset is not None:
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_SCORED_CODE,
+            message=(
+                f"Scored {counts['rows_scored']} row(s): containment "
+                f"precision {containment['precision']:.3f} recall "
+                f"{containment['recall']:.3f} (F1 {containment['f1']:.3f}) "
+                f"over {containment['matches']} firing(s) and "
+                f"{containment['truths']} key(s); key_offset recall "
+                f"{key_offset['recall']:.3f} within {tolerance_bytes}B. Read "
+                f"the criteria TOGETHER: containment says the window enclosed "
+                f"the key, key_offset says the predicted position was right to "
+                f"within alignment slack."
+            ),
+            severity=Severity.INFO,
+            details={
+                "containment": {
+                    "precision": containment["precision"],
+                    "recall": containment["recall"],
+                    "f1": containment["f1"],
+                },
+                "key_offset": {
+                    "precision": key_offset["precision"],
+                    "recall": key_offset["recall"],
+                    "f1": key_offset["f1"],
+                },
+            },
+        ))
+
+    if counts["rows_unscorable"]:
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_UNSCORABLE_ROWS_CODE,
+            message=(
+                f"{counts['rows_unscorable']} of {counts['rows_total']} row(s) "
+                f"carried NO truth interval and were EXCLUDED from the report, "
+                f"along with their {counts['matches_unscorable']} firing(s), so "
+                f"no rate below is over them. Pooling them in would assert "
+                f"those firings are false positives — a claim a row with no "
+                f"truth set cannot support. If you KNOW those dumps hold no "
+                f"key, matches_unscorable is published so you can compute the "
+                f"stricter precision yourself."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "rows": [r["dump"] or r["detector"] for r in rows
+                         if r["status"] == SCORE_ROW_UNSCORABLE],
+                "matches_unscorable": counts["matches_unscorable"],
+            },
+        ))
+
+    if containment is not None and containment["max_truths_per_match"] > 1:
+        swallowed = (
+            containment["truths"] > 1
+            and containment["max_truths_per_match"] == containment["truths"]
+        )
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_FAN_OUT_CODE,
+            message=(
+                f"FAN-OUT {containment['max_truths_per_match']}: one firing's "
+                f"window contained that many distinct keys"
+                + (
+                    f" — EVERY key in its row. A recall of "
+                    f"{containment['recall']:.3f} reached this way is a "
+                    f"property of how wide the emitted window is, not of the "
+                    f"detector localising anything; narrow the pattern before "
+                    f"reporting that number."
+                    if swallowed else
+                    ". Recall is truth-indexed, so a wide window can lift it "
+                    "without the detector localising any single key."
+                )
+            ),
+            severity=Severity.WARNING if swallowed else Severity.INFO,
+            details={
+                "max_truths_per_match": containment["max_truths_per_match"],
+                "truths": containment["truths"],
+                "recall": containment["recall"],
+            },
+        ))
+
+    if containment is not None and containment["max_matches_per_truth"] > 1:
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_FAN_IN_CODE,
+            message=(
+                f"FAN-IN {containment['max_matches_per_truth']}: one key was "
+                f"hit by that many separate firings. Precision is "
+                f"match-indexed, so all of them count as true positives — "
+                f"which flatters a rule set whose members overlap. This is "
+                f"published rather than deduplicated because collapsing it "
+                f"would hide whichever rule is redundant."
+            ),
+            severity=Severity.INFO,
+            details={
+                "max_matches_per_truth": containment["max_matches_per_truth"],
+            },
+        ))
+
+    if (containment is not None and key_offset is not None
+            and key_offset["matches"] < containment["matches"]):
+        silent = containment["matches"] - key_offset["matches"]
+        diagnostics.append(Diagnostic(
+            code=SCORE_DETECTOR_NO_KEY_OFFSET_CODE,
+            message=(
+                f"{silent} of {containment['matches']} firing(s) carry no "
+                f"key_offset, make NO positional claim, and are excluded from "
+                f"the key_offset/exact precision denominator rather than "
+                f"charged as false positives. Every MemDiver-emitted rule "
+                f"carries the meta; a hand-written one may not — so those two "
+                f"criteria are measured over {key_offset['matches']} firing(s) "
+                f"while containment is measured over {containment['matches']}."
+            ),
+            severity=Severity.INFO,
+            details={
+                "matches_without_key_offset": silent,
+                "key_offset_matches": key_offset["matches"],
+                "containment_matches": containment["matches"],
+            },
+        ))
+    return diagnostics
+
+
+def score_detector_matches(
+    *,
+    matches: Optional[Sequence[Any]] = None,
+    truths: Optional[Sequence[Any]] = None,
+    detector: Optional[str] = None,
+    dump: Optional[str] = None,
+    truth_sources: Optional[Sequence[str]] = None,
+    rows: Optional[Sequence[Any]] = None,
+    tolerance_bytes: int = DEFAULT_TOLERANCE_BYTES,
+) -> Dict[str, Any]:
+    """Score detector firings against known-true key intervals.
+
+    The single implementation behind the CLI ``score-detector`` command, the
+    HTTP ``POST /api/scan/score`` route, the MCP ``score_detector_matches``
+    tool and ``memdiver.services.score_detector_matches``.
+
+    This is the second half of :func:`scan_yara_rule`. That producer answers
+    "did the rule fire?"; it cannot answer "was it right?", and a census of
+    firings with no ground truth beside it measures nothing — a rule matching
+    every page yields a perfect ``dumps_matched`` and is worthless. Hand this
+    producer a scan's ``dumps[].scan.matches`` and the key's known intervals
+    and you get interval precision/recall under all three of the engine's
+    criteria, with the many-to-many structure kept visible.
+
+    NO dump is opened. Everything arrives as data, which is why there is no key
+    material, no view and no locked-container guard in this signature.
+
+    Supply the work in exactly ONE of two intakes:
+
+    * ``matches`` + ``truths`` (+ optional ``detector`` / ``dump`` /
+      ``truth_sources``) — ONE (detector, dump) pair.
+    * ``rows`` — N pre-grouped rows, each a mapping with those same five keys.
+      Rows are scored INDEPENDENTLY and only their counts are summed; pooling
+      the intervals first would let a firing from one dump pair with a truth
+      from another whose offsets happen to line up, inventing true positives.
+
+    Each match may be a dict (``RuleMatch.to_dict()``, or JSON off the wire) or
+    an object carrying the attributes; likewise each truth
+    (``TruthInterval.to_dict()``, or the dataclass). Dicts are converted into
+    attribute-carrying rows HERE, before the engine sees them, because
+    ``engine/detector_metrics.py`` reads its inputs by ``getattr`` and coerces
+    a missing field to ``0`` — so an unconverted dict scores as a firing at
+    offset 0 with nothing raised. :class:`_ScoredMatch` spells that out; a row
+    missing ``offset`` or ``length`` is refused rather than defaulted.
+
+    Args:
+        matches: Detector firings for the single-pair intake. Each needs
+            ``offset`` and ``length``; ``key_offset`` / ``key_length`` are
+            optional, and a firing without ``key_offset`` makes no positional
+            claim and is excluded from the ``key_offset``/``exact``
+            denominators rather than charged as a false positive.
+        truths: Known-true key intervals. Each needs ``start`` (or ``offset``)
+            and ``length``; ``source`` is carried so ledger corroboration is
+            never laundered into a key-log recall denominator.
+        detector: Rule/detector name for the single-pair intake. Defaults to
+            ``"unknown"``, which is also what the engine would use.
+        dump: Optional label for the single-pair intake, carried through for
+            provenance.
+        truth_sources: Optional override of the provenance derived from the
+            intervals' own ``source`` fields.
+        rows: The N-row intake. Mutually exclusive with the four arguments
+            above, with no precedence.
+        tolerance_bytes: Slack for the ``key_offset`` criterion. Defaults to
+            :data:`DEFAULT_TOLERANCE_BYTES` (16), matching the ``alignment=16``
+            of :func:`core.alignment_filter.alignment_filter`, so a detected
+            region starting up to 15 bytes below the true key still counts as
+            the same finding. The ``exact`` criterion always runs at 0.
+
+    Returns:
+        A bare dict carrying ``verdict``, the ``intake``, ``counts``, one row
+        per input row, the micro-averaged ``report``, and ``diagnostics``.
+
+        Read ``verdict`` before any number — only ``"scored"`` is a
+        measurement (see :data:`SCORE_DETECTOR_VERDICTS`) — and read each row's
+        ``truths`` count before its ``metrics``, exactly as the engine's own
+        docstring requires: ``recall == 0.0`` with ``truths == 0`` means there
+        was nothing to find, and only ``recall == 0.0`` with ``truths > 0``
+        means the detector missed.
+
+        ``report`` is ``None`` — not a block of zeros — when no row was
+        scorable, for the same reason an unreadable dump's ``scan`` is ``None``
+        in :func:`scan_yara_rule`.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for zero or both intakes, for the
+            pair-only decorations passed alongside ``rows``, for a negative
+            ``tolerance_bytes``, and for any match/truth row whose byte
+            geometry is missing or is not a whole non-negative number;
+            PRECONDITION for an empty ``rows`` list.
+    """
+    # Function-local, the repo-wide idiom: the ``app`` layer must not pull the
+    # engine's compute at module import time. Only DEFAULT_TOLERANCE_BYTES is
+    # imported at module scope, because it is a keyword default in this
+    # signature and so has to resolve when the signature is built.
+    from memdiver.engine.detector_metrics import (
+        CRITERIA,
+        CRITERION_CONTAINMENT,
+        CRITERION_KEY_OFFSET,
+        aggregate_detector_report,
+        score_intervals,
+    )
+    from memdiver.engine.key_location import ELAPSED_PRECISION
+
+    # ``detector`` / ``dump`` / ``truth_sources`` count as the pair form too:
+    # in the rows intake every row carries its own, so one supplied out here is
+    # provenance the caller asked to record that nothing would ever read. It is
+    # refused rather than ignored.
+    supplied = [
+        name for name, arg in (
+            ("matches", matches), ("truths", truths), ("detector", detector),
+            ("dump", dump), ("truth_sources", truth_sources),
+        )
+        if arg is not None
+    ]
+    # Exactly one intake, naming BOTH forms and every colliding argument, with
+    # no precedence — the same posture ``scan_yara_rule`` takes over its two
+    # rule forms, and for the same reason: silently preferring one would hand
+    # the caller a complete, confident report scored over data they did not
+    # mean.
+    if bool(supplied) == (rows is not None):
+        raise CapabilityError(
+            "score_detector_matches() takes exactly ONE of matches=/truths= "
+            "(one detector, one dump, optionally labelled with detector=/"
+            "dump=/truth_sources=) or rows= (N pre-grouped rows, each carrying "
+            "its own labels); "
+            + (
+                f"both were supplied (rows= alongside "
+                f"{'=, '.join(supplied)}=)" if rows is not None
+                else "neither was"
+            )
+            + ". There is no precedence between them.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if tolerance_bytes < 0:
+        # Refused rather than clamped: the engine clamps the RELATION to 0
+        # (``max(tolerance_bytes, 0)``) but publishes ``tolerance_bytes``
+        # verbatim on every metrics block, so a negative value would be
+        # reported as the slack that was applied when it was not.
+        raise CapabilityError(
+            f"tolerance_bytes must be >= 0, got {tolerance_bytes}; 0 is the "
+            f"exact-match criterion and is already reported alongside every "
+            f"tolerant one",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+    started = time.perf_counter()
+    if rows is not None:
+        supplied = list(rows)
+        if not supplied:
+            raise CapabilityError(
+                "Need at least 1 row to score, got 0",
+                category=ErrorCategory.PRECONDITION,
+            )
+        normalized = [_as_score_row(r, i) for i, r in enumerate(supplied)]
+        intake = SCORE_INTAKE_ROWS
+    else:
+        normalized = [_as_score_row(
+            None, 0, matches=matches, truths=truths, detector=detector,
+            dump=dump, truth_sources=truth_sources)]
+        intake = SCORE_INTAKE_PAIR
+
+    payload_rows: List[Dict[str, Any]] = []
+    for row in normalized:
+        if not row.truths:
+            # Unscorable, and NOT merely "scored badly": with an empty truth
+            # set every rate the engine would return is a vacuous zero, so the
+            # row gets ``metrics: None`` and stays out of the roll-up.
+            payload_rows.append(
+                _score_detector_row(row, status=SCORE_ROW_UNSCORABLE))
+            continue
+        # Per-row metrics come from ``score_intervals`` and the roll-up from
+        # ``aggregate_detector_report``, which scores each row again
+        # internally. The relation is therefore computed twice — knowingly:
+        # it is pure compute over two small interval lists, and the pass is
+        # what buys the per-row ``pairs`` (every related (match, truth, delta)
+        # triple) that the micro-average deliberately empties because its
+        # indices are only meaningful within one row. Without it a report over
+        # eight dumps could say the detector is imprecise and never say which
+        # dump, nor by how many bytes it was off.
+        scored = score_intervals(
+            row.matches, row.truths, tolerance_bytes=tolerance_bytes)
+        payload_rows.append(_score_detector_row(
+            row,
+            status=SCORE_ROW_SCORED,
+            metrics={c: m.to_dict() for c, m in scored.items()},
+        ))
+
+    scorable = [r for r in normalized if r.truths]
+    counts = {
+        "rows_total": len(normalized),
+        "rows_scored": len(scorable),
+        "rows_unscorable": len(normalized) - len(scorable),
+        # Rows that HAD keys to find and where the detector fired at all. A
+        # scored row with no firings is a genuine total miss for that row, and
+        # is counted here so it cannot be confused with an unscorable one.
+        "rows_without_matches": sum(1 for r in scorable if not r.matches),
+        "matches_total": sum(len(r.matches) for r in normalized),
+        # THE precision denominator: firings on scorable rows only.
+        "matches_scored": sum(len(r.matches) for r in scorable),
+        "matches_unscorable": sum(
+            len(r.matches) for r in normalized if not r.truths),
+        "truths_total": sum(len(r.truths) for r in normalized),
+        "detectors": len({r.detector for r in normalized}),
+        "dumps": len({r.dump for r in normalized if r.dump}),
+    }
+
+    # Only the scorable rows are handed to the engine. See
+    # :data:`SCORE_ROW_UNSCORABLE`: including a row with no truth set would put
+    # its firings in the precision denominator with nothing to match them
+    # against, which asserts they are false positives.
+    report = aggregate_detector_report(
+        [
+            {
+                "matches": row.matches,
+                "truths": row.truths,
+                "detector": row.detector,
+                "dump": row.dump,
+                "truth_sources": list(row.truth_sources),
+            }
+            for row in scorable
+        ],
+        tolerance_bytes=tolerance_bytes,
+    ) if scorable else None
+
+    if scorable and counts["matches_scored"]:
+        verdict = SCORE_SCORED
+    elif scorable:
+        # Truths existed and the detector fired on none of them anywhere. A
+        # real, measured total miss — which is exactly why it is NOT folded in
+        # with ``no_truths`` below.
+        verdict = SCORE_NO_MATCHES
+    else:
+        verdict = SCORE_NO_TRUTHS
+
+    overall = report["overall"]["metrics"] if report else {}
+    return {
+        "verdict": verdict,
+        "intake": intake,
+        "tolerance_bytes": tolerance_bytes,
+        "criteria": list(CRITERIA),
+        "counts": counts,
+        "rows": payload_rows,
+        # ``None``, never a block of zeros, when nothing was scorable.
+        "report": report,
+        "elapsed_s": round(time.perf_counter() - started, ELAPSED_PRECISION),
+        "diagnostics": [
+            d.to_dict() for d in _score_detector_diagnostics(
+                payload_rows,
+                verdict=verdict,
+                counts=counts,
+                tolerance_bytes=tolerance_bytes,
+                containment=overall.get(CRITERION_CONTAINMENT),
+                key_offset=overall.get(CRITERION_KEY_OFFSET),
+            )
+        ],
+    }
+
+
 def _key_pattern_anchors(result: Any) -> Dict[str, int]:
     """Pick ONE occurrence per present dump — the one nearest the modal offset.
 
@@ -3740,6 +5614,14 @@ def export_key_pattern(
     payload["location"] = location
 
     diagnostics: List[Diagnostic] = []
+    # FIRST in the list on purpose: every other diagnostic below is a QUALITY
+    # judgement on a rule that at least works, while this one says the rule
+    # cannot fire at all. A reader who acts on only the first entry should act
+    # on that one.
+    over_limit = _scan_limit_diagnostic(payload.get("pattern") or {},
+                                        context=context)
+    if over_limit is not None:
+        diagnostics.append(over_limit)
     if key_wildcard_count == 0:
         diagnostics.append(Diagnostic(
             code=KEY_PATTERN_STATIC_KEY_CODE,
@@ -3764,20 +5646,43 @@ def export_key_pattern(
         bytes.fromhex(export["pattern"]["hex_pattern"].replace(" ", "")),
         static_mask,
     )
+    # ``<=`` on the bits clause, not ``<``: the calibrated floor IS 0.0 (see the
+    # constants block, which measures why), and ``bits < 0.0`` can never be true
+    # -- a silently dead predicate of the kind this tree has been bitten by
+    # before. With the floor at 0.0 the clause fires exactly when the anchors
+    # carry no information at all, which is ``distinct_bytes == 1`` and so
+    # already inside the bytes clause: the bits half now adds no alarm the
+    # measured sweep did not already attribute to ``distinct_bytes``. It is kept
+    # because ``details`` publishes ``shannon_bits`` to the operator, and a gate
+    # that ignored a number it shows them would be free to drift from it.
+    #
+    # DECIDING clause is the FIRST one. ``distinct_bytes < 3`` is what separates
+    # the 22 unselective cells from the 70 perfect ones with no false alarm.
     if (distinctiveness["distinct_bytes"] < KEY_PATTERN_MIN_ANCHOR_BYTES
-            or distinctiveness["shannon_bits"] < KEY_PATTERN_MIN_ANCHOR_BITS):
+            or distinctiveness["shannon_bits"] <= KEY_PATTERN_MIN_ANCHOR_BITS):
         diagnostics.append(Diagnostic(
             code=KEY_PATTERN_DEGENERATE_ANCHORS_CODE,
             message=(
                 f"The static anchors carry only "
                 f"{distinctiveness['distinct_bytes']} distinct byte value(s) "
                 f"({distinctiveness['shannon_bits']} bits/byte, longest "
-                f"constant run {distinctiveness['longest_constant_run']}), so "
-                f"this rule will match almost anywhere. On the reference "
-                f"corpus the real key's surroundings are zeros, and the "
-                f"resulting rule matches 5,311 positions in its own source "
-                f"dump. Raise --context until the window reaches structural "
-                f"bytes, or combine this pattern with a coarser locator."
+                f"constant run {distinctiveness['longest_constant_run']} of "
+                f"{distinctiveness['static_bytes']} static bytes), so what "
+                f"this rule pins is filler rather than structure and it can "
+                f"fire wherever the same filler occurs. MEASURE YOUR OWN "
+                f"rule rather than trust a figure from someone else's "
+                f"corpus: write it out with --output-dir, then "
+                f"`memdiver scan-yara --rule-file <rule> --count-only "
+                f"--no-max-matches <dumps>` reports the uncapped census "
+                f"without the match lists. For scale, on the reference "
+                f"corpus this shape fires 825,779 times in its own 11 MB "
+                f"source dump under libyara and 5,311 times under "
+                f"Volatility3's non-overlapping RegExScanner (pinned by "
+                f"tests/test_vol3_verify.py) — the same rule and the same "
+                f"dump, 155x apart, which is why a selectivity count means "
+                f"nothing without the engine that produced it. Raise "
+                f"--context until the window reaches structural bytes, or "
+                f"combine this pattern with a coarser locator."
             ),
             severity=Severity.WARNING,
             details=dict(distinctiveness),
@@ -4295,6 +6200,1221 @@ def _pcap_field_index(sessions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             entry["searchable"] = entry["searchable"] or field["searchable"]
             entry["sessions"].append(position)
     return index
+
+
+# ---------------------------------------------------------------------------
+# D3 — VERIFYING the plugin we emit, in both of the ways a user runs it
+# ---------------------------------------------------------------------------
+#
+# ``scan_yara_rule`` (D1) runs the YARA half of an export. The Volatility3 half
+# had the same hole and a worse one: for most of this repo's life an emitted
+# plugin was checked only by ``ast.parse`` and substring assertions over the
+# generated text, so a plugin that could not be IMPORTED -- let alone find a key
+# -- passed every test in the suite. Phase B's four real bugs were all found by
+# RUNNING things, one of them a vol3 export that disagreed with the YARA rule it
+# embedded.
+#
+# ``engine/vol3_verify.py`` (in-process) and ``engine/vol3_subproc.py``
+# (subprocess) were written to make that repeatable and were reachable from NO
+# surface at all -- the same shape of hole ``engine/yara_scan.py`` sat in before
+# D1. This producer is both of them, on all four surfaces.
+#
+# Why BOTH paths and not just the cheap one: they answer different questions and
+# on this machine they answer with different framework versions. In-process
+# asks "does the plugin work against the Volatility3 MemDiver imports?"
+# (measured 2.27.0 here). Subprocess asks "does it work the way the user runs
+# it?" -- ``vol -p <dir> -f <dump> <module>.<Class>`` against the user's own
+# checkout (measured 2.27.1 here, from a tree whose ``pip show`` says 2.27.1 and
+# whose bare ``import volatility3`` says 2.28.2). A verification result that
+# does not name the framework that produced it is worthless, which is why every
+# row carries its ``mode_used`` and its RESOLVED ``framework_version``.
+
+#: Which runtime ran the plugin.
+#:
+#: * ``"auto"`` (the default) prefers IN-PROCESS -- the PyPI ``volatility3`` in
+#:   MemDiver's own environment -- and falls back to an external launcher. That
+#:   ordering is the user's stated requirement ("by default the pypi version
+#:   should be used but users should also be able to set the path to the actual
+#:   tool") and it is also the only order that can serve a ``.msl``: see
+#:   :data:`VOL3_MODE_SUBPROCESS` below.
+#: * ``"in_process"`` forces :mod:`engine.vol3_verify`.
+#: * ``"subprocess"`` forces :mod:`engine.vol3_subproc`.
+VOL3_MODE_AUTO = "auto"
+VOL3_MODE_IN_PROCESS = "in_process"
+VOL3_MODE_SUBPROCESS = "subprocess"
+VOL3_MODES = (VOL3_MODE_AUTO, VOL3_MODE_IN_PROCESS, VOL3_MODE_SUBPROCESS)
+
+#: What HAPPENED to one dump. Three-valued, and the third value is the one this
+#: producer exists to keep separate from a zero:
+#:
+#: * ``"verified"``   — the plugin ran over this dump's bytes. ``run`` is
+#:                      present and its ``match_count`` is a measurement.
+#: * ``"unreadable"`` — the dump could not be opened. ``run`` is ``None``.
+#: * ``"unsupported"``— the requested MODE cannot address this dump's bytes at
+#:                      all. ``run`` is ``None``. MEASURED, not theoretical:
+#:                      ``vol`` takes a bare file path and never goes through
+#:                      MemDiver's container layer, so on an ``.msl`` it scans
+#:                      the CONTAINER FILE. On the ground-truth run that means
+#:                      it reports the key at 371752 where every MemDiver
+#:                      coordinate says 370672 — skewed by the container's own
+#:                      header size (1080 bytes for that import; it is not a
+#:                      constant), i.e. a confident WRONG offset, not a zero.
+#:                      A wrong answer is worse than no answer, so a forced
+#:                      ``subprocess`` over a container refuses this dump and
+#:                      says why.
+VERIFY_VERIFIED = "verified"
+VERIFY_UNREADABLE = "unreadable"
+VERIFY_UNSUPPORTED = "unsupported"
+VERIFY_PLUGIN_STATUSES = (VERIFY_VERIFIED, VERIFY_UNREADABLE, VERIFY_UNSUPPORTED)
+
+#: The cross-dump verdict, in :data:`YARA_SCAN_VERDICTS`' four-valued shape and
+#: for its reasons — only ONE of the four is an absence.
+#:
+#: * ``"hit"``          — the plugin fired on at least one dump.
+#: * ``"no_hit"``       — at least one dump was scanned end to end with no row,
+#:                        and no such zero was degraded. The ONLY value that may
+#:                        be read as "this plugin does not fire here".
+#: * ``"inconclusive"`` — nothing fired, and every zero came off a degraded run
+#:                        (a view that sized to 0 bytes), so the zeros are
+#:                        unproven.
+#: * ``"not_run"``      — no dump was verified at all: no runtime was usable for
+#:                        them, or every dump was unreadable. Claims NOTHING,
+#:                        and in particular is what a forced ``subprocess`` over
+#:                        an ``.msl`` returns instead of a zero.
+VERIFY_HIT = "hit"
+VERIFY_NO_HIT = "no_hit"
+VERIFY_INCONCLUSIVE = "inconclusive"
+VERIFY_NOT_RUN = "not_run"
+VERIFY_PLUGIN_VERDICTS = (
+    VERIFY_HIT, VERIFY_NO_HIT, VERIFY_INCONCLUSIVE, VERIFY_NOT_RUN,
+)
+
+#: How the plugin was supplied. Echoed so a reader need not re-derive it from
+#: which request field happened to be set.
+VERIFY_INTAKE_PATH = "path"
+VERIFY_INTAKE_SOURCE = "source"
+
+VERIFY_PLUGIN_NOT_RUN_CODE = "analysis.verify_plugin.not_run"
+VERIFY_PLUGIN_INCONCLUSIVE_CODE = "analysis.verify_plugin.inconclusive"
+VERIFY_PLUGIN_NO_HIT_CODE = "analysis.verify_plugin.no_hit"
+VERIFY_PLUGIN_PARTIAL_CODE = "analysis.verify_plugin.partial"
+VERIFY_PLUGIN_UNREADABLE_CODE = "analysis.verify_plugin.unreadable"
+VERIFY_PLUGIN_UNSUPPORTED_CODE = "analysis.verify_plugin.unsupported"
+VERIFY_PLUGIN_ZERO_BYTES_CODE = "analysis.verify_plugin.zero_bytes"
+VERIFY_PLUGIN_VERSION_SKEW_CODE = "analysis.verify_plugin.version_skew"
+VERIFY_PLUGIN_KEY_MISSING_CODE = "analysis.verify_plugin.key_not_recovered"
+VERIFY_PLUGIN_HITS_CAPPED_CODE = "analysis.verify_plugin.hits_capped"
+VERIFY_PLUGIN_COUNT_ONLY_CODE = "analysis.verify_plugin.count_only"
+VERIFY_PLUGIN_PID_UNPROVEN_CODE = "analysis.verify_plugin.pid_unproven"
+
+#: Whether a verified row carries its per-hit LIST. ``True`` is the default on
+#: every surface, exactly as :data:`DEFAULT_INCLUDE_MATCHES` is for D1, and for
+#: the same reason: an unselective pattern (the emitter's default 64-byte pad
+#: over a zero run) fires thousands of times per dump and each hit carries the
+#: key hex, so the payload has to be boundable independently of the run.
+DEFAULT_INCLUDE_HITS = True
+
+
+def _verify_plugin_source(
+    plugin_path: Optional[str], plugin_source: Optional[str],
+) -> Tuple[str, str, Optional[Path]]:
+    """Resolve the emitted plugin to ``(intake, source_text, path_or_None)``.
+
+    Exactly ONE of the two forms, named by BOTH names in the refusal and with
+    no precedence between them — the posture :func:`scan_yara_rule` takes over
+    its two rule forms, for its reason: silently preferring one would hand back
+    a confident verification of a plugin the caller did not mean to test.
+
+    The existence probe is wrapped, and that guard is load-bearing rather than
+    defensive. An emitted plugin's SOURCE is ~20 KB, which is far longer than
+    ``NAME_MAX`` on every ordinary filesystem, and ``Path.is_file()`` RAISES
+    ``OSError`` (ENAMETOOLONG) for such a value instead of returning ``False``.
+    So a caller who puts the source text in ``plugin_path=`` by mistake would
+    get a bare ``OSError`` traceback out of a path check rather than this
+    module's own refusal. Same guard, for the same measured reason, as
+    ``_score_json_from_args`` in ``cli/pipeline.py``.
+    """
+    if (plugin_path is None) == (plugin_source is None):
+        raise CapabilityError(
+            "verify_vol3_plugin() takes exactly ONE of plugin_path= (a .py "
+            "file on disk) or plugin_source= (the plugin's Python text); "
+            + ("both were supplied" if plugin_path is not None else "neither was")
+            + ". There is no precedence between them.",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    if plugin_source is not None:
+        return VERIFY_INTAKE_SOURCE, plugin_source, None
+    path = Path(str(plugin_path)).expanduser()
+    try:
+        exists = path.is_file()
+    except OSError:
+        exists = False
+    if not exists:
+        raise FileNotFoundServiceError(f"File not found: {path}")
+    return VERIFY_INTAKE_PATH, path.read_text(), path
+
+
+def _verify_plugin_hits_from_rows(rows: Sequence[Dict[str, Any]]) -> List[Any]:
+    """Turn ``vol``'s ``-r json`` rows into the same ``Vol3Hit``s in-process makes.
+
+    One shape for both runtimes is the whole point: the payload's ``run`` block
+    is built by :func:`_verify_plugin_run` from a list of ``Vol3Hit``, so a
+    caller comparing an in-process verification against a subprocess one is
+    comparing like with like rather than two hand-shaped dicts that agreed on
+    the day they were written.
+
+    Columns are read BY NAME, never by position, so a reordered ``_COLUMNS`` in
+    the emitted template cannot silently swap ``KeyOffset`` for
+    ``PatternOffset``.
+    """
+    from memdiver.engine.vol3_verify import Vol3Hit
+
+    hits: List[Any] = []
+    for row in rows:
+        pattern_offset = int(row["PatternOffset"])
+        key_absolute = int(row["KeyOffset"])
+        hits.append(Vol3Hit(
+            offset=pattern_offset,
+            # ``vol`` does not print PATTERN_LENGTH as a column, so the window
+            # width comes from the plugin's own module constant, read by the
+            # caller and passed in below.
+            length=0,
+            key_offset=key_absolute - pattern_offset,
+            key_length=int(row["KeyLength"]),
+            key_hex=str(row["KeyHex"]),
+            key_entropy=float(row["KeyEntropy"]),
+            static_ratio=float(row["StaticRatio"]),
+        ))
+    return hits
+
+
+def _verify_plugin_run(
+    *,
+    plugin_class_name: str,
+    layer_scanned: str,
+    layer_bytes: int,
+    window_length: int,
+    hits: Sequence[Any],
+    match_count: int,
+    expected_offset: Optional[int],
+    anchor_bytes: int,
+    anchor_distinct_bytes: int,
+    key_bytes: Optional[bytes],
+    include_hits: bool,
+) -> Dict[str, Any]:
+    """ONE run's payload, in ONE shape whichever runtime produced it.
+
+    ``expected_offset_reported`` is EXACT membership with no tolerance, which is
+    :class:`engine.vol3_verify.Vol3VerifyReport`'s own choice and is kept here
+    deliberately: the failure this instrument exists to catch is "the plugin
+    reported a hit 64 bytes from the real key", and a tolerance would score
+    that as a near miss instead of the miss it is.
+
+    ``key_recovered`` is the strongest single claim available — not "a hit
+    landed near the key" but "the plugin handed back the key's exact bytes" —
+    and is ``None``, never ``False``, when no ``key_hex`` was supplied. It is
+    computed over the RETAINED hits, so ``hits_capped`` below is the flag that
+    says a ``False`` might be an artefact of the cap rather than a real absence.
+
+    ``include_hits=False`` REMOVES the ``hits`` key rather than emptying it, for
+    the reason :func:`_yara_scan_payload` removes ``matches``: an empty list
+    would make a count-only row with thousands of firings indistinguishable
+    from a proven-clean one to ``len(run["hits"])``, and an absent key cannot be
+    misread as an empty one.
+    """
+    retained = list(hits)
+    reported = expected_offset is not None and any(
+        hit.key_absolute_offset == expected_offset for hit in retained
+    )
+    per_mib = match_count / (layer_bytes / (1024 * 1024)) if layer_bytes else 0.0
+    run: Dict[str, Any] = {
+        "plugin_class_name": plugin_class_name,
+        "layer_scanned": layer_scanned,
+        "layer_bytes": layer_bytes,
+        "window_length": window_length,
+        "match_count": match_count,
+        "hits_retained": len(retained),
+        # A FLOOR on ``hits`` (never on ``match_count``, which is always the
+        # honest total) — and the reason ``key_recovered`` may be a false
+        # negative, so it is published rather than inferred.
+        "hits_capped": match_count > len(retained),
+        "expected_offset": expected_offset,
+        "expected_offset_reported": reported,
+        "key_recovered": (
+            None if key_bytes is None
+            else any(hit.key_hex == key_bytes.hex() for hit in retained)
+        ),
+        "anchor_bytes": anchor_bytes,
+        # The single most predictive number for selectivity: an anchor of 128
+        # zero bytes has ``anchor_distinct_bytes == 1`` and fires anywhere a
+        # long zero run exists, however high its static ratio looks.
+        "anchor_distinct_bytes": anchor_distinct_bytes,
+        "matches_per_mib": round(per_mib, 4),
+    }
+    if include_hits:
+        run["hits"] = [
+            {
+                "offset": hit.offset,
+                "length": window_length,
+                "key_offset": hit.key_offset,
+                "key_absolute_offset": hit.key_absolute_offset,
+                "key_length": hit.key_length,
+                "key_hex": hit.key_hex,
+                "key_entropy": hit.key_entropy,
+                "static_ratio": hit.static_ratio,
+            }
+            for hit in retained
+        ]
+    else:
+        run["hits_omitted"] = True
+    return run
+
+
+def _verify_plugin_row(
+    path: Path,
+    *,
+    status: str,
+    mode_used: Optional[str] = None,
+    framework_version: Optional[Sequence[int]] = None,
+    view: Optional[str] = None,
+    run: Optional[Dict[str, Any]] = None,
+    detail: str = "",
+) -> Dict[str, Any]:
+    """One dump's row, in ONE shape whatever happened to that dump.
+
+    ``run`` is ``None`` on every row that is not ``"verified"``, mirroring
+    :func:`_yara_scan_row`'s ``scan``: there is simply no ``match_count: 0`` on
+    an unreadable or unsupported row for a falsy check to misread as a proven
+    absence.
+
+    ``mode_used`` and ``framework_version`` are per-ROW rather than per-request
+    because under ``mode="auto"`` the fallback can legitimately differ per dump
+    (in-process for a container, the launcher for a flat dump), and because a
+    result that does not name the framework that produced it cannot be acted on
+    — three Volatility3 trees commonly coexist on one machine and they disagree.
+    """
+    if status not in VERIFY_PLUGIN_STATUSES:
+        raise ValueError(
+            "unknown verify-plugin status " + repr(status) + "; expected one of "
+            + ", ".join(repr(s) for s in VERIFY_PLUGIN_STATUSES))
+    if (status == VERIFY_VERIFIED) != (run is not None):
+        raise ValueError(
+            "verify-plugin status " + repr(status) + " contradicts run payload "
+            + ("present" if run is not None else "absent"))
+    return {
+        "dump_path": str(path),
+        "name": path.name,
+        "status": status,
+        # Why this dump was not verified; "" on a verified row.
+        "detail": detail,
+        "mode_used": mode_used,
+        "framework_version": list(framework_version) if framework_version else None,
+        # The view the bytes came from. ``None`` in subprocess mode, where the
+        # bytes are whatever ``vol`` mapped off the path — which is exactly why
+        # a container is refused there rather than reported in the wrong space.
+        "view": view,
+        "run": run,
+    }
+
+
+def _verify_row_degraded(run: Dict[str, Any]) -> bool:
+    """True when a verified row did NOT cover any bytes.
+
+    The quiet false-absence channel, and the same one
+    :func:`_yara_row_degraded` guards: a view that sizes to 0 — an empty file,
+    or an ``.msl`` whose container holds nothing this view can project — is
+    handed to the plugin, reports no error, finds nothing, and would otherwise
+    fall straight into ``dumps_no_hit``. Declaring a plugin non-firing having
+    compared ZERO bytes is the worst instance of a silent all-clear.
+    """
+    return not run["layer_bytes"]
+
+
+#: Wall-clock ceiling for ONE subprocess plugin run, re-exported from the
+#: engine rather than re-literalled so the CLI flag, the Pydantic model and the
+#: MCP tool advertise the same budget the library applies.
+VOL3_SUBPROC_TIMEOUT_S = _VOL3_DEFAULT_TIMEOUT_SECONDS
+
+#: Hits RETAINED per dump, from :mod:`engine.vol3_verify`, for the same reason.
+VOL3_MAX_HITS = _VOL3_DEFAULT_MAX_HITS
+
+
+class _VerifyShape(NamedTuple):
+    """The per-REQUEST facts both runners need to shape a row identically.
+
+    The whole value of running a plugin two ways is that the two answers are
+    comparable; twelve repeated keyword arguments across two call sites is how
+    that stops being true. Handing both runners one object makes a divergence a
+    type error rather than a subtly different payload.
+    """
+
+    plugin_class: str
+    window_length: int
+    anchor_bytes: int
+    anchor_distinct: int
+    expected_offset: Optional[int]
+    key_bytes: Optional[bytes]
+    pid: Optional[int]
+    max_hits: int
+    include_hits: bool
+
+
+def _verify_plugin_class_name(source: str) -> str:
+    """The emitted plugin's class name, read out of its own text.
+
+    Read from the source rather than derived from a filename because the
+    emitter derives the two independently — the same reason
+    :func:`engine.vol3_subproc.plugin_module_name` reads it.
+    """
+    match = re.search(r"^class\s+(\w+)\s*\(", source, re.M)
+    if match is None:
+        raise CapabilityError(
+            "the supplied plugin declares no class at all, so there is "
+            "nothing to run. Pass an emitted Volatility3 plugin (the "
+            "``vol3`` format of export_key_pattern / export_pattern).",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return match.group(1)
+
+
+def _verify_in_process(
+    source: Any,
+    *,
+    source_text: str,
+    path: Path,
+    view: str,
+    flat_file: bool,
+    shape: _VerifyShape,
+) -> Dict[str, Any]:
+    """Run the plugin in THIS interpreter, over bytes MemDiver resolved.
+
+    The byte-source choice mirrors :func:`engine.yara_scan.scan_source`'s
+    exactly, and for its reasons:
+
+    * a raw dump read in its ``raw`` view goes through
+      :func:`engine.vol3_verify.run_over_file`, which registers a flat
+      ``physical.FileLayer`` — the file offset IS the view offset there, and it
+      is the only option that does not materialise a multi-GB dump;
+    * everything else goes through :func:`~engine.vol3_verify.run_over_buffer`
+      with the PROJECTED view, because an ``.msl``'s bytes have to be decrypted
+      and/or VAS-projected before an offset means anything. This is the branch
+      that makes a container verifiable at all, and it is why ``mode="auto"``
+      prefers this runtime.
+
+    Note what ``run_over_file`` deliberately does NOT do: it never runs
+    Volatility3's ``LayerStacker``. MemDiver's flat dumps carry an ELF header
+    with ``e_type = ET_DYN``, so the stacker would wrap the dump in an
+    ``Elf64Layer`` exposing ~6 KB of an 11 MB file and the scan would see
+    nothing. The emitted plugin's own layer walk is what handles that in the
+    subprocess path, where the stacker DOES run.
+    """
+    from memdiver.engine.vol3_verify import run_over_buffer, run_over_file
+
+    extra_config = {"pid": shape.pid} if shape.pid is not None else None
+    if flat_file:
+        report = run_over_file(
+            source_text, Path(source.path),
+            expected_offset=shape.expected_offset,
+            extra_config=extra_config,
+            max_hits=shape.max_hits,
+        )
+    else:
+        report = run_over_buffer(
+            source_text, source.read_all(view),
+            expected_offset=shape.expected_offset,
+            extra_config=extra_config,
+            max_hits=shape.max_hits,
+        )
+    return _verify_plugin_row(
+        path,
+        status=VERIFY_VERIFIED,
+        mode_used=VOL3_MODE_IN_PROCESS,
+        framework_version=report.framework_version,
+        view=view,
+        run=_verify_plugin_run(
+            plugin_class_name=report.plugin_class_name,
+            layer_scanned=report.layer_scanned,
+            layer_bytes=report.layer_bytes,
+            window_length=shape.window_length,
+            hits=report.hits,
+            match_count=report.match_count,
+            expected_offset=shape.expected_offset,
+            anchor_bytes=shape.anchor_bytes,
+            anchor_distinct_bytes=shape.anchor_distinct,
+            key_bytes=shape.key_bytes,
+            include_hits=shape.include_hits,
+        ),
+    )
+
+
+def _verify_subprocess(
+    *,
+    path: Path,
+    plugin_file: Path,
+    launcher: Any,
+    framework_version: Optional[Sequence[int]],
+    layer_bytes: int,
+    timeout_s: int,
+    shape: _VerifyShape,
+) -> Dict[str, Any]:
+    """Run the plugin through a REAL ``vol`` launcher, the way a user does.
+
+    ``--pid`` and any other plugin flag go in ``plugin_args``, appended AFTER
+    the target, because ``vol``'s CLI is an argparse subcommand parser: the same
+    flag placed before the plugin name exits 2 with "unrecognized arguments"
+    (measured against the author's 2.27.1 checkout).
+
+    The hit list is capped HERE rather than by the launcher, so ``match_count``
+    stays the honest total: ``vol`` has no cap to ask for, and truncating the
+    count as well as the list would turn a selectivity measurement into a
+    reading of ``max_hits``.
+    """
+    from memdiver.engine.vol3_subproc import run_plugin
+
+    plugin_args: List[str] = []
+    if shape.pid is not None:
+        plugin_args += ["--pid", str(shape.pid)]
+    rows = run_plugin(
+        launcher, plugin_file, path,
+        plugin_args=plugin_args, timeout=timeout_s,
+    )
+    hits = _verify_plugin_hits_from_rows(rows)
+    return _verify_plugin_row(
+        path,
+        status=VERIFY_VERIFIED,
+        mode_used=VOL3_MODE_SUBPROCESS,
+        framework_version=framework_version,
+        # ``None`` on purpose: ``vol`` mapped the FILE, not a MemDiver view. The
+        # only reason that is comparable to the in-process row at all is that a
+        # container never reaches this runner — it is refused as
+        # ``"unsupported"`` upstream.
+        view=None,
+        run=_verify_plugin_run(
+            plugin_class_name=shape.plugin_class,
+            # The plugin walks ``layer.dependencies`` down to the lowest layer
+            # by default, so the bytes it scanned are the FILE's. Named for what
+            # it is rather than borrowed from the in-process layer name.
+            layer_scanned="file",
+            layer_bytes=layer_bytes,
+            window_length=shape.window_length,
+            hits=hits[:shape.max_hits],
+            match_count=len(hits),
+            expected_offset=shape.expected_offset,
+            anchor_bytes=shape.anchor_bytes,
+            anchor_distinct_bytes=shape.anchor_distinct,
+            key_bytes=shape.key_bytes,
+            include_hits=shape.include_hits,
+        ),
+    )
+
+
+#: Pulls ``PATTERN_LENGTH`` out of an emitted plugin's text.
+#:
+#: Needed because ``vol`` does not print the window width as a column, so the
+#: subprocess path has no other way to report a hit's ``length`` — and reporting
+#: ``0`` there while in-process reports 560 would make the two runtimes
+#: incomparable, which is the one thing this producer must not allow.
+_VERIFY_PATTERN_LENGTH = re.compile(r"^PATTERN_LENGTH\s*=\s*(\d+)\s*$", re.M)
+
+#: Pulls ``PATTERN_NAME`` out, for naming the temp module a ``plugin_source``
+#: intake is written to. Only cosmetic — ``plugin_module_name`` reads the CLASS
+#: out of the source itself.
+_VERIFY_PATTERN_NAME = re.compile(r"^PATTERN_NAME\s*=\s*[\"'](.*)[\"']\s*$", re.M)
+
+
+def _verify_plugin_window_length(source: str) -> int:
+    match = _VERIFY_PATTERN_LENGTH.search(source)
+    return int(match.group(1)) if match else 0
+
+
+def _verify_plugin_module_stem(source: str) -> str:
+    match = _VERIFY_PATTERN_NAME.search(source)
+    stem = re.sub(r"\W+", "_", match.group(1)) if match else "memdiver_plugin"
+    # A leading digit is a legal filename and an illegal module name, and
+    # ``vol -p`` addresses the file AS a module.
+    return stem if stem and not stem[0].isdigit() else f"p_{stem}"
+
+
+def _verify_plugin_runtime(
+    *, mode: str, vol_bin: Optional[str], vol_python: Optional[str],
+) -> Dict[str, Any]:
+    """Resolve BOTH runtimes and describe them, before a single dump is opened.
+
+    The returned block is the part of the payload that makes a verification
+    actionable, and it is not optional decoration. Three Volatility3 trees
+    commonly coexist on one machine and they disagree; on this one the PyPI
+    package MemDiver imports is 2.27.0 while the author's checkout answers
+    2.27.1 as a script (and 2.28.2 to a bare ``import``, from the same venv,
+    because an editable install's finder points at a sibling). A row that says
+    "1 hit at 370672" without saying which framework produced it cannot be
+    reproduced, so ``framework_version`` is resolved for both runtimes and
+    ``versions_agree`` states the answer rather than leaving it to be eyeballed.
+
+    The launcher's version is read by :func:`engine.vol3_subproc.probe_version`,
+    which probes WITH ``cwd`` set to the launcher's own directory. Do not
+    "simplify" that away: the script directory shadows the editable finder, so
+    it is the only invocation whose answer matches what ``vol.py`` will load.
+    """
+    from memdiver.engine import vol3_subproc
+    from memdiver.engine.vol3_verify import HAS_VOLATILITY3, framework_version
+
+    in_process: Dict[str, Any] = {"available": bool(HAS_VOLATILITY3)}
+    in_process["framework_version"] = (
+        list(framework_version()) if HAS_VOLATILITY3 else None
+    )
+
+    # Resolved again for the runner's use. Resolution only STATS files -- the
+    # expensive part, ``probe_version``, ran once inside
+    # ``_verify_plugin_runtime`` above -- so this is deliberately a second cheap
+    # call rather than a launcher threaded out of a function whose job is to
+    # describe runtimes.
+    launcher = vol3_subproc.resolve_launcher(vol_bin=vol_bin, vol_python=vol_python)
+    subprocess_block: Dict[str, Any] = {
+        "available": launcher is not None,
+        "framework_version": None,
+        # The launcher's identity, in full. ``cwd`` and ``python`` are as
+        # load-bearing as the path: which framework a checkout's ``vol.py``
+        # loads depends on all three.
+        "launcher": launcher.describe() if launcher else None,
+        "argv": list(launcher.argv) if launcher else None,
+        "cwd": str(launcher.cwd) if launcher else None,
+        "python": launcher.python if launcher else None,
+        "source": launcher.source if launcher else None,
+    }
+    if launcher is not None:
+        version = vol3_subproc.probe_version(launcher)
+        subprocess_block["framework_version"] = list(version) if version else None
+
+    both = (in_process["framework_version"], subprocess_block["framework_version"])
+    return {
+        "mode_requested": mode,
+        "in_process": in_process,
+        "subprocess": subprocess_block,
+        # ``None`` — not ``True`` — when either side is unknown. "We could not
+        # tell" and "they match" are different facts.
+        "versions_agree": (
+            None if None in both else both[0] == both[1]
+        ),
+        "launcher": vol3_subproc.launcher_report(
+            vol_bin=vol_bin, vol_python=vol_python,
+        ),
+    }
+
+
+def _verify_plugin_diagnostics(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    verdict: str,
+    counts: Dict[str, Any],
+    runtime: Dict[str, Any],
+    key_bytes: Optional[bytes],
+    include_hits: bool,
+    pid: Optional[int],
+) -> List[Diagnostic]:
+    """Everything qualifying the numbers above, in the order it should be read."""
+    diagnostics: List[Diagnostic] = []
+
+    if verdict == VERIFY_NOT_RUN:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_NOT_RUN_CODE,
+            message=(
+                f"No dump was verified: {counts['dumps_unsupported']} could not "
+                f"be addressed by the requested runtime and "
+                f"{counts['dumps_unreadable']} could not be read. This result "
+                f"claims NOTHING about the plugin — it is not a zero."
+            ),
+            severity=Severity.WARNING,
+            details={
+                "dumps_total": counts["dumps_total"],
+                "dumps_unsupported": counts["dumps_unsupported"],
+                "dumps_unreadable": counts["dumps_unreadable"],
+            },
+        ))
+    elif verdict == VERIFY_INCONCLUSIVE:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_INCONCLUSIVE_CODE,
+            message=(
+                "The plugin fired nowhere, but every zero came off a run that "
+                "covered 0 bytes, so the zeros are UNPROVEN. Do not read this "
+                "as 'the plugin does not fire here'."
+            ),
+            severity=Severity.WARNING,
+            details={"dumps_zero_bytes": counts["dumps_zero_bytes"]},
+        ))
+    elif verdict == VERIFY_NO_HIT:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_NO_HIT_CODE,
+            message=(
+                f"The plugin ran end to end over "
+                f"{counts['dumps_verified']} dump(s) and fired on none of "
+                f"them. This zero is MEASURED."
+            ),
+            severity=Severity.INFO,
+            details={"dumps_verified": counts["dumps_verified"]},
+        ))
+    elif counts["dumps_verified"] and counts["dumps_hit"] < counts["dumps_verified"]:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_PARTIAL_CODE,
+            message=(
+                f"Fired on {counts['dumps_hit']} of "
+                f"{counts['dumps_verified']} verified dump(s). Partial "
+                f"survival is the normal shape of a real key across a process "
+                f"lifecycle; the silent dumps are evidence, not a shortfall."
+            ),
+            severity=Severity.INFO,
+            details={
+                "dumps_hit": counts["dumps_hit"],
+                "dumps_verified": counts["dumps_verified"],
+            },
+        ))
+
+    unsupported = [r for r in rows if r["status"] == VERIFY_UNSUPPORTED]
+    if unsupported:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_UNSUPPORTED_CODE,
+            message=(
+                f"{len(unsupported)} dump(s) were REFUSED by the requested "
+                f"runtime rather than reported as zero: "
+                + "; ".join(f"{r['name']}: {r['detail']}" for r in unsupported[:3])
+                + ("; ..." if len(unsupported) > 3 else "")
+            ),
+            severity=Severity.WARNING,
+            details={"dumps": [r["name"] for r in unsupported]},
+        ))
+
+    unreadable = [r for r in rows if r["status"] == VERIFY_UNREADABLE]
+    if unreadable:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_UNREADABLE_CODE,
+            message=(
+                f"{len(unreadable)} dump(s) could not be read: "
+                + "; ".join(f"{r['name']}: {r['detail']}" for r in unreadable[:3])
+                + ("; ..." if len(unreadable) > 3 else "")
+            ),
+            severity=Severity.WARNING,
+            details={"dumps": [r["name"] for r in unreadable]},
+        ))
+
+    if counts["dumps_zero_bytes"]:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_ZERO_BYTES_CODE,
+            message=(
+                f"{counts['dumps_zero_bytes']} verified dump(s) presented 0 "
+                f"bytes to the plugin. Their zeros prove nothing — check the "
+                f"view, and whether an encrypted container was unlocked."
+            ),
+            severity=Severity.WARNING,
+            details={"dumps_zero_bytes": counts["dumps_zero_bytes"]},
+        ))
+
+    if runtime["versions_agree"] is False:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_VERSION_SKEW_CODE,
+            message=(
+                "The two runtimes resolve DIFFERENT Volatility3 versions: "
+                f"in-process "
+                f"{'.'.join(map(str, runtime['in_process']['framework_version']))}"
+                f" vs launcher "
+                f"{'.'.join(map(str, runtime['subprocess']['framework_version']))}"
+                f" ({runtime['subprocess']['launcher']}). Each row's "
+                f"framework_version says which one answered it."
+            ),
+            severity=Severity.INFO,
+            details={
+                "in_process": runtime["in_process"]["framework_version"],
+                "subprocess": runtime["subprocess"]["framework_version"],
+            },
+        ))
+
+    if key_bytes is not None and counts["dumps_verified"]:
+        missing = [
+            r["name"] for r in rows
+            if r["status"] == VERIFY_VERIFIED and r["run"]["key_recovered"] is False
+        ]
+        if missing:
+            diagnostics.append(Diagnostic(
+                code=VERIFY_PLUGIN_KEY_MISSING_CODE,
+                message=(
+                    f"The supplied key was NOT among the plugin's own output on "
+                    f"{len(missing)} verified dump(s) ({', '.join(missing[:4])}"
+                    + (", ..." if len(missing) > 4 else "")
+                    + "). On a dump that does hold the key this is the "
+                      "strongest failure this harness reports."
+                ),
+                severity=Severity.WARNING,
+                details={"dumps": missing},
+            ))
+
+    capped = [
+        r["name"] for r in rows
+        if r["status"] == VERIFY_VERIFIED and r["run"]["hits_capped"]
+    ]
+    if capped:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_HITS_CAPPED_CODE,
+            message=(
+                f"The hit list stopped at max_hits on {len(capped)} dump(s) "
+                f"({', '.join(capped[:4])}"
+                + (", ..." if len(capped) > 4 else "")
+                + "). match_count is still the honest total, but "
+                  "expected_offset_reported and key_recovered are computed over "
+                  "the RETAINED hits and may be false negatives."
+            ),
+            severity=Severity.WARNING,
+            details={"dumps": capped},
+        ))
+
+    if not include_hits:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_COUNT_ONLY_CODE,
+            message=(
+                "COUNT-ONLY: every per-hit list was omitted and every count and "
+                "flag retained. Nothing bounds the RUN — the plugin still finds "
+                "every hit — only the payload."
+            ),
+            severity=Severity.INFO,
+            details={"hits_total": counts["hits_total"]},
+        ))
+
+    if pid is not None:
+        diagnostics.append(Diagnostic(
+            code=VERIFY_PLUGIN_PID_UNPROVEN_CODE,
+            message=(
+                f"pid={pid} was passed through to the plugin but is UNPROVEN "
+                f"here. --pid needs a kernel image plus a matching ISF so the "
+                f"OS PsList can hand back a process layer; a flat process dump "
+                f"has neither, and the emitted plugin then logs a warning and "
+                f"scans the whole layer anyway. Treat the rows as unrestricted."
+            ),
+            severity=Severity.WARNING,
+            details={"pid": pid},
+        ))
+
+    return diagnostics
+
+
+def verify_vol3_plugin(
+    *,
+    dump_paths: Sequence[str],
+    plugin_path: Optional[str] = None,
+    plugin_source: Optional[str] = None,
+    mode: str = VOL3_MODE_AUTO,
+    view: Optional[str] = None,
+    expected_offset: Optional[int] = None,
+    key_hex: Optional[str] = None,
+    pid: Optional[int] = None,
+    vol_bin: Optional[str] = None,
+    vol_python: Optional[str] = None,
+    timeout_s: int = VOL3_SUBPROC_TIMEOUT_S,
+    max_hits: int = VOL3_MAX_HITS,
+    include_hits: bool = DEFAULT_INCLUDE_HITS,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+    key_material: Optional[Dict[str, Any]] = None,
+    on_source: Optional[Callable[[Any], None]] = None,
+) -> Dict[str, Any]:
+    """RUN a MemDiver-emitted Volatility3 plugin over N dumps, and say who ran it.
+
+    The single implementation behind the CLI ``verify-plugin`` command, the HTTP
+    ``POST /api/scan/verify-plugin`` route, the MCP ``verify_vol3_plugin`` tool
+    and ``memdiver.services.verify_vol3_plugin``.
+
+    This is the Volatility3 half of what :func:`scan_yara_rule` did for YARA,
+    and it exists because "the suite is green" was never evidence about an
+    emitted plugin: for most of this repo's life such a plugin was checked only
+    by ``ast.parse`` and substring assertions over its generated text, so one
+    that could not be imported passed everything. Both engine modules that fix
+    that — :mod:`engine.vol3_verify` (in-process) and
+    :mod:`engine.vol3_subproc` (a real ``vol`` launcher) — were reachable from
+    no surface at all until this producer.
+
+    **The two runtimes answer different questions**, which is why *mode*
+    defaults to ``"auto"`` rather than to either one:
+
+    * ``"in_process"`` execs the plugin's source, constructs it through
+      Volatility3's own ``PluginInterface.__init__`` (running the real
+      ``unsatisfied()`` requirement gate) and scans bytes MemDiver projected.
+      It is the only runtime that can address a container: it can be handed the
+      ``.msl``'s ``vas`` view directly.
+    * ``"subprocess"`` runs ``vol -p <dir> -f <dump> <module>.<Class>`` against
+      whichever Volatility3 the operator points at — the way a user actually
+      runs a plugin, and frequently a different framework version from
+      MemDiver's own.
+    * ``"auto"`` prefers IN-PROCESS and falls back to the launcher.
+
+    Point *vol_bin* / *vol_python* at a specific launcher and interpreter. They
+    are first-class parameters, not just the :data:`engine.vol3_subproc.VOL3_BIN_ENV`
+    / ``VOL3_PYTHON_ENV`` env vars, and they BEAT them — an environment variable
+    is not a channel an HTTP body or an MCP tool call has, so env-only
+    configuration would leave "let me use my own vol.py" reachable from the
+    shell alone.
+
+    Args:
+        dump_paths: The dumps to run the plugin over. Rows come back in THIS
+            order.
+        plugin_path: A ``.py`` plugin on disk. Mutually exclusive with
+            *plugin_source*, with no precedence.
+        plugin_source: The plugin's Python TEXT — e.g. the ``content`` field
+            ``export_key_pattern(fmt="vol3")`` just returned. In subprocess
+            mode it is written to a temporary module, because ``vol`` addresses
+            a plugin by ``-p <dir>`` plus ``<module>.<Class>``.
+        mode: One of :data:`VOL3_MODES`.
+        view: Byte view to project for the IN-PROCESS runtime. ``None`` keeps
+            each format's own default (``"raw"`` for raw dumps, ``"vas"`` for
+            ``.msl``) — the same resolution :func:`scan_yara_rule` applies, read
+            from the same single declaration. Ignored in subprocess mode, where
+            ``vol`` maps the file itself; see the ``"unsupported"`` status.
+        expected_offset: A byte position the key is known to occupy. Membership
+            is EXACT, with no tolerance: the failure worth catching is "a hit 64
+            bytes from the real key", and a tolerance would score that as a near
+            miss.
+        key_hex: The secret's bytes, to assert the plugin handed the KEY back
+            rather than merely fired near it (``engine.vol3_verify`` calls that
+            claim ``verify_key_recovered``). Accepts ``"aa bb cc"`` and
+            ``"0xaabbcc"``, exactly as the byte-search box does.
+        pid: Passed through to the plugin's ``--pid``. **Explicitly unproven.**
+            Narrowing needs a kernel image plus a matching ISF so the OS
+            ``PsList`` can return a process layer; neither this repo nor the
+            machine it was developed on has one, so nothing here demonstrates
+            that the rows are restricted to that process — and the emitted
+            plugin itself logs a warning and scans the whole layer when the
+            kernel requirement is unfilled. A diagnostic says so on every run
+            that passes one.
+        vol_bin / vol_python: The launcher and the interpreter that owns its
+            Volatility3. Both beat the env vars.
+        timeout_s: Wall-clock ceiling for ONE subprocess run.
+        max_hits: Hits RETAINED per dump; ``match_count`` is always the honest
+            total and ``hits_capped`` says when the cap bit.
+        include_hits: Whether each verified row carries its per-hit LIST.
+            ``False`` is the count-only census: every count and flag, none of
+            the lists. It bounds the PAYLOAD, not the run.
+        key_file / passphrase / kem_key_file / key_material: Decryption
+            material for encrypted ``.msl`` containers.
+        on_source: Called with each freshly opened source before anything is
+            read from it; runs AFTER the locked-container guard below.
+
+    Returns:
+        A bare dict carrying ``verdict``, the ``intake``, the ``plugin``
+        identity, the ``runtime`` block (BOTH runtimes' availability and
+        RESOLVED framework versions, plus the launcher's path, cwd and
+        interpreter), the ``caps`` the run used, ``counts``, one row per dump in
+        the SUPPLIED order, and ``diagnostics``.
+
+        Read ``verdict`` before any count — only ``"no_hit"`` is an absence
+        (see :data:`VERIFY_PLUGIN_VERDICTS`) — and read each row's ``status``
+        before its ``run``, which is ``None`` on every row that did not run.
+
+    Raises:
+        CapabilityError: INVALID_INPUT for zero or both plugin forms, for an
+            unknown *mode*, for a bad *key_hex*, and for the emitted plugin's
+            own structural faults (no ``PluginInterface`` subclass, several of
+            them, no ``_required_framework_version``, a ``TreeGrid`` missing
+            columns — all raised by :mod:`engine.vol3_verify`); PRECONDITION for
+            an empty ``dump_paths``; UNSUPPORTED when the requested runtime does
+            not exist. That last one is CLASS 1, not class 2: ``volatility3`` is
+            an optional extra (``memdiver[vol]``), so its absence is a forgotten
+            install option rather than a broken environment, and the message
+            names the remedy. When NEITHER runtime is available the single
+            refusal names BOTH remedies.
+        FileNotFoundServiceError: when a supplied dump or ``plugin_path`` does
+            not exist. Checked up front, so a typo is reported before N dumps
+            are opened.
+        EncryptedDumpLockedError: for a locked encrypted container, in BOTH
+            modes. Non-negotiable: a locked ``.msl`` reads back EMPTY rather
+            than failing, so without the guard both paths would report a
+            confident zero over bytes nobody decrypted — the silent false
+            negative ``test_g9_producers_surface_locked_dump`` exists to
+            prevent. The subprocess path opens the container purely for this
+            guard (and to learn its format) before handing ``vol`` the path.
+    """
+    # Function-local, the repo-wide idiom: the ``app`` layer must not pull the
+    # engine's compute at module import time. Only the keyword DEFAULTS resolve
+    # at module scope. ``_default_view`` is imported from the YARA scanner ON
+    # PURPOSE rather than re-derived here — it reads each source's own declared
+    # default off its ``size_for`` signature, and that single declaration is
+    # what keeps the two producers from disagreeing about which view an
+    # ``.msl`` gets when the caller names none.
+    from memdiver.engine import vol3_subproc
+    from memdiver.engine.key_location import ELAPSED_PRECISION
+    from memdiver.engine.vol3_verify import (
+        HAS_VOLATILITY3,
+        _require_volatility3,
+        anchor_stats,
+    )
+    from memdiver.engine.yara_scan import _default_view
+
+    if mode not in VOL3_MODES:
+        raise CapabilityError(
+            f"unknown mode {mode!r}; expected one of "
+            + ", ".join(repr(m) for m in VOL3_MODES),
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+    intake, source_text, resolved_plugin_path = _verify_plugin_source(
+        plugin_path, plugin_source)
+
+    paths = [Path(p).expanduser() for p in dump_paths]
+    if not paths:
+        raise CapabilityError(
+            "Need at least 1 dump to verify against, got 0",
+            category=ErrorCategory.PRECONDITION,
+        )
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        raise FileNotFoundServiceError(f"File not found: {', '.join(missing)}")
+
+    key_bytes = _needle_from_key_hex(key_hex) if key_hex else None
+    runtime = _verify_plugin_runtime(
+        mode=mode, vol_bin=vol_bin, vol_python=vol_python)
+    in_process_ok = bool(HAS_VOLATILITY3)
+    launcher_ok = bool(runtime["subprocess"]["available"])
+
+    # The runtime gate, once, before any dump is opened. ``mode="in_process"``
+    # defers to ``engine.vol3_verify``'s own UNSUPPORTED message rather than
+    # inventing a second one; the AUTO branch is the only place that has to
+    # compose a refusal, because it is the only request that had two ways to be
+    # satisfied and neither worked.
+    if mode == VOL3_MODE_IN_PROCESS:
+        _require_volatility3()
+    elif mode == VOL3_MODE_SUBPROCESS and not launcher_ok:
+        raise CapabilityError(
+            f"mode='subprocess' needs a real Volatility3 launcher: "
+            f"{runtime['launcher']}",
+            category=ErrorCategory.UNSUPPORTED,
+        )
+    elif mode == VOL3_MODE_AUTO and not (in_process_ok or launcher_ok):
+        from memdiver.engine.vol3_verify import VOL3_MISSING
+
+        raise CapabilityError(
+            f"No Volatility3 runtime is available, so the emitted plugin "
+            f"cannot be run either way. Either install the in-process extra "
+            f"({VOL3_MISSING}) OR point MemDiver at an existing launcher "
+            f"(set {vol3_subproc.VOL3_BIN_ENV} or pass vol_bin=; a .py "
+            f"launcher also wants {vol3_subproc.VOL3_PYTHON_ENV} / "
+            f"vol_python=). Currently: {runtime['launcher']}",
+            category=ErrorCategory.UNSUPPORTED,
+        )
+
+    window_length = _verify_plugin_window_length(source_text)
+    anchor_bytes, anchor_distinct = anchor_stats(source_text)
+    plugin_class = _verify_plugin_class_name(source_text)
+    # Everything the two per-dump runners need that is the same for every dump,
+    # bundled once. A NamedTuple rather than twelve repeated keywords: the two
+    # runners have to shape their rows IDENTICALLY, and the surest way to keep
+    # them doing that is for them to be handed the same object.
+    shape = _VerifyShape(
+        plugin_class=plugin_class,
+        window_length=window_length,
+        anchor_bytes=anchor_bytes,
+        anchor_distinct=anchor_distinct,
+        expected_offset=expected_offset,
+        key_bytes=key_bytes,
+        pid=pid,
+        max_hits=max_hits,
+        include_hits=include_hits,
+    )
+    launcher = vol3_subproc.resolve_launcher(vol_bin=vol_bin, vol_python=vol_python)
+
+    def _observe(source: Any) -> None:
+        # FIRST, before a single byte is read, in BOTH modes. A locked
+        # encrypted dump reads back EMPTY instead of raising, so this is the
+        # difference between "we could not open your container" and N confident
+        # zero-hit rows over bytes nobody decrypted.
+        _raise_if_locked(source)
+        if on_source is not None:
+            on_source(source)
+
+    km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
+    started = time.perf_counter()
+    rows: List[Dict[str, Any]] = []
+
+    with ExitStack() as stack:
+        # The temp module is created ONCE and only when a launcher run actually
+        # needs it, because ``vol`` addresses a plugin as ``-p <dir>`` plus
+        # ``<module>.<Class>`` and so cannot be handed source text.
+        subprocess_plugin: Dict[str, Optional[Path]] = {"path": resolved_plugin_path}
+
+        def _plugin_file() -> Path:
+            if subprocess_plugin["path"] is None:
+                directory = Path(stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="memdiver_vol3_")))
+                written = directory / f"{_verify_plugin_module_stem(source_text)}.py"
+                written.write_text(source_text)
+                subprocess_plugin["path"] = written
+            return subprocess_plugin["path"]
+
+        for path in paths:
+            row_mode = (
+                mode if mode != VOL3_MODE_AUTO
+                else (VOL3_MODE_IN_PROCESS if in_process_ok else VOL3_MODE_SUBPROCESS)
+            )
+            try:
+                with open_dump_source(str(path), km) as source:
+                    _observe(source)
+                    fmt = getattr(source, "format_name", None)
+                    resolved_view = (
+                        view if view is not None else _default_view(source))
+                    if row_mode == VOL3_MODE_SUBPROCESS and not (
+                        fmt == "raw" and resolved_view == "raw"
+                    ):
+                        # MEASURED, not theoretical. ``vol`` gets a bare file
+                        # path and never goes through MemDiver's container
+                        # layer, so on the ground-truth ``.msl`` it reports the
+                        # key at 371752 where every MemDiver coordinate says
+                        # 370672 — skewed by the container's header size
+                        # (1080 B for that import; not a constant). That is a
+                        # confident WRONG offset, which is worse than a zero and
+                        # far worse than a refusal, so refuse.
+                        rows.append(_verify_plugin_row(
+                            path,
+                            status=VERIFY_UNSUPPORTED,
+                            detail=(
+                                f"mode='subprocess' hands `vol` the file path, "
+                                f"so it would scan the {fmt!r} CONTAINER rather "
+                                f"than the {resolved_view!r} view — measured as "
+                                f"an offset skew of the container's header "
+                                f"size (measured 1080 bytes on the "
+                                f"ground-truth .msl). "
+                                f"Use mode='in_process', which projects the "
+                                f"view before scanning."
+                            ),
+                        ))
+                        continue
+                    if row_mode == VOL3_MODE_IN_PROCESS:
+                        row = _verify_in_process(
+                            source,
+                            source_text=source_text,
+                            path=path,
+                            view=resolved_view,
+                            flat_file=(fmt == "raw" and resolved_view == "raw"),
+                            shape=shape,
+                        )
+                    else:
+                        row = _verify_subprocess(
+                            path=path,
+                            plugin_file=_plugin_file(),
+                            launcher=launcher,
+                            framework_version=(
+                                runtime["subprocess"]["framework_version"]),
+                            layer_bytes=source.size_for(resolved_view),
+                            timeout_s=timeout_s,
+                            shape=shape,
+                        )
+            except (OSError, ValueError, RuntimeError) as exc:
+                # NARROW ON PURPOSE, exactly as ``scan_yara_rule``'s own handler
+                # is. ``EncryptedDumpLockedError`` is a ``CapabilityError`` and
+                # is none of these, so it propagates straight through —
+                # widening to ``Exception`` would silently convert a forgotten
+                # key into N clean runs. ``RuntimeError`` is in the tuple
+                # because that is what ``vol3_subproc.run_plugin`` raises for a
+                # non-zero launcher exit -- degraded per-dump rather than
+                # propagated, so one bad dump cannot abort a corpus sweep.
+                #
+                # Stated rather than hidden: a plugin that is broken for EVERY
+                # dump therefore comes back as N ``"unreadable"`` rows instead
+                # of one request-level error, because out-of-process there is no
+                # way to tell "this dump" from "this plugin" -- only the
+                # launcher's exit code. Each row's ``detail`` carries ``vol``'s
+                # own stderr, and the unreadable diagnostic surfaces it, so the
+                # cause is legible; the in-process runtime raises properly
+                # (``load_plugin_class`` refuses a bad plugin up front), which
+                # is another reason ``mode="auto"`` prefers it.
+                logger.warning(
+                    "%s: could not be verified (%s); claiming nothing about "
+                    "this dump.", path, exc)
+                rows.append(_verify_plugin_row(
+                    path, status=VERIFY_UNREADABLE, detail=str(exc)))
+                continue
+            rows.append(row)
+
+    verified = [r for r in rows if r["status"] == VERIFY_VERIFIED]
+    hit = [r for r in verified if r["run"]["match_count"]]
+    zero = [r for r in verified if not r["run"]["match_count"]]
+    proven_zero = [r for r in zero if not _verify_row_degraded(r["run"])]
+    unproven_zero = [r for r in zero if _verify_row_degraded(r["run"])]
+
+    counts = {
+        "dumps_total": len(rows),
+        "dumps_verified": len(verified),
+        "dumps_unreadable": sum(
+            1 for r in rows if r["status"] == VERIFY_UNREADABLE),
+        "dumps_unsupported": sum(
+            1 for r in rows if r["status"] == VERIFY_UNSUPPORTED),
+        "dumps_hit": len(hit),
+        "dumps_no_hit": len(proven_zero),
+        "dumps_inconclusive": len(unproven_zero),
+        # Equal to ``dumps_inconclusive`` TODAY, and kept as its own key
+        # deliberately rather than deduplicated. It names the CAUSE where the
+        # other names the consequence: a zero-byte layer is currently the only
+        # way a verified row can be degraded (there is no per-chunk timeout
+        # here, which is what makes ``scan_yara_rule``'s two counts diverge),
+        # so a reader must not have to infer "no bytes were compared" from a
+        # verdict word. Add a second degradation channel and the two separate
+        # on their own instead of one of them silently becoming wrong.
+        "dumps_zero_bytes": len(unproven_zero),
+        "dumps_hits_capped": sum(1 for r in verified if r["run"]["hits_capped"]),
+        # NOT a floor: each row's ``match_count`` is the honest total even when
+        # its LIST was capped, so this is a true census. ``hits_retained`` is
+        # the capped one, and the two differ exactly when a cap bit.
+        "hits_total": sum(r["run"]["match_count"] for r in verified),
+        "hits_retained": sum(r["run"]["hits_retained"] for r in verified),
+        "bytes_scanned": sum(r["run"]["layer_bytes"] for r in verified),
+        # ``None`` when no key was supplied; otherwise how many verified dumps
+        # handed the key's exact bytes back.
+        "dumps_key_recovered": (
+            None if key_bytes is None
+            else sum(1 for r in verified if r["run"]["key_recovered"])
+        ),
+        "dumps_expected_offset_reported": (
+            None if expected_offset is None
+            else sum(
+                1 for r in verified if r["run"]["expected_offset_reported"])
+        ),
+    }
+
+    if hit:
+        verdict = VERIFY_HIT
+    elif proven_zero and not unproven_zero:
+        verdict = VERIFY_NO_HIT
+    elif verified:
+        verdict = VERIFY_INCONCLUSIVE
+    else:
+        verdict = VERIFY_NOT_RUN
+
+    return {
+        "verdict": verdict,
+        "intake": intake,
+        "plugin": {
+            "class_name": plugin_class,
+            "path": str(resolved_plugin_path) if resolved_plugin_path else None,
+            "window_length": window_length,
+            "anchor_bytes": anchor_bytes,
+            "anchor_distinct_bytes": anchor_distinct,
+        },
+        "runtime": runtime,
+        "caps": {
+            "mode": mode,
+            "view": view,
+            "max_hits": max_hits,
+            "timeout_s": timeout_s,
+            "pid": pid,
+        },
+        "counts": counts,
+        "dumps": rows,
+        "elapsed_s": round(time.perf_counter() - started, ELAPSED_PRECISION),
+        "diagnostics": [
+            d.to_dict() for d in _verify_plugin_diagnostics(
+                rows,
+                verdict=verdict,
+                counts=counts,
+                runtime=runtime,
+                key_bytes=key_bytes,
+                include_hits=include_hits,
+                pid=pid,
+            )
+        ],
+    }
 
 
 # _emit/_progress_bridge/_experiment_check_cancelled MOVED to memdiver.app._progress (P3.1)

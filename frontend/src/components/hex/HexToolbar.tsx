@@ -71,8 +71,26 @@ export function HexToolbar() {
   const isMsl = format === "msl";
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--md-border)] md-bg-secondary text-xs">
-      <span className="md-text-secondary truncate flex-1" title={dumpPath ?? ""}>
+    /*
+     * `flex-wrap` is load bearing, not cosmetic.
+     *
+     * The three control groups to the right (view tabs ~201px, go-to ~132px,
+     * find ~209px) are all `shrink-0` and together occupy 542px of a 572px
+     * toolbar in the default layout. The file-name span was the only flexible
+     * item, so it absorbed the entire deficit and measured ZERO pixels wide —
+     * in the single-dump viewer as well as the N-pane one. The name is what
+     * tells the analyst WHICH dump is on screen, which matters more, not less,
+     * once several panes are open.
+     *
+     * Wrapping lets the widest group drop to a second line instead of eating
+     * the label; `min-w-[9rem]` is the floor the label keeps in either case,
+     * and `truncate` still handles a long name gracefully.
+     */
+    <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-[var(--md-border)] md-bg-secondary text-xs">
+      <span
+        className="md-text-secondary truncate flex-1 min-w-[9rem]"
+        title={dumpPath ?? ""}
+      >
         {t("toolbar.fileLabel", { name: fileName, size: sizeKB })}
       </span>
       {isMsl && (

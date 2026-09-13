@@ -24,7 +24,7 @@ export function ConvergenceChart({ data }: ConvergenceChartProps) {
             <code>memdiver consensus --convergence</code>.
           </>
         }
-        secondary={{ label: tr("convergence.empty.cliLink"), href: "/docs/quickstart/experiment.md" }}
+        secondary={{ label: tr("convergence.empty.cliLink"), doc: "quickstart/experiment.md" }}
         data-testid="convergence-empty"
       />
     );

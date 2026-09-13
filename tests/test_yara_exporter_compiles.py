@@ -27,6 +27,7 @@ import random
 import sys
 from pathlib import Path
 
+import pytest
 import yara
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -38,6 +39,7 @@ from memdiver.architect.volatility3_exporter import Volatility3Exporter  # noqa:
 from memdiver.architect.yara_exporter import (  # noqa: E402
     _escape_meta,
     _sanitize_identifier,
+    _YARA_KEYWORDS,
     YaraExporter,
 )
 
@@ -321,3 +323,78 @@ def test_volatility3_plugin_with_hostile_name_and_description():
     ast.parse(source)
     rule = _only_rule(_compile(_embedded_yara_rule(source)))
     assert rule.identifier == "my_rule_v2_name"
+
+
+# --------------------------------------------------------------------------- #
+# Reserved words: the gap `none` exposed
+# --------------------------------------------------------------------------- #
+
+#: Every YARA reserved word this suite knows to probe. The list is deliberately
+#: WIDER than the grammar strictly needs -- it is the candidate pool for
+#: :func:`test_no_reserved_word_is_missing_from_the_keyword_set`, which asks the
+#: installed libyara which of them it actually rejects. Adding a word that turns
+#: out to be legal costs nothing; the test only asserts about the rejected ones.
+_CANDIDATE_RESERVED_WORDS = (
+    "rule", "meta", "strings", "condition", "and", "or", "not",
+    "all", "any", "none", "them", "for", "of", "at", "in",
+    "filesize", "entrypoint", "import", "include", "private", "global",
+    "true", "false", "ascii", "wide", "nocase", "fullword",
+    "xor", "base64", "base64wide",
+    "defined", "matches", "contains",
+    "startswith", "endswith", "icontains", "istartswith", "iendswith", "iequals",
+    "int8", "int16", "int32", "uint8", "uint16", "uint32",
+    "int8be", "int16be", "int32be", "uint8be", "uint16be", "uint32be",
+)
+
+
+def _is_legal_identifier(word: str) -> bool:
+    """True when the INSTALLED libyara accepts *word* as a rule identifier."""
+    try:
+        yara.compile(source=f"rule {word} {{ condition: true }}")
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("word", ["none", "contains", "uint32", "matches", "defined"])
+def test_a_reserved_word_as_rule_name_still_compiles(word):
+    """A pattern NAMED after a reserved word must still export a usable rule.
+
+    ``none`` is the regression that prompted this: it was absent from
+    ``_YARA_KEYWORDS``, so ``_sanitize_identifier`` returned it unchanged and the
+    exporter emitted ``rule none { ... }``, which libyara refuses with
+    "unexpected <none>, expecting identifier". The name reaches this path from
+    ``--name`` on four surfaces, so a user picking an unlucky word got an
+    artifact that could not be loaded at all -- and the failure surfaced only
+    when something tried to COMPILE the rule, never at export time.
+    """
+    assert not _is_legal_identifier(word), (
+        f"{word!r} is no longer reserved in this libyara; the premise of this "
+        "test has changed, so re-derive _YARA_KEYWORDS rather than deleting it"
+    )
+    rule = _only_rule(_compile(YaraExporter.export(BASIC_PATTERN, rule_name=word)))
+    assert rule.identifier != word
+    assert rule.identifier.endswith(word)
+
+
+def test_no_reserved_word_is_missing_from_the_keyword_set():
+    """``_YARA_KEYWORDS`` must cover every word libyara actually rejects.
+
+    Asks the installed libyara instead of trusting the literal, so the set
+    cannot silently drift from the linked engine the way it already did once:
+    22 reserved words were missing, and only ``none`` was ever noticed, by a
+    random hypothesis draw.
+
+    One-directional on purpose. Extras are harmless -- over-sanitising only
+    prefixes a name that did not need it, and ``include`` is legal in this
+    libyara yet stays listed as version-defensive. A GAP is what emits a broken
+    artifact, so only gaps fail.
+    """
+    missing = sorted(
+        word for word in _CANDIDATE_RESERVED_WORDS
+        if not _is_legal_identifier(word) and word not in _YARA_KEYWORDS
+    )
+    assert not missing, (
+        f"libyara rejects these as identifiers but _YARA_KEYWORDS omits them, so "
+        f"a pattern named after one exports an uncompilable rule: {missing}"
+    )

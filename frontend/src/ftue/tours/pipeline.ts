@@ -36,7 +36,7 @@ export const pipelineTour: Tour = {
       target: "pipeline-recipe-card",
       placement: "bottom",
       title: "Pick a recipe",
-      body: "Recipes are pre-filled starting points. 'Replicate gocryptfs DFRWS' loads the thresholds from the paper so a reviewer can reproduce the published hits in one click.",
+      body: "Recipes are pre-filled starting points. 'Replicate gocryptfs IMF' loads the thresholds from the paper so a reviewer can reproduce the published hits in one click.",
     },
     {
       id: "oracle-explain",

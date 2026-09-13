@@ -27,6 +27,7 @@ import pytest
 from memdiver.engine.vol3_emit import emit_plugin_for_hit
 from memdiver.engine.vol3_subproc import (
     VOL3_BIN_ENV,
+    VOL3_BIN_PARAM,
     Vol3Launcher,
     VOL3_PYTHON_ENV,
     _parse_json_rows,
@@ -34,6 +35,7 @@ from memdiver.engine.vol3_subproc import (
     launcher_report,
     plugin_module_name,
     probe_version,
+    resolve_launcher,
     run_plugin,
 )
 from tests._emit_pins import synth_hit
@@ -159,6 +161,189 @@ def test_no_launcher_anywhere_resolves_to_none(clean_env, monkeypatch):
     )
     assert find_vol3_launcher() is None
     assert "not found" in launcher_report()
+
+
+# --------------------------------------------------------------------------- #
+# Launcher selection by PARAMETER, not only by environment
+# --------------------------------------------------------------------------- #
+#
+# ``MEMDIVER_VOL3_BIN`` / ``MEMDIVER_VOL3_PYTHON`` are unreachable from the web
+# and MCP surfaces -- nobody sets an environment variable through an HTTP body
+# or a tool call -- so env-only configuration could not satisfy the requirement
+# that a user be able to point MemDiver at their own ``vol.py``.
+# :func:`resolve_launcher` is the parameter form, and these tests pin that the
+# parameters WIN over the environment rather than merely supplement it.
+
+def test_vol_bin_parameter_beats_the_env_var(clean_env, tmp_path):
+    env_pinned = tmp_path / "env" / "vol.py"
+    env_pinned.parent.mkdir()
+    env_pinned.write_text("# env\n")
+    asked = tmp_path / "asked" / "vol.py"
+    asked.parent.mkdir()
+    asked.write_text("# asked\n")
+    clean_env.setenv(VOL3_BIN_ENV, str(env_pinned))
+
+    launcher = resolve_launcher(vol_bin=str(asked))
+    assert launcher is not None
+    assert launcher.argv[-1] == str(asked.resolve())
+    # And the provenance says WHICH rule produced it: "the caller told us" and
+    # "the environment told us" are different facts, and every verification
+    # report carries the answer.
+    assert launcher.source == VOL3_BIN_PARAM
+
+
+def test_vol_python_parameter_beats_the_env_var(clean_env, tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "vol.py").write_text("# fake\n")
+    (checkout / "env_python").write_text("#!/bin/sh\n")
+    (checkout / "asked_python").write_text("#!/bin/sh\n")
+    clean_env.setenv(VOL3_PYTHON_ENV, str(checkout / "env_python"))
+
+    launcher = resolve_launcher(
+        vol_bin=str(checkout / "vol.py"),
+        vol_python=str(checkout / "asked_python"),
+    )
+    assert launcher is not None
+    assert launcher.python == str(checkout / "asked_python")
+    assert launcher.argv[0] == str(checkout / "asked_python")
+
+
+def test_vol_python_alone_still_pins_the_interpreter(clean_env, tmp_path, monkeypatch):
+    """The launcher may come off ``PATH`` while the interpreter is named.
+
+    A legitimate combination: ``vol`` is on ``PATH`` but the caller knows which
+    venv owns its framework, which is the only thing that decides what loads.
+    """
+    found = tmp_path / "bin" / "vol.py"
+    found.parent.mkdir()
+    found.write_text("# fake\n")
+    chosen = tmp_path / "bin" / "python"
+    chosen.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(
+        "memdiver.engine.vol3_subproc.shutil.which",
+        lambda name: str(found) if name == "vol.py" else None,
+    )
+
+    launcher = resolve_launcher(vol_python=str(chosen))
+    assert launcher is not None
+    assert launcher.python == str(chosen)
+    assert launcher.source == 'which("vol.py")'
+
+
+def test_an_explicit_vol_bin_that_does_not_exist_does_NOT_fall_back(
+    clean_env, tmp_path, monkeypatch,
+):
+    """Honouring a request INCLUDING its failure.
+
+    Silently falling back to ``PATH`` would produce a report header naming a
+    launcher the caller never asked for -- which is exactly the confusion this
+    whole module's ``cwd``/version discipline exists to remove.
+    """
+    monkeypatch.setattr(
+        "memdiver.engine.vol3_subproc.shutil.which", lambda name: "/usr/bin/vol",
+    )
+    assert resolve_launcher(vol_bin=str(tmp_path / "nope" / "vol.py")) is None
+
+
+def test_resolve_launcher_with_no_arguments_is_find_vol3_launcher(clean_env, tmp_path):
+    pinned = tmp_path / "checkout" / "vol.py"
+    pinned.parent.mkdir()
+    pinned.write_text("# fake\n")
+    clean_env.setenv(VOL3_BIN_ENV, str(pinned))
+
+    assert resolve_launcher() == find_vol3_launcher()
+
+
+def test_launcher_report_not_found_names_the_PARAMETER_too(clean_env, monkeypatch):
+    """The wording of the "no runtime" refusal every surface raises.
+
+    Naming only the env var would tell a web or MCP caller to do something they
+    cannot do.
+    """
+    monkeypatch.setattr(
+        "memdiver.engine.vol3_subproc.shutil.which", lambda name: None,
+    )
+    report = launcher_report()
+    assert "not found" in report
+    assert VOL3_BIN_ENV in report
+    assert "vol_bin=" in report
+    assert "vol_python=" in report
+
+
+# --------------------------------------------------------------------------- #
+# Argument PLACEMENT: global before the target, plugin flags after it
+# --------------------------------------------------------------------------- #
+
+def test_plugin_args_are_appended_AFTER_the_target(tmp_path, monkeypatch):
+    """``vol``'s CLI is an argparse SUBCOMMAND parser, and this is measured.
+
+    Against the author's 2.27.1 checkout::
+
+        vol.py ... --virtual Pad256.MemDiverScanPad256  -> exit 2,
+                                        "unrecognized arguments: --virtual"
+        vol.py ... Pad256.MemDiverScanPad256 --virtual   -> exit 0, [] rows
+        vol.py ... Pad256.MemDiverScanPad256 --pid 1     -> exit 0, 1 row
+
+    So a plugin flag placed in ``extra_args`` (which sits BEFORE the target, and
+    is correct for global ``vol`` options) is a hard error, not a subtlety.
+    ``plugin_args`` is the slot that works; no caller in the repo was using
+    ``extra_args`` for a plugin flag, so nothing changed behaviour.
+    """
+    ref, hit, _ = synth_hit()
+    plugin = emit_plugin_for_hit(hit, ref, "ArgOrder", tmp_path / "argorder.py")
+    dump = tmp_path / "argorder.dump"
+    dump.write_bytes(ref)
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "Volatility 3 Framework 2.27.1\n\n[]\n"
+        stderr = ""
+
+    def _fake_run(argv, cwd, timeout):
+        seen["argv"] = list(argv)
+        return _Result()
+
+    monkeypatch.setattr("memdiver.engine.vol3_subproc._run", _fake_run)
+    launcher = Vol3Launcher(
+        argv=("/bin/true",), cwd=tmp_path, python=None, source="test")
+
+    run_plugin(
+        launcher, plugin, dump,
+        extra_args=("--offline",), plugin_args=("--pid", "1"),
+    )
+
+    argv = seen["argv"]
+    target = "argorder.ArgOrder"
+    assert argv[-2:] == ["--pid", "1"], argv
+    assert argv[argv.index(target) - 1] == "--offline", argv
+    assert argv.index("--offline") < argv.index(target) < argv.index("--pid")
+
+
+def test_plugin_args_default_to_nothing(tmp_path, monkeypatch):
+    """The historical argv, byte for byte, when no plugin flag is passed."""
+    ref, hit, _ = synth_hit()
+    plugin = emit_plugin_for_hit(hit, ref, "ArgNone", tmp_path / "argnone.py")
+    dump = tmp_path / "argnone.dump"
+    dump.write_bytes(ref)
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "[]"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "memdiver.engine.vol3_subproc._run",
+        lambda argv, cwd, timeout: (seen.update(argv=list(argv)), _Result())[1],
+    )
+    launcher = Vol3Launcher(
+        argv=("/bin/true",), cwd=tmp_path, python=None, source="test")
+
+    run_plugin(launcher, plugin, dump)
+
+    assert seen["argv"][-1] == "argnone.ArgNone"
 
 
 # --------------------------------------------------------------------------- #

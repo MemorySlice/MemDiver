@@ -56,7 +56,18 @@ test.describe("cross-dump variance (4-state consensus) on .msl", () => {
     // Click a band low in the strip → jump far across the (huge, sparse) VA
     // span. That target may be a gap with no invariant bytes, so just assert
     // the viewer survives the jump and still renders a hex grid.
-    await minimap.click({ position: { x: 10, y: 250 } });
+    //
+    // The y offset is derived from the strip's measured height rather than
+    // hardcoded: the persistent main-area dump bar (MainViewSwitcher +
+    // DumpSelectionStrip) took ~34px of vertical space off the viewer column,
+    // which shortened the minimap. A fixed y=250 then landed OUTSIDE the strip
+    // and Playwright reported the neighbouring label column as intercepting the
+    // click.
+    const strip = await minimap.boundingBox();
+    expect(strip, "the variance minimap must have a layout box").not.toBeNull();
+    await minimap.click({
+      position: { x: 10, y: Math.max(1, Math.round(strip!.height * 0.8)) },
+    });
     await expect(page.locator(".hex-byte").first()).toBeVisible({ timeout: 20_000 });
 
     guards.assertClean();

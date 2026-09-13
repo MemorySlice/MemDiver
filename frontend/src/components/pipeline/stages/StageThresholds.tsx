@@ -4,7 +4,7 @@
  * Exposes the `ReduceParams` numeric knobs and brute-force options
  * the user can tune before committing to a run. Sensible defaults
  * live in the store from {@link pipeline-store.ts}; the gocryptfs
- * recipe pre-populates these to the DFRWS paper values.
+ * recipe pre-populates these to the IMF paper values.
  *
  * The two optional tail stages are opted into from here as well:
  * ``emit`` (write a Volatility 3 plugin from the best hit, which is

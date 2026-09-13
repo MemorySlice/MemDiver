@@ -34,6 +34,16 @@ interface HexRowProps {
   getClassificationAt?: (offset: number) => number | undefined;
   view?: HexViewMode;
   getPageStateAt?: (offset: number) => PageState | undefined;
+  /**
+   * Cross-dump disagreement at this offset, for the N-dump aligned overlay.
+   *
+   * Purely ADDITIVE: omitted (the single-dump viewer) it changes nothing, and
+   * where it is supplied it only ever APPENDS `cross-dump-differs` — which
+   * `hex.css` paints as an inset ring, never a background — so it composes with
+   * the consensus, variance, search-highlight and page-state styling already on
+   * the same byte instead of replacing any of it.
+   */
+  getDiffersAt?: (offset: number) => boolean;
 }
 
 export const HexRow = memo(function HexRow({
@@ -52,6 +62,7 @@ export const HexRow = memo(function HexRow({
   getClassificationAt,
   view = "raw",
   getPageStateAt,
+  getDiffersAt,
 }: HexRowProps) {
   const { t } = useTranslation("hex");
   const isVaView = view === "va";
@@ -118,6 +129,12 @@ export const HexRow = memo(function HexRow({
       }
     }
 
+    // Cross-dump disagreement ring. Appended after the consensus class so the
+    // ring reads as sitting ON TOP of the class colour; it carries no
+    // background of its own, so nothing below is clobbered.
+    const differsAcrossDumps = getDiffersAt?.(byteOffset) ?? false;
+    if (differsAcrossDumps) classes.push("cross-dump-differs");
+
     // "va"-view page-state tint. Composed AFTER the overlays above so a
     // non-captured page reads as failed/unmapped without clobbering
     // consensus/variance/search styling. CAPTURED bytes render normally.
@@ -140,6 +157,15 @@ export const HexRow = memo(function HexRow({
     if (varianceVal !== undefined) {
       const varText = t("row.variance", { value: varianceVal.toFixed(1) });
       tooltip = tooltip ? `${tooltip} | ${varText}` : varText;
+    }
+    // Cheap hover fallback for the cross-dump ring. The real affordance is
+    // `OverlayByteInspector`, which a tooltip cannot replace — it shows a table
+    // and is reachable by keyboard — but a hover that says nothing at all when
+    // a byte is visibly ringed is worse than one word. Reuses NDumpOverlay's
+    // existing string rather than adding a near-duplicate.
+    if (differsAcrossDumps) {
+      const variesText = t("ndump.variesNote");
+      tooltip = tooltip ? `${tooltip} | ${variesText}` : variesText;
     }
 
     // Add gap after 8th byte for visual grouping

@@ -30,6 +30,25 @@ export const LLDB_RAW = path.join(RUN_0001, "lldb_raw.bin");
 export const GCORE = path.join(RUN_0001, "gcore.core");
 export const datasetAvailable = existsSync(MSL);
 
+/**
+ * How many `run_*` dirs the real corpus actually holds, counted from disk.
+ *
+ * The pagination specs used to assert a hardcoded `toHaveCount(100)`. That is a
+ * fact about a PRIVATE corpus, not about the product, so it went red the moment
+ * the corpus changed size (it is 95 today) — and a permanently-red spec hides
+ * the real regressions it was written to catch. Counting here keeps the strong
+ * assertion ("every run accumulated", not "more than a page") while being
+ * immune to the corpus growing or shrinking.
+ *
+ * 0 when the dataset is absent; those specs skip on `datasetAvailable` anyway.
+ */
+export const datasetRunCount = datasetAvailable
+  ? readdirSync(DATASET_DIR).filter((n) => /^run_\d+$/.test(n)).length
+  : 0;
+
+/** Page size the dataset-runs endpoint is called with (see DatasetOverview). */
+export const DATASET_PAGE_SIZE = 50;
+
 // Synthetic, committed MSL fixture for smoke flows (no private dataset needed).
 // Regenerate with: python tests/e2e/fixtures/synthetic_msl/generate.py
 export const syntheticMslPath = path.join(
@@ -38,6 +57,18 @@ export const syntheticMslPath = path.join(
   "sample.msl",
 );
 export const syntheticMslAvailable = existsSync(syntheticMslPath);
+
+// Committed ASLR-shifted .msl PAIR for the multi-dump specs (side-by-side
+// panes + cross-dump overlay). Regenerate with:
+//   python tests/e2e/fixtures/aslr_msl/generate.py
+// The two runs carry the SAME regions at DIFFERENT bases, and the two regions
+// move by DIFFERENT run-to-run deltas (0x1000 vs 0x10000000), so a viewer that
+// assumes one scalar VA delta per dump cannot align them — which is exactly
+// what makes an alignment bug visible in the pane/overlay assertions.
+export const aslrMslRun1Path = path.join(__dirname, "aslr_msl", "run_1.msl");
+export const aslrMslRun2Path = path.join(__dirname, "aslr_msl", "run_2.msl");
+export const aslrMslPairAvailable =
+  existsSync(aslrMslRun1Path) && existsSync(aslrMslRun2Path);
 
 // Committed pcap-oracle fixture (see tests/e2e/fixtures/pcap/generate.py): a
 // self-verifying (matched.msl, session_tls13.pcap) pair whose recovered

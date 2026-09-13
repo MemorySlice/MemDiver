@@ -119,7 +119,10 @@ from memdiver.services import (
     locate_key,
     manual_export_pattern,
     n_sweep,
+    scan_yara_rule,
+    score_detector_matches,
     search_reduce,
+    verify_vol3_plugin,
     # verify / experiment
     experiment_result,
     verify_key_result,
@@ -202,6 +205,14 @@ __all__ = [
     "locate_key",
     "export_key_pattern",
     "locate_field_across_pairs",
+    # D1 — run an emitted YARA rule over N dumps.
+    "scan_yara_rule",
+    # D2 — score those firings against known-true key intervals.
+    "score_detector_matches",
+    # D3 — RUN an emitted Volatility3 plugin, in-process and/or through the
+    # operator's own ``vol`` launcher; every row names the framework that
+    # answered it.
+    "verify_vol3_plugin",
     # verify / experiment producers
     "verify_key_result",
     "experiment_result",

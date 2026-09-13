@@ -34,7 +34,7 @@ export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: Conse
         title={t("consensus.empty.title")}
         description={t("consensus.empty.description")}
         primaryCta={onNavigate ? { label: t("consensus.empty.runAnalysis"), onClick: () => onNavigate("analysis") } : undefined}
-        secondary={{ label: t("consensus.empty.aboutLink"), href: "/docs/visualizations/consensus.md" }}
+        secondary={{ label: t("consensus.empty.aboutLink"), doc: "visualizations/consensus.md" }}
         data-testid="consensus-empty"
       />
     );

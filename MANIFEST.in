@@ -3,4 +3,5 @@ include README.md
 include CHANGELOG.md
 include config.json
 recursive-include algorithms/patterns *.json
+recursive-include docs *.md
 recursive-include frontend/dist *

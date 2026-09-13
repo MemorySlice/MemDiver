@@ -174,7 +174,7 @@ export function ArchitectPlaceholder() {
         icon={<ArchitectIcon />}
         title={t("research.emptyTitle")}
         description={t("research.emptyDescription")}
-        secondary={{ label: t("research.emptySecondaryLabel"), href: "/docs/visualizations/architect.md" }}
+        secondary={{ label: t("research.emptySecondaryLabel"), doc: "visualizations/architect.md" }}
         data-testid="architect-empty"
       />
     );

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
@@ -60,6 +62,64 @@ class ConsensusRequest(KeyMaterialFields):
 
     dump_paths: list[str]
     normalize: bool = False
+
+
+class AlignedWindowKey(KeyMaterialFields):
+    """Decryption material for ONE dump of an aligned-window request.
+
+    The window's N dumps are not a single keyed unit: a corpus routinely mixes
+    plaintext captures with containers encrypted under different keys, and a
+    flat ``key_hex`` for the whole request would silently try dump A's key on
+    dump B. Each entry names its ``dump_path`` and carries the same three
+    ``KeyMaterialFields`` every other route accepts.
+    """
+
+    dump_path: str
+
+
+class AlignedWindowRequest(BaseModel):
+    """Request body for ``POST /api/analysis/consensus/aligned-window``.
+
+    POST rather than GET for two reasons that are not style: N dump paths plus
+    N key triples do not fit a query string, and key material must stay out of
+    access logs, shell history and ``Referer`` headers.
+
+    Exactly ONE of ``consensus_id`` (a build registered by ``POST /consensus``)
+    or ``dump_paths`` (build one now, or serve the labelled no-consensus
+    window) — neither and both are 400s, because "which correspondence is this
+    window in" has to have exactly one answer.
+
+    The anchor dump is ``anchor_path``, NOT ``dump_path``. It is spelled that
+    way because it is the ANCHOR — the one dump whose coordinate the request is
+    phrased in — and because ``dump_paths`` (the whole set) already lives on
+    this model: two fields one character apart meaning "the anchor" and "every
+    dump" is a footgun, and a request that misspells one as the other would
+    silently fall through to a slab anchor at offset 0 and answer a different
+    question in a different coordinate. It also matches the producer kwarg
+    (``aligned_window_result(anchor_path=...)``). There is deliberately NO
+    ``dump_path`` alias: an unknown field is dropped by pydantic, so an alias
+    would re-open exactly the ambiguity the rename closes.
+    """
+
+    consensus_id: str | None = None
+    dump_paths: list[str] | None = None
+    #: ``"dump"`` reads ``anchor_path`` + ``view`` + ``offset``; ``"slab"``
+    #: reads ``slab_offset`` and needs no dump. Each REQUIRES its own field —
+    #: the route 400s rather than defaulting, see ``_aligned_window_anchor``.
+    anchor: Literal["dump", "slab"] = "dump"
+    #: The anchor dump. Note the RESPONSE still spells its anchor block's path
+    #: ``anchor.dump_path``; only this request field carries the anchor name.
+    anchor_path: str | None = None
+    view: Literal["va", "vas", "raw"] = "va"
+    offset: int = 0
+    slab_offset: int | None = None
+    length: int = 1024
+    #: Subset of the build to return, as dump paths or build-order indices.
+    dumps: list[str | int] | None = None
+    normalize: bool = False
+    classify: bool = True
+    include_bytes: bool = True
+    keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
 class AnalysisCandidatesRequest(KeyMaterialFields):

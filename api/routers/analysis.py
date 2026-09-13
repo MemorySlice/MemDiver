@@ -14,6 +14,7 @@ from memdiver.api.dependencies import (
     task_manager_or_503 as _task_manager_or_503,
 )
 from memdiver.api.models import (
+    AlignedWindowRequest,
     AnalysisCandidatesRequest,
     AnalysisRunResponse,
     AnalyzeFileRequest,
@@ -38,6 +39,7 @@ from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
+from memdiver.engine.consensus import MAX_CONSENSUS_WINDOW
 from memdiver.engine.consensus_service import build_consensus
 
 logger = logging.getLogger("memdiver.api.routers.analysis")
@@ -254,7 +256,7 @@ def consensus_range(
         raise HTTPException(status_code=404, detail="No consensus computed yet")
     cm = built.matrix
 
-    length = min(length, 16384)
+    length = min(length, MAX_CONSENSUS_WINDOW)
     end = min(offset + length, cm.size)
     actual_offset = max(0, offset)
 
@@ -299,7 +301,7 @@ def consensus_va_range(
     dump_index = cm.dump_index_for_path(dump_path)
     if dump_index < 0:
         raise HTTPException(status_code=404, detail="dump not part of this consensus")
-    length = min(max(0, length), 16384)
+    length = min(max(0, length), MAX_CONSENSUS_WINDOW)
     classes = cm.class_window_va(dump_index, va, length)
     return {"va": va, "length": length, "dump_index": dump_index, "classes": classes}
 
@@ -335,6 +337,145 @@ def consensus_va_overview(
         raise HTTPException(status_code=404, detail="dump not part of this consensus")
     bins = min(max(1, bins), 4096)
     return {"dump_index": dump_index, **cm.va_overview(dump_index, bins)}
+
+
+def _aligned_window_key_material(req: AlignedWindowRequest) -> dict:
+    """``{dump_path: open_dump kwargs}`` from the request's per-dump key list.
+
+    One decode per entry through the same ``decode_key_material`` every other
+    route uses, so malformed hex is the same 400 here as everywhere else.
+    """
+    by_path = {}
+    for entry in req.keys:
+        km = decode_key_material(entry.passphrase, entry.key_hex, entry.kem_key_hex)
+        if km:
+            by_path[entry.dump_path] = km
+    return by_path
+
+
+def _aligned_window_anchor(req: AlignedWindowRequest) -> tuple[str | None, int | None]:
+    """Resolve ``anchor`` to ``(anchor_path, slab_offset)``, refusing to guess.
+
+    Each anchor mode REQUIRES its own field. Filling in a missing one would not
+    return a worse window, it would return a window in a DIFFERENT COORDINATE:
+    a dump-anchored request with no ``anchor_path`` falling through to a slab
+    anchor serves real bytes at an address nobody asked about, which is the
+    precise failure this route exists to eliminate. So both omissions are 400s.
+    """
+    if req.anchor == "dump":
+        if not req.anchor_path:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    'anchor="dump" needs anchor_path: a dump anchor phrases the '
+                    "window in ONE dump's own coordinate, and with no dump named "
+                    "there is no such coordinate to read from. Name the anchor "
+                    'dump, or ask for anchor="slab" with an explicit slab_offset.'
+                ),
+            )
+        return req.anchor_path, None
+    if req.slab_offset is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                'anchor="slab" needs slab_offset: the slab offset IS the slab '
+                "anchor, so defaulting it to 0 would silently serve the start of "
+                "the aligned slab instead of the window you asked for. Pass "
+                "slab_offset explicitly (0 is allowed, it just has to be said)."
+            ),
+        )
+    return None, req.slab_offset
+
+
+def _aligned_window_source(req: AlignedWindowRequest, manager):
+    """Resolve the request to ``(consensus vector or None, consensus_id)``.
+
+    Exactly one of ``consensus_id`` / ``dump_paths``: neither and both are
+    400s, because "which correspondence is this window in" must have exactly
+    one answer. An unknown ``consensus_id`` is a 404.
+    """
+    if bool(req.consensus_id) == bool(req.dump_paths):
+        raise HTTPException(
+            status_code=400,
+            detail="pass exactly one of consensus_id or dump_paths",
+        )
+    if not req.consensus_id:
+        return None, None
+    built = manager.get(req.consensus_id)
+    if built is None:
+        raise HTTPException(status_code=404, detail="No consensus computed yet")
+    return built.matrix, req.consensus_id
+
+
+@router.post("/consensus/aligned-window")
+def consensus_aligned_window(
+    req: AlignedWindowRequest,
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
+):
+    """One window, read in EVERY dump at the address the consensus aligned.
+
+    Invariant W1 — the whole point of this route. For every dump ``d`` and
+    every ``i`` in ``[0, length)``, ``dumps[d].bytes[i]`` is the byte ``d``
+    holds at the address the consensus put in correspondence with the anchor's
+    byte at ``offset + i``, and ``classes[i]`` is that correspondence's
+    ByteClass. Where no correspondence exists: ``i`` falls in a ``gaps`` run,
+    ``classes[i] == -1``, ``bytes[i] == 0x00``, and ``i`` is outside every
+    ``bytes_valid`` run. THE CLIENT NEVER RECEIVES A PEER COORDINATE IT HAS TO
+    APPLY — ``segments[].dumps[].va``/``offset`` are provenance only.
+
+    POST, not GET: N dump paths plus N key triples do not fit a query string,
+    and key material must stay out of access logs, history and ``Referer``.
+
+    The anchor is ``anchor_path`` + ``view`` + ``offset`` (``anchor: "dump"``)
+    or ``slab_offset`` (``anchor: "slab"``); a missing anchor field is a 400,
+    never a fallback to the other mode — see ``_aligned_window_anchor``.
+
+    ``length`` is clamped twice — at ``MAX_CONSENSUS_WINDOW`` and at
+    ``length * n_dumps <= MAX_WINDOW_TOTAL_BYTES`` — and a clamp always sets
+    ``truncated`` and echoes ``requested_length``. It NEVER drops a dump: a
+    silently missing dump reads as "this dump has nothing there".
+
+    A peer nobody supplied a key for comes back as ``bytes: null`` with a
+    populated ``key_status``, and every OTHER dump still returns its bytes.
+    """
+    from memdiver.app.composition import build_tool_session
+    from memdiver.app.tools_consensus import (
+        aligned_window_from_vector,
+        aligned_window_result,
+    )
+
+    consensus, consensus_id = _aligned_window_source(req, manager)
+    key_material_by_path = _aligned_window_key_material(req)
+    anchor_path, slab_offset = _aligned_window_anchor(req)
+
+    if consensus is not None:
+        payload = aligned_window_from_vector(
+            consensus,
+            anchor_path=anchor_path,
+            anchor_view=req.view,
+            offset=req.offset,
+            slab_offset=slab_offset,
+            length=req.length,
+            dumps=req.dumps,
+            include_bytes=req.include_bytes,
+            key_material_by_path=key_material_by_path,
+        )
+    else:
+        payload = aligned_window_result(
+            build_tool_session(),
+            dump_paths=list(req.dump_paths or []),
+            anchor_path=anchor_path,
+            anchor_view=req.view,
+            offset=req.offset,
+            slab_offset=slab_offset,
+            length=req.length,
+            normalize=req.normalize,
+            classify=req.classify,
+            include_bytes=req.include_bytes,
+            key_material_by_path=key_material_by_path,
+        ).payload
+    payload["consensus_id"] = consensus_id
+    return payload
 
 
 @router.post("/run-file", response_model=AnalysisRunResponse)

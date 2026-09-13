@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
@@ -687,7 +687,18 @@ def _pcap_pairs_from_args(args: argparse.Namespace) -> Optional[list]:
     if not raw:
         return None
     path = Path(raw).expanduser()
-    text = path.read_text() if path.is_file() else raw
+    try:
+        from_file = path.is_file()
+    except OSError:
+        # A real pairing is inline JSON hundreds of bytes long, which is longer
+        # than NAME_MAX on every ordinary filesystem -- and ``Path.is_file()``
+        # RAISES ENAMETOOLONG for such a value rather than returning False, so
+        # an unguarded call turns a legitimate ``--pairs '[{...}]'`` into a
+        # traceback. Any path we cannot even stat is not a file, so fall through
+        # to the inline parse, which is what the value actually is. Same guard,
+        # for the same reason, as ``_score_json_from_args`` below.
+        from_file = False
+    text = path.read_text() if from_file else raw
     try:
         parsed = json.loads(text)
     except ValueError as exc:
@@ -701,6 +712,228 @@ def _pcap_pairs_from_args(args: argparse.Namespace) -> Optional[list]:
             f"--pairs must hold a JSON list of "
             f"{{'dump_path', 'pcap_path'}} objects, got "
             f"{type(parsed).__name__}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return parsed
+
+
+#: Verdict -> process exit code for ``scan-yara``. Deliberately the same
+#: vocabulary ``_LOCATE_KEY_EXIT`` uses: ``0`` = the thing was found, ``3`` =
+#: ``_CLI_EXIT[NOT_FOUND]`` for a MEASURED absence, ``2`` = the shared
+#: caller-correctable code for "nothing was actually established".
+#:
+#: ``inconclusive`` maps to ``2`` rather than ``3`` because it is exactly not an
+#: absence: nothing matched, but a scan timed out or errored, so the zeros are
+#: unproven and the fix is in the invocation (a bigger --timeout, a wider
+#: --overlap-bytes). A dict, so a new verdict in
+#: ``app.tools_pipeline.YARA_SCAN_VERDICTS`` lands on the ``.get`` default (2)
+#: instead of silently exiting 0.
+_YARA_SCAN_EXIT = {
+    "matched": 0, "clean": 3, "inconclusive": 2, "not_scanned": 2,
+}
+
+
+def _cmd_scan_yara(args: argparse.Namespace) -> int:
+    """Compile ONE YARA rule set and scan N dumps with it.
+
+    Routes through ``app.tools_pipeline.scan_yara_rule`` -- the same producer
+    the HTTP ``POST /api/scan/yara`` route and the MCP ``scan_yara_rule`` tool
+    use. The full payload (verdict, the compiled rule set, the per-dump census
+    with each row's matches, diagnostics) goes to ``--output``; the verdict line
+    and the diagnostics go to STDERR, so an operator piping the JSON onward
+    still sees the qualifications -- and here that matters more than usual,
+    because the qualifications are the difference between a proven "clean" and
+    a timed-out one.
+
+    A top-level command rather than an ``inspect`` action: the ``inspect`` group
+    is single-dump, session-first and ``ServiceResult``-shaped, none of which an
+    N-dump scan can express. Same reasoning, same shape as ``locate-field-pairs``
+    and ``export-key-pattern``.
+
+    Exit codes are ``locate-key``'s (see :data:`_YARA_SCAN_EXIT`): ``0``
+    matched, ``3`` proven clean, ``2`` inconclusive or nothing scanned. The full
+    payload is written in every case -- a non-zero exit is a verdict, not a
+    failure.
+
+    ``--count-only`` inverts to the producer's ``include_matches`` and is the
+    one thing that makes ``--no-max-matches`` usable on a real corpus: an
+    unselective rule (the default 64-byte pad matches 825,779 positions in a
+    single 11 MB dump) writes gigabytes of ``matched_hex`` into ``--output``
+    otherwise, because ``--max-matches`` bounds MEMORY and never bounded the
+    file. The verdict line below is unchanged by it -- every number it prints
+    comes from ``counts``, which count-only keeps in full.
+    """
+    from memdiver.app.tools_pipeline import scan_yara_rule
+
+    payload = scan_yara_rule(
+        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        # Both are handed over exactly as given, INCLUDING when both or neither
+        # was supplied: the producer owns the exactly-one-of refusal so the CLI
+        # and the other three surfaces report that mistake in the same words.
+        rule_source=_yara_rule_source_from_args(args),
+        rule_paths=args.rule_file,
+        view=args.view,
+        max_matches=args.max_matches,
+        timeout_s=args.timeout,
+        overlap_bytes=args.overlap_bytes,
+        # The flag is the NEGATION of the producer's parameter: argparse's
+        # store_true gives a positive-sense flag ("give me only counts") while
+        # the producer keeps the positive-sense default ("matches are
+        # included"), so the inversion belongs here, once.
+        include_matches=not args.count_only,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    counts = payload["counts"]
+    print(
+        f"memdiver: verdict={payload['verdict']} "
+        f"rules={','.join(payload['rules']['names']) or '(none)'} "
+        f"matched={counts['dumps_matched']}/{counts['dumps_scanned']} scanned "
+        f"(of {counts['dumps_total']} dumps; {counts['dumps_clean']} clean, "
+        f"{counts['dumps_inconclusive']} inconclusive, "
+        f"{counts['dumps_unreadable']} unreadable) "
+        f"{counts['matches_total']} match(es) over "
+        f"{counts['scanned_bytes']} bytes",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
+    return _YARA_SCAN_EXIT.get(payload["verdict"], 2)
+
+
+def _yara_rule_source_from_args(args: argparse.Namespace) -> Optional[str]:
+    """Read ``--rule-source`` as rule TEXT, or ``None`` when it was not given.
+
+    ``None`` -- not ``""`` -- is what selects the producer's ``rule_paths``
+    form, so "flag omitted" and "flag given as an empty string" stay
+    distinguishable: an empty rule source is a libyara compile error the
+    operator should see, not a silent fall-through to the other input form.
+
+    Note that unlike ``--pairs`` this deliberately does NOT try the value as a
+    file path first. Rule FILES have their own flag (``--rule-file``, which is
+    what the producer compiles per-namespace), and quietly reading a file here
+    would collapse the two input forms the producer keeps apart.
+    """
+    raw = getattr(args, "rule_source", None)
+    return None if raw is None else str(raw)
+
+
+#: Verdict -> process exit code for ``score-detector``. Same vocabulary as
+#: :data:`_YARA_SCAN_EXIT` and ``_LOCATE_KEY_EXIT``: ``0`` = a measurement was
+#: established, ``3`` = ``_CLI_EXIT[NOT_FOUND]`` for a MEASURED absence (there
+#: were keys to find and the detector fired on none of them), ``2`` = the
+#: shared caller-correctable code for "nothing was established at all".
+#:
+#: ``no_truths`` is a ``2`` and not a ``3`` for exactly the reason the producer
+#: keeps the two apart: with no truth intervals there was no denominator, so
+#: the result is not an absence but a missing input -- the fix is in the
+#: invocation (supply --truths), not in the detector. A dict, so a new verdict
+#: in ``app.tools_pipeline.SCORE_DETECTOR_VERDICTS`` lands on the ``.get``
+#: default (2) instead of silently exiting 0.
+_SCORE_DETECTOR_EXIT = {"scored": 0, "no_matches": 3, "no_truths": 2}
+
+
+def _cmd_score_detector(args: argparse.Namespace) -> int:
+    """Score detector firings against the key's known-true intervals.
+
+    Routes through ``app.tools_pipeline.score_detector_matches`` -- the same
+    producer the HTTP ``POST /api/scan/score`` route and the MCP
+    ``score_detector_matches`` tool use. The full payload (verdict, the
+    per-row metrics with every related (match, truth, delta) triple, the
+    micro-averaged report, diagnostics) goes to ``--output``; the headline
+    numbers and the diagnostics go to STDERR, so an operator piping the JSON
+    onward still sees the qualifications -- and here that matters more than
+    usual, because a precision of 1.000 produced by one window that swallowed
+    every key is a WARNING diagnostic and nothing else would say so.
+
+    Reads no dump, so unlike ``scan-yara`` this command takes no paths and no
+    decryption flags: both sides of the comparison arrive as JSON.
+
+    A top-level command rather than an ``inspect`` action, for the same reason
+    ``scan-yara`` is one: the ``inspect`` group is single-dump, session-first
+    and ``ServiceResult``-shaped, and an N-row score is none of those.
+
+    Exit codes are :data:`_SCORE_DETECTOR_EXIT`: ``0`` scored, ``3`` a measured
+    total miss, ``2`` nothing scorable. The full payload is written in every
+    case -- a non-zero exit is a verdict, not a failure.
+    """
+    from memdiver.app.tools_pipeline import score_detector_matches
+
+    payload = score_detector_matches(
+        # All three intakes are handed over exactly as given, INCLUDING when
+        # both or neither was supplied: the producer owns the exactly-one-of
+        # refusal so all four surfaces report that mistake in the same words.
+        matches=_score_json_from_args(args, "matches"),
+        truths=_score_json_from_args(args, "truths"),
+        rows=_score_json_from_args(args, "rows"),
+        detector=args.detector,
+        dump=args.dump,
+        truth_sources=args.truth_source,
+        tolerance_bytes=args.tolerance_bytes,
+    )
+    counts = payload["counts"]
+    print(
+        f"memdiver: verdict={payload['verdict']} "
+        f"detector(s)={counts['detectors']} "
+        f"scored={counts['rows_scored']}/{counts['rows_total']} row(s) "
+        f"({counts['rows_unscorable']} unscorable) "
+        f"{counts['matches_scored']} firing(s) vs "
+        f"{counts['truths_total']} key(s) "
+        f"within {payload['tolerance_bytes']}B",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
+    return _SCORE_DETECTOR_EXIT.get(payload["verdict"], 2)
+
+
+def _score_json_from_args(args: argparse.Namespace, flag: str) -> Optional[list]:
+    """Read ``--matches`` / ``--truths`` / ``--rows`` as a JSON file, or inline.
+
+    ``None`` when the flag was not given, which is what selects the other
+    intake -- so "flag omitted" and "flag given as an empty list" stay
+    distinguishable: ``--matches '[]'`` is a detector that fired nowhere (a
+    real, scorable result) and must not fall through to the ``--rows`` form.
+
+    A path is tried first (the ordinary case -- a real scan's match list is far
+    too long to type) and the value is parsed as inline JSON only when no such
+    file exists, so a filename that happens to look like JSON is never silently
+    reinterpreted. Exactly ``--pairs``' behaviour, for exactly its reasons.
+
+    The per-entry geometry validation is deliberately NOT done here: the
+    producer owns it, so a firing with no ``offset`` is refused in the same
+    words on all four surfaces -- and it MUST be refused rather than defaulted,
+    because the metrics engine coerces a missing byte position to 0.
+    """
+    raw = getattr(args, flag, None)
+    if raw is None:
+        return None
+    path = Path(raw).expanduser()
+    try:
+        from_file = path.is_file()
+    except OSError:
+        # A real match list is inline JSON hundreds of bytes long, which is
+        # longer than NAME_MAX on every ordinary filesystem -- and
+        # ``Path.is_file()`` RAISES ENAMETOOLONG for such a value rather than
+        # returning False. Any path we cannot even stat is not a file, so fall
+        # through to the inline parse, which is what the value actually is.
+        from_file = False
+    text = path.read_text() if from_file else raw
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"--{flag} is neither a readable JSON file nor valid inline JSON: "
+            f"{exc}",
+            category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+    if not isinstance(parsed, list):
+        raise CapabilityError(
+            f"--{flag} must hold a JSON list, got {type(parsed).__name__}",
             category=ErrorCategory.INVALID_INPUT,
         )
     return parsed
@@ -936,3 +1169,121 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     }
     _write_output(payload, getattr(args, "output", None))
     return 0
+
+
+#: Verdict -> process exit code for ``verify-plugin``. The same vocabulary
+#: :data:`_YARA_SCAN_EXIT` uses, because it is the same kind of question asked
+#: of the other artifact MemDiver emits: ``0`` = the plugin fired, ``3`` =
+#: ``_CLI_EXIT[NOT_FOUND]`` for a MEASURED absence, ``2`` = the shared
+#: caller-correctable code for "nothing was established".
+#:
+#: ``not_run`` is a ``2`` and this is where it earns its keep: it is what
+#: ``--mode subprocess`` over an ``.msl`` returns, and the fix is in the
+#: invocation (drop to ``--mode in_process``), not in the plugin. A dict, so a
+#: new verdict in ``app.tools_pipeline.VERIFY_PLUGIN_VERDICTS`` lands on the
+#: ``.get`` default (2) instead of silently exiting 0.
+_VERIFY_PLUGIN_EXIT = {
+    "hit": 0, "no_hit": 3, "inconclusive": 2, "not_run": 2,
+}
+
+
+def _verify_plugin_source_from_args(args: argparse.Namespace) -> Optional[str]:
+    """Read ``--plugin-source`` as plugin TEXT, or ``None`` when not given.
+
+    ``None`` -- not ``""`` -- is what selects the producer's ``plugin_path``
+    form, exactly as ``_yara_rule_source_from_args`` keeps "flag omitted" and
+    "flag given empty" apart.
+
+    It deliberately does NOT try the value as a path first. An emitted plugin's
+    source is ~20 KB, which is longer than ``NAME_MAX`` on every ordinary
+    filesystem, and ``Path.is_file()`` RAISES ``OSError`` (ENAMETOOLONG) rather
+    than returning ``False`` for such a value -- so a path-first read here would
+    be a crash waiting for the first realistic input. The producer's own
+    ``plugin_path`` check carries the same guard for the mirror-image mistake.
+    """
+    raw = getattr(args, "plugin_source", None)
+    return None if raw is None else str(raw)
+
+
+def _cmd_verify_plugin(args: argparse.Namespace) -> int:
+    """RUN a MemDiver-emitted Volatility3 plugin over N dumps.
+
+    Routes through ``app.tools_pipeline.verify_vol3_plugin`` -- the same
+    producer the HTTP ``POST /api/scan/verify-plugin`` route and the MCP
+    ``verify_vol3_plugin`` tool use.
+
+    A top-level command rather than an ``inspect`` action, for ``scan-yara``'s
+    reasons: the ``inspect`` group is single-dump, session-first and
+    ``ServiceResult``-shaped, none of which an N-dump verification can express.
+
+    The full payload goes to ``--output``; the verdict line, the RUNTIME line
+    and the diagnostics go to STDERR. The runtime line is not decoration -- it
+    names the mode and the RESOLVED framework version, and on a machine holding
+    several Volatility3 trees that is the difference between a reproducible
+    result and a number.
+
+    Exit codes are :data:`_VERIFY_PLUGIN_EXIT`: ``0`` fired, ``3`` measured
+    absence, ``2`` inconclusive or nothing run. The full payload is written in
+    every case -- a non-zero exit is a verdict, not a failure.
+    """
+    from memdiver.app.tools_pipeline import verify_vol3_plugin
+
+    payload = verify_vol3_plugin(
+        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        # Both handed over exactly as given, INCLUDING when both or neither was
+        # supplied: the producer owns the exactly-one-of refusal so all four
+        # surfaces report that mistake in the same words.
+        plugin_source=_verify_plugin_source_from_args(args),
+        plugin_path=args.plugin,
+        mode=args.mode,
+        view=args.view,
+        expected_offset=args.expected_offset,
+        key_hex=args.key_hex,
+        pid=args.pid,
+        vol_bin=args.vol_bin,
+        vol_python=args.vol_python,
+        timeout_s=args.timeout,
+        max_hits=args.max_hits,
+        # The flag is the NEGATION of the producer's parameter, exactly as
+        # scan-yara's --count-only is: argparse's store_true gives a
+        # positive-sense flag while the producer keeps the positive-sense
+        # default, so the inversion belongs here, once.
+        include_hits=not args.count_only,
+        key_file=args.key_file,
+        passphrase=args.passphrase,
+        kem_key_file=args.kem_key_file,
+        on_source=_warn_tag_status,
+    )
+    counts = payload["counts"]
+    runtime = payload["runtime"]
+    print(
+        f"memdiver: verdict={payload['verdict']} "
+        f"plugin={payload['plugin']['class_name']} "
+        f"fired={counts['dumps_hit']}/{counts['dumps_verified']} verified "
+        f"(of {counts['dumps_total']} dumps; {counts['dumps_no_hit']} no-hit, "
+        f"{counts['dumps_inconclusive']} inconclusive, "
+        f"{counts['dumps_unsupported']} unsupported, "
+        f"{counts['dumps_unreadable']} unreadable) "
+        f"{counts['hits_total']} hit(s) over {counts['bytes_scanned']} bytes",
+        file=sys.stderr,
+    )
+    # The provenance line. Printed unconditionally, because a verification that
+    # does not say which framework answered it is not reproducible -- and on the
+    # author's machine the two runtimes answer 2.27.0 and 2.27.1.
+    print(
+        f"memdiver: runtime in_process="
+        f"{_verify_version(runtime['in_process']['framework_version'])} "
+        f"subprocess="
+        f"{_verify_version(runtime['subprocess']['framework_version'])} "
+        f"launcher={runtime['subprocess']['launcher'] or '(none)'}",
+        file=sys.stderr,
+    )
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    _write_output(payload, args.output)
+    return _VERIFY_PLUGIN_EXIT.get(payload["verdict"], 2)
+
+
+def _verify_version(version: Optional[Sequence[int]]) -> str:
+    """``2.27.0``, or ``unavailable`` -- never a blank that reads as a version."""
+    return ".".join(str(part) for part in version) if version else "unavailable"

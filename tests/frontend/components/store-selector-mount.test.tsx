@@ -11,6 +11,15 @@ import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
 import { KeyVerificationPanel } from "@/components/verification/KeyVerificationPanel";
 import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
+import { DumpList } from "@/components/dumps/DumpList";
+import { DumpSelectionStrip } from "@/components/dumps/DumpSelectionStrip";
+import { MainViewSwitcher } from "@/components/hex/MainViewSwitcher";
+import { MultiHexViewer } from "@/components/hex/MultiHexViewer";
+import { HexOverlayPane } from "@/components/hex/HexOverlayPane";
+import { HexPaneHeader } from "@/components/hex/HexPaneHeader";
+import { HexAlignmentChip } from "@/components/hex/HexAlignmentChip";
+import { OverlayByteInspector } from "@/components/hex/OverlayByteInspector";
+import { FileUpload } from "@/components/upload/FileUpload";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { renderWithCount } from "@tests/helpers/render-counter";
 
@@ -48,6 +57,34 @@ describe("converted store selectors mount without an update-depth loop", () => {
     ["ScanResultsPanel", () => <ScanResultsPanel />],
     ["KeyVerificationPanel", () => <KeyVerificationPanel />],
     ["AnalysisPanel", () => <AnalysisPanel />],
+    ["DumpList", () => <DumpList />],
+    ["DumpSelectionStrip", () => <DumpSelectionStrip />],
+    ["MainViewSwitcher", () => <MainViewSwitcher />],
+    ["MultiHexViewer", () => <MultiHexViewer />],
+    ["HexOverlayPane", () => <HexOverlayPane />],
+    ["HexAlignmentChip", () => <HexAlignmentChip paths={[]} hasMsl={false} />],
+    ["OverlayByteInspector", () => <OverlayByteInspector />],
+    [
+      "HexPaneHeader",
+      () => (
+        <HexPaneHeader
+          dump={{
+            id: "d0",
+            path: "/dumps/d0.msl",
+            name: "d0.msl",
+            size: 4096,
+            format: "msl",
+            sameProcess: true,
+          }}
+          isOrigin
+          isFocused
+          widthPx={588}
+          onFocus={() => {}}
+          onCollapse={() => {}}
+        />
+      ),
+    ],
+    ["FileUpload", () => <FileUpload />],
   ];
 
   for (const [name, make] of components) {

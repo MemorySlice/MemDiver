@@ -185,6 +185,7 @@ def create_app() -> FastAPI:
         architect,
         consensus,
         dataset,
+        docs,
         dumps,
         experiment,
         inspect,
@@ -192,6 +193,7 @@ def create_app() -> FastAPI:
         path,
         pcaps,
         pipeline,
+        scan,
         sessions,
         settings as settings_router,
         structures,
@@ -213,9 +215,18 @@ def create_app() -> FastAPI:
     app.include_router(oracles.router, prefix="/api/oracles", tags=["oracles"])
     app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
     app.include_router(experiment.router, prefix="/api/experiment", tags=["experiment"])
+    # D1 — running the rules MemDiver emits. A router of its own rather than a
+    # route on ``architect`` (which is EXEMPT_ROUTERS'd as having no app-layer
+    # producer) or on ``analysis`` (still on the legacy {"detail": ...} error
+    # contract); see the note at the top of api/routers/scan.py.
+    app.include_router(scan.router, prefix="/api/scan", tags=["scan"])
     app.include_router(
         settings_router.router, prefix="/api/settings", tags=["settings"]
     )
+    # In-app documentation. Mounted under /api (NOT at /docs, which is
+    # FastAPI's own Swagger UI) and therefore before the "/" StaticFiles
+    # catch-all, and token-guarded exactly like its siblings.
+    app.include_router(docs.router, prefix="/api/docs", tags=["docs"])
 
     from memdiver.api.ws.progress import router as ws_router
 

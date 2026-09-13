@@ -265,7 +265,7 @@ to go back to full coverage:
 memdiver brute-force … --pcap traffic.pcap --key-sizes 32 --stride 1 -o hits.json
 ```
 
-One deliberate exception: the **Replicate gocryptfs DFRWS** recipe in the web
+One deliberate exception: the **Replicate gocryptfs IMF** recipe in the web
 UI still pins `stride 8`, because the published result was produced at that
 setting and the recipe exists to reproduce it.
 

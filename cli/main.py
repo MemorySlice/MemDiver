@@ -13,10 +13,23 @@ from pathlib import Path
 # picks ``client_random`` because it is the one field every TLS version carries
 # and is unique per handshake, so the flag advertises that choice rather than
 # re-spelling it.
+# ``DEFAULT_INCLUDE_MATCHES`` is scan-yara's payload verbosity: --count-only is
+# spelled as the NEGATION of that constant rather than a bare False, so the flag
+# and the producer cannot disagree about which shape is the default one.
+# ``DEFAULT_INCLUDE_HITS`` / ``VOL3_*`` are verify-plugin's equivalents: the
+# --count-only flag is again the NEGATION of the constant, and --mode /
+# --timeout / --max-hits must advertise the SAME vocabulary and budgets the
+# producer applies.
 from memdiver.app.tools_pipeline import (
+    DEFAULT_INCLUDE_HITS,
+    DEFAULT_INCLUDE_MATCHES,
     DEFAULT_MAX_RETURNED_REGIONS,
     DEFAULT_PAIR_FIELD_ID,
     DEFAULT_RESOURCE_TYPE,
+    VOL3_MAX_HITS,
+    VOL3_MODE_AUTO,
+    VOL3_MODES,
+    VOL3_SUBPROC_TIMEOUT_S,
 )
 from memdiver.core.service_errors import CapabilityError
 # Same reasoning for --neighborhood-pad: the flag must advertise the SAME pad
@@ -29,6 +42,19 @@ from memdiver.engine.key_location import (
     DEFAULT_KEY_CONTEXT,
     DEFAULT_MAX_KEY_OFFSETS,
 )
+# Same reasoning again for score-detector's --tolerance-bytes: the flag must
+# advertise the SAME alignment slack the scorer applies.
+from memdiver.engine.detector_metrics import DEFAULT_TOLERANCE_BYTES
+# Same reasoning again for scan-yara's --max-matches / --timeout: the flags
+# must advertise the SAME cap and libyara budget the engine applies, so they
+# import the canonical constants instead of repeating the literals.
+from memdiver.engine.yara_scan import (
+    DEFAULT_MAX_MATCHES,
+    DEFAULT_TIMEOUT_S,
+)
+# And verify-plugin's two launcher env vars, named in --vol-bin/--vol-python's
+# help so an operator can see which variable each flag beats.
+from memdiver.engine.vol3_subproc import VOL3_BIN_ENV, VOL3_PYTHON_ENV
 
 from ._shared import (
     _decrypt_parent_parser,
@@ -49,6 +75,7 @@ from .consensus import (
     _cmd_consensus_add,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
+    _cmd_consensus_window,
 )
 from .experiment import _cmd_experiment
 from .pipeline import (
@@ -66,6 +93,9 @@ from .pipeline import (
     _cmd_locate_field_pairs,
     _cmd_locate_key,
     _cmd_n_sweep,
+    _cmd_scan_yara,
+    _cmd_score_detector,
+    _cmd_verify_plugin,
     _cmd_search_reduce,
     _cmd_verify,
 )
@@ -171,6 +201,34 @@ def _build_parser() -> argparse.ArgumentParser:
     cf.add_argument("--state", required=True, help="Path to session state JSON")
     cf.add_argument("-o", "--output", help="Output JSON file")
     cf.add_argument("-v", "--verbose", action="store_true")
+    # consensus-window — ONE window, read in every dump at the aligned address
+    cw = sub.add_parser(
+        "consensus-window",
+        help="Read one window in every dump at the address the consensus aligned",
+        parents=[_decrypt_parent_parser()],
+    )
+    cw.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+    cw.add_argument("--anchor-dump",
+                    help="Dump whose view --offset is a coordinate in "
+                         "(omit to anchor on the aligned slab)")
+    cw.add_argument("--view", choices=["va", "vas", "raw"], default="va",
+                    help="Anchor's navigable view (default: va)")
+    cw.add_argument("--offset", type=lambda x: int(x, 0), default=0,
+                    help="Window start in the anchor's view (hex or decimal)")
+    cw.add_argument("--slab-offset", type=lambda x: int(x, 0), default=None,
+                    help="Slab-coordinate anchor (mutually exclusive with "
+                         "--anchor-dump)")
+    cw.add_argument("--length", type=int, default=1024,
+                    help="Window length in bytes (default: 1024)")
+    cw.add_argument("--normalize", action="store_true",
+                    help="ASLR-aware normalization for the build")
+    cw.add_argument("--no-classify", dest="classify", action="store_false",
+                    help="Skip the consensus build; serve the LABELLED "
+                         "unclassified window (every class -1)")
+    cw.add_argument("--no-bytes", action="store_true",
+                    help="Return coordinates and classes without the bytes")
+    cw.add_argument("-o", "--output", help="Output JSON file")
+    cw.add_argument("-v", "--verbose", action="store_true")
     # search-reduce
     sr = sub.add_parser(
         "search-reduce",
@@ -524,6 +582,218 @@ def _build_parser() -> argparse.ArgumentParser:
                           "sessions when the capture is parsed")
     lfp.add_argument("-o", "--output", help="Output JSON file")
     lfp.add_argument("-v", "--verbose", action="store_true")
+    # scan-yara (RUN an emitted rule over N dumps -- the other half of export)
+    sy = sub.add_parser(
+        "scan-yara",
+        help="Scan N dumps with a YARA rule set (exit 0 matched / 3 proven "
+             "clean / 2 inconclusive or nothing scanned)",
+        parents=[_decrypt_parent_parser()],
+    )
+    sy.add_argument("dumps", nargs="+",
+                    help="Dump file paths or directories to scan. Each is "
+                         "scanned in ITS OWN default view unless --view says "
+                         "otherwise ('raw' for raw dumps, 'vas' for .msl)")
+    # Deliberately NOT a mutually exclusive group: the producer owns the
+    # exactly-one-of refusal (and names both forms in it), so all four surfaces
+    # report the mistake in the same words instead of argparse inventing its
+    # own for this one. Same posture as locate-field-pairs' --pairs.
+    sy.add_argument("--rule-source", metavar="TEXT",
+                    help="YARA rule TEXT, inline. Mutually exclusive with "
+                         "--rule-file, with no precedence -- supply exactly "
+                         "one. A precompiled .yarc is never accepted: it is "
+                         "executable libyara bytecode, so loading one would be "
+                         "a code-loading surface")
+    sy.add_argument("--rule-file", action="append", metavar="PATH",
+                    help="Path to a .yar rule file; repeat for several. Each "
+                         "file is compiled into its own YARA namespace, so two "
+                         "files may define the same rule name")
+    sy.add_argument("--view", default=None,
+                    help="Byte view to scan (default: the format's own — "
+                         "'raw' for raw dumps, 'vas' for .msl)")
+    sy.add_argument("--max-matches", type=int, default=DEFAULT_MAX_MATCHES,
+                    help=f"Matches KEPT per dump (default "
+                         f"{DEFAULT_MAX_MATCHES}); the row's scan.truncated "
+                         f"says when the cap bit. Must be positive — pass "
+                         f"--no-max-matches for an uncapped census")
+    sy.add_argument("--no-max-matches", dest="max_matches",
+                    action="store_const", const=None,
+                    help="Scan without a match cap. Spelled as its own flag "
+                         "because 0 is REFUSED rather than read as "
+                         "'unlimited': a cap computed to 0 means stop")
+    sy.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S,
+                    help=f"libyara budget in seconds, per chunk on the chunked "
+                         f"strategy and per file on the filepath one (default "
+                         f"{DEFAULT_TIMEOUT_S}). Exhausting it leaves bytes "
+                         f"UNSCANNED and makes a zero-match result "
+                         f"inconclusive, never clean")
+    sy.add_argument("--overlap-bytes", type=int, default=0,
+                    help="Bytes stitched between chunks so a match straddling "
+                         "a boundary is still seen whole. 0 (the default) sizes "
+                         "it from the rules' pattern_length meta, which every "
+                         "MemDiver-emitted rule carries")
+    # --count-only, and not --no-matches. Three reasons, in order of weight:
+    # this parser ALREADY carries --no-max-matches, and two flags differing by
+    # one word ("--no-matches" / "--no-max-matches") is a mistyping hazard that
+    # argparse's prefix matching would resolve silently; "no matches" is also
+    # already what the `clean` verdict MEANS on this command, so the flag would
+    # read as an assertion about the result rather than a request about the
+    # output; and --count-only says positively what you get back rather than
+    # only what is missing.
+    sy.add_argument("--count-only", dest="count_only", action="store_true",
+                    default=not DEFAULT_INCLUDE_MATCHES,
+                    help="Return COUNTS without the per-match lists. Every "
+                         "count and flag is kept (match_count per dump, "
+                         "matches_total, truncated, timed_out, errors, "
+                         "scanned_bytes, chunks, strategy, the verdict); only "
+                         "each row's matches list is omitted. Bounds the "
+                         "OUTPUT, not the scan: libyara still finds every "
+                         "match, so this is no faster — but an unselective "
+                         "rule over a corpus writes gigabytes of matched_hex "
+                         "otherwise. Independent of --max-matches, so combine "
+                         "it with --no-max-matches for an honest census (under "
+                         "a cap the counts are a floor, and the payload's "
+                         "count_only diagnostic says so)")
+    sy.add_argument("-o", "--output", help="Output JSON file")
+    sy.add_argument("-v", "--verbose", action="store_true")
+    # verify-plugin (RUN the emitted vol3 plugin -- the other half of emit,
+    # and the vol3 twin of scan-yara)
+    vp = sub.add_parser(
+        "verify-plugin",
+        help="RUN a MemDiver-emitted Volatility3 plugin over N dumps, "
+             "in-process and/or through your own vol (exit 0 fired / 3 "
+             "measured absence / 2 inconclusive or nothing run)",
+        parents=[_decrypt_parent_parser()],
+    )
+    vp.add_argument("dumps", nargs="+",
+                    help="Dump file paths or directories to run the plugin "
+                         "over. Each is read in ITS OWN default view unless "
+                         "--view says otherwise ('raw' for raw dumps, 'vas' "
+                         "for .msl)")
+    # Deliberately NOT a mutually exclusive group, exactly as scan-yara's two
+    # rule forms are not: the producer owns the exactly-one-of refusal (and
+    # names both forms in it), so all four surfaces report the mistake in the
+    # same words instead of argparse inventing its own for this one.
+    vp.add_argument("--plugin", metavar="PATH",
+                    help="Path to an emitted Volatility3 plugin (.py). "
+                         "Mutually exclusive with --plugin-source, with no "
+                         "precedence -- supply exactly one")
+    vp.add_argument("--plugin-source", metavar="TEXT",
+                    help="The plugin's Python TEXT, inline -- e.g. the "
+                         "'content' field export-key-pattern --format vol3 "
+                         "just produced. Mutually exclusive with --plugin")
+    vp.add_argument("--mode", default=VOL3_MODE_AUTO, choices=list(VOL3_MODES),
+                    help=f"Which runtime runs the plugin (default "
+                         f"'{VOL3_MODE_AUTO}'). 'in_process' execs the plugin "
+                         f"against the volatility3 MemDiver imports and can "
+                         f"scan a PROJECTED view, so it is the only mode that "
+                         f"can address an .msl. 'subprocess' runs `vol -p <dir> "
+                         f"-f <dump> <module>.<Class>` against your own "
+                         f"launcher -- the way a plugin is actually used, and "
+                         f"often a different framework version. '{VOL3_MODE_AUTO}' "
+                         f"prefers in-process and falls back to the launcher")
+    vp.add_argument("--vol-bin", metavar="PATH", default=None,
+                    help=f"The vol/vol.py launcher to use, beating "
+                         f"${VOL3_BIN_ENV}. This is the 'point me at the "
+                         f"actual tool' flag: by default the PyPI volatility3 "
+                         f"in MemDiver's own environment is used")
+    vp.add_argument("--vol-python", metavar="PATH", default=None,
+                    help=f"The interpreter that owns the launcher's "
+                         f"volatility3, beating ${VOL3_PYTHON_ENV}. A "
+                         f"checkout's vol.py belongs to that checkout's venv, "
+                         f"and running it under MemDiver's interpreter "
+                         f"silently changes which framework is under test")
+    vp.add_argument("--view", default=None,
+                    help="Byte view to project for the in-process runtime "
+                         "(default: the format's own -- 'raw' for raw dumps, "
+                         "'vas' for .msl). Ignored by --mode subprocess, where "
+                         "`vol` maps the file itself -- which is exactly why a "
+                         "container is REFUSED there rather than reported in "
+                         "the wrong coordinate space")
+    vp.add_argument("--expected-offset", type=int, default=None,
+                    help="A byte position the key is known to occupy. "
+                         "Membership is EXACT, with no tolerance: the failure "
+                         "worth catching is a hit 64 bytes from the real key, "
+                         "and a tolerance would score that as a near miss")
+    vp.add_argument("--key-hex", default=None,
+                    help="The secret's bytes, to assert the plugin handed the "
+                         "KEY back rather than merely fired near it. Accepts "
+                         "'aa bb cc' and '0xaabbcc'. Note that an emitted "
+                         "pattern WILDCARDS the key, so a window can match a "
+                         "dump the key was wiped from -- key_recovered is what "
+                         "tells those apart")
+    vp.add_argument("--pid", type=int, default=None,
+                    help="Passed through to the plugin's --pid. EXPLICITLY "
+                         "UNPROVEN: narrowing needs a kernel image plus a "
+                         "matching ISF so the OS PsList can return a process "
+                         "layer, and a flat process dump has neither -- the "
+                         "emitted plugin then warns and scans the whole layer "
+                         "anyway. A diagnostic says so on every run")
+    vp.add_argument("--timeout", type=int, default=VOL3_SUBPROC_TIMEOUT_S,
+                    help=f"Wall-clock ceiling for ONE subprocess plugin run, "
+                         f"in seconds (default {VOL3_SUBPROC_TIMEOUT_S})")
+    vp.add_argument("--max-hits", type=int, default=VOL3_MAX_HITS,
+                    help=f"Hits RETAINED per dump (default {VOL3_MAX_HITS}). "
+                         f"match_count stays the honest total and hits_capped "
+                         f"says when the cap bit -- which also means "
+                         f"key_recovered may then be a false negative")
+    vp.add_argument("--count-only", dest="count_only", action="store_true",
+                    default=not DEFAULT_INCLUDE_HITS,
+                    help="Return COUNTS without the per-hit lists. Every count "
+                         "and flag is kept; only each row's hits list is "
+                         "omitted. Bounds the OUTPUT, not the run")
+    vp.add_argument("-o", "--output", help="Output JSON file")
+    vp.add_argument("-v", "--verbose", action="store_true")
+    # score-detector (was the rule RIGHT? -- the other half of scan-yara)
+    sd = sub.add_parser(
+        "score-detector",
+        help="Score detector firings against known-true key intervals "
+             "(exit 0 scored / 3 measured total miss / 2 nothing scorable)",
+    )
+    # Deliberately NOT a mutually exclusive group, and deliberately no
+    # `required=`: the producer owns the exactly-one-of refusal over the two
+    # intakes (and names both in it), so all four surfaces report the mistake
+    # in the same words. Same posture as scan-yara's two rule forms.
+    sd.add_argument("--matches", metavar="JSON|PATH",
+                    help="The detector's firings, as a JSON list (a file path "
+                         "or inline JSON) of {'offset','length'} objects, "
+                         "optionally with 'key_offset'/'key_length'. This is "
+                         "exactly a scan-yara row's scan.matches. Pair with "
+                         "--truths; mutually exclusive with --rows, with no "
+                         "precedence")
+    sd.add_argument("--truths", metavar="JSON|PATH",
+                    help="The known-true key intervals, as a JSON list of "
+                         "{'start'(or 'offset'),'length'} objects, ideally "
+                         "with 'source' ('keylog'/'ledger') so sparse ledger "
+                         "corroboration is not mistaken for complete key-log "
+                         "truth")
+    sd.add_argument("--rows", metavar="JSON|PATH",
+                    help="N pre-grouped rows instead: a JSON list of "
+                         "{'matches','truths','detector','dump'} objects. Each "
+                         "row is scored INDEPENDENTLY and only the counts are "
+                         "summed, so a firing from one dump can never pair "
+                         "with a truth from another whose offsets line up")
+    sd.add_argument("--detector", default=None,
+                    help="Rule/detector name for the --matches/--truths form "
+                         "(default 'unknown'). In the --rows form each row "
+                         "carries its own")
+    sd.add_argument("--dump", default=None,
+                    help="Dump label for the --matches/--truths form, carried "
+                         "through for provenance. A LABEL only -- nothing is "
+                         "opened, and no bytes are read")
+    sd.add_argument("--truth-source", action="append", metavar="NAME",
+                    help="Override the truth provenance instead of deriving "
+                         "it from the intervals' own 'source'; repeat for "
+                         "several")
+    sd.add_argument("--tolerance-bytes", type=int,
+                    default=DEFAULT_TOLERANCE_BYTES,
+                    help=f"Slack for the key_offset criterion (default "
+                         f"{DEFAULT_TOLERANCE_BYTES}, the alignment=16 "
+                         f"grouping candidates are blocked on, so a region "
+                         f"starting up to 15 bytes below the true key still "
+                         f"counts as the same finding). The 'exact' criterion "
+                         f"always runs at 0 and is reported alongside")
+    sd.add_argument("-o", "--output", help="Output JSON file")
+    sd.add_argument("-v", "--verbose", action="store_true")
     # export-key-pattern (a signature anchored on an already-known secret)
     ekp = sub.add_parser(
         "export-key-pattern",
@@ -832,6 +1102,7 @@ def main():
         "consensus-begin": _cmd_consensus_begin,
         "consensus-add": _cmd_consensus_add,
         "consensus-finalize": _cmd_consensus_finalize,
+        "consensus-window": _cmd_consensus_window,
         "search-reduce": _cmd_search_reduce,
         "analyze-candidates": _cmd_analyze_candidates,
         "brute-force": _cmd_brute_force,
@@ -843,6 +1114,9 @@ def main():
         "locate-field-pairs": _cmd_locate_field_pairs,
         "export-key-pattern": _cmd_export_key_pattern,
         "inspect-pcap": _cmd_inspect_pcap,
+        "scan-yara": _cmd_scan_yara,
+        "score-detector": _cmd_score_detector,
+        "verify-plugin": _cmd_verify_plugin,
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,
     }

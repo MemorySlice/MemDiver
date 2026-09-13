@@ -56,7 +56,15 @@ export const useConsensusIncrementalStore = create<State>((set, get) => ({
   error: null,
 
   begin: async (size: number) => {
-    set({ status: "building", error: null, history: [], numDumps: 0 });
+    // `sessionId` is cleared up front so a failed begin cannot leave the
+    // previous session's id behind for `addPath`/`finalize` to fold into.
+    set({
+      status: "building",
+      error: null,
+      history: [],
+      numDumps: 0,
+      sessionId: null,
+    });
     try {
       const res = await postJson<{ session_id: string; size: number }>(
         "/api/consensus/begin",
@@ -107,6 +115,16 @@ export const useConsensusIncrementalStore = create<State>((set, get) => ({
     }
   },
 
+  /**
+   * Fold a SERVER-SIDE dump into the open session.
+   *
+   * This is the path a session-seeded dump takes: the analyst already has
+   * these files on the server, so there is nothing to upload — only a path to
+   * name. One rejected dump (too short for the fixed consensus width, say)
+   * must not tear the session down, so the failure is reported in `error`
+   * while `status` stays "building" and the remaining dumps can still be
+   * folded in.
+   */
   addPath: async (path: string) => {
     const { sessionId } = get();
     if (!sessionId) return;
@@ -119,10 +137,10 @@ export const useConsensusIncrementalStore = create<State>((set, get) => ({
         numDumps: json.num_dumps,
         liveStats: json.live_stats,
         history: [...prev.history, json.live_stats.max_variance],
+        error: null,
       }));
     } catch (err) {
       set({
-        status: "error",
         error: err instanceof Error ? err.message : String(err),
       });
     }

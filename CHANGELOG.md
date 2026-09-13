@@ -190,7 +190,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Phase-A experiment (`engine/candidate_stats.py::run_phase_a` and
   `scripts/phase_a_experiment.py`) stays at `8` as frozen paper reproduction.
   Raising the stride is now an opt-in speed tradeoff. The web UI's
-  *Replicate gocryptfs DFRWS* recipe still pins `stride 8` to reproduce the
+  *Replicate gocryptfs IMF* recipe still pins `stride 8` to reproduce the
   published result.
   - **Existing browser sessions are migrated.** The pipeline wizard's form is
     persisted to `localStorage`, so a browser that had already stored the old

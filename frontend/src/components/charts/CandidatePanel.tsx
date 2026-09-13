@@ -35,7 +35,17 @@ import { CandidateTable } from "./CandidateTable";
 export function CandidatePanel() {
   const { t } = useTranslation("candidates");
 
-  const dumpPaths = useDumpStore(useShallow((s) => s.dumps.map((d) => d.path)));
+  // The SELECTION, not every loaded dump. An analyst with nine imported dumps
+  // and three ticked means those three; mirrors the store's `getSelectedDumpPaths`
+  // (an empty selection is invariant I2's "all of them"). `useShallow` is
+  // load-bearing: the selector builds a fresh array on every store tick.
+  const dumpPaths = useDumpStore(
+    useShallow((s) =>
+      s.selectedDumpIds.length === 0
+        ? s.dumps.map((d) => d.path)
+        : s.dumps.filter((d) => s.selectedDumpIds.includes(d.id)).map((d) => d.path),
+    ),
+  );
   const normalize = useDumpStore((s) => s.aslrNormalize);
   const consensusAvailable = useConsensusStore((s) => s.available);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);

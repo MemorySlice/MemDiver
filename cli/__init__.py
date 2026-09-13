@@ -28,6 +28,7 @@ from .consensus import (
     _cmd_consensus_add,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
+    _cmd_consensus_window,
     _consensus_state_paths,
     _load_welford_session,
 )
@@ -82,8 +83,11 @@ from .pipeline import (
     _cmd_locate_field_pairs,
     _cmd_locate_key,
     _cmd_n_sweep,
+    _cmd_scan_yara,
+    _cmd_score_detector,
     _cmd_search_reduce,
     _cmd_verify,
+    _cmd_verify_plugin,
 )
 
 __all__ = [
@@ -116,6 +120,7 @@ __all__ = [
     "_cmd_consensus_begin",
     "_cmd_consensus_add",
     "_cmd_consensus_finalize",
+    "_cmd_consensus_window",
     "_consensus_state_paths",
     "_load_welford_session",
     # pipeline stages
@@ -131,6 +136,9 @@ __all__ = [
     "_cmd_locate_field_pairs",
     "_cmd_export_key_pattern",
     "_cmd_inspect_pcap",
+    "_cmd_scan_yara",
+    "_cmd_score_detector",
+    "_cmd_verify_plugin",
     "_cmd_gen_kem_key",
     "_cmd_import_dir",
     "_cmd_verify",

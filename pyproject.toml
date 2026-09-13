@@ -94,6 +94,20 @@ dependencies = [
     #     (engine/yara_scan.py): compile a MemDiver-emitted pattern rule and
     #     measure it against the corpus. Base, not an extra: an emitted detector
     #     you cannot scan with is a detector you cannot evaluate. ---
+    # DO NOT "fix" the 1024-byte regexp scan limit by raising this floor: the
+    # version that fixes it does not exist. `YR_RE_SCAN_LIMIT` regressed
+    # 4096 -> 1024 in libyara 4.5.3/4.5.4 (upstream PR #2144), which makes any
+    # wildcard pattern wider than 1024 bytes match NOTHING, silently. The
+    # upstream revert is UNRELEASED: as verified against the PyPI JSON API,
+    # 4.5.4 is the newest published sdist/wheel and there is no 4.5.5 (4.5.3
+    # was never published either -- the releases jump 4.5.2 -> 4.5.4). The
+    # limit is also not raisable at runtime: `yara.set_config` exposes
+    # stack_size / max_strings_per_rule / max_match_data and not the scan
+    # limit. It is therefore handled in CODE, by probing libyara for the real
+    # limit and refusing to call an unverifiable rule "clean" --
+    # `engine.yara_scan.regexp_scan_limit` and
+    # `tests/test_libyara_scan_limit.py`. When a fixed release does land, the
+    # probe self-corrects and no floor change is needed for correctness.
     "yara-python>=4.5.4",
     # --- Dump collection (`memdiver experiment`). Needs a live, attachable
     #     target at runtime; the LLDB backend is installed via the OS (Xcode
@@ -442,6 +456,12 @@ files = [
     # slip there would turn a diagnostic into a second exception. dpkt itself
     # stays `Any` (ignore_missing_imports), as it does for `tls_pcap.py`.
     "engine/resources/protocol_detect.py",
+    # Wave 11 -- the aligned-window producer. Typed from the start, and types
+    # earn their keep here for the same reason they do in protocol_fields.py:
+    # every helper returns an OFFSET that a peer dump is then read at, and an
+    # Optional/int slip would hand a viewer real bytes at the wrong address --
+    # a silently WRONG answer rather than a crash.
+    "app/tools_consensus.py",
 
 ]
 
@@ -556,5 +576,9 @@ exclude_dirs = ["tests", "docs", "scripts", "tools", "frontend", "build", "misc"
 memdiver = [
     "config.json",
     "algorithms/patterns/*.json",
+    # The in-app documentation panel (GET /api/docs/{path}) reads these at
+    # runtime, so a `pip install memdiver` that omitted them would serve the
+    # panel's 404-with-published-URL fallback instead of the real page.
+    "docs/**/*.md",
     "frontend/dist/**/*",
 ]

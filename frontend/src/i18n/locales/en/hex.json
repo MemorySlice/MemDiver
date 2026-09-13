@@ -112,5 +112,75 @@
     "range": "rows {{start}}–{{end}} of {{total}}",
     "prev": "Prev window",
     "next": "Next window"
+  },
+  "mainView": {
+    "label": "Main view layout",
+    "single": "Single",
+    "sideBySide": "Side by side ({{count}})",
+    "overlay": "Overlay",
+    "singleTitle": "One pane, showing the focused dump",
+    "sideBySideTitle": "Every selected dump in its own aligned pane",
+    "overlayTitle": "Every selected dump superimposed, byte by byte",
+    "needTwoTitle": "Select at least 2 dumps to use this layout"
+  },
+  "alignment": {
+    "label": "Alignment",
+    "virtual_address": "Aligned by virtual address",
+    "module_offset": "Aligned by module offset",
+    "file_offset": "Aligned by file offset",
+    "unknown": "Alignment unknown",
+    "pending": "Aligning…",
+    "fileOffsetWarning": "File-offset alignment: bytes at the same position may not be the same address.",
+    "runConsensus": "Run consensus to align",
+    "running": "Aligning…",
+    "truncated": "Window truncated",
+    "truncatedTitle": "The aligned window was clipped to the shortest dump; bytes past the clip are not compared.",
+    "comparedTitle": "{{compared}} bytes compared, {{discarded}} discarded, {{sources}} sources"
+  },
+  "pane": {
+    "origin": "Origin",
+    "originTitle": "The dump this session started from",
+    "focus": "Focus",
+    "focusTitle": "The focused pane anchors the alignment",
+    "focusAction": "Focus {{name}}",
+    "collapse": "Collapse {{name}}",
+    "restore": "Show {{name}}",
+    "size": "{{size}} KB",
+    "collapsedLabel": "Collapsed panes"
+  },
+  "multiHex": {
+    "label": "Side-by-side hex panes",
+    "noAnchor": "Select at least two dumps to compare them side by side.",
+    "paneCap": "Showing {{shown}} of {{selected}} selected dumps.",
+    "paneCapHint": "Switch to Overlay to compare all of them at once.",
+    "paneError": "Could not load {{name}}: {{error}}",
+    "windowError": "Some bytes in this window could not be loaded: {{error}}"
+  },
+  "overlayPane": {
+    "label": "Aligned overlay",
+    "noAnchor": "Select at least two dumps to overlay them.",
+    "noConsensusTitle": "No consensus for this selection",
+    "noConsensusBody": "Run consensus to classify every byte as invariant, structural, pointer or key candidate across the selected dumps.",
+    "runConsensus": "Run consensus to classify",
+    "running": "Running consensus…",
+    "rawOffsetTitle": "VA alignment requires an aligned consensus",
+    "rawOffsetBody": "This consensus was built in raw file offsets. Enable ASLR normalization and re-run it to align by virtual address.",
+    "enableAslrAndRerun": "Enable ASLR normalization and re-run",
+    "anchorLabel": "Anchor: {{name}}"
+  },
+  "inspector": {
+    "title": "Byte inspector",
+    "noCursor": "Click a byte to inspect it across every selected dump.",
+    "offset": "Offset {{offset}}",
+    "class": "class: {{name}}",
+    "classNone": "class: unclassified",
+    "differSummary": "{{differing}} of {{total}} dumps differ",
+    "identical": "all {{total}} dumps agree",
+    "anchor": "anchor",
+    "absent": "absent",
+    "differs": "differs from the anchor",
+    "colDump": "Dump",
+    "colByte": "Byte",
+    "colChar": "Char"
   }
 }

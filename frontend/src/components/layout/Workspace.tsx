@@ -21,6 +21,8 @@ import { InvestigationPanel } from "@/components/investigation/InvestigationPane
 import { FileUpload } from "@/components/upload/FileUpload";
 import { SessionManager } from "@/components/session/SessionManager";
 import { DumpList } from "@/components/dumps/DumpList";
+import { DumpSelectionStrip } from "@/components/dumps/DumpSelectionStrip";
+import { MainViewSwitcher } from "@/components/hex/MainViewSwitcher";
 import { FormatNavigator } from "@/components/format/FormatNavigator";
 import { StructureList } from "@/components/structures/StructureList";
 import { StructureOverlayPanel } from "@/components/structures/StructureOverlayPanel";
@@ -34,6 +36,9 @@ import { HandleList } from "@/components/msl/HandleList";
 import { ReservedBlocksList } from "@/components/msl/ReservedBlocksList";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { HexViewer } from "@/components/hex/HexViewer";
+import { MultiHexViewer } from "@/components/hex/MultiHexViewer";
+import { HexOverlayPane } from "@/components/hex/HexOverlayPane";
+import { OverlayByteInspector } from "@/components/hex/OverlayByteInspector";
 import { HexOverlay } from "@/components/hex/HexOverlay";
 import { HexComparison } from "@/components/hex/HexComparison";
 import { useHexStore } from "@/stores/hex-store";
@@ -405,6 +410,31 @@ function DatasetOverview({ path }: { path: string }) {
   );
 }
 
+/**
+ * The persistent multi-dump bar above the main viewer.
+ *
+ * This is the fix for "I add a second dump and it disappears into a variance
+ * number at the bottom of the screen": which dumps take part, which one is the
+ * session's ORIGIN and which one is focused are now stated in the main area, at
+ * the top, next to the control that lays them out.
+ *
+ * It renders the SAME `DumpSelectionStrip` the Import tab mounts, so the two
+ * entry points cannot drift apart.
+ */
+function MainAreaDumpBar() {
+  const inputMode = useAppStore((s) => s.inputMode);
+  if (inputMode !== "file") return null;
+  return (
+    <div
+      data-testid="main-area-dump-bar"
+      className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--md-border)] md-bg-secondary min-w-0"
+    >
+      <MainViewSwitcher />
+      <DumpSelectionStrip />
+    </div>
+  );
+}
+
 function MainContent() {
   const { t } = useTranslation("layout");
   const inputMode = useAppStore((s) => s.inputMode);
@@ -416,6 +446,10 @@ function MainContent() {
       dumps: s.dumps,
     })),
   );
+  // `mainView` is the N-dump layout over the whole selection; `viewMode` above
+  // is the legacy PAIRWISE switch driven by `comparisonDumpIds`. Two fields,
+  // two components, deliberately not merged — see the dump-store comment.
+  const mainView = useDumpStore((s) => s.mainView);
   const activeDump = useActiveDump();
   const path = inputPath;
 
@@ -455,6 +489,13 @@ function MainContent() {
       );
     }
 
+    // The N-dump layouts are store-driven: they anchor on `activeDumpId` and
+    // lay out the whole selection, so they take no path props. `reconcileSelection`
+    // (I4) degrades `mainView` to "single" below two selected dumps, so neither
+    // branch can be reached without something to lay out.
+    if (mainView === "sideBySide") return <MultiHexViewer />;
+    if (mainView === "overlay") return <HexOverlayPane />;
+
     const dumpPath = activeDump?.path ?? path;
     const fileSize = activeDump?.fileSize ?? 0;
     const format = activeDump?.format ?? "raw";
@@ -469,6 +510,16 @@ function DetailPanel() {
   const neighborhoodOverlay = useHexStore((s) => s.activeNeighborhoodOverlay);
   const overlay = useHexStore((s) => s.activeStructureOverlay);
   const result = useAnalysisStore((s) => s.result);
+  const mainView = useDumpStore((s) => s.mainView);
+  const inputMode = useAppStore((s) => s.inputMode);
+
+  // In the aligned overlay the detail panel answers the question the overlay
+  // itself cannot: WHICH dumps disagree at the cursor. It outranks the
+  // structure/neighborhood panels because the user is looking at a byte stream
+  // whose whole point is the cross-dump comparison.
+  if (mainView === "overlay" && inputMode === "file") {
+    return <OverlayByteInspector />;
+  }
 
   if (neighborhoodOverlay) {
     return <NeighborhoodOverlayPanel />;
@@ -744,8 +795,11 @@ export function Workspace() {
             <ResizeHandle />
             <Panel id="main" defaultSize="45%" minSize="20%">
               <HexFocusBridge />
-              <div data-tour-id="workspace-main" className="h-full">
-                <MainContent />
+              <div data-tour-id="workspace-main" className="h-full flex flex-col min-h-0">
+                <MainAreaDumpBar />
+                <div className="flex-1 min-h-0">
+                  <MainContent />
+                </div>
               </div>
             </Panel>
             <ResizeHandle />

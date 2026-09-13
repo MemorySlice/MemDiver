@@ -16,6 +16,7 @@ from memdiver.core.service_errors import (
     UnsupportedFormatError,
 )
 from memdiver.core.strings import extract_strings
+from memdiver.engine.consensus import MAX_CONSENSUS_WINDOW
 
 from .key_material import key_material_kwargs, open_dump_source, open_msl_reader
 from .session import ToolSession
@@ -257,7 +258,7 @@ def read_hex_raw_result(
     """ServiceResult producer for :func:`_read_hex_raw` (base64 payload)."""
     import base64
 
-    length = min(length, 16384)  # cap at 16KB
+    length = min(length, MAX_CONSENSUS_WINDOW)  # one shared 16 KiB window cap
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:

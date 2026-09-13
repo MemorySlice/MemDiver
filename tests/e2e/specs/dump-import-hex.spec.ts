@@ -2,6 +2,8 @@ import path from "node:path";
 import { test, expect } from "@playwright/test";
 import {
   datasetAvailable,
+  datasetRunCount,
+  DATASET_PAGE_SIZE,
   syntheticMslAvailable,
   syntheticMslPath,
   MSL,
@@ -66,6 +68,65 @@ test.describe("dump import + hex viewer", () => {
     const firstByte = page.locator('.hex-byte[data-offset="0"]');
     await expect(firstByte).toBeVisible({ timeout: 15_000 });
     await expect(firstByte).toHaveText(/^[0-9a-f]{2}$/i, { timeout: 15_000 });
+
+    guards.assertClean();
+  });
+
+  // --- Importing must never yank the analyst out of the pane they are reading. ---
+  // `FileUpload` used to call `setActiveDump` unconditionally after an upload,
+  // so importing a second dump moved focus (and therefore the hex viewer, the
+  // toolbar and the alignment anchor) onto a file the user had not asked to
+  // look at. It now claims focus only when there was none to steal, matching
+  // `addDump`'s own "only when the store was empty" rule.
+  test("importing another dump does not steal focus from the dump under inspection", async ({ page }) => {
+    test.skip(!syntheticMslAvailable, "synthetic MSL fixture missing");
+    const guards = installErrorGuards(page);
+
+    // The wizard registers the session dump, so a dump IS already focused.
+    await enterWorkspaceWithMsl(page, syntheticMslPath);
+    await page.locator(tab("dumps")).first().click();
+    const firstRow = page.locator('[data-testid="dump-row"]').first();
+    await expect(firstRow).toBeVisible({ timeout: 15_000 });
+    const focusedId = await firstRow.getAttribute("data-dump-id");
+    expect(focusedId, "the session dump must carry data-dump-id").toBeTruthy();
+    await expect(page.getByTestId(`dump-focus-badge-${focusedId}`)).toBeVisible();
+
+    // Import a second dump through the Import tab.
+    await page.locator(tab("import")).first().click();
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator("div.border-dashed").first().click(),
+    ]);
+    await chooser.setFiles(SAMPLE_DUMP_BIN);
+    await expect(page.locator(".md-panel span.font-mono").first()).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // The new dump joined the session — it is listed and it participates…
+    await page.locator(tab("dumps")).first().click();
+    await expect(page.locator('[data-testid="dump-row"]')).toHaveCount(2, {
+      timeout: 15_000,
+    });
+    const importedId = await page
+      .locator('[data-testid="dump-row"]')
+      .nth(1)
+      .getAttribute("data-dump-id");
+    expect(importedId).not.toBe(focusedId);
+    await expect(page.getByTestId(`dump-select-${importedId}`)).toBeChecked();
+
+    // …but focus did NOT move: badge, row marker and the viewer's own toolbar
+    // all still name the dump that was being read.
+    await expect(page.getByTestId(`dump-focus-badge-${focusedId}`)).toBeVisible();
+    await expect(page.getByTestId(`dump-focus-badge-${importedId}`)).toHaveCount(0);
+    await expect(
+      page.locator(`[data-testid="dump-row"][data-dump-id="${focusedId}"]`),
+    ).toHaveAttribute("aria-current", "true");
+    // The toolbar's file label is a `flex-1 truncate` span that the view-mode
+    // tabs and the search boxes squeeze to 0px at the default viewport, so its
+    // CONTENT is the readable signal here, not its visibility.
+    await expect(
+      page.locator("span.md-text-secondary.truncate.flex-1").first(),
+    ).toHaveText(/^sample\.msl — /);
 
     guards.assertClean();
   });
@@ -210,10 +271,29 @@ test.describe("dump import + hex viewer", () => {
       await page.waitForTimeout(400);
     }
 
-    // All 100 runs accumulate, and the fetch was genuinely paged (offset 0 then 50).
-    await expect(page.locator('[data-testid="dataset-run"]')).toHaveCount(100, { timeout: 45_000 });
-    expect(runReqs.some((u) => /[?&]limit=50\b/.test(u) && /[?&]offset=0\b/.test(u))).toBe(true);
-    expect(runReqs.some((u) => /[?&]offset=50\b/.test(u))).toBe(true);
+    // EVERY run accumulates -- counted from the corpus on disk rather than
+    // hardcoded. A fixed 100 was a fact about a private corpus, not about the
+    // product, so it went red as soon as that corpus changed size (95 today) and
+    // a permanently-red spec masks the regressions it was written to catch.
+    await expect(page.locator('[data-testid="dataset-run"]')).toHaveCount(datasetRunCount, {
+      timeout: 45_000,
+    });
+
+    // ...and the fetch was genuinely paged: first page at offset 0, then a
+    // second request one page in. Only assert the second page when the corpus is
+    // actually large enough to have one -- otherwise a small corpus would fail
+    // here for the wrong reason instead of simply not exercising pagination.
+    expect(
+      runReqs.some(
+        (u) =>
+          new RegExp(`[?&]limit=${DATASET_PAGE_SIZE}\\b`).test(u) && /[?&]offset=0\b/.test(u),
+      ),
+    ).toBe(true);
+    if (datasetRunCount > DATASET_PAGE_SIZE) {
+      expect(
+        runReqs.some((u) => new RegExp(`[?&]offset=${DATASET_PAGE_SIZE}\\b`).test(u)),
+      ).toBe(true);
+    }
 
     guards.assertClean();
   });

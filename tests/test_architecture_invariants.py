@@ -912,13 +912,13 @@ def test_cross_surface_capability_parity():
 
 
 # ---------------------------------------------------------------------------
-# Invariant 13 (G9) — the SIX pipeline producers that open a keyed container
+# Invariant 13 (G9) — the SEVEN pipeline producers that open a keyed container
 # must SURFACE a locked (missing/wrong-key) dump rather than silently losing
 # the key state and misreporting it as a genuine empty/negative result. Each
 # is expected to raise EncryptedDumpLockedError. Crypto-fixture-gated like the
 # flagship E2E tests (skips when AES-256-GCM is absent).
 #
-# The two key-location producers (B1/B3) matter most of the six: a locked
+# The two key-location producers (B1/B3) matter most of the seven: a locked
 # container reads back EMPTY rather than raising, so without the guard
 # ``locate_key`` would report a confident ABSENCE in every locked dump, and
 # ``export_key_pattern`` would emit a 100 %-static pattern over bytes nobody
@@ -970,6 +970,35 @@ def test_g9_producers_surface_locked_dump(encrypted_msl, tmp_path):
     with pytest.raises(EncryptedDumpLockedError):
         tools_pipeline.export_key_pattern(dump_paths=pair, key_hex="deadbeef")
 
+    # D1's YARA scanner, and it belongs here as much as the two above: a locked
+    # container reads back EMPTY rather than failing, so without the guard every
+    # locked dump would come back as a perfectly ordinary zero-match scan —
+    # ``verdict: "clean"``, no diagnostic, nothing to audit afterwards. The rule
+    # below is intentionally trivial and never gets to run.
+    with pytest.raises(EncryptedDumpLockedError):
+        tools_pipeline.scan_yara_rule(
+            dump_paths=pair,
+            rule_source='rule locked_probe { strings: $a = { de ad be ef } '
+                        'condition: $a }',
+        )
+
+    # D3's plugin verifier, and it belongs here TWICE over: BOTH of its
+    # runtimes read a locked container as EMPTY rather than failing, so without
+    # the guard an in-process run would report a confident zero over bytes
+    # nobody decrypted and a subprocess run would hand `vol` a container it
+    # cannot address at all. The guard fires before the plugin is even parsed,
+    # which is why the source below is a bare stub that never has to be
+    # runnable -- and note the assertion is mode-independent by construction:
+    # ``open_dump_source`` + ``_raise_if_locked`` run ahead of the per-row mode
+    # split, so neither mode can regress on its own.
+    for locked_mode in ("auto", "in_process", "subprocess"):
+        with pytest.raises(EncryptedDumpLockedError):
+            tools_pipeline.verify_vol3_plugin(
+                dump_paths=pair,
+                plugin_source="class NotAPlugin(object):\n    pass\n",
+                mode=locked_mode,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Cross-surface SIGNATURE parity (not just capability presence)
@@ -1012,6 +1041,24 @@ _MCP_TOOL_PRODUCERS = {
     # resolved key_material dict and the on_source hook, both in
     # _INTERNAL_PRODUCER_PARAMS), so it needs no _MCP_ALLOWED_OMISSIONS entry.
     "locate_field_across_pairs": "locate_field_across_pairs",
+    # D1's rule scanner. Mirrors its producer 1:1 (every param but the resolved
+    # key_material dict and the on_source hook, both in
+    # _INTERNAL_PRODUCER_PARAMS), so it needs no _MCP_ALLOWED_OMISSIONS entry.
+    "scan_yara_rule": "scan_yara_rule",
+    # D2's scorer. Mirrors its producer 1:1 -- and has NO key-material or
+    # on_source params to omit, because it opens no dump: both sides of the
+    # comparison arrive as data.
+    "score_detector_matches": "score_detector_matches",
+    # D3's plugin verifier. Mirrors its producer 1:1 (every param but the
+    # resolved key_material dict and the on_source hook, both in
+    # _INTERNAL_PRODUCER_PARAMS), so it needs no _MCP_ALLOWED_OMISSIONS entry.
+    "verify_vol3_plugin": "verify_vol3_plugin",
+    # The N-dump aligned window. NOT a pipeline producer (it lives in
+    # app.tools_consensus -- see the producer_modules map below), but it is
+    # held to the same signature parity for the same reason: a window whose
+    # MCP surface silently lacks `slab_offset` or `classify` is a window an
+    # agent can only ask half the questions of.
+    "aligned_window": "aligned_window_result",
 }
 #: Producer params that are orchestration internals, never surfaced on any tool.
 #: ``key_material`` is the resolved dict a surface *builds* from the individual
@@ -1042,7 +1089,12 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
     import inspect
 
     pytest.importorskip("mcp")
-    from memdiver.app import experiment_orchestration, tools_inspect, tools_pipeline
+    from memdiver.app import (
+        experiment_orchestration,
+        tools_consensus,
+        tools_inspect,
+        tools_pipeline,
+    )
     from memdiver.mcp_server.server import create_server
 
     server = create_server()
@@ -1054,6 +1106,7 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
     producer_modules = {
         "experiment_result": experiment_orchestration,
         "analyze_region_result": tools_inspect,
+        "aligned_window_result": tools_consensus,
     }
 
     problems = []

@@ -200,3 +200,47 @@ def _cmd_consensus_finalize(args: argparse.Namespace) -> int:
     }
     _write_output(result, args.output)
     return 0
+
+
+def _cmd_consensus_window(args: argparse.Namespace) -> int:
+    """Read ONE window in every dump at the address the consensus aligned.
+
+    The terminal sibling of ``POST /api/analysis/consensus/aligned-window`` and
+    the MCP ``aligned_window`` tool — the same
+    ``app.tools_consensus.aligned_window_result`` producer, so the slab -> VA ->
+    navigable-offset arithmetic exists in exactly one place and the CLI cannot
+    grow a second, differently-wrong copy of it.
+
+    The decrypt flags apply to EVERY dump here (one process, one operator, one
+    keyring is the terminal case); the per-dump ``key_material_by_path``
+    channel the producer takes is exercised by the web and MCP surfaces, where
+    a request really can mix differently-keyed containers.
+    """
+    from memdiver.app.composition import build_tool_session
+    from memdiver.app.tools_consensus import aligned_window_result
+
+    dump_paths = _resolve_dump_paths(args.dumps)
+    if args.classify and len(dump_paths) < 2:
+        print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
+        return 1
+
+    key_material = _key_material_from_args(args)
+    by_path = {str(p): key_material for p in dump_paths} if any(
+        v is not None for v in key_material.values()
+    ) else None
+
+    result = aligned_window_result(
+        build_tool_session(),
+        dump_paths=[str(p) for p in dump_paths],
+        anchor_path=args.anchor_dump,
+        anchor_view=args.view,
+        offset=args.offset,
+        slab_offset=args.slab_offset,
+        length=args.length,
+        normalize=args.normalize,
+        classify=args.classify,
+        include_bytes=not args.no_bytes,
+        key_material_by_path=by_path,
+    )
+    _write_output(result.payload, args.output)
+    return 0
