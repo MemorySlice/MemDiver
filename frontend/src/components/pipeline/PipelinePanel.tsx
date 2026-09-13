@@ -78,7 +78,7 @@ function Stepper({
               onClick={() => (canJump ? onJump(step.id) : undefined)}
               className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors text-xs ${
                 isActive
-                  ? "bg-[var(--md-accent-blue)] text-white font-semibold"
+                  ? "bg-[var(--md-accent-blue)] md-text-on-accent font-semibold"
                   : isDone
                     ? "md-text-secondary hover:bg-[var(--md-bg-hover)] cursor-pointer"
                     : "md-text-muted"
@@ -124,7 +124,7 @@ function HeaderBar() {
     <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--md-border)] md-bg-secondary">
       <h2 className="text-sm font-semibold md-text-accent">{t("panel.title")}</h2>
       <span
-        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-2 py-0.5"
+        className="inline-block text-[10px] uppercase tracking-wide md-text-on-accent rounded px-2 py-0.5"
         style={{ background: STATUS_BADGE_BG[status] ?? "var(--md-text-muted)" }}
       >
         {status}

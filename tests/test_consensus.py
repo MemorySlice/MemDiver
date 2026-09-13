@@ -239,3 +239,269 @@ def test_legacy_getters_keep_their_default_min_lengths():
         StaticRegion(start=20, end=40, mean_variance=9000.0,
                      classification="key_candidate"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# iter_regions / count_regions — the LAZY, paginated retrieval path
+# ---------------------------------------------------------------------------
+#
+# ``get_regions`` computes a region's mean variance BEFORE any caller-side
+# limit can apply, so a ``min_length=1`` STRUCTURAL query over an 11 MB slab is
+# ~10^5-10^6 numpy reductions for a page the caller truncates to 200 rows.
+# These pin the three properties that make the lazy path safe to page with:
+# it computes only what it yields, it yields in offset order, and its cursor
+# neither repeats nor drops a row.
+
+
+def test_get_regions_is_exactly_the_lazy_iterator():
+    """The eager getter is ``list(iter_regions(...))`` — byte for byte.
+
+    Pinned so the two paths cannot drift into two filter chains, which is how
+    a paginated total and the page it sizes stop agreeing.
+    """
+    cm = _vector_from_layout()
+    for query in (ByteClass.INVARIANT, ByteClass.STRUCTURAL,
+                  [ByteClass.POINTER, ByteClass.KEY_CANDIDATE]):
+        for min_length, max_length in ((1, 0), (20, 0), (1, 20), (40, 40)):
+            assert cm.get_regions(
+                query, min_length=min_length, max_length=max_length,
+            ) == list(cm.iter_regions(
+                query, min_length=min_length, max_length=max_length,
+            )), (query, min_length, max_length)
+
+
+def test_iter_regions_computes_mean_variance_only_for_yielded_rows(monkeypatch):
+    """THE point of the lazy path: an abandoned iterator costs one reduction.
+
+    Counted on the real reducer, so a future rewrite that hoists the variance
+    pass back out of the loop fails here rather than silently reintroducing
+    the whole-slab cost.
+    """
+    cm = _vector_from_layout()
+    calls = []
+    original = ConsensusVector._region_mean_variance
+
+    def counting(self, start, end):
+        calls.append((start, end))
+        return original(self, start, end)
+
+    monkeypatch.setattr(ConsensusVector, "_region_mean_variance", counting)
+
+    regions = cm.iter_regions([ByteClass.INVARIANT, ByteClass.STRUCTURAL])
+    assert calls == [], "constructing the iterator must reduce nothing"
+
+    first = next(regions)
+    assert calls == [(0, 60)], "one reduction for the one row taken"
+    assert (first.start, first.end) == (0, 60)
+
+    next(regions)
+    assert len(calls) == 2
+    # ... and the eager getter over the SAME query reduces every region.
+    calls.clear()
+    assert len(cm.get_regions([ByteClass.INVARIANT, ByteClass.STRUCTURAL])) == 2
+    assert len(calls) == 2
+
+
+def test_iter_regions_yields_in_offset_order():
+    cm = _vector_from_layout()
+    starts = [r.start for r in cm.iter_regions(
+        [ByteClass.INVARIANT, ByteClass.STRUCTURAL, ByteClass.POINTER,
+         ByteClass.KEY_CANDIDATE],
+    )]
+    assert starts == sorted(starts)
+    # One union over every class is one region: the whole slab.
+    assert starts == [0]
+
+
+def test_iter_regions_after_is_an_exclusive_cursor():
+    """``after`` skips runs starting AT or before it — so paging by the last
+    ``start`` seen can neither repeat nor drop a row."""
+    cm = _vector_from_layout()
+    query = [ByteClass.STRUCTURAL, ByteClass.POINTER, ByteClass.KEY_CANDIDATE]
+    # One contiguous non-invariant run [40, 100) plus nothing else.
+    assert [(r.start, r.end) for r in cm.iter_regions(query)] == [(40, 100)]
+    assert [(r.start, r.end) for r in cm.iter_regions(query, after=39)] == [(40, 100)]
+    assert list(cm.iter_regions(query, after=40)) == [], "AT the cursor is skipped"
+
+    invariant = [(r.start, r.end) for r in cm.iter_regions(ByteClass.INVARIANT)]
+    assert invariant == [(0, 40), (100, 140)]
+    assert [(r.start, r.end) for r in cm.iter_regions(
+        ByteClass.INVARIANT, after=0)] == [(100, 140)]
+    # Paging the whole set with the cursor reproduces it exactly once.
+    paged = []
+    cursor = -1
+    while True:
+        page = list(cm.iter_regions(ByteClass.INVARIANT, after=cursor))[:1]
+        if not page:
+            break
+        paged.append((page[0].start, page[0].end))
+        cursor = page[0].start
+    assert paged == invariant
+
+
+def test_iter_regions_after_default_skips_nothing():
+    """``-1`` is before every valid start, including ``0``."""
+    cm = _vector_from_layout()
+    assert cm.get_regions(ByteClass.INVARIANT) == list(
+        cm.iter_regions(ByteClass.INVARIANT, after=-1))
+
+
+def test_count_regions_agrees_with_the_list_it_sizes():
+    """The total a paginated caller states its page against."""
+    cm = _vector_from_layout()
+    for query in (ByteClass.INVARIANT, ByteClass.STRUCTURAL, ByteClass.POINTER,
+                  ByteClass.KEY_CANDIDATE,
+                  [ByteClass.POINTER, ByteClass.KEY_CANDIDATE]):
+        for min_length, max_length in ((1, 0), (20, 0), (1, 20), (41, 0)):
+            assert cm.count_regions(
+                query, min_length=min_length, max_length=max_length,
+            ) == len(cm.get_regions(
+                query, min_length=min_length, max_length=max_length,
+            )), (query, min_length, max_length)
+
+
+def test_count_regions_reduces_no_variance(monkeypatch):
+    """A count is run LENGTHS only — paying a per-region ``.mean()`` for it
+    would reintroduce exactly the cost the lazy iterator exists to avoid."""
+    cm = _vector_from_layout()
+    calls = []
+    monkeypatch.setattr(
+        ConsensusVector, "_region_mean_variance",
+        lambda self, start, end: calls.append((start, end)) or 0.0,
+    )
+
+    assert cm.count_regions(ByteClass.INVARIANT) == 2
+    assert calls == []
+
+
+def test_count_regions_accepts_names_and_raw_codes_like_get_regions():
+    cm = _vector_from_layout()
+    assert cm.count_regions(int(ByteClass.POINTER)) == cm.count_regions(
+        ByteClass.POINTER)
+    with pytest.raises(ValueError, match="at least one"):
+        cm.count_regions([])
+
+
+# ---------------------------------------------------------------------------
+# _class_runs memoization
+# ---------------------------------------------------------------------------
+#
+# `count_regions` then `iter_regions` is the SHAPE of every paginated region
+# listing, and each used to run its own whole-slab pass (a class mask plus a
+# run scan — a measured ~370 ms over 211 M bytes), so page 20 cost exactly
+# what page 1 cost. The runs are a pure function of the classification array,
+# which is immutable once a build produced it; these tests pin both halves of
+# that — the reuse, and the invalidation that makes the reuse safe.
+
+
+def test_count_then_iter_runs_the_whole_slab_pass_once(monkeypatch):
+    """The shape of every paginated region listing, charged once."""
+    import memdiver.engine.consensus as consensus_module
+
+    cm = _vector_from_layout()
+    passes = []
+    real = consensus_module.find_contiguous_runs
+
+    def _counting(*args, **kwargs):
+        passes.append(args[1:])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(consensus_module, "find_contiguous_runs", _counting)
+    total = cm.count_regions(ByteClass.INVARIANT)
+    rows = list(cm.iter_regions(ByteClass.INVARIANT))
+    assert total == len(rows) == 2
+    assert len(passes) == 1
+    assert len(cm._class_runs_cache) == 1
+    # And a later page pays nothing either.
+    assert list(cm.iter_regions(ByteClass.INVARIANT, after=0)) != []
+    assert len(passes) == 1
+
+
+def test_class_runs_caches_each_class_tuple_separately():
+    cm = _vector_from_layout()
+    invariant = cm._class_runs((ByteClass.INVARIANT,))
+    pointer = cm._class_runs((ByteClass.POINTER,))
+    union = cm._class_runs((ByteClass.INVARIANT, ByteClass.POINTER))
+    assert invariant == [(0, 40), (100, 140)]
+    assert pointer == [(60, 80)]
+    assert union != invariant and union != pointer
+    assert len(cm._class_runs_cache) == 3
+    assert cm._class_runs((ByteClass.INVARIANT,)) is invariant
+
+
+def test_reassigning_classifications_drops_the_cached_runs():
+    """A stale cache would describe the PREVIOUS array's runs."""
+    cm = _vector_from_layout()
+    assert cm._class_runs((ByteClass.INVARIANT,)) == [(0, 40), (100, 140)]
+    cm.classifications = np.full(140, int(ByteClass.INVARIANT), dtype=np.uint8)
+    assert cm._class_runs_cache == {}
+    assert cm._class_runs((ByteClass.INVARIANT,)) == [(0, 140)]
+
+
+def test_finalize_drops_the_cached_runs():
+    """The incremental path replaces classifications outside the setter."""
+    cm = ConsensusVector()
+    cm.build_incremental(8)
+    cm.add_source(b"\x00" * 8)
+    cm.add_source(b"\x00" * 8)
+    cm.finalize()
+    before = cm._class_runs((ByteClass.INVARIANT,))
+    assert before == [(0, 8)]
+    cm.build_incremental(8)
+    assert cm._class_runs_cache == {}
+    assert cm._class_runs((ByteClass.INVARIANT,)) == []
+
+
+# ---------------------------------------------------------------------------
+# The VA / VAS walks (bisect keys + the defensive sort)
+# ---------------------------------------------------------------------------
+
+
+def _aligned_vector(rows=4, page_size=16):
+    """A vector with a hand-built two-dump aligned layout, one row per page."""
+    cm = ConsensusVector()
+    cm.msl_layout = [
+        (row * page_size, page_size,
+         [0x1000 + row * page_size, 0x9000 + row * page_size])
+        for row in range(rows)
+    ]
+    cm.size = rows * page_size
+    cm.num_dumps = 2
+    cm.variance = np.zeros(cm.size, dtype=np.float32)
+    cm.classifications = np.zeros(cm.size, dtype=np.uint8)
+    return cm
+
+
+def test_va_starts_is_cached_and_matches_the_va_index():
+    cm = _aligned_vector()
+    starts = cm._va_starts(0)
+    assert starts == [entry[0] for entry in cm._va_index_for(0)]
+    assert cm._va_starts(0) is starts
+    # Per dump, not shared between dumps.
+    assert cm._va_starts(1) == [entry[0] for entry in cm._va_index_for(1)]
+    assert cm._va_starts(1) != starts
+
+
+def test_walk_vas_window_is_order_insensitive():
+    """The ascending-vas_offset contract is bisected, but still only a contract.
+
+    A caller that yields the runs in another order must get the same answer,
+    which is why the defensive sort survives the fast path that skips it.
+    """
+    cm = _aligned_vector()
+    runs = [(0x1000, 32, 0), (0x9000, 32, 32)]
+    ascending = list(cm._walk_vas_window(0, runs, 16, 32))
+    shuffled = list(cm._walk_vas_window(0, list(reversed(runs)), 16, 32))
+    assert ascending == shuffled
+    assert ascending, "the window overlaps both runs and must yield something"
+
+
+def test_walk_vas_window_finds_a_run_it_has_to_skip_past():
+    """The near end is bisected; the run before the target must not be lost."""
+    cm = _aligned_vector(rows=8)
+    runs = [(0x1000, 64, 0), (0x1040, 64, 64)]
+    walked = list(cm._walk_vas_window(0, runs, 80, 16))
+    assert walked
+    assert all(offset + run <= 16 for offset, run, _slab, _row in walked)
+    # Every byte of the window is accounted for exactly once.
+    assert sum(run for _offset, run, _slab, _row in walked) == 16

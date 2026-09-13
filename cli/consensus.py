@@ -216,7 +216,7 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
     channel the producer takes is exercised by the web and MCP surfaces, where
     a request really can mix differently-keyed containers.
     """
-    from memdiver.app.composition import build_tool_session
+    from memdiver.app.composition import build_tool_session, has_key_material
     from memdiver.app.tools_consensus import aligned_window_result
 
     dump_paths = _resolve_dump_paths(args.dumps)
@@ -225,9 +225,10 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         return 1
 
     key_material = _key_material_from_args(args)
-    by_path = {str(p): key_material for p in dump_paths} if any(
-        v is not None for v in key_material.values()
-    ) else None
+    by_path = (
+        {str(p): key_material for p in dump_paths}
+        if has_key_material(key_material) else None
+    )
 
     result = aligned_window_result(
         build_tool_session(),
@@ -240,6 +241,55 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         normalize=args.normalize,
         classify=args.classify,
         include_bytes=not args.no_bytes,
+        key_material_by_path=by_path,
+    )
+    _write_output(result.payload, args.output)
+    return 0
+
+
+def _cmd_consensus_regions(args: argparse.Namespace) -> int:
+    """List EVERY occurrence of a consensus class, paginated and jumpable.
+
+    The terminal sibling of ``POST /api/analysis/consensus/regions`` and the
+    MCP ``consensus_regions`` tool — the same
+    ``app.tools_consensus.class_regions_result`` producer, so the slab -> VA ->
+    navigable-offset arithmetic exists in exactly one place.
+
+    ``--classes`` omitted is the NON-INVARIANT UNION, not "key_candidate": real
+    key material is class-MIXED (a measured 48-byte TLS 1.2 secret is 22
+    KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL bytes), so a per-class query
+    shatters a real secret into shards no ``--min-length`` keeps.
+
+    The decrypt flags apply to the anchor dump here (one process, one operator,
+    one keyring is the terminal case); the per-dump ``key_material_by_path``
+    channel the producer takes is exercised by the web and MCP surfaces.
+    """
+    from memdiver.app.composition import build_tool_session, has_key_material
+    from memdiver.app.tools_consensus import class_regions_result
+
+    dump_paths = _resolve_dump_paths(args.dumps)
+    if len(dump_paths) < 2:
+        print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
+        return 1
+
+    key_material = _key_material_from_args(args)
+    by_path = (
+        {str(p): key_material for p in dump_paths}
+        if has_key_material(key_material) else None
+    )
+
+    result = class_regions_result(
+        build_tool_session(),
+        dump_paths=[str(p) for p in dump_paths],
+        classes=args.classes,
+        min_length=args.min_length,
+        max_length=args.max_length,
+        after=args.after,
+        limit=args.limit,
+        anchor_path=args.anchor_dump,
+        anchor_view=args.view,
+        include_anchor_offsets=not args.no_anchor_offsets,
+        normalize=args.normalize,
         key_material_by_path=by_path,
     )
     _write_output(result.payload, args.output)

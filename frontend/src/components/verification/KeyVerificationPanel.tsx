@@ -384,7 +384,7 @@ export function KeyVerificationPanel() {
         <button
           onClick={runVerify}
           disabled={!canVerify}
-          className="px-3 py-1.5 rounded text-white disabled:opacity-40 transition-opacity flex items-center gap-1.5"
+          className="px-3 py-1.5 rounded md-text-on-accent disabled:opacity-40 transition-opacity flex items-center gap-1.5"
           style={{ background: "var(--md-accent-blue)" }}
           data-testid="verify-submit-btn"
         >

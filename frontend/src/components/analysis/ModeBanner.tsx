@@ -14,7 +14,7 @@ export function ModeBanner() {
           key={m}
           onClick={() => setMode(m)}
           className={`px-2 py-0.5 rounded capitalize transition-colors ${
-            mode === m ? "text-white" : "md-text-muted hover:bg-[var(--md-bg-hover)]"
+            mode === m ? "md-text-on-accent" : "md-text-muted hover:bg-[var(--md-bg-hover)]"
           }`}
           style={mode === m ? { background: m === "verification" ? "var(--md-accent-blue)" : "var(--md-accent-purple)" } : undefined}
         >

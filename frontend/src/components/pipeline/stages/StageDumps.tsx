@@ -81,7 +81,7 @@ export function StageDumps({ onAdvance }: Props) {
             type="button"
             onClick={pasteLines}
             disabled={draft.trim().length === 0}
-            className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+            className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
           >
             {t("stages.dumps.addPaths")}
           </button>
@@ -89,7 +89,7 @@ export function StageDumps({ onAdvance }: Props) {
             <button
               type="button"
               onClick={clearAll}
-              className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-white"
+              className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-[var(--md-bg-primary)]"
             >
               {t("stages.dumps.clearAll")}
             </button>
@@ -142,7 +142,7 @@ export function StageDumps({ onAdvance }: Props) {
           type="button"
           disabled={!canAdvance}
           onClick={() => onAdvance("oracle")}
-          className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+          className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
         >
           {t("stages.dumps.next")}
         </button>

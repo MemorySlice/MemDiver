@@ -282,3 +282,56 @@ describe("HexViewer chunk-fetch effect dependencies", () => {
     expect(depArray).toContain("dumpPath");
   });
 });
+
+describe("selectRange", () => {
+  /**
+   * The selection API a programmatic JUMP needs.
+   *
+   * `startSelection` + `extendSelection` is the DRAG pair, and there the cursor
+   * rightly follows the active end. A jump is navigation, so the cursor must
+   * stay on the byte that was navigated to — composing the drag pair for it
+   * dragged the cursor to the run's LAST byte, hundreds of rows off screen on a
+   * multi-KiB region, and every cursor-driven readout then described a byte the
+   * analyst could not see.
+   */
+  it("selects the whole range and leaves the cursor exactly where it was", () => {
+    useHexStore.setState({ cursorOffset: 500000, selection: null });
+
+    useHexStore.getState().selectRange(500000, 500047);
+
+    expect(useHexStore.getState().selection).toEqual({
+      anchor: 500000,
+      active: 500047,
+    });
+    expect(useHexStore.getState().cursorOffset).toBe(500000);
+  });
+
+  it("does not move the cursor even when it sits outside the range", () => {
+    useHexStore.setState({ cursorOffset: 42, selection: null });
+
+    useHexStore.getState().selectRange(500000, 500047);
+
+    expect(useHexStore.getState().cursorOffset).toBe(42);
+  });
+
+  it("is referentially stable for an identical range", () => {
+    useHexStore.setState({ cursorOffset: 0, selection: null });
+    useHexStore.getState().selectRange(10, 20);
+    const first = useHexStore.getState().selection;
+
+    useHexStore.getState().selectRange(10, 20);
+
+    // Same range, same object: a re-jump to the row the user is already on
+    // must not churn every memoized HexRow.
+    expect(useHexStore.getState().selection).toBe(first);
+  });
+
+  it("leaves extendSelection's cursor-tracking contract alone", () => {
+    // The drag gesture is unchanged — the grid depends on it.
+    useHexStore.setState({ cursorOffset: 0, selection: null });
+    useHexStore.getState().startSelection(100);
+    useHexStore.getState().extendSelection(140);
+
+    expect(useHexStore.getState().cursorOffset).toBe(140);
+  });
+});

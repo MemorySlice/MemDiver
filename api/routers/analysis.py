@@ -22,6 +22,7 @@ from memdiver.api.models import (
     AutoExportRequest,
     BatchRunRequest,
     BatchRunResponse,
+    ConsensusRegionsRequest,
     ConsensusRequest,
     ConvergenceRequest,
     ExportKeylogRequest,
@@ -39,6 +40,7 @@ from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
+from memdiver.core.variance import DEFAULT_THRESHOLDS
 from memdiver.engine.consensus import MAX_CONSENSUS_WINDOW
 from memdiver.engine.consensus_service import build_consensus
 
@@ -92,6 +94,17 @@ def run_consensus(
     if len(req.dump_paths) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 dumps")
 
+    # Per-caller pre-check, as engine.consensus_service documents: reject an
+    # obviously-missing path before any I/O, and name every one of them rather
+    # than only the first the opener trips over. A path that vanishes between
+    # here and the open still lands as a clean 404 via that module's
+    # FileNotFoundServiceError translation.
+    missing = [p for p in req.dump_paths if not Path(p).exists()]
+    if missing:
+        raise HTTPException(
+            status_code=404, detail=f"Files not found: {missing[:3]}"
+        )
+
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
     # open+build is the shared skeleton; build_consensus opens each dump as a
     # context-managed source, builds the vector while they are all live, and
@@ -102,6 +115,11 @@ def run_consensus(
     # client — no shared mutable state on a process-wide singleton.
     built = manager.register(cm)
 
+    # ``classification`` travels with every row, exactly as the CLI
+    # ``consensus`` command has always emitted it (cli/consensus.py). Dropping
+    # it here forced the web UI to re-derive a region's class from its
+    # ``mean_variance`` against hard-coded 0/200/3000 literals -- a second,
+    # silently-drifting copy of ``core.variance``'s bands.
     static_regions = []
     for r in cm.get_static_regions():
         static_regions.append({
@@ -109,6 +127,7 @@ def run_consensus(
             "end": r.end,
             "length": r.end - r.start,
             "mean_variance": float(r.mean_variance),
+            "classification": r.classification,
         })
 
     volatile_regions = []
@@ -118,6 +137,7 @@ def run_consensus(
             "end": r.end,
             "length": r.end - r.start,
             "mean_variance": float(r.mean_variance),
+            "classification": r.classification,
         })
 
     return {
@@ -125,8 +145,25 @@ def run_consensus(
         "size": cm.size,
         "num_dumps": cm.num_dumps,
         "counts": cm.classification_counts(),
+        # The BANDS this build's classes were cut at, so a legend renders the
+        # boundaries that actually produced these counts instead of the module
+        # defaults. ``cm.thresholds`` is None for a build that took them, which
+        # is precisely DEFAULT_THRESHOLDS -- resolved here rather than left as
+        # null, because "null" reads to a client as "unknown", not "0/200/3000".
+        # Same shape POST /candidates reports its resolved thresholds in.
+        "thresholds": (cm.thresholds or DEFAULT_THRESHOLDS)._asdict(),
         "static_regions": static_regions,
         "volatile_regions": volatile_regions,
+        # WHICH dumps (and under which ASLR setting) produced this build.
+        # A consensus is only meaningful for the set it was built over: the
+        # classes, the gaps and the cross-dump "differs" verdict all change
+        # when one dump joins or leaves. Without this echo a client holds a
+        # `consensus_id` it cannot attribute, and keeps projecting an old
+        # build onto a selection it never saw — plausible classes over the
+        # wrong bytes. Echoed from the REQUEST, not from `cm.dump_paths`, so
+        # the caller can compare it against the selection it sent.
+        "dump_paths": list(req.dump_paths),
+        "normalize": req.normalize,
     }
 
 
@@ -339,11 +376,17 @@ def consensus_va_overview(
     return {"dump_index": dump_index, **cm.va_overview(dump_index, bins)}
 
 
-def _aligned_window_key_material(req: AlignedWindowRequest) -> dict:
+def _per_dump_key_material(req) -> dict:
     """``{dump_path: open_dump kwargs}`` from the request's per-dump key list.
 
     One decode per entry through the same ``decode_key_material`` every other
     route uses, so malformed hex is the same 400 here as everywhere else.
+
+    Shared by both consensus POST bodies (``AlignedWindowRequest`` and
+    ``ConsensusRegionsRequest``), which carry the identical ``keys`` list: the
+    per-dump channel exists because a corpus routinely mixes plaintext captures
+    with containers encrypted under DIFFERENT keys, and that is as true of the
+    anchor a region page opens as of the peers a window reads.
     """
     by_path = {}
     for entry in req.keys:
@@ -387,12 +430,16 @@ def _aligned_window_anchor(req: AlignedWindowRequest) -> tuple[str | None, int |
     return None, req.slab_offset
 
 
-def _aligned_window_source(req: AlignedWindowRequest, manager):
+def _consensus_source(req, manager):
     """Resolve the request to ``(consensus vector or None, consensus_id)``.
 
     Exactly one of ``consensus_id`` / ``dump_paths``: neither and both are
-    400s, because "which correspondence is this window in" must have exactly
+    400s, because "which correspondence is this answer in" must have exactly
     one answer. An unknown ``consensus_id`` is a 404.
+
+    Shared by the two either/or consensus routes (``/consensus/aligned-window``
+    and ``/consensus/regions``) so the id/paths contract — and its two error
+    codes — cannot drift between them.
     """
     if bool(req.consensus_id) == bool(req.dump_paths):
         raise HTTPException(
@@ -405,6 +452,54 @@ def _aligned_window_source(req: AlignedWindowRequest, manager):
     if built is None:
         raise HTTPException(status_code=404, detail="No consensus computed yet")
     return built.matrix, req.consensus_id
+
+
+def _require_dumps_in_build(consensus, dumps) -> None:
+    """409 unless every entry of ``dumps`` belongs to ``consensus``'s build.
+
+    A consensus is a statement ABOUT A SET OF DUMPS. Answer a window for a
+    selection the build never saw and every number in the response is a
+    confident lie: the classes were computed over other bytes, the gaps mark
+    other holes, and the cross-dump "differs" ring fires on differences
+    between dumps the analyst is not looking at. Silence is the worst outcome
+    here, because nothing downstream can detect it.
+
+    409 (conflict), not 404: the build exists and the dumps exist, they simply
+    do not belong together. That is a state the client fixes by re-running the
+    consensus over the current selection — which is exactly what the
+    ``NoConsensusPrompt`` empty state offers.
+
+    Matching is delegated to ``app.tools_consensus.dump_index_for``, the same
+    resolver ``_select_dumps`` uses for the real read, so a request cannot pass
+    this gate and then be rejected by the producer (or vice versa) over a
+    difference in path spelling. ``ConsensusVector.dump_index_for_path`` behind
+    it compares RESOLVED paths, so ``/a/c/../b.msl``, a symlinked parent and a
+    relative spelling all find the dump the build stored.
+
+    Skipped when there is no consensus (the selector IS the dump list), when
+    the caller named no subset (the whole build is implied), and when the build
+    recorded no paths at all — an incremental/upload fold holds bytes, not
+    files, so there is nothing to check against and ``_select_dumps`` already
+    reports that as its own 409.
+    """
+    from memdiver.app.tools_consensus import dump_index_for
+
+    if consensus is None or not dumps:
+        return
+    if not consensus.dump_paths:
+        return
+    outside = [str(d) for d in dumps if dump_index_for(consensus, d) < 0]
+    if not outside:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "this consensus was not built over "
+            f"{outside[:3]}: a window is only meaningful for the dumps the "
+            "build covers, so answering would return classes computed over "
+            "other bytes. Re-run the consensus over the current selection."
+        ),
+    )
 
 
 @router.post("/consensus/aligned-window")
@@ -423,6 +518,14 @@ def consensus_aligned_window(
     ``bytes_valid`` run. THE CLIENT NEVER RECEIVES A PEER COORDINATE IT HAS TO
     APPLY — ``segments[].dumps[].va``/``offset`` are provenance only.
 
+    ``differs`` (``gaps``-style runs) and ``variants`` (per index, like
+    ``classes``) carry the cross-dump comparison: an index differs iff at least
+    two dumps are PRESENT and at least two present values disagree, and
+    ``variants[i]`` counts the distinct values the present dumps hold (``0`` =
+    nobody present). They are computed over exactly the dumps this request
+    selected, which is why they cannot be derived client-side from a byte
+    cache that still holds de-selected dumps.
+
     POST, not GET: N dump paths plus N key triples do not fit a query string,
     and key material must stay out of access logs, history and ``Referer``.
 
@@ -437,6 +540,10 @@ def consensus_aligned_window(
 
     A peer nobody supplied a key for comes back as ``bytes: null`` with a
     populated ``key_status``, and every OTHER dump still returns its bytes.
+
+    ``dumps`` must name dumps the ``consensus_id`` build actually covers; a
+    selection the build never saw is a 409, never a silent answer — see
+    ``_require_dumps_in_build``.
     """
     from memdiver.app.composition import build_tool_session
     from memdiver.app.tools_consensus import (
@@ -444,8 +551,10 @@ def consensus_aligned_window(
         aligned_window_result,
     )
 
-    consensus, consensus_id = _aligned_window_source(req, manager)
-    key_material_by_path = _aligned_window_key_material(req)
+    consensus, consensus_id = _consensus_source(req, manager)
+    # Before any read: a build may only answer for its own dumps.
+    _require_dumps_in_build(consensus, req.dumps)
+    key_material_by_path = _per_dump_key_material(req)
     anchor_path, slab_offset = _aligned_window_anchor(req)
 
     if consensus is not None:
@@ -472,6 +581,100 @@ def consensus_aligned_window(
             normalize=req.normalize,
             classify=req.classify,
             include_bytes=req.include_bytes,
+            key_material_by_path=key_material_by_path,
+        ).payload
+    payload["consensus_id"] = consensus_id
+    return payload
+
+
+@router.post("/consensus/regions")
+def consensus_regions(
+    req: ConsensusRegionsRequest,
+    manager: ConsensusSessionManager = Depends(get_consensus_manager),
+):
+    """Every occurrence of a consensus class, paginated AND jumpable.
+
+    The list behind "show me every key candidate": one page of regions, each
+    carrying its slab coordinates, its label, its per-class byte mix — and the
+    offset a hex viewer can be scrolled to.
+
+    THE OFFSET IS THE POINT. ``regions[].anchor_offset`` is the argument
+    ``hex-store.scrollToOffset`` takes, verbatim. Returning only a VA would
+    force the client to re-implement the slab -> VA -> offset translation for
+    each of the two coordinates it navigates in (the overlay walks ``"vas"``,
+    the single viewer ``"va"``) — the client-side coordinate arithmetic
+    ``app.tools_consensus`` exists to delete, and the origin of both shipped
+    overlay bugs. ``-1`` means "no honest answer" (never a plausible number,
+    the convention ``ConsensusVector.slab_to_va`` set), and the envelope's
+    ``anchor.jumpable`` states that ONCE for the page so a client can hide the
+    jump affordance instead of inferring a refusal from a sea of ``-1``s.
+
+    ``classes`` omitted is the NON-INVARIANT UNION. Real key material is
+    class-mixed — a measured 48-byte TLS 1.2 secret is 22 KEY_CANDIDATE + 18
+    POINTER + 8 STRUCTURAL bytes — so ``classes=["key_candidate"]`` does not
+    return that secret, it shatters it into 3-byte shards.
+
+    Pagination is a slab-offset CURSOR, not a page number: pass the previous
+    response's ``next_after`` as ``after``. ``total`` sizes the whole result
+    set and ``counts`` carries the whole-build histogram, so the chip counts
+    beside the list arrive with the first page.
+
+    POST, not GET, for the same two reasons as ``/consensus/aligned-window``:
+    N key triples do not fit a query string, and key material must stay out of
+    access logs, history and ``Referer``. The keys are load-bearing here too —
+    resolving a ``"vas"`` anchor offset means opening (and decrypting) the
+    anchor container.
+
+    A LOCKED anchor is reported (``jumpable: false``), never raised: the
+    regions themselves are read from the consensus, not from the container, so
+    a missing key costs the jump offsets and nothing else.
+
+    Deliberately NO ``try/except``: a ``CapabilityError`` out of the producer
+    goes through the app's single global handler (``api.main``), which is what
+    keeps the error contract identical to every other producer-backed route.
+    """
+    from memdiver.app.composition import build_tool_session
+    from memdiver.app.tools_consensus import (
+        class_regions_from_vector,
+        class_regions_result,
+    )
+
+    consensus, consensus_id = _consensus_source(req, manager)
+    # Before any read: a build may only answer for its own dumps. The anchor is
+    # the only dump this route names, and anchoring on a dump the build never
+    # saw would express every offset in a coordinate the classes were not
+    # measured in.
+    _require_dumps_in_build(
+        consensus, [req.anchor_path] if req.anchor_path else None,
+    )
+    key_material_by_path = _per_dump_key_material(req)
+
+    if consensus is not None:
+        payload = class_regions_from_vector(
+            consensus,
+            classes=req.classes,
+            min_length=req.min_length,
+            max_length=req.max_length,
+            after=req.after,
+            limit=req.limit,
+            anchor_path=req.anchor_path,
+            anchor_view=req.anchor_view,
+            include_anchor_offsets=req.include_anchor_offsets,
+            key_material_by_path=key_material_by_path,
+        )
+    else:
+        payload = class_regions_result(
+            build_tool_session(),
+            dump_paths=list(req.dump_paths or []),
+            classes=req.classes,
+            min_length=req.min_length,
+            max_length=req.max_length,
+            after=req.after,
+            limit=req.limit,
+            anchor_path=req.anchor_path,
+            anchor_view=req.anchor_view,
+            include_anchor_offsets=req.include_anchor_offsets,
+            normalize=req.normalize,
             key_material_by_path=key_material_by_path,
         ).payload
     payload["consensus_id"] = consensus_id

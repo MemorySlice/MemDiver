@@ -4,6 +4,7 @@ import { useAlignedSelection } from "@/hooks/useAlignedPanes";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 import { byteToAscii, byteToHex } from "@/utils/hex-codec";
+import { VARIANCE_META, varianceCategoryForCode } from "@/utils/variance-classes";
 
 /**
  * What every dump holds at the cursor, as a table.
@@ -25,20 +26,6 @@ function formatOffset(offset: number): string {
   return `0x${hex.slice(0, 4)}_${hex.slice(4)}`;
 }
 
-/** Backend ByteClass codes, sharing NDumpOverlay's legend strings. */
-const CLASS_KEYS = [
-  "ndump.legendInvariant",
-  "ndump.legendStructural",
-  "ndump.legendPointer",
-  "ndump.legendKeyCandidate",
-] as const;
-
-const CLASS_STYLES = [
-  "consensus-invariant",
-  "consensus-structural",
-  "consensus-pointer",
-  "consensus-key-candidate",
-] as const;
 
 export function OverlayByteInspector() {
   const { t } = useTranslation("hex");
@@ -62,6 +49,9 @@ export function OverlayByteInspector() {
   void chunkVersionByPath;
   const store = useMultiHexStore.getState();
   const classCode = store.getClassAt(cursorOffset);
+  // `undefined` (gap / unclassified) and any unknown code both read as
+  // "no class" rather than silently claiming INVARIANT.
+  const classCategory = classCode === undefined ? null : varianceCategoryForCode(classCode);
   const anchorPresent = store.isPresentAt(anchor.path, cursorOffset);
   const anchorByte = anchorPresent ? store.getByteAt(anchor.path, cursorOffset) : undefined;
 
@@ -87,6 +77,16 @@ export function OverlayByteInspector() {
         {t("inspector.title")}
       </h3>
 
+      {/*
+        Load bearing since the overlay began painting a weighted plurality: the
+        grid can now show a byte that no dump holds at this offset, so this
+        panel has to say out loud that its own column is not that byte. Every
+        row below is a real read, mask-checked, from one file.
+      */}
+      <p data-testid="overlay-inspector-ground-truth" className="md-text-muted">
+        {t("inspector.groundTruth")}
+      </p>
+
       <div className="flex flex-wrap items-center gap-2" data-testid="overlay-inspector-summary">
         <span className="font-mono">{t("inspector.offset", { offset: formatOffset(cursorOffset) })}</span>
         <span aria-hidden="true" className="md-text-muted">
@@ -94,14 +94,10 @@ export function OverlayByteInspector() {
         </span>
         <span
           data-testid="overlay-inspector-class"
-          className={
-            classCode !== undefined && classCode < CLASS_STYLES.length
-              ? CLASS_STYLES[classCode]
-              : undefined
-          }
+          className={classCategory ? VARIANCE_META[classCategory].byteClass : undefined}
         >
-          {classCode !== undefined && classCode < CLASS_KEYS.length
-            ? t("inspector.class", { name: t(CLASS_KEYS[classCode]) })
+          {classCategory
+            ? t("inspector.class", { name: t(VARIANCE_META[classCategory].labelKey) })
             : t("inspector.classNone")}
         </span>
         <span aria-hidden="true" className="md-text-muted">

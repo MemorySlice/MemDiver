@@ -106,7 +106,12 @@ from memdiver.app.tools import (
 )
 
 # --- consensus: the aligned window (the N-dump differential viewer) --------
-from memdiver.app.tools_consensus import aligned_window_from_vector, aligned_window_result
+from memdiver.app.tools_consensus import (
+    aligned_window_from_vector,
+    aligned_window_result,
+    class_regions_from_vector,
+    class_regions_result,
+)
 
 # --- frontend-serving producers (field inference / algorithm availability) --
 from memdiver.app.tools_algorithms import algorithm_availability
@@ -170,6 +175,12 @@ __all__ = [
     # the caller already has (no rebuild); ``aligned_window_result`` builds one.
     "aligned_window_result",
     "aligned_window_from_vector",
+    # consensus — EVERY occurrence of a class, paginated and jumpable. The
+    # complement of the window: the window answers "what is at this offset in
+    # all N dumps", this answers "where are all the offsets worth looking at",
+    # and each row carries the navigable offset to go there.
+    "class_regions_result",
+    "class_regions_from_vector",
     # verify / experiment
     "verify_key_result",
     "experiment_result",

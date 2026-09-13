@@ -20,6 +20,12 @@ from pathlib import Path
 # --count-only flag is again the NEGATION of the constant, and --mode /
 # --timeout / --max-hits must advertise the SAME vocabulary and budgets the
 # producer applies.
+# The region-page defaults live with the producer, so `--limit`'s help text
+# and its cap cannot drift from the page the producer actually serves.
+from memdiver.app.tools_consensus import (
+    DEFAULT_REGIONS_PER_PAGE,
+    MAX_REGIONS_PER_PAGE,
+)
 from memdiver.app.tools_pipeline import (
     DEFAULT_INCLUDE_HITS,
     DEFAULT_INCLUDE_MATCHES,
@@ -75,6 +81,7 @@ from .consensus import (
     _cmd_consensus_add,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
+    _cmd_consensus_regions,
     _cmd_consensus_window,
 )
 from .experiment import _cmd_experiment
@@ -229,6 +236,39 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Return coordinates and classes without the bytes")
     cw.add_argument("-o", "--output", help="Output JSON file")
     cw.add_argument("-v", "--verbose", action="store_true")
+    # consensus-regions — EVERY occurrence of a class, paginated and jumpable
+    cr = sub.add_parser(
+        "consensus-regions",
+        help="List every occurrence of a consensus class, with jump offsets",
+        parents=[_decrypt_parent_parser()],
+    )
+    cr.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+    cr.add_argument("--classes", nargs="+", default=None,
+                    help="Byte classes to list: invariant, structural, "
+                         "pointer, key_candidate, or non_invariant (default: "
+                         "the non_invariant union — real key material is "
+                         "class-MIXED, so a per-class query shatters it)")
+    cr.add_argument("--min-length", type=int, default=8,
+                    help="Shortest region to report (default: 8)")
+    cr.add_argument("--max-length", type=int, default=0,
+                    help="Longest region to report; 0 = unbounded")
+    cr.add_argument("--after", type=lambda x: int(x, 0), default=-1,
+                    help="Exclusive slab-offset cursor — the previous page's "
+                         "next_after (default: -1, start from the beginning)")
+    cr.add_argument("--limit", type=int, default=DEFAULT_REGIONS_PER_PAGE,
+                    help=f"Rows per page (default: {DEFAULT_REGIONS_PER_PAGE}, "
+                         f"max {MAX_REGIONS_PER_PAGE})")
+    cr.add_argument("--anchor-dump",
+                    help="Dump whose coordinate the jump offsets are in "
+                         "(omit for slab coordinates only)")
+    cr.add_argument("--view", choices=["va", "vas", "raw"], default="va",
+                    help="Anchor's navigable view (default: va)")
+    cr.add_argument("--no-anchor-offsets", action="store_true",
+                    help="Skip opening the anchor entirely — no jump offsets")
+    cr.add_argument("--normalize", action="store_true",
+                    help="ASLR-aware normalization for the build")
+    cr.add_argument("-o", "--output", help="Output JSON file")
+    cr.add_argument("-v", "--verbose", action="store_true")
     # search-reduce
     sr = sub.add_parser(
         "search-reduce",
@@ -1103,6 +1143,7 @@ def main():
         "consensus-add": _cmd_consensus_add,
         "consensus-finalize": _cmd_consensus_finalize,
         "consensus-window": _cmd_consensus_window,
+        "consensus-regions": _cmd_consensus_regions,
         "search-reduce": _cmd_search_reduce,
         "analyze-candidates": _cmd_analyze_candidates,
         "brute-force": _cmd_brute_force,

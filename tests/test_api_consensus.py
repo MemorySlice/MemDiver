@@ -267,3 +267,95 @@ def test_analysis_consensus_builds_are_isolated(client, tmp_path):
     # so the first build still reports size_a even though it was built first.
     assert len(range_a.json()["classifications"]) == size_a
     assert len(range_b.json()["classifications"]) == size_b
+
+
+# ---------------------------------------------------------------------------
+# A build may only answer for ITS OWN dumps.
+#
+# The aligned-window endpoint prefers ``consensus_id`` over ``dump_paths``, so
+# a client that never cleared its stored id keeps asking a build made over
+# {A, B} for a window over {C, D}. Answering that is the worst possible
+# outcome: the classes were computed over other bytes, the gaps mark other
+# holes, and the cross-dump "differs" ring reports differences between dumps
+# nobody is looking at — all of it plausible, none of it detectable downstream.
+#
+# 409, not 404: the build exists and the dumps exist, they simply do not
+# belong together, and the fix is to re-run the consensus over the selection.
+# ---------------------------------------------------------------------------
+
+
+def _aligned_window_body(consensus_id: str, anchor: str, dumps: list[str]) -> dict:
+    return {
+        "consensus_id": consensus_id,
+        "anchor": "dump",
+        "anchor_path": anchor,
+        "view": "raw",
+        "offset": 0,
+        "length": 64,
+        "dumps": dumps,
+        "include_bytes": True,
+    }
+
+
+def test_aligned_window_refuses_dumps_outside_the_build(client, tmp_path):
+    """Build over A,B then ask for C: 409, not a silent answer."""
+    a, b = _write_raw_dumps(tmp_path, "built", 256)
+    c, _d = _write_raw_dumps(tmp_path, "other", 256)
+
+    post = client.post(
+        "/api/analysis/consensus", json={"dump_paths": [str(a), str(b)]},
+    )
+    assert post.status_code == 200, post.text
+    consensus_id = post.json()["consensus_id"]
+
+    resp = client.post(
+        "/api/analysis/consensus/aligned-window",
+        json=_aligned_window_body(consensus_id, str(a), [str(c)]),
+    )
+    assert resp.status_code == 409, resp.text
+    assert "other_a" in resp.text
+
+
+def test_aligned_window_refuses_a_selection_that_only_partly_overlaps(client, tmp_path):
+    """One familiar dump does not license a window over an unfamiliar one."""
+    a, b = _write_raw_dumps(tmp_path, "built", 256)
+    c, _d = _write_raw_dumps(tmp_path, "other", 256)
+
+    consensus_id = client.post(
+        "/api/analysis/consensus", json={"dump_paths": [str(a), str(b)]},
+    ).json()["consensus_id"]
+
+    resp = client.post(
+        "/api/analysis/consensus/aligned-window",
+        json=_aligned_window_body(consensus_id, str(a), [str(a), str(c)]),
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_aligned_window_allows_a_subset_of_the_build(client, tmp_path):
+    """A SUBSET is still described by the build, so it is answered normally."""
+    a, b = _write_raw_dumps(tmp_path, "built", 256)
+
+    consensus_id = client.post(
+        "/api/analysis/consensus", json={"dump_paths": [str(a), str(b)]},
+    ).json()["consensus_id"]
+
+    resp = client.post(
+        "/api/analysis/consensus/aligned-window",
+        json=_aligned_window_body(consensus_id, str(a), [str(a)]),
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_aligned_window_without_a_dumps_selector_is_not_a_409(client, tmp_path):
+    """No selector means "every dump of the build" — nothing to conflict with."""
+    a, b = _write_raw_dumps(tmp_path, "built", 256)
+
+    consensus_id = client.post(
+        "/api/analysis/consensus", json={"dump_paths": [str(a), str(b)]},
+    ).json()["consensus_id"]
+
+    body = _aligned_window_body(consensus_id, str(a), [])
+    body.pop("dumps")
+    resp = client.post("/api/analysis/consensus/aligned-window", json=body)
+    assert resp.status_code == 200, resp.text

@@ -9,11 +9,16 @@ variance and reference bytes. This module owns that skeleton so the three
 call sites cannot drift apart again.
 
 Deliberately *not* included here: the per-caller pre-checks (``< 2`` dumps,
-missing files, empty-vector detection), key-material decoding, and the
-region/artifact/session shaping of the result. Each caller keeps those so its
-observable output — error messages, HTTP bodies, written artifacts, stderr
-warnings — stays byte-identical. This module is purely open + (optional
-per-source hook) + build.
+empty-vector detection), key-material decoding, and the region/artifact/session
+shaping of the result. Each caller keeps those so its observable output — error
+messages, HTTP bodies, written artifacts, stderr warnings — stays
+byte-identical. This module is purely open + (optional per-source hook) + build.
+
+The one exception is the *type* of a missing-file failure. Opening is what
+raises it, so translating it is this module's job, not each caller's: a bare
+``FileNotFoundError`` out of ``core.dump_io`` is not a ``CapabilityError``, so
+it bypassed the API's global error funnel entirely and surfaced as a 500 with a
+full traceback instead of a 404. See :func:`open_consensus_sources`.
 
 Base-dependency only: importing this module pulls in neither FastAPI, the MCP
 server, nor any UI framework.
@@ -26,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, List, Mapping, Optional, Sequence, Union
 
 from memdiver.core.dump_source import DumpSource, open_dump
+from memdiver.core.service_errors import FileNotFoundServiceError
 from memdiver.engine.consensus import ConsensusVector
 
 __all__ = ["open_consensus_sources", "build_consensus"]
@@ -55,9 +61,19 @@ def open_consensus_sources(
     """
     km = key_material or {}
     with ExitStack() as stack:
-        sources: List[DumpSource] = [
-            stack.enter_context(open_dump(Path(p), **km)) for p in paths
-        ]
+        try:
+            sources: List[DumpSource] = [
+                stack.enter_context(open_dump(Path(p), **km)) for p in paths
+            ]
+        except FileNotFoundError as exc:
+            # ``core.dump_io.DumpReader.open`` raises the bare builtin, which is
+            # not a CapabilityError and so never reaches the API's global
+            # handler. Translate it here — the canonical idiom, matching
+            # ``app.tools_pipeline`` — so every surface reports a missing dump
+            # as NOT_FOUND (404 / a clean CLI message) naming the path.
+            raise FileNotFoundServiceError(
+                f"File not found: {exc.filename or exc}"
+            ) from exc
         yield sources
 
 

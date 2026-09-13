@@ -84,7 +84,7 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
               }}
               className={`cursor-pointer transition-colors ${
                 isActive
-                  ? "bg-[var(--md-accent-blue)] text-white"
+                  ? "bg-[var(--md-accent-blue)] md-text-on-accent"
                   : "hover:bg-[var(--md-bg-hover)]"
               }`}
               onClick={() => handleRowClick(f.offset)}
@@ -102,7 +102,7 @@ export function StructureOverlayPanel({ variant = "detail" }: Props) {
                 {f.valid ? (
                   <span
                     className={
-                      isActive ? "text-white" : "text-[var(--md-accent-green)]"
+                      isActive ? "md-text-on-accent" : "text-[var(--md-accent-green)]"
                     }
                     title={t("overlay.constraintPassed")}
                   >

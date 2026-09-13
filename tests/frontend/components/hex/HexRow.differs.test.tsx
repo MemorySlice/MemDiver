@@ -6,7 +6,6 @@ import "@/i18n";
 
 import { HexRow } from "@/components/hex/HexRow";
 import { buildRegionIndex } from "@/components/hex/highlight-utils";
-import type { PageState } from "@/api/types";
 
 /**
  * `getDiffersAt` is an ADDITIVE prop, and "additive" is a claim about the other
@@ -30,7 +29,6 @@ function renderRow(extra: Partial<React.ComponentProps<typeof HexRow>> = {}) {
       rowOffset={0}
       getByteAt={byteAt}
       {...CURSOR}
-      focusColumn="hex"
       regionIndex={buildRegionIndex([])}
       {...extra}
     />,
@@ -93,9 +91,12 @@ describe("HexRow getDiffersAt composes with the other layers", () => {
   });
 
   it("keeps the page-state tint on the same byte", () => {
+    // The page state now reaches the row through the absence vocabulary (the
+    // single-dump viewer adapts `getPageStateAt` into it); a FAILED page still
+    // carries a byte, so it tints rather than voids and must still compose.
     const { container } = renderRow({
       view: "va",
-      getPageStateAt: () => "FAILED" as PageState,
+      getAbsenceAt: () => "failed",
       getDiffersAt: () => true,
     });
 
@@ -125,7 +126,6 @@ describe("HexRow getDiffersAt composes with the other layers", () => {
         cursorOffset={2}
         selectionStart={0}
         selectionEnd={4}
-        focusColumn="hex"
         regionIndex={buildRegionIndex([])}
         getDiffersAt={() => true}
       />,
@@ -143,7 +143,7 @@ describe("HexRow getDiffersAt composes with the other layers", () => {
       getClassificationAt: () => 2,
       getVarianceAt: () => 120,
       view: "va",
-      getPageStateAt: () => "UNMAPPED" as PageState,
+      getAbsenceAt: () => "unmapped",
       regionIndex: buildRegionIndex([
         { offset: 0, length: 1, type: "search", label: "hit" },
       ]),

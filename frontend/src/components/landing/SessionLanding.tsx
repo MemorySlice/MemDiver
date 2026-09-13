@@ -80,7 +80,7 @@ export function SessionLanding() {
             <h2 className="text-lg font-semibold">{t("sessions")}</h2>
             <button
               onClick={() => setAppView("wizard")}
-              className="px-4 py-2 rounded text-white text-sm font-medium transition-opacity hover:opacity-90"
+              className="px-4 py-2 rounded md-text-on-accent text-sm font-medium transition-opacity hover:opacity-90"
               style={{ background: "var(--md-accent-blue)" }}
             >
               {t("newSession")}
@@ -113,11 +113,9 @@ export function SessionLanding() {
                       <span className="font-medium text-sm truncate">{s.display_name || s.name}</span>
                       {s.input_mode && (
                         <span
-                          className="text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0"
+                          className="text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0 md-text-on-accent"
                           style={{
                             background: "var(--md-accent-blue)",
-                            color: "white",
-                            opacity: 0.8,
                           }}
                         >
                           {MODE_LABEL_KEYS[s.input_mode] ? t(MODE_LABEL_KEYS[s.input_mode]) : s.input_mode}
@@ -140,13 +138,13 @@ export function SessionLanding() {
                     <button
                       onClick={() => handleLoad(s.name)}
                       disabled={loadingSession === s.name}
-                      className="px-3 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-accent-blue)] hover:text-white transition-colors disabled:opacity-50"
+                      className="px-3 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-accent-blue)] hover:text-[var(--md-bg-primary)] transition-colors disabled:opacity-50"
                     >
                       {loadingSession === s.name ? t("loadingSpinner") : t("common:load")}
                     </button>
                     <button
                       onClick={() => handleDelete(s.name)}
-                      className="px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-accent-red)] hover:text-white transition-colors"
+                      className="px-2 py-1 text-xs rounded border border-[var(--md-border)] hover:bg-[var(--md-accent-red)] hover:text-[var(--md-bg-primary)] transition-colors"
                     >
                       {t("common:delete")}
                     </button>

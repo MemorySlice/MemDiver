@@ -147,6 +147,21 @@ interface HexState {
   setCursor: (offset: number) => void;
   startSelection: (offset: number) => void;
   extendSelection: (offset: number) => void;
+  /**
+   * Select `[start, endInclusive]` WITHOUT moving `cursorOffset`.
+   *
+   * `startSelection` + `extendSelection` is the DRAG gesture, and there the
+   * cursor rightly tracks the selection's active end — that is where the
+   * pointer (or the shift-arrow) is. A programmatic JUMP is the other gesture:
+   * the analyst navigated TO a region, so the cursor belongs on the byte they
+   * navigated to. Composing the drag pair for a jump dragged the cursor to the
+   * region's LAST byte, which on an 8 KiB region is 511 rows below anything on
+   * screen — and every cursor-driven readout (`Agreement k/N`, the byte
+   * inspector) then described a byte the analyst could not see. Hence a
+   * separate action: `extendSelection`'s contract is left exactly as the grid's
+   * drag handling needs it.
+   */
+  selectRange: (start: number, endInclusive: number) => void;
   clearSelection: () => void;
   setFocusColumn: (col: "hex" | "ascii") => void;
 
@@ -608,6 +623,16 @@ export const useHexStore = create<HexState>((set, get) => ({
         cursorOffset: offset,
       };
     }),
+
+  // Cursor-preserving by design — see the interface doc.
+  selectRange: (start, endInclusive) =>
+    set((state) =>
+      state.selection &&
+      state.selection.anchor === start &&
+      state.selection.active === endInclusive
+        ? {}
+        : { selection: { anchor: start, active: endInclusive } },
+    ),
 
   clearSelection: () =>
     set((state) => (state.selection === null ? {} : { selection: null })),

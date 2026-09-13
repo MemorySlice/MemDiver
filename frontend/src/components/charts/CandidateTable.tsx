@@ -6,14 +6,17 @@ import {
   type CandidateRegion,
 } from "@/api/candidates";
 import { offsetToHex } from "@/utils/hex-codec";
+import { VARIANCE_META } from "@/utils/variance-classes";
 
-/** Class -> accent token, matching ConsensusChart's histogram so one colour
- * means one class everywhere in the Consensus tab. */
+/** Class -> colour, read from the shared variance map so one colour means one
+ * class everywhere -- the Consensus tab's histogram, the hex grid and this
+ * table. The local copy this replaces was off by one (structural painted blue,
+ * pointer cyan), so the table and the hex viewer disagreed about every row. */
 const CLASS_COLOR: Record<ByteClassName, string> = {
-  invariant: "var(--md-accent-green)",
-  structural: "var(--md-accent-blue)",
-  pointer: "var(--md-accent-cyan)",
-  key_candidate: "var(--md-accent-red)",
+  invariant: VARIANCE_META.invariant.colorVar,
+  structural: VARIANCE_META.structural.colorVar,
+  pointer: VARIANCE_META.pointer.colorVar,
+  key_candidate: VARIANCE_META.key_candidate.colorVar,
 };
 
 interface Props {

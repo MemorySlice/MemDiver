@@ -323,6 +323,14 @@ class ConsensusVector:
         self.thresholds: Union[VarianceThresholds, None] = thresholds
         self.variance: Union[np.ndarray, array] = np.array([], dtype=np.float32)
         self._classifications: Union[np.ndarray, array] = np.array([], dtype=np.uint8)
+        # Contiguous runs per queried class tuple. The classification array is
+        # immutable once a build has produced it, so the runs derived from it
+        # are too — and deriving them is a WHOLE-SLAB pass (a mask plus a run
+        # scan, ~370 ms over 211 M bytes) that `count_regions` and
+        # `iter_regions` each paid independently, making page 20 of a region
+        # listing cost exactly as much as page 1. Dropped by
+        # `_set_classifications`, the one door every assignment goes through.
+        self._class_runs_cache: Dict[Tuple[int, ...], List[Tuple[int, int]]] = {}
         self.num_dumps: int = 0
         self.size: int = 0
         self.region_results: Dict[str, Any] = {}
@@ -346,6 +354,11 @@ class ConsensusVector:
         self.msl_layout: Union[List[Tuple[int, int, List[int]]], None] = None
         self.dump_paths: List[str] = []
         self._va_index_cache: Dict[int, List[Tuple[int, int, int]]] = {}
+        # Ascending va_start per _va_index_for row — the bisect key for the
+        # VA->slab direction, one list per dump. Same derivation and same
+        # lifetime as _va_index_cache; rebuilding it per call meant every VA
+        # walk paid a pass over one row PER PAGE of the aligned build.
+        self._va_starts_cache: Dict[int, List[int]] = {}
         # Ascending slab_offset per msl_layout row — the bisect key for the
         # slab->VA direction. Same lifetime as _va_index_cache: both are
         # derived from msl_layout and both are dropped when a build replaces
@@ -372,20 +385,29 @@ class ConsensusVector:
         on assignment. numpy arrays from classify_variance are passed through.
         """
         if isinstance(value, np.ndarray):
-            self._classifications = value
+            self._set_classifications(value)
         elif isinstance(value, array):
-            self._classifications = value
+            self._set_classifications(value)
         elif isinstance(value, list):
             if not value:
-                self._classifications = np.array([], dtype=np.uint8)
+                self._set_classifications(np.array([], dtype=np.uint8))
             elif isinstance(value[0], str):
-                self._classifications = np.array(
+                self._set_classifications(np.array(
                     [_STR_TO_BYTECLASS[s] for s in value], dtype=np.uint8,
-                )
+                ))
             else:
-                self._classifications = np.array(value, dtype=np.uint8)
+                self._set_classifications(np.array(value, dtype=np.uint8))
         else:
-            self._classifications = np.array(list(value), dtype=np.uint8)
+            self._set_classifications(np.array(list(value), dtype=np.uint8))
+
+    def _set_classifications(self, value: Union[np.ndarray, array]) -> None:
+        """Install a classification array and drop what was derived from it.
+
+        The SINGLE assignment point, so a rebuild can never leave
+        :attr:`_class_runs_cache` describing the previous array's runs.
+        """
+        self._classifications = value
+        self._class_runs_cache = {}
 
     def build(self, dump_paths: List[Path]) -> None:
         """Compute per-byte variance across all dump files.
@@ -408,7 +430,7 @@ class ConsensusVector:
         self.size = min_size
         buffers = [p.read_bytes()[:min_size] for p in dump_paths]
         self.variance = compute_variance(buffers, min_size)
-        self._classifications = classify_variance(self.variance, self.thresholds)
+        self._set_classifications(classify_variance(self.variance, self.thresholds))
         self.reference_bytes = buffers[0] if buffers else b""
         self.alignment_report = _flat_report(sizes, min_size)
         logger.info("Consensus built: %d bytes, %d dumps", min_size, self.num_dumps)
@@ -440,6 +462,7 @@ class ConsensusVector:
         # map a viewed dump's path -> index -> VA layout for this build.
         self.dump_paths = [str(getattr(s, "path", "") or "") for s in sources]
         self._va_index_cache = {}
+        self._va_starts_cache = {}
         self._slab_starts_cache = None
         if all(_is_native_msl(s) for s in sources):
             from .consensus_msl import build_msl_consensus_result
@@ -452,7 +475,7 @@ class ConsensusVector:
         else:
             self.msl_layout = None
             self._build_raw(sources)
-        self._classifications = classify_variance(self.variance, self.thresholds)
+        self._set_classifications(classify_variance(self.variance, self.thresholds))
 
     def _adopt_aligned(self, result, method: str) -> None:
         """Take an aligned build's slab, layout and coverage.
@@ -544,6 +567,20 @@ class ConsensusVector:
         self._va_index_cache[dump_index] = idx
         return idx
 
+    def _va_starts(self, dump_index: int) -> List[int]:
+        """Cached ascending ``va_start`` per :meth:`_va_index_for` row.
+
+        The bisect key for the VA walk, materialized once per dump for the
+        same reason :meth:`_slab_starts` is: ``msl_layout`` has one row per
+        PAGE, so rebuilding this list per call is a ~51,600-element pass to
+        answer a question a bisect answers in 16 comparisons.
+        """
+        cached = self._va_starts_cache.get(dump_index)
+        if cached is None:
+            cached = [entry[0] for entry in self._va_index_for(dump_index)]
+            self._va_starts_cache[dump_index] = cached
+        return cached
+
     def _slab_starts(self) -> List[int]:
         """Cached ascending ``slab_offset`` per ``msl_layout`` row (bisect key).
 
@@ -568,10 +605,16 @@ class ConsensusVector:
             return -1
         return i
 
-    # -- the two walks -------------------------------------------------
+    # -- the three walks -----------------------------------------------
     #
-    # Every coordinate answer this class gives comes out of one of these two
+    # Every coordinate answer this class gives comes out of one of these three
     # generators, so a fix to a walk is a fix to every consumer at once.
+    #
+    # The third is a COMPOSITION of the first, not a second spelling of it:
+    # the VAS coordinate is piecewise-linear in VA, so a VAS window is a
+    # sequence of VA-linear sub-walks re-based onto the window. Nothing about
+    # VA -> slab resolution is respelled, which is what stops the VA answer and
+    # the VAS answer drifting apart for the bytes they both describe.
 
     def _walk_va_window(
         self, dump_index: int, va: int, length: int,
@@ -589,7 +632,7 @@ class ConsensusVector:
             return
         va = int(va)
         end = va + length
-        starts = [e[0] for e in idx]
+        starts = self._va_starts(dump_index)
         # First entry that could overlap [va, end).
         i = max(0, bisect.bisect_right(starts, va) - 1)
         # bisect lands past the LAST entry sharing a va_start; back up onto the
@@ -609,6 +652,73 @@ class ConsensusVector:
                     self._layout_row_for_slab(run_slab),
                 )
             i += 1
+
+    def _walk_vas_window(
+        self,
+        dump_index: int,
+        vas_runs: Sequence[Tuple[int, int, int]],
+        vas_offset: int,
+        length: int,
+    ) -> Iterator[Tuple[int, int, int, int]]:
+        """Same tuples for a window walked in a dump's DENSE VAS stream.
+
+        The ``"vas"`` view is the dump's captured bytes laid end to end, so
+        ``vas`` offset ``k+1`` is the byte after ``k`` even when the two sit in
+        regions megabytes apart in VA. Walking such a window VA-linearly
+        (:meth:`_walk_va_window`) therefore marches off the end of the first
+        captured run into unmapped VA — reporting bytes every dump captured as
+        a GAP — or, worse, into the next region's bytes at the wrong address.
+
+        This is a COMPOSITION of :meth:`_walk_va_window`, not a second
+        VA -> slab resolution: VAS is piecewise-linear in VA, so each captured
+        run overlapping the window is one VA-linear sub-walk whose window
+        offsets are re-based by where that run starts in the window.
+
+        ``vas_runs`` is ``[(va_start, run_length, vas_offset)]`` — only the
+        OPEN source knows its own region table, so it is a parameter rather
+        than something this vector could derive. The contract is ASCENDING
+        ``vas_offset``; the defensive sort is KEPT (a caller that yields them
+        in another order still gets the right answer) but is now skipped when
+        the table already satisfies the contract, which every in-tree caller
+        does. Skipping it matters because the sort is O(R log R) per window and
+        ``R`` is the whole PT_LOAD table for a gcore.
+
+        Both ends of the scan are bounded: the far end by the ascending break,
+        the near end by bisecting to the first run that can overlap instead of
+        walking up to it from run 0.
+        """
+        length = max(0, int(length))
+        if length == 0 or not vas_runs:
+            return
+        vas_offset = int(vas_offset)
+        end = vas_offset + length
+        starts = [int(run[2]) for run in vas_runs]
+        ordered: Sequence[Tuple[int, int, int]] = vas_runs
+        if any(b < a for a, b in zip(starts, starts[1:])):
+            ordered = sorted(vas_runs, key=lambda r: r[2])
+            starts = [int(run[2]) for run in ordered]
+        first = max(0, bisect.bisect_right(starts, vas_offset) - 1)
+        # Back up onto the first run sharing that offset; a zero-length run
+        # parked at a real run's offset must not hide the real one.
+        while first > 0 and starts[first - 1] == starts[first]:
+            first -= 1
+        for run_va, run_length, run_vas in ordered[first:]:
+            run_length = int(run_length)
+            run_vas = int(run_vas)
+            if run_length <= 0:
+                continue
+            if run_vas >= end:
+                break  # sorted ascending — nothing further overlaps
+            if run_vas + run_length <= vas_offset:
+                continue
+            piece_start = max(vas_offset, run_vas)
+            piece_end = min(end, run_vas + run_length)
+            piece_va = int(run_va) + (piece_start - run_vas)
+            base = piece_start - vas_offset
+            for window_offset, run, slab, row in self._walk_va_window(
+                dump_index, piece_va, piece_end - piece_start,
+            ):
+                yield (window_offset + base, run, slab, row)
 
     def _walk_slab_window(
         self, slab_offset: int, length: int,
@@ -728,7 +838,9 @@ class ConsensusVector:
             length=length,
             segments=tuple(segments),
             gaps=tuple(gaps),
-            classes=tuple(int(c) for c in classes.tolist()),
+            # tolist() already yields plain ints, in C; re-wrapping each one
+            # in int() was a per-byte Python round trip over the window.
+            classes=tuple(classes.tolist()),
         )
 
     def project_va_window(
@@ -742,6 +854,38 @@ class ConsensusVector:
         return self._project(
             anchor_index, va, length,
             self._walk_va_window(anchor_index, va, length),
+        )
+
+    def project_vas_window(
+        self,
+        anchor_index: int,
+        vas_runs: Sequence[Tuple[int, int, int]],
+        vas_offset: int,
+        length: int,
+    ) -> "WindowProjection":
+        """Resolve ``[vas_offset, +length)`` in a dump's DENSE VAS stream.
+
+        The VAS sibling of :meth:`project_va_window`: same segments, gaps and
+        classes, but the window is walked run-to-run through the dump's
+        captured bytes instead of VA-linearly, so a window that crosses a
+        captured-run boundary stays contiguous. See :meth:`_walk_vas_window`
+        for why VA-linear is wrong here and for the ``vas_runs`` contract.
+
+        :attr:`WindowProjection.start` is a VAS OFFSET here, not a virtual
+        address — the coordinate the window was requested in, as for every
+        other ``project_*``.
+
+        Reusing :meth:`_project` unchanged is load-bearing: it buys the
+        segments/gaps partition of ``[0, length)``, non-overlapping segments,
+        and segments never wider than one layout row — which is what keeps a
+        peer read inside a page every dump captured.
+
+        (A ``class_window_vas`` would compose the same way, from the same
+        walk, if a caller ever needs just the classes. None does today.)
+        """
+        return self._project(
+            anchor_index, vas_offset, length,
+            self._walk_vas_window(anchor_index, vas_runs, vas_offset, length),
         )
 
     def project_slab_window(
@@ -835,7 +979,7 @@ class ConsensusVector:
         self._incremental_sizes = []
         self.reference_bytes = b""
         self.variance = np.zeros(size, dtype=np.float32)
-        self._classifications = np.array([], dtype=np.uint8)
+        self._set_classifications(np.array([], dtype=np.uint8))
 
     def add_source(self, source) -> Tuple[int, float, float]:
         """Fold one dump into an incremental build. Returns live stats.
@@ -892,7 +1036,7 @@ class ConsensusVector:
                 self.num_dumps,
             )
         self.variance = self._welford.variance()
-        self._classifications = classify_variance(self.variance, self.thresholds)
+        self._set_classifications(classify_variance(self.variance, self.thresholds))
         # An incremental fold is the flat path, one dump at a time: every
         # source was truncated to the size fixed by `build_incremental`.
         self.alignment_report = _flat_report(self._incremental_sizes, self.size)
@@ -907,11 +1051,23 @@ class ConsensusVector:
         secrets classify as a mix (a measured 48-byte TLS 1.2 secret is 22
         KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL), so the union is the only
         grouping that keeps them retrievable at a useful ``min_length``.
+
+        Memoized per class tuple against :attr:`_class_runs_cache`: the runs
+        are a pure function of the (immutable) classification array, and both
+        :meth:`count_regions` and :meth:`iter_regions` ask for the same tuple
+        back to back — as does every subsequent page of a region listing.
         """
+        key = tuple(int(c) for c in classes)
+        cached = self._class_runs_cache.get(key)
+        if cached is not None:
+            return cached
         if len(classes) == 1:
-            return find_contiguous_runs(self._classifications, classes[0])
-        mask = class_mask(self._classifications, classes)
-        return find_contiguous_runs(mask.astype(np.uint8), 1)
+            runs = find_contiguous_runs(self._classifications, classes[0])
+        else:
+            mask = class_mask(self._classifications, classes)
+            runs = find_contiguous_runs(mask.astype(np.uint8), 1)
+        self._class_runs_cache[key] = runs
+        return runs
 
     def _region_mean_variance(self, start: int, end: int) -> float:
         """Mean variance over [start, end) — 0.0 when no variance is loaded.
@@ -942,6 +1098,71 @@ class ConsensusVector:
                       default=max(classes))
         return ByteClass(int(highest)).name.lower()
 
+    def _kept_runs(
+        self, classes: Tuple[ByteClass, ...], min_length: int, max_length: int,
+    ) -> Iterator[Tuple[int, int]]:
+        """``(start, end)`` runs of ``classes`` surviving the length filters.
+
+        Split out of :meth:`iter_regions` so :meth:`count_regions` can share
+        the EXACT filter chain without paying for the per-region variance
+        reduction — a count that disagreed with the list it is meant to size
+        would turn every paginated cursor into a silent off-by-N.
+        """
+        for start, end in self._class_runs(classes):
+            length = end - start
+            if length < min_length:
+                continue
+            if max_length and length > max_length:
+                continue
+            yield (start, end)
+
+    def iter_regions(
+        self, byte_class: ByteClassSpec, *,
+        min_length: int = 1, max_length: int = 0, after: int = -1,
+    ) -> Iterator[StaticRegion]:
+        """:meth:`get_regions`, LAZILY — the paginated retrieval path.
+
+        Yields the same rows in the same offset order, but computes each row's
+        ``mean_variance`` (and its label) only for the regions it actually
+        yields. That is the difference between a bounded page and a whole-slab
+        reduction: ``get_regions`` materializes EVERY region before any limit
+        can apply, so a ``min_length=1`` STRUCTURAL query over an 11 MB slab
+        costs ~10^5–10^6 numpy ``.mean()`` calls even when the caller wants
+        200 rows.
+
+        ``after`` is an exclusive cursor in SLAB coordinates: runs starting at
+        or before it are skipped, so paging by "the last ``start`` I saw"
+        cannot repeat or drop a row even if the filters change between pages.
+        The default ``-1`` is before every valid start, i.e. no skipping.
+        """
+        classes = normalize_byte_classes(byte_class)
+        after = int(after)
+        for start, end in self._kept_runs(classes, min_length, max_length):
+            if start <= after:
+                continue
+            yield StaticRegion(
+                start=start, end=end,
+                mean_variance=self._region_mean_variance(start, end),
+                classification=self._region_label(start, end, classes),
+            )
+
+    def count_regions(
+        self, byte_class: ByteClassSpec, *,
+        min_length: int = 1, max_length: int = 0,
+    ) -> int:
+        """How many regions :meth:`iter_regions` would yield from the start.
+
+        Run LENGTHS only — no variance reduction and no labelling — because a
+        total is the one number a paginated caller needs on EVERY page, and
+        paying a per-region ``.mean()`` for it would reintroduce exactly the
+        whole-slab cost the lazy iterator exists to avoid.
+
+        No ``after``: the total is the size of the whole result set, which is
+        what a page counter ("201–400 of 8,412") is stated against.
+        """
+        classes = normalize_byte_classes(byte_class)
+        return sum(1 for _run in self._kept_runs(classes, min_length, max_length))
+
     def get_regions(
         self, byte_class: ByteClassSpec, *,
         min_length: int = 1, max_length: int = 0,
@@ -961,21 +1182,13 @@ class ConsensusVector:
         Returns:
             ``StaticRegion`` rows in offset order, each carrying the region's
             mean variance and the most volatile class it contains.
+
+        Expressed as ``list(self.iter_regions(...))`` so the eager and the
+        lazy path cannot drift: there is ONE filter chain and ONE row builder.
         """
-        classes = normalize_byte_classes(byte_class)
-        regions = []
-        for start, end in self._class_runs(classes):
-            length = end - start
-            if length < min_length:
-                continue
-            if max_length and length > max_length:
-                continue
-            regions.append(StaticRegion(
-                start=start, end=end,
-                mean_variance=self._region_mean_variance(start, end),
-                classification=self._region_label(start, end, classes),
-            ))
-        return regions
+        return list(self.iter_regions(
+            byte_class, min_length=min_length, max_length=max_length,
+        ))
 
     def get_static_regions(self, min_length: int = 32) -> List[StaticRegion]:
         """Find contiguous static (invariant) byte regions."""

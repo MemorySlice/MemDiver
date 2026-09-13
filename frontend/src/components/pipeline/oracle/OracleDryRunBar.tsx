@@ -84,7 +84,7 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
           type="button"
           disabled={!oracleId || submitting || samplesB64.length === 0}
           onClick={() => void handleRun()}
-          className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+          className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
           title={t("oracle.dryRun.testTitle")}
         >
           {submitting

@@ -181,6 +181,25 @@ describe("decodeRunsToMask", () => {
     expect([...decodeRunsToMask([[1, 0], [2, -4]], 4)]).toEqual([0, 0, 0, 0]);
   });
 
+  /**
+   * The shape the backend now produces: one aligned segment whose captured
+   * pages are NOT contiguous, so presence arrives as several runs with real
+   * holes between them. Reading only the first run (or assuming the runs
+   * merge) would mark absent bytes present — and an absent byte reads as `0`,
+   * so the error is a confident `00` over a hole in the address space.
+   */
+  it("keeps the holes between several non-contiguous runs in one segment", () => {
+    expect([...decodeRunsToMask([[0, 2], [4, 1], [6, 3]], 10)]).toEqual([
+      1, 1, 0, 0, 1, 0, 1, 1, 1, 0,
+    ]);
+  });
+
+  it("does not care what order the runs arrive in", () => {
+    expect([...decodeRunsToMask([[6, 3], [0, 2], [4, 1]], 10)]).toEqual([
+      ...decodeRunsToMask([[0, 2], [4, 1], [6, 3]], 10),
+    ]);
+  });
+
   it("returns an empty mask for a non-positive length", () => {
     expect(decodeRunsToMask([[0, 4]], 0)).toHaveLength(0);
     expect(decodeRunsToMask([[0, 4]], -2)).toHaveLength(0);

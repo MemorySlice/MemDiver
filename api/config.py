@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     # ceiling. Override with ``MEMDIVER_PCAP_QUOTA_BYTES``; <=0 disables pruning.
     pcap_quota_bytes: int = 5 * 2**30  # 5 GiB
 
+    # Aggregate cap for the imported-dump directory (``upload_dir/imports``, or
+    # ``memdiver_home()/imports`` when no upload dir has been chosen). Imported
+    # ``.msl`` containers are referenced by server path for the life of a
+    # session and nothing else ever reclaims them, so the directory is capped
+    # the same way the pcap one is. 5 GiB mirrors ``pcap_quota_bytes``.
+    # Override with ``MEMDIVER_DUMP_QUOTA_BYTES``; <=0 disables pruning.
+    dump_quota_bytes: int = 5 * 2**30  # 5 GiB
+
     @model_validator(mode="after")
     def _apply_defaults_and_config(self) -> "Settings":
         """Load config.json defaults and resolve factory paths."""

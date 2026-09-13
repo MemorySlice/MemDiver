@@ -104,3 +104,71 @@ def test_build_consensus_forwards_key_material():
     cm_empty = build_consensus(paths, key_material={})
     assert cm_none.size == cm_empty.size == 100
     assert cm_none.classification_counts() == cm_empty.classification_counts()
+
+
+# ---------------------------------------------------------------------------
+# Missing-file failures must be typed, not bare.
+#
+# ``core.dump_io.DumpReader.open`` raises the builtin FileNotFoundError, which
+# is NOT a CapabilityError, so it bypassed the API's global error funnel and
+# surfaced as a 500 with a full ASGI traceback instead of a 404. The skeleton
+# translates it, so every surface (HTTP, CLI, MCP) reports it the same way.
+# ---------------------------------------------------------------------------
+
+
+def test_open_consensus_sources_missing_path_raises_service_error(tmp_path):
+    import pytest
+
+    from memdiver.core.service_errors import (
+        ErrorCategory,
+        FileNotFoundServiceError,
+    )
+
+    missing = tmp_path / "gone.msl"
+    with pytest.raises(FileNotFoundServiceError) as excinfo:
+        with open_consensus_sources([str(missing)]):
+            pass
+    assert excinfo.value.category is ErrorCategory.NOT_FOUND
+    assert excinfo.value.status == 404
+    assert "gone.msl" in excinfo.value.message
+
+
+def test_build_consensus_missing_path_raises_service_error(tmp_path):
+    import pytest
+
+    from memdiver.core.service_errors import FileNotFoundServiceError
+
+    good = _make_dumps([b"\xAA" * 4096])[0]
+    missing = str(tmp_path / "gone.msl")
+    with pytest.raises(FileNotFoundServiceError):
+        build_consensus([good, missing])
+
+
+def test_partially_opened_sources_are_closed_when_one_path_is_missing(tmp_path):
+    """The ExitStack must still unwind: the first dump opened fine."""
+    import pytest
+
+    from memdiver.core.service_errors import FileNotFoundServiceError
+
+    good = _make_dumps([b"\xAA" * 4096])[0]
+    opened = []
+
+    import memdiver.engine.consensus_service as svc
+
+    real_open = svc.open_dump
+
+    def _tracking_open(path, **kw):
+        src = real_open(path, **kw)
+        opened.append(src)
+        return src
+
+    svc.open_dump = _tracking_open
+    try:
+        with pytest.raises(FileNotFoundServiceError):
+            with open_consensus_sources([good, str(tmp_path / "gone.msl")]):
+                pass
+    finally:
+        svc.open_dump = real_open
+
+    # The good source was entered, and the stack closed it on the way out.
+    assert opened, "the first path should have been opened"

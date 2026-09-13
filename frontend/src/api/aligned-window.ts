@@ -29,6 +29,7 @@
  */
 
 import { request } from "./client";
+import { useDumpStore } from "@/stores/dump-store";
 
 /** Which coordinate space the caller is navigating in. */
 export type AlignedWindowView = "raw" | "vas" | "va";
@@ -51,6 +52,31 @@ export interface AlignedWindowKey {
   passphrase?: string;
   key_hex?: string;
   kem_key_hex?: string;
+}
+
+/**
+ * Key material for the paths a request may need to OPEN, secret-less dumps left out.
+ *
+ * The `consensus_id` branch only ever opens the anchor, but the `dump_paths`
+ * branch resolves key material across the whole set, so both are offered and
+ * the backend picks. Deduplicates `paths` -- a repeated path would otherwise
+ * emit a repeated `keys` entry.
+ */
+export function keysForPaths(paths: readonly string[]): AlignedWindowKey[] {
+  const lookup = useDumpStore.getState().getKeyMaterialByPath;
+  const keys: AlignedWindowKey[] = [];
+  for (const dump_path of new Set(paths)) {
+    const material = lookup(dump_path);
+    if (!material) continue;
+    if (!material.passphrase && !material.key_hex && !material.kem_key_hex) continue;
+    keys.push({
+      dump_path,
+      ...(material.passphrase ? { passphrase: material.passphrase } : {}),
+      ...(material.key_hex ? { key_hex: material.key_hex } : {}),
+      ...(material.kem_key_hex ? { kem_key_hex: material.kem_key_hex } : {}),
+    });
+  }
+  return keys;
 }
 
 export interface AlignedWindowRequest {
@@ -107,7 +133,50 @@ export interface AlignedWindowAnchor {
   slab_offset: number;
 }
 
-/** Provenance for one run of the window. Display only — never index math. */
+/**
+ * Provenance for one run of the window. Display only — never index math.
+ *
+ * ── TODO (backend): explicit RE-ANCHOR SEAM markers ─────────────────────────
+ * The design asks for a dashed rule between hex rows wherever a dump's delta is
+ * re-anchored partway through the span (`re-anchor · dump 03 · Δ +0x40 from
+ * here`), carrying the caution that *a stable run that ends at a seam is a
+ * mapping artefact, not a finding*. The client CANNOT honestly compute that, and
+ * this note records why rather than leaving the next reader to re-derive it:
+ *
+ *   1. A seam is, by definition, a place where the mapping from the anchor's
+ *      coordinate to a PEER's coordinate changes slope. Detecting it means
+ *      differencing `dumps[].va` (or `.offset`) across two segments — exactly
+ *      the peer-coordinate arithmetic invariant W1 forbids, and exactly what
+ *      `DumpRail` already refused to do for the per-dump Δ column.
+ *   2. `segments[].window_offset` boundaries are computable here and require no
+ *      such arithmetic — but they are a strict SUPERSET of the seams. A new
+ *      segment is emitted at every mapping/page boundary and at every gap,
+ *      almost all of which carry the SAME delta. Drawing those as "re-anchor"
+ *      would manufacture the mapping-artefact confusion the caution exists to
+ *      warn about, which is worse than drawing nothing.
+ *   3. `alignment` carries nothing per dump (method, bytes_compared,
+ *      bytes_discarded, sizes_differed, n_sources, warnings), and the store
+ *      keeps no segments at all, so there is no third source to appeal to.
+ *
+ * What would make it honest, in the one place the arithmetic is legitimate —
+ * `app/tools_consensus.py`, which holds every dump's `msl_layout` and computes
+ * the correspondence in the first place:
+ *
+ *   - Add `seams: { window_offset: number; dump_index: number; delta: number }[]`
+ *     to `AlignedWindowResponse`, emitted ONLY where the producer observes the
+ *     anchor→peer delta actually change between two adjacent correspondence
+ *     runs — never merely where a new `msl_layout` row starts.
+ *   - `window_offset` must be in window index space, like every other offset in
+ *     this response, so the client can place the rule with `i` alone.
+ *   - `delta` is the signed change (peer coordinate minus the previous run's),
+ *     already differenced server-side; the client renders it and never
+ *     recomputes it.
+ *   - Emit nothing on the `file_offset` path: a flat build has no mapping to
+ *     re-anchor, so an empty array there is the correct answer, not a gap.
+ *
+ * Until that field exists, `HexOverlayPane` renders no seam rules, and its
+ * virtualizer keeps its fixed 20px row geometry.
+ */
 export interface AlignedWindowSegment {
   window_offset: number;
   length: number;
@@ -160,6 +229,32 @@ export interface AlignedWindowResponse {
   classes: number[];
   /** `[window_offset, run_length]` runs with no correspondence. */
   gaps: [number, number][];
+  /**
+   * `length` entries, one per window index like `classes`: how many DISTINCT
+   * byte values the dumps present at that index hold. `0` = nobody is present
+   * there, `1` = every present dump agrees. Locked dumps (`bytes === null`)
+   * contribute nothing, so they never add a variant.
+   *
+   * THE cross-dump disagreement answer as well, and the only one on the wire:
+   * an index is a DIFFER iff `variants[i] >= 2`. That is exactly "at least TWO
+   * dumps are PRESENT there (inside their `bytes_valid`) and at least two of
+   * those present values differ" — one present dump counts `1` and an empty
+   * index counts `0`, so `>= 2` is unreachable without two present dumps
+   * holding two values. A byte only one dump holds is NOT a difference:
+   * absence is a separate finding, and counting it would flag every unmapped
+   * hole in every dump. The response used to carry a redundant boolean
+   * `differs` run list saying precisely this; it was removed rather than kept
+   * as a second field that must always agree with this one.
+   *
+   * Computed over exactly the dumps this request asked for, which is why it is
+   * server-side: a client reducer over a byte cache also sees dumps that have
+   * since left the selection.
+   *
+   * Weight-independent by design — it counts values, not a plurality. The
+   * weighted "consensus byte" stays a client computation because it must
+   * answer live to the user's per-dump weights.
+   */
+  variants: number[];
   segments: AlignedWindowSegment[];
   dumps: AlignedWindowDump[];
 }

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
 from memdiver.api.path_safety import ensure_within
+from memdiver.api.storage_quota import prune_dir_to_quota
 # The producer's own default, imported rather than re-literalled so the
 # route's ``max_offsets`` cannot drift from the value every other surface
 # defaults to.
@@ -50,30 +51,10 @@ def _prune_pcap_dir(pcap_dir: Path, quota_bytes: int, keep: Path) -> None:
     <= 0 disables pruning. Files vanishing mid-prune (racing request) are
     tolerated — the prune is advisory, not transactional.
     """
-    if quota_bytes <= 0:
-        return
-    # Snapshot (mtime, size, path) tolerantly: a file vanishing here or below
-    # (a concurrent upload/prune) is simply skipped, never fatal.
-    stats = []
-    for p in pcap_dir.iterdir():
-        try:
-            st = p.stat()
-        except FileNotFoundError:
-            continue
-        if p.is_file():
-            stats.append((st.st_mtime, st.st_size, p))
-    total = sum(size for _, size, _ in stats)
-    for _, size, p in sorted(stats):  # oldest mtime first
-        if total <= quota_bytes:
-            break
-        if p == keep:  # never evict the just-uploaded capture
-            continue
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            continue
-        total -= size
-        logger.info("pruned oldest pcap %s to stay under quota", p.name)
+    # The LRU logic is shared with the imported-dump directory; see
+    # api/storage_quota.py. Kept behind this name so the existing callers and
+    # tests that reach for ``_prune_pcap_dir`` are unaffected.
+    prune_dir_to_quota(pcap_dir, quota_bytes, keep=keep, label="pcap")
 
 
 @router.post("/upload")

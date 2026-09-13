@@ -35,6 +35,11 @@ EXPECTED_TOOLS = {
     # address the consensus aligned. Wired on all four surfaces in the change
     # that introduced it, so it never needed a KNOWN_PARITY_GAPS entry.
     "aligned_window",
+    # The window's COMPLEMENT: every occurrence of a class, paginated, each row
+    # carrying the navigable offset to jump to. Wired on all four surfaces in
+    # the change that introduced it, for the same reason -- a surface without
+    # it re-derives the slab -> VA -> offset arithmetic of its own.
+    "consensus_regions",
     # P2.3: the manual complement of export_pattern — "I know the offset, I do
     # not have the key bytes". Wired on web + MCP + library in one atomic change
     # so the producer could leave EXEMPT_PRODUCERS and be registered truthfully

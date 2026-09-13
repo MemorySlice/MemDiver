@@ -169,6 +169,16 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("consensus.aligned_window",
          "memdiver.app.tools_consensus.aligned_window_result",
          ("library", "cli", "web", "mcp")),
+    # The COMPLEMENT of the window: the window answers "what is at this offset
+    # in all N dumps", this answers "where are all the offsets worth looking
+    # at" -- every occurrence of a class, paginated, each row carrying the
+    # navigable offset to jump to. Registered on all four surfaces in the
+    # change that introduced it, for the identical reason: the per-row
+    # slab -> VA -> offset translation is exactly the arithmetic a surface
+    # without this capability re-derives, differently and wrongly.
+    _cap("consensus.class_regions",
+         "memdiver.app.tools_consensus.class_regions_result",
+         ("library", "cli", "web", "mcp")),
     # -- pcap arm/validate (the pcap verification oracle's first step) -------
     # Wired on all four surfaces since Phase 1 (services.py, CLI `inspect-pcap`,
     # POST /api/pcaps/validate, MCP `inspect_pcap`) but never registered here, so

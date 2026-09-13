@@ -85,7 +85,7 @@ function StepSelectData({ error }: { error: string | null }) {
         />
         <button
           onClick={() => setShowBrowser(true)}
-          className="px-4 py-2 rounded font-medium text-white transition-all"
+          className="px-4 py-2 rounded font-medium md-text-on-accent transition-all"
           style={{ background: "var(--md-accent-blue)" }}
         >
           {t("step.selectData.open")}
@@ -182,7 +182,7 @@ function StepDirectoryType() {
             onClick={() => setInputMode(o.value)}
             className={`flex-1 text-left p-4 rounded-lg border transition-colors ${
               inputMode === o.value
-                ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)]"
+                ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)] md-selected-surface"
                 : "border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
             }`}
           >
@@ -267,7 +267,7 @@ function StepAnalysis() {
           onClick={() => setAnalysisApproach("auto")}
           className={`w-full text-left p-4 rounded-lg border transition-colors ${
             analysisApproach === "auto"
-              ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)]"
+              ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)] md-selected-surface"
               : "border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
           }`}
         >
@@ -320,7 +320,7 @@ function StepAnalysis() {
           onClick={() => setAnalysisApproach("inspect")}
           className={`w-full text-left p-4 rounded-lg border transition-colors ${
             analysisApproach === "inspect"
-              ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)]"
+              ? "border-[var(--md-accent-blue)] bg-[var(--md-bg-selected)] md-selected-surface"
               : "border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]"
           }`}
         >
@@ -447,7 +447,7 @@ export function Wizard() {
           <button
             onClick={goForward}
             disabled={nextDisabled}
-            className="px-4 py-2 rounded text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-4 py-2 rounded md-text-on-accent transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             style={{
               background: nextDisabled ? "var(--md-text-muted)" : "var(--md-accent-blue)",
             }}

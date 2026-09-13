@@ -1059,6 +1059,13 @@ _MCP_TOOL_PRODUCERS = {
     # MCP surface silently lacks `slab_offset` or `classify` is a window an
     # agent can only ask half the questions of.
     "aligned_window": "aligned_window_result",
+    # The window's complement: every occurrence of a class, paginated and
+    # jumpable. A consensus producer like ``aligned_window`` (see the
+    # producer_modules lookup below); it mirrors its producer 1:1 apart from
+    # the ToolSession the surface owns, so it needs no _MCP_ALLOWED_OMISSIONS
+    # entry. Guarded here so a new page/filter parameter cannot reach the web
+    # and CLI surfaces while the agent surface silently keeps the old question.
+    "consensus_regions": "class_regions_result",
 }
 #: Producer params that are orchestration internals, never surfaced on any tool.
 #: ``key_material`` is the resolved dict a surface *builds* from the individual
@@ -1107,6 +1114,7 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
         "experiment_result": experiment_orchestration,
         "analyze_region_result": tools_inspect,
         "aligned_window_result": tools_consensus,
+        "class_regions_result": tools_consensus,
     }
 
     problems = []

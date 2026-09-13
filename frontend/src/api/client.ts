@@ -47,6 +47,36 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A sentence a human can read, out of whatever a `request` call rejected with.
+ *
+ * `request` throws `ApiError` carrying the RAW response body, so an error
+ * surfaced verbatim reads
+ * `{"error":"anchor offset does not name an addressable byte","category":...}`.
+ * Unwrapping the envelope's own message is the difference between a note the
+ * analyst can act on and a JSON blob in the middle of the UI.
+ *
+ * Lives beside `ApiError` because that is the shape it decodes; every store
+ * that surfaces a failed request should import THIS one rather than keep a
+ * private copy that silently reverts to the raw body.
+ */
+export function readableFailure(err: unknown): string {
+  const raw = (err instanceof Error ? err.message : String(err)).trim();
+  if (!raw.startsWith("{")) return raw;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const envelope = parsed as { error?: unknown; detail?: unknown; message?: unknown };
+      for (const field of [envelope.error, envelope.detail, envelope.message]) {
+        if (typeof field === "string" && field.trim() !== "") return field.trim();
+      }
+    }
+  } catch {
+    // Not JSON after all -- the raw text is the best we have.
+  }
+  return raw;
+}
+
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const { headers: callerHeaders, ...restInit } = init ?? {};
   const res = await fetch(`${BASE}${url}`, {

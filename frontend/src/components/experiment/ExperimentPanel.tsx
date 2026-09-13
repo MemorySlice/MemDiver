@@ -309,7 +309,7 @@ export function ExperimentPanel() {
         onClick={handleRun}
         disabled={running || tools.length === 0}
         className="px-4 py-2 bg-[var(--md-accent-blue)] hover:opacity-90 disabled:bg-[var(--md-bg-hover)]
-                   disabled:text-[var(--md-text-muted)] rounded text-xs font-medium text-white"
+                   disabled:text-[var(--md-text-muted)] rounded text-xs font-medium md-text-on-accent"
         data-testid="experiment-run"
       >
         {running ? status || t('experiment.running') : t('experiment.runExperiment')}

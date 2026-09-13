@@ -1,10 +1,12 @@
 """DumpSource implementations and auto-detect factory."""
 
+import bisect
 import itertools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -18,6 +20,9 @@ from typing import (
 )
 
 from .dump_io import DumpReader, find_all_offsets, find_first_offset
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from memdiver.msl.reader import CapturedRunIndex
 
 logger = logging.getLogger("memdiver.core.dump_source")
 
@@ -116,6 +121,17 @@ class DumpSource(Protocol):
     # :func:`find_first_in`, which falls back to ``find_all`` for sources that
     # predate it.
 
+    # NOTE: ``read_range_valid`` is deliberately NOT a member of this Protocol
+    # either, and for exactly the same reason as ``find_first`` above: this
+    # Protocol is ``runtime_checkable``, so adding the member would break
+    # ``isinstance(obj, DumpSource)`` for every duck-typed source registered
+    # via :func:`register_dump_source`. Only :class:`MslDumpSource` needs it
+    # (its ``view="va"`` projection is the one view that PADS rather than
+    # returning short, so ``len(data)`` there is not a presence claim).
+    # Callers must go through the tolerant module-level helper
+    # :func:`read_range_with_validity`, which falls back to ``read_range`` and
+    # claims full coverage for every source whose views return short.
+
     def iter_ranges(self, *args: Any, **kwargs: Any) -> Iterator[Tuple[int, int, Any]]:
         """Iterate captured ranges.
 
@@ -140,6 +156,27 @@ def _find_first_in_bytes(data: bytes, needle: bytes) -> Optional[int]:
     """Presence-only byte search over *data* (delegates to the shared
     :func:`core.dump_io.find_first_offset` helper used by ``DumpReader``)."""
     return find_first_offset(data, needle)
+
+
+def _append_merged_run(
+    runs: List[Tuple[int, int]], start: int, length: int,
+) -> None:
+    """Append ``(start, length)`` to *runs*, coalescing it with the previous
+    run when the two abut.
+
+    Runs are produced in ascending order, so only the last one can ever touch
+    the new one. Merging keeps the run list canonical: whether two captured
+    bytes arrived from one region or from two that happen to be adjacent is an
+    artifact of the dump's chunking, not something a caller should have to
+    normalise away.
+    """
+    if length <= 0:
+        return
+    if runs and runs[-1][0] + runs[-1][1] == start:
+        prev_start, prev_len = runs[-1]
+        runs[-1] = (prev_start, prev_len + length)
+    else:
+        runs.append((start, length))
 
 
 def find_first_in(
@@ -171,6 +208,44 @@ def find_first_in(
         return finder(needle, **kwargs)
     hits = source.find_all(needle, **kwargs)
     return hits[0] if hits else None
+
+
+def read_range_with_validity(
+    source: Any, offset: int, length: int, view: "str | None" = None,
+) -> Tuple[bytes, List[Tuple[int, int]]]:
+    """Read bytes from a dump *source* together with which of them are real.
+
+    Returns ``(data, runs)``. ``data`` is exactly what
+    :meth:`~DumpSource.read_range` would have returned; ``runs`` is a list of
+    ``(start_in_result, run_length)`` pairs — **result-relative**, i.e. indices
+    into ``data`` itself — covering precisely the bytes the dump actually
+    captured. Anything in ``data`` outside every run is filler the source
+    invented to keep the buffer ``length`` bytes long, so a caller can no
+    longer mistake a padded ``0x00`` for a captured ``0x00``.
+
+    Uses the source's own ``read_range_valid`` when it has one (today only
+    :class:`MslDumpSource`, whose sparse ``view="va"`` projection is the one
+    view that pads); otherwise falls back to ``read_range`` and claims
+    ``[(0, len(data))]``. That fallback is CORRECT rather than merely
+    tolerant: every other view returns short rather than padding, so the
+    bytes handed back are captured bytes by construction.
+
+    This fallback is the reason ``read_range_valid`` is NOT part of the
+    :class:`DumpSource` Protocol: that Protocol is ``runtime_checkable``, so
+    widening it would break ``isinstance(obj, DumpSource)`` for every existing
+    duck-typed source. Prefer this helper over calling the method directly.
+
+    ``view`` is forwarded only when the caller supplies it, so each
+    implementation keeps its own default view (``"raw"`` for
+    :class:`RawDumpSource` and the region-table sources, ``"vas"`` for
+    :class:`MslDumpSource`) — the same rule :func:`find_first_in` follows.
+    """
+    kwargs = {} if view is None else {"view": view}
+    reader = getattr(source, "read_range_valid", None)
+    if callable(reader):
+        return reader(offset, length, **kwargs)
+    data = source.read_range(offset, length, **kwargs)
+    return (data, [(0, len(data))] if data else [])
 
 
 class RawDumpSource:
@@ -345,10 +420,53 @@ class MslDumpSource:
             # page runs only (see read_range/iter_ranges), so its size is the
             # sum of captured-run lengths — NOT the sum of region_size, which
             # over-counts FAILED/UNMAPPED pages that contribute zero bytes.
-            # (For all-CAPTURED imports the two are equal.) iter_ranges yields
-            # zero-copy memoryviews, so summing lengths does not read data.
-            self._size = sum(rng_len for _va, rng_len, _chunk in self.iter_ranges())
+            # (For all-CAPTURED imports the two are equal.) Summed over the
+            # reader's cached run index, so asking for the size never reads a
+            # byte of page data — it used to cost a whole-container copy.
+            index = self._run_index()
+            self._size = 0 if index is None else sum(r.length for r in index.runs)
         return self._size
+
+    def _run_index(self) -> "Optional[CapturedRunIndex]":
+        """This container's captured-run index, or ``None`` with no reader.
+
+        Lives on the READER, which the dump-source pool keeps alive across
+        requests, rather than on this source — ``__init__`` / ``borrow_reader``
+        hand out a fresh view per request, so a cache parked here would be cold
+        every time (see :func:`app.reader_cache.cached_dump_source`).
+        """
+        if self._reader is None:
+            return None
+        return self._reader.captured_run_index()
+
+    def captured_runs(self) -> Tuple[Tuple[int, int, int], ...]:
+        """``(va_start, run_length, vas_offset)`` for every captured run.
+
+        The run table WITHOUT the bytes. Callers that only need to know where
+        the captured runs are — VA <-> VAS translation, window planning — used
+        to derive it by walking :meth:`iter_ranges` and throwing every chunk
+        away, which copied the whole container to learn 107 triples.
+        """
+        index = self._run_index()
+        if index is None:
+            return ()
+        return tuple(
+            (run.va_start, run.length, run.vas_offset)
+            for run in index.runs if run.length > 0
+        )
+
+    def va_span_start(self) -> Optional[int]:
+        """Base VA of the ``"va"`` view — ``metadata()["va_span_start"]``.
+
+        The narrow accessor for the one metadata key window code actually
+        asks for. ``metadata()`` also computes ``vas_size``, and building the
+        whole dict to read one key off it is how a 0.0004 ms question became a
+        15 ms answer. ``None`` (not ``0``) when there is no open reader, which
+        is exactly what ``metadata()`` omitting the key means.
+        """
+        if self._reader is None:
+            return None
+        return self._va_span()[0]
 
     def _va_span(self) -> Tuple[int, int]:
         """Return the cached ``(span_start, span_size)`` of the "va" view.
@@ -449,18 +567,89 @@ class MslDumpSource:
         if view == "va":
             return self._read_range_va(offset, length)
         self._require_vas(view)
-        result, flat_pos = bytearray(), 0
-        for _va, rng_len, chunk in self.iter_ranges():
-            rng_end = flat_pos + rng_len
-            if rng_end <= offset:
-                flat_pos = rng_end
-                continue
-            if flat_pos >= offset + length:
+        index = self._run_index()
+        if index is None or length <= 0:
+            return b""
+        # The "vas" stream is dense, so the run whose vas_offset is the last
+        # one at or below `offset` is the first that can overlap — bisect
+        # straight to it instead of copying every run before it.
+        end = offset + length
+        first = max(0, bisect.bisect_right(index.vas_starts, offset) - 1)
+        result = bytearray()
+        for run in index.runs[first:]:
+            if run.vas_offset >= end:
                 break
-            s, e = max(0, offset - flat_pos), min(rng_len, offset + length - flat_pos)
-            result.extend(chunk[s:e])
-            flat_pos = rng_end
+            begin = max(0, offset - run.vas_offset)
+            stop = min(run.avail, end - run.vas_offset)
+            if stop > begin:
+                result.extend(
+                    self._reader.read_view(run.buf_offset + begin, stop - begin),
+                )
         return bytes(result)
+
+    def read_range_valid(
+        self, offset: int, length: int, view: ViewMode = "vas",
+    ) -> Tuple[bytes, List[Tuple[int, int]]]:
+        """Read a range and report WHICH of the returned bytes are captured.
+
+        Returns ``(data, runs)``. ``data`` is byte-for-byte what
+        :meth:`read_range` returns for the same arguments. ``runs`` is a list
+        of ``(start_in_result, run_length)`` pairs covering exactly the
+        CAPTURED bytes; every position in ``data`` outside every run is filler.
+
+        The runs are **result-relative** — offsets into ``data``, not virtual
+        addresses and not view offsets. A caller that has just been handed a
+        window of bytes wants to know which of *those* bytes to trust, and
+        making it re-derive that from ``offset`` (whose meaning already differs
+        per view: a VA-span-relative delta for ``"va"``, a flat projection
+        offset for ``"vas"``, a file offset for ``"raw"``) is exactly the
+        arithmetic this method exists to remove.
+
+        ``view="va"`` is the only view that can report partial coverage: it
+        pads the result to ``length`` so a window keeps its VA alignment, and
+        FAILED/UNMAPPED/gap positions stay ``0x00`` (see
+        :meth:`_read_range_va`). ``"vas"`` and ``"raw"`` return SHORT rather
+        than padding, so every byte they hand back is a real byte and the run
+        list is simply full coverage.
+
+        Adjacent captured runs are merged: two captured regions that happen to
+        abut in VA yield one run, not two, so the run list is a canonical
+        description of the result rather than an artifact of how the dump
+        happened to be chunked.
+        """
+        if view != "va":
+            data = self.read_range(offset, length, view)
+            return (data, [(0, len(data))] if data else [])
+        index = self._run_index()
+        if length <= 0 or index is None:
+            return (b"", [])
+        span_start, _span_size = self._va_span()
+        req_start = span_start + offset
+        req_end = req_start + length
+        buf = bytearray(length)
+        runs: List[Tuple[int, int]] = []
+        # Bisect to the first run that can overlap, then walk forward. Walking
+        # from run 0 instead cost a full copy of every region before the
+        # target — 846 MB to deliver 16 KiB at the far end of the span.
+        first = max(0, bisect.bisect_right(index.va_starts, req_start) - 1)
+        while first > 0 and index.va_starts[first - 1] == index.va_starts[first]:
+            first -= 1
+        for run in index.by_va[first:]:
+            c_end = run.va_start + run.length
+            if c_end <= req_start:
+                continue
+            if run.va_start >= req_end:
+                break  # by_va is ascending — nothing further overlaps
+            ov_start = max(run.va_start, req_start)
+            ov_end = min(c_end, req_end)
+            begin = ov_start - run.va_start
+            stop = min(ov_end - run.va_start, run.avail)
+            if stop > begin:
+                dst = ov_start - req_start
+                buf[dst:dst + (stop - begin)] = \
+                    self._reader.read_view(run.buf_offset + begin, stop - begin)
+            _append_merged_run(runs, ov_start - req_start, ov_end - ov_start)
+        return (bytes(buf), runs)
 
     def _read_range_va(self, offset: int, length: int) -> bytes:
         """Serve the sparse full-VA view on demand (see class docstring).
@@ -472,24 +661,13 @@ class MslDumpSource:
         ``0x00``. Callers rely on ``/page-states`` — not the byte values — to
         tell real captured bytes from filler. The full span is never
         materialized; only the overlapping captured runs are copied.
+
+        :meth:`read_range_valid` is the machine-readable form of that caveat:
+        it returns these same bytes alongside the result-relative runs that are
+        genuinely captured, so a caller need not reach for ``/page-states`` (or,
+        worse, trust ``len(data)``) to tell data from filler.
         """
-        if length <= 0 or self._reader is None:
-            return b""
-        span_start, _span_size = self._va_span()
-        req_start = span_start + offset
-        req_end = req_start + length
-        buf = bytearray(length)
-        for vaddr, clen, chunk in self.iter_ranges():
-            c_end = vaddr + clen
-            if c_end <= req_start:
-                continue
-            if vaddr >= req_end:
-                break  # iter_ranges is ascending by VA — nothing further overlaps
-            ov_start = max(vaddr, req_start)
-            ov_end = min(c_end, req_end)
-            buf[ov_start - req_start:ov_end - req_start] = \
-                chunk[ov_start - vaddr:ov_end - vaddr]
-        return bytes(buf)
+        return self.read_range_valid(offset, length, view="va")[0]
 
     def find_all(self, needle: bytes, view: ViewMode = "vas") -> List[int]:
         if view == "raw":
@@ -535,14 +713,16 @@ class MslDumpSource:
         captured bytes for ``va`` live, or ``None`` if ``va`` falls
         outside any captured page.
         """
-        if self._reader is None:
+        index = self._run_index()
+        if index is None:
             return None
-        flat_pos = 0
-        for vaddr, length, _chunk in self.iter_ranges():
-            if vaddr <= va < vaddr + length:
-                return flat_pos + (va - vaddr)
-            flat_pos += length
-        return None
+        i = bisect.bisect_right(index.va_starts, va) - 1
+        if i < 0:
+            return None
+        run = index.by_va[i]
+        if va >= run.va_start + run.length:
+            return None
+        return run.vas_offset + (va - run.va_start)
 
     def va_to_file_offset(self, va: int) -> "int | None":
         """Translate a virtual address to a file offset in the .msl container.
@@ -563,18 +743,20 @@ class MslDumpSource:
         return None
 
     def iter_ranges(self) -> Iterator[Tuple[int, int, bytes]]:
-        if self._reader is None:
+        """Yield ``(va_start, run_length, bytes)`` per captured run, in VAS order.
+
+        Driven by the reader's cached run index, so the region table is walked
+        (and its PageStateMaps expanded) ONCE per reader rather than once per
+        call, and each run's bytes are copied exactly once — the old path read
+        a region's whole page data and then copied the slice out of it again.
+        """
+        index = self._run_index()
+        if index is None:
             return
-        from memdiver.msl.page_map import iter_captured_ranges
-        regions = self._reader.collect_regions()
-        regions.sort(key=lambda r: r.base_addr)
-        for region in regions:
-            page_data = self._get_region_page_data(region)
-            for vaddr, length, chunk in iter_captured_ranges(
-                region.page_states, page_data,
-                region.base_addr, region.page_size,
-            ):
-                yield (vaddr, length, bytes(chunk))
+        read_view = self._reader.read_view
+        for run in index.runs:
+            yield (run.va_start, run.length,
+                   bytes(read_view(run.buf_offset, run.avail)))
 
     def metadata(self) -> Dict[str, Any]:
         if self._reader is None:

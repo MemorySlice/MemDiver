@@ -4,10 +4,13 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import "@/i18n";
 
+import { useConsensusStore } from "@/stores/consensus-store";
 import { useDumpStore, type DumpEntry } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 import type { AlignedWindowAlignment } from "@/api/aligned-window";
+import { CHUNK_SIZE } from "@/components/hex/multi-window-utils";
+import { BYTES_PER_ROW } from "@/components/hex/window-utils";
 import { stubVirtualizerLayout } from "@tests/helpers/virtualizer";
 
 vi.mock("@/api/client", () => ({
@@ -32,6 +35,15 @@ vi.mock("@/components/hex/HexRow", () => ({
 }));
 
 const { MultiHexViewer } = await import("@/components/hex/MultiHexViewer");
+
+/**
+ * The store's REAL range walk, captured before any test replaces it.
+ *
+ * `setState` on a zustand store overwrites its actions permanently — `reset()`
+ * restores data, not methods — so a test that wants the real implementation
+ * has to put it back, or it silently inherits whichever stub ran first.
+ */
+const realGetChunkErrorsInRange = useMultiHexStore.getState().getChunkErrorsInRange;
 
 function entry(i: number): DumpEntry {
   return {
@@ -61,7 +73,16 @@ const MODULE_ALIGNMENT: AlignedWindowAlignment = {
  * already has a 28-test suite of its own. Replacing the getters likewise lets a
  * test state what the panes hold without hand-rolling a base64 response.
  */
-function seed(n: number, alignment: AlignedWindowAlignment = MODULE_ALIGNMENT) {
+function seed(
+  n: number,
+  alignment: AlignedWindowAlignment = MODULE_ALIGNMENT,
+  // The viewer now REFUSES to paint without a consensus that describes the
+  // selection — with none, the store falls back to posting `dump_paths` and
+  // the server rebuilds the whole consensus for every 8 KiB chunk. `builtFrom`
+  // stays empty ("this build cannot name its dumps"), which is the permissive
+  // case, so these tests keep asserting about panes rather than provenance.
+  consensusId: string | null = "c1",
+) {
   const dumps = Array.from({ length: n }, (_, i) => entry(i));
   act(() => {
     useDumpStore.setState({
@@ -79,6 +100,7 @@ function seed(n: number, alignment: AlignedWindowAlignment = MODULE_ALIGNMENT) {
       format: "msl",
       windowStartRow: 0,
     });
+    useConsensusStore.setState({ consensusId, builtFrom: [] });
     useMultiHexStore.setState({
       alignment,
       truncated: false,
@@ -101,6 +123,7 @@ afterEach(() => {
   act(() => {
     useDumpStore.getState().clearAll();
     useMultiHexStore.getState().reset();
+    useConsensusStore.getState().reset();
   });
 });
 
@@ -312,5 +335,210 @@ describe("MultiHexViewer alignment chip", () => {
     render(<MultiHexViewer />);
 
     expect(screen.getByTestId("hex-alignment-truncated")).toBeInTheDocument();
+  });
+});
+
+describe("MultiHexViewer absence vocabulary", () => {
+  /**
+   * Side-by-side had no legend at all, so the hatched cells it now paints
+   * would have been a private notation.
+   */
+  it("names the three absences in a legend strip", () => {
+    seed(2);
+    render(<MultiHexViewer />);
+
+    const legend = screen.getByTestId("multi-hex-legend");
+    expect(legend).toHaveTextContent(/no correspondence/i);
+    expect(legend).toHaveTextContent(/not in this dump/i);
+    expect(legend).toHaveTextContent(/load failed/i);
+    expect(screen.getByTestId("hex-absence-legend-absence-gap")).toBeInTheDocument();
+    expect(screen.getByTestId("hex-absence-legend-absence-absent")).toBeInTheDocument();
+    expect(screen.getByTestId("hex-absence-legend-absence-error")).toBeInTheDocument();
+  });
+
+  /**
+   * Absence is the NORMAL case — the aligned slab holds only pages every dump
+   * captured at the same ASLR-invariant key — so the viewer has to say so
+   * where the analyst is already reading the alignment, not leave them to
+   * conclude that something broke.
+   */
+  it("explains discarded bytes where the alignment is reported", () => {
+    // 4096 compared across 2 sources + 8192 discarded = 16384 offered.
+    seed(2, { ...MODULE_ALIGNMENT, bytes_compared: 4096, bytes_discarded: 8192 });
+    render(<MultiHexViewer />);
+
+    const note = screen.getByTestId("hex-alignment-discard-note");
+    // Folded away by default: the chip has to stay a chip.
+    expect((note as HTMLDetailsElement).open).toBe(false);
+    expect(note).toHaveTextContent("50.0%");
+    expect(note).toHaveTextContent(/anonymous/i);
+    expect(note).toHaveTextContent(/never as a difference/i);
+  });
+
+  it("offers no such note when nothing was discarded", () => {
+    seed(2);
+    render(<MultiHexViewer />);
+
+    expect(screen.queryByTestId("hex-alignment-discard-note")).toBeNull();
+  });
+});
+
+describe("MultiHexViewer window-error banner", () => {
+  it("renders a Retry control and asks the store to retry the visible chunk", () => {
+    seed(2);
+    const retryChunksInRange = vi.fn();
+    act(() => {
+      useMultiHexStore.setState({
+        retryChunksInRange,
+        getChunkErrorsInRange: () => [{ offset: 0, message: "Internal Server Error" }],
+      });
+    });
+
+    render(<MultiHexViewer />);
+
+    const banner = screen.getByTestId("multi-hex-window-error");
+    expect(banner).toBeInTheDocument();
+    // The message text resolves through i18n, never a hardcoded string.
+    expect(banner).toHaveTextContent("Internal Server Error");
+
+    const retry = screen.getByTestId("multi-hex-window-retry");
+    fireEvent.click(retry);
+    expect(retryChunksInRange).toHaveBeenCalled();
+  });
+
+  /**
+   * The dead end this replaced: the banner used to inspect the FIRST and LAST
+   * visible row's chunk only, so a chunk failing anywhere between them showed
+   * nothing at all — a band of `--` in the middle of the grid, with the retry
+   * control reachable from nowhere.
+   */
+  it("raises the banner for a chunk failing in the MIDDLE of the visible window", () => {
+    seed(2);
+    const retryChunksInRange = vi.fn();
+    // Tall enough that four chunks are on screen, so chunk 2 is interior: it
+    // is neither the first visible row's chunk nor the last's.
+    stubVirtualizerLayout(1600, 32_000);
+    act(() => {
+      useMultiHexStore.setState({
+        retryChunksInRange,
+        getChunkErrorsInRange: realGetChunkErrorsInRange,
+        // Seeded so the REAL `getChunkErrorsInRange` does the walk — this is a
+        // test of that walk, not of a stub. The key shape is `cacheKeyFor`'s:
+        // `identity|chunkOffset`.
+        identity: "seeded",
+        chunkErrors: new Map([
+          [
+            `seeded|${2 * CHUNK_SIZE}`,
+            { message: "middle chunk failed", attempts: 0, nextRetryAt: 0 },
+          ],
+        ]),
+      });
+    });
+
+    render(<MultiHexViewer />);
+
+    // The window really does reach past the failing chunk on both sides.
+    const lastRow = rows[rows.length - 1].rowOffset;
+    expect(lastRow).toBeGreaterThan(2 * CHUNK_SIZE + CHUNK_SIZE);
+
+    const banner = screen.getByTestId("multi-hex-window-error");
+    expect(banner).toHaveTextContent("middle chunk failed");
+
+    fireEvent.click(screen.getByTestId("multi-hex-window-retry"));
+    const [start, end] = retryChunksInRange.mock.calls[0] as [number, number];
+    expect(start).toBeLessThanOrEqual(2 * CHUNK_SIZE);
+    expect(end).toBeGreaterThanOrEqual(2 * CHUNK_SIZE + BYTES_PER_ROW);
+  });
+
+  it("asks about every byte in the window, not just the two end rows", () => {
+    seed(2);
+    const getChunkErrorsInRange = vi.fn(() => []);
+    stubVirtualizerLayout(1600, 32_000);
+    act(() => {
+      useMultiHexStore.setState({ getChunkErrorsInRange });
+    });
+
+    render(<MultiHexViewer />);
+
+    const firstRow = rows[0].rowOffset;
+    const lastRow = rows[rows.length - 1].rowOffset;
+    const [start, end] = getChunkErrorsInRange.mock.calls[0] as unknown as [number, number];
+    expect(start).toBe(firstRow);
+    // Inclusive of the LAST byte of the last row, so that row's chunk counts.
+    expect(end).toBe(lastRow + BYTES_PER_ROW - 1);
+  });
+
+  it("shows no banner when nothing failed", () => {
+    seed(2);
+    act(() => {
+      useMultiHexStore.setState({ getChunkErrorsInRange: () => [] });
+    });
+    render(<MultiHexViewer />);
+    expect(screen.queryByTestId("multi-hex-window-error")).toBeNull();
+    expect(screen.queryByTestId("multi-hex-window-retry")).toBeNull();
+  });
+});
+
+describe("MultiHexViewer consensus fence", () => {
+  /**
+   * Side-by-side had NO consensus guard at all: with none in the store the
+   * aligned-window request falls back to `dump_paths`, and because `classify`
+   * defaults to true the server re-derives the entire consensus for every
+   * 8 KiB chunk the analyst scrolls past. Sending `classify: false` instead is
+   * not the fix — that takes the raw-file-offset path, where an `.msl` peer
+   * read lands on a block header and returns plausible bytes from the wrong
+   * address, which is the exact failure the endpoint exists to prevent.
+   */
+  it("offers to run a consensus instead of rendering panes without one", () => {
+    seed(3, MODULE_ALIGNMENT, null);
+    render(<MultiHexViewer />);
+
+    expect(screen.getByTestId("hex-overlay-no-consensus")).toBeInTheDocument();
+    expect(screen.getByTestId("hex-overlay-run-consensus")).toBeInTheDocument();
+    expect(screen.queryByTestId("multi-hex-viewer")).not.toBeInTheDocument();
+    expect(rows).toHaveLength(0);
+  });
+
+  it("issues no aligned-window request while there is no consensus", () => {
+    seed(3, MODULE_ALIGNMENT, null);
+    const ensureLoaded = vi.fn();
+    act(() => {
+      useMultiHexStore.setState({ ensureLoaded });
+    });
+
+    render(<MultiHexViewer />);
+
+    expect(ensureLoaded).not.toHaveBeenCalled();
+  });
+
+  it("names the cause when the consensus covers other dumps", () => {
+    seed(3);
+    act(() => {
+      useConsensusStore.setState({
+        consensusId: "c1",
+        builtFrom: ["/dumps/somewhere-else.msl", "/dumps/other.msl"],
+      });
+    });
+
+    render(<MultiHexViewer />);
+
+    const prompt = screen.getByTestId("hex-overlay-no-consensus");
+    expect(prompt).toHaveAttribute("data-variant", "stale");
+    expect(prompt).toHaveTextContent(/different set of dumps/i);
+  });
+
+  it("renders the panes once the consensus describes the selection", () => {
+    const dumps = seed(3);
+    act(() => {
+      useConsensusStore.setState({
+        consensusId: "c1",
+        builtFrom: dumps.map((d) => d.path),
+      });
+    });
+
+    render(<MultiHexViewer />);
+
+    expect(screen.getByTestId("multi-hex-viewer")).toBeInTheDocument();
+    expect(screen.queryByTestId("hex-overlay-no-consensus")).not.toBeInTheDocument();
   });
 });

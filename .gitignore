@@ -20,6 +20,13 @@ env/
 # *.json above exists to keep generated artifacts out; these are hand-written.
 !frontend/tsconfig*.json
 !tsconfig*.json
+# Same story for the i18n locale files: each one IS a namespace (i18n/index.ts
+# globs this directory and derives the namespace from the basename), so a
+# missing file is a screen full of raw `ns.key` strings. The 17 that predate the
+# blanket rule stayed tracked because *.json cannot un-track a tracked file --
+# candidates.json was added later and was silently never committed, which is
+# exactly the failure this negation exists to stop happening again.
+!frontend/src/i18n/locales/*/*.json
 # Same story for the npm manifests now that the repo is an npm workspace root.
 # Anchored with a leading `/` so each names exactly one file: a bare
 # `!package.json` would un-ignore that basename at EVERY level of the tree.

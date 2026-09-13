@@ -174,19 +174,19 @@ export function OracleUpload() {
                     <span className="md-text-accent font-mono text-xs truncate">
                       {o.filename}
                     </span>
-                    <span className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5 bg-[var(--md-accent-purple)]">
+                    <span className="inline-block text-[10px] uppercase tracking-wide md-text-on-accent rounded px-1.5 py-0.5 bg-[var(--md-accent-purple)]">
                       {t("oracle.upload.shape", { shape: o.shape })}
                     </span>
                     {o.armed ? (
                       <span
-                        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
+                        className="inline-block text-[10px] uppercase tracking-wide md-text-on-accent rounded px-1.5 py-0.5"
                         style={{ background: "var(--md-accent-green)" }}
                       >
                         {t("oracle.upload.armed")}
                       </span>
                     ) : (
                       <span
-                        className="inline-block text-[10px] uppercase tracking-wide text-white rounded px-1.5 py-0.5"
+                        className="inline-block text-[10px] uppercase tracking-wide md-text-on-accent rounded px-1.5 py-0.5"
                         style={{ background: "var(--md-accent-orange)" }}
                       >
                         {t("oracle.upload.unarmed")}
@@ -201,7 +201,7 @@ export function OracleUpload() {
                           e.stopPropagation();
                           void handleArm(o);
                         }}
-                        className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90"
+                        className="text-xs px-2 py-1 rounded bg-[var(--md-accent-blue)] md-text-on-accent hover:opacity-90"
                         title={t("oracle.upload.armTitle")}
                       >
                         {t("oracle.upload.arm")}
@@ -213,7 +213,7 @@ export function OracleUpload() {
                         e.stopPropagation();
                         void handleRemove(o);
                       }}
-                      className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-white"
+                      className="text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-accent-red)] hover:text-[var(--md-bg-primary)]"
                     >
                       {t("common:delete")}
                     </button>

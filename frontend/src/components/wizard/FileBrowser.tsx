@@ -167,7 +167,7 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
           <button
             onClick={handleSelectCurrentDir}
             disabled={!currentPath}
-            className="px-3 py-1.5 text-sm rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90 transition-opacity disabled:opacity-40"
+            className="px-3 py-1.5 text-sm rounded bg-[var(--md-accent-blue)] md-text-on-accent hover:opacity-90 transition-opacity disabled:opacity-40"
           >
             {t("browser.selectDirectory")}
           </button>

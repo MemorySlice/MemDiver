@@ -4,7 +4,7 @@ import logging
 import mmap
 import struct
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, NamedTuple, Optional, Tuple
 from uuid import UUID
 
 from .block_iter import merge_continuations as _merge_cont
@@ -34,6 +34,81 @@ from .types import (MslAuthError, MslBlockHeader, MslConnectionTable,
                     MslProcessTable, MslRelatedDump, MslVasMap)
 
 logger = logging.getLogger("memdiver.msl.reader")
+
+
+class CapturedRun(NamedTuple):
+    """One contiguous run of CAPTURED pages, located in the block buffer.
+
+    The unit of :meth:`MslReader.captured_run_index`. Everything a reader of
+    ``.msl`` bytes needs in order to serve a window WITHOUT walking the
+    container: where the run lives in virtual address space, where it lives in
+    the flat ``"vas"`` stream, and where its bytes are in the buffer.
+
+    ``length`` is the run's NOMINAL size (``pages * page_size``); ``avail`` is
+    how many of those bytes the buffer actually holds. The two differ only for
+    a container truncated mid-payload, and keeping them apart is what lets a
+    caller report the run's true extent while copying only real bytes.
+    """
+
+    va_start: int
+    length: int
+    buf_offset: int
+    avail: int
+    vas_offset: int
+
+
+class CapturedRunIndex(NamedTuple):
+    """:class:`CapturedRun` runs plus the keys a read path bisects them by.
+
+    ``runs`` is in ``vas_offset`` order — the order
+    :meth:`MslDumpSource.iter_ranges` yields in, which is what makes
+    ``vas_offset`` the flat ``"vas"`` stream offset. ``by_va`` is the same runs
+    ordered by virtual address, because a ``"va"`` window has to find the runs
+    that overlap an address and region base addresses are not guaranteed to
+    arrive in VA order.
+
+    The two ``*_starts`` tuples are the bisect keys for their respective
+    orderings, materialized once so a lookup never rebuilds them.
+    """
+
+    runs: Tuple[CapturedRun, ...]
+    by_va: Tuple[CapturedRun, ...]
+    va_starts: Tuple[int, ...]
+    vas_starts: Tuple[int, ...]
+
+
+def _captured_page_runs(region) -> List[Tuple[int, int]]:
+    """``[(start_page, page_count)]`` for the CAPTURED runs of one region.
+
+    Accepts either representation a decoded region can carry — the per-page
+    ``page_states`` list or the run-length ``page_intervals`` — because both
+    are produced from the same PageStateMap and callers construct regions
+    either way. ``page_states`` is consulted first: it is the input
+    ``MslDumpSource.iter_ranges`` has always used, so the runs derived here are
+    the same runs by construction rather than by coincidence.
+    """
+    from .page_map import PageInterval, PageState
+
+    states = getattr(region, "page_states", None) or getattr(
+        region, "page_intervals", None,
+    )
+    if not states:
+        return []
+    if isinstance(states[0], PageInterval):
+        return [
+            (int(iv.start_page), int(iv.count))
+            for iv in states
+            if iv.state == PageState.CAPTURED and iv.count > 0
+        ]
+    runs: List[Tuple[int, int]] = []
+    run_start = 0
+    for i in range(1, len(states) + 1):
+        if i < len(states) and states[i] == states[run_start]:
+            continue
+        if states[run_start] == PageState.CAPTURED:
+            runs.append((run_start, i - run_start))
+        run_start = i
+    return runs
 
 
 class MslReader:
@@ -75,6 +150,11 @@ class MslReader:
         # header_size); for decrypted files the plaintext buffer (base 0).
         self._buf = None
         self._buf_base: int = 0
+        # Derived from the region table AND the buffer, so it is NOT a
+        # _CACHE_ATTRS block cache (those pair one-for-one with a collect_*
+        # method). Reset alongside them wherever they are reset: a reopened
+        # reader must never serve buffer offsets from the previous mapping.
+        self._captured_runs_cache: Optional[CapturedRunIndex] = None
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
 
@@ -95,6 +175,7 @@ class MslReader:
     def close(self) -> None:
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
+        self._captured_runs_cache = None
         self._plaintext = None
         self._buf = None
         if self._mmap:
@@ -408,6 +489,28 @@ class MslReader:
         end = min(offset + length, len(self._buf))
         return bytes(self._buf[offset:end])
 
+    @property
+    def buffer_length(self) -> int:
+        """Bytes addressable by :meth:`read_bytes` / :meth:`read_view`.
+
+        Zero when the reader is closed. Exposed so a caller can decide how much
+        of a block's declared payload a truncated container actually holds
+        WITHOUT reading the payload to find out.
+        """
+        return 0 if self._buf is None else len(self._buf)
+
+    def read_view(self, offset: int, length: int) -> memoryview:
+        """:meth:`read_bytes` without the copy.
+
+        Returns a memoryview over the same bytes and with the same clamping.
+        A window read that used to copy a whole region to slice a page out of
+        it can slice first and copy only what it returns.
+        """
+        if self._buf is None:
+            return memoryview(b"")
+        end = min(offset + length, len(self._buf))
+        return memoryview(self._buf)[offset:end]
+
     def read_block_payload(self, hdr: MslBlockHeader) -> bytes:
         """Read and decompress a block's payload bytes."""
         if self._buf is None:
@@ -443,6 +546,66 @@ class MslReader:
 
     def collect_regions(self) -> List[MslMemoryRegion]:
         return self._collect(BlockType.MEMORY_REGION, decode_memory_region, "_regions_cache")
+
+    def captured_run_index(self) -> CapturedRunIndex:
+        """Every CAPTURED run in the container, indexed for lookup (cached).
+
+        The read path's map. Without it, answering "give me the 4 KiB at this
+        virtual address" meant restarting a walk over the region table from
+        region 0 and COPYING every region's page data on the way past — a
+        measured 846 MB copied to deliver 16 KiB. With it, a read is a bisect
+        plus one slice.
+
+        Ordering is region base address, then page order within a region, which
+        is exactly the order :meth:`MslDumpSource.iter_ranges` yields in — so
+        ``vas_offset`` is the run's offset in the flat ``"vas"`` stream, not a
+        second opinion about it.
+
+        Buffer offsets are computed the same way the old per-region read
+        computed them (payload start, past the 0x20 header and the 8-byte
+        padded PageStateMap), so an index lookup and a region read land on the
+        same byte. Cached on the READER, which the dump-source pool keeps
+        alive, rather than on a per-request source view that would rebuild it
+        every request; :data:`_CACHE_ATTRS` drops it on ``close()``.
+        """
+        cached = self._captured_runs_cache
+        if cached is not None:
+            return cached
+        from .page_map import count_captured_pages
+
+        buf_len = self.buffer_length
+        runs: List[CapturedRun] = []
+        vas_offset = 0
+        for region in sorted(self.collect_regions(), key=lambda r: r.base_addr):
+            page_size = int(region.page_size)
+            map_bytes = ((int(region.num_pages) + 3) // 4 + 7) & ~7
+            base = int(region.block_header.payload_offset) + 0x20 + map_bytes
+            region_avail = max(
+                0,
+                min(count_captured_pages(region.page_states) * page_size,
+                    buf_len - base),
+            )
+            data_offset = 0
+            for start_page, page_count in _captured_page_runs(region):
+                length = page_count * page_size
+                runs.append(CapturedRun(
+                    va_start=int(region.base_addr) + start_page * page_size,
+                    length=length,
+                    buf_offset=base + data_offset,
+                    avail=max(0, min(length, region_avail - data_offset)),
+                    vas_offset=vas_offset,
+                ))
+                data_offset += length
+                vas_offset += length
+        by_va = tuple(sorted(runs, key=lambda run: run.va_start))
+        index = CapturedRunIndex(
+            runs=tuple(runs),
+            by_va=by_va,
+            va_starts=tuple(run.va_start for run in by_va),
+            vas_starts=tuple(run.vas_offset for run in runs),
+        )
+        self._captured_runs_cache = index
+        return index
 
     def collect_key_hints(self) -> List[MslKeyHint]:
         return self._collect(BlockType.KEY_HINT, decode_key_hint, "_hints_cache")

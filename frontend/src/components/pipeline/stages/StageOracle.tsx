@@ -166,7 +166,7 @@ export function StageOracle({ onAdvance }: Props) {
               onClick={() =>
                 void arm((pcapPath ?? "").trim(), { clearPathOnFailure: false })
               }
-              className="shrink-0 text-xs px-3 py-1 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+              className="shrink-0 text-xs px-3 py-1 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
             >
               {isArming
                 ? t("stages.oracle.pcap.arming")
@@ -211,7 +211,7 @@ export function StageOracle({ onAdvance }: Props) {
           type="button"
           disabled={!canAdvance}
           onClick={() => onAdvance("thresholds")}
-          className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+          className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
           title={
             canAdvance
               ? t("stages.oracle.nextTitleEnabled")

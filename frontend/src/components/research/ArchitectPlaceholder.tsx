@@ -15,7 +15,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { ArchitectIcon } from "@/components/common/Icons";
 
 const BTN = "px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-xs";
-const BTN_ACCENT = "px-2 py-1 rounded text-xs bg-[var(--md-accent-blue)] text-white";
+const BTN_ACCENT = "px-2 py-1 rounded text-xs bg-[var(--md-accent-blue)] md-text-on-accent";
 const INPUT = "w-full px-1.5 py-1 rounded border border-[var(--md-border)] bg-[var(--md-bg-primary)] text-[10px] font-mono";
 
 type ArchitectMode = "manual" | "auto";

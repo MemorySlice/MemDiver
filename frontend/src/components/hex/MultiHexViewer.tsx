@@ -5,18 +5,24 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   useAlignedSelection,
   useAlignedWindowLoader,
+  useConsensusUsable,
   useMslPaneCoordinate,
 } from "@/hooks/useAlignedPanes";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
+import type { AbsenceKind } from "@/utils/absence-classes";
+import { useConsensusStore } from "@/stores/consensus-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
+import { AbsenceLegend } from "./AbsenceLegend";
 import { HexAlignmentChip } from "./HexAlignmentChip";
 import { HexPaneHeader } from "./HexPaneHeader";
 import { HexRow } from "./HexRow";
 import { HexStatusBar } from "./HexStatusBar";
 import { HexToolbar } from "./HexToolbar";
+import { NoConsensusPrompt } from "./NoConsensusPrompt";
+import { WindowErrorBanner } from "./WindowErrorBanner";
 import { buildRegionIndex } from "./highlight-utils";
 import { MAX_PANES, PANE_COLUMN_WIDTH_PX, visiblePanes } from "./multi-window-utils";
 import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
@@ -43,6 +49,18 @@ import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
  * existing `scrollToOffset` caller (bookmarks, search, `CandidatePanel`) keeps
  * working through `useHexScrollTarget`.
  */
+/** One pane's byte reader and the reason its reads come back empty. */
+interface PaneReaders {
+  version: number;
+  read: (offset: number) => number | undefined;
+  /**
+   * WHY that read came back empty. Paired with `read` and rotated with it,
+   * because a cell that says "--" while its reason says something else is
+   * exactly the confusion this vocabulary exists to remove.
+   */
+  absence: (offset: number) => AbsenceKind | undefined;
+}
+
 export function MultiHexViewer() {
   const { t } = useTranslation("hex");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -75,7 +93,6 @@ export function MultiHexViewer() {
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
-  const focusColumn = useHexStore((s) => s.focusColumn);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
@@ -84,7 +101,10 @@ export function MultiHexViewer() {
 
   const chunkVersionByPath = useMultiHexStore((s) => s.chunkVersionByPath);
   const byPath = useMultiHexStore((s) => s.byPath);
-  const chunkErrors = useMultiHexStore((s) => s.chunkErrors);
+
+  // Only to tell the two fences apart: "nothing built yet" and "built over
+  // other dumps" are different facts and need different sentences.
+  const consensusId = useConsensusStore((s) => s.consensusId);
 
   useHexKeyboard(containerRef);
 
@@ -107,6 +127,16 @@ export function MultiHexViewer() {
     () => selected.filter((d) => collapsedDumpIds.has(d.id)),
     [selected, collapsedDumpIds],
   );
+
+  /**
+   * Is there a consensus that describes THIS selection?
+   *
+   * A build made over another set of dumps would put the panes in a slab this
+   * selection never produced — real bytes at the wrong address, which is the
+   * one failure the aligned-window endpoint exists to prevent. One hook, shared
+   * with the overlay and with the loader that is the actual fence.
+   */
+  const consensusUsable = useConsensusUsable(selectedPaths);
 
   // The anchor's own size governs the row count: every pane is rendered in the
   // ANCHOR's coordinate (invariant W1), so a longer or shorter neighbour does
@@ -144,24 +174,6 @@ export function MultiHexViewer() {
   const selectionStart = selection ? Math.min(selection.anchor, selection.active) : null;
   const selectionEnd = selection ? Math.max(selection.anchor, selection.active) : null;
 
-  /**
-   * A load failure for a chunk the user is actually LOOKING AT.
-   *
-   * Chunk-scoped rather than pane-scoped (see `multi-hex-store.chunkErrors`):
-   * one request carries every pane, so a failure is a fact about a window, not
-   * about a dump. Restricting it to the visible window is also what keeps it
-   * from lingering — scroll away and the note goes with the rows it described.
-   */
-  const windowError = useMemo(() => {
-    void chunkErrors;
-    if (firstVisibleIndex < 0) return null;
-    const store = useMultiHexStore.getState();
-    return (
-      store.getChunkError(absRow(firstVisibleIndex) * BYTES_PER_ROW) ??
-      store.getChunkError(absRow(lastVisibleIndex) * BYTES_PER_ROW)
-    );
-  }, [chunkErrors, firstVisibleIndex, lastVisibleIndex, absRow]);
-
   const regionIndex = useMemo(
     () => buildRegionIndex(highlightedRegions),
     [highlightedRegions],
@@ -178,17 +190,15 @@ export function MultiHexViewer() {
    * byte the dump does not hold, which is indistinguishable from a real `0x00`.
    * Returning `undefined` instead makes `HexRow` draw "--", which is the truth.
    */
-  const readerCacheRef = useRef(
-    new Map<string, { version: number; read: (offset: number) => number | undefined }>(),
-  );
+  const readerCacheRef = useRef(new Map<string, PaneReaders>());
   const byteReaders = useMemo(() => {
     const cache = readerCacheRef.current;
-    const readers = new Map<string, (offset: number) => number | undefined>();
+    const readers = new Map<string, PaneReaders>();
     for (const pane of panes) {
       const version = chunkVersionByPath.get(pane.path) ?? 0;
       const cached = cache.get(pane.path);
       if (cached && cached.version === version) {
-        readers.set(pane.path, cached.read);
+        readers.set(pane.path, cached);
         continue;
       }
       const read = (offset: number) => {
@@ -196,8 +206,11 @@ export function MultiHexViewer() {
         if (!store.isPresentAt(pane.path, offset)) return undefined;
         return store.getByteAt(pane.path, offset);
       };
-      cache.set(pane.path, { version, read });
-      readers.set(pane.path, read);
+      const absence = (offset: number) =>
+        useMultiHexStore.getState().absenceAt(pane.path, offset) ?? undefined;
+      const entry = { version, read, absence };
+      cache.set(pane.path, entry);
+      readers.set(pane.path, entry);
     }
     return readers;
   }, [panes, chunkVersionByPath]);
@@ -263,6 +276,26 @@ export function MultiHexViewer() {
     );
   }
 
+  /**
+   * The same fence the overlay draws, and for a second reason on top of the
+   * shared one.
+   *
+   * Without a `consensus_id` the store falls back to posting `dump_paths`, and
+   * `classify` defaults to true — so the server rebuilds the ENTIRE consensus
+   * for every 8 KiB chunk the analyst scrolls past. Sending `classify: false`
+   * instead is NOT the fix: that takes the raw-file-offset path, where an
+   * `.msl` peer read lands on a block header and hands back plausible bytes
+   * from the wrong address.
+   */
+  if (!consensusUsable) {
+    return (
+      <NoConsensusPrompt
+        paths={selectedPaths}
+        variant={consensusId ? "stale" : "missing"}
+      />
+    );
+  }
+
   const gridWidth = panes.length * PANE_COLUMN_WIDTH_PX;
   const cappedOut = openIds.length - paneIds.length;
 
@@ -279,16 +312,31 @@ export function MultiHexViewer() {
         hasMsl={selected.some((d) => d.format === "msl")}
       />
 
-      {windowError && (
-        <div
-          data-testid="multi-hex-window-error"
-          role="status"
-          className="px-3 py-1 text-xs md-text-error"
-          title={windowError}
-        >
-          {t("multiHex.windowError", { error: windowError })}
-        </div>
-      )}
+      {/*
+        Side-by-side had no legend at all, so the hatched cells it now paints
+        would have been a private notation. It carries the ABSENCE vocabulary
+        only: these panes paint no consensus class, and a class legend over a
+        grid that never shows one teaches a colour the analyst will not find.
+      */}
+      <div
+        data-testid="multi-hex-legend"
+        className="flex items-center gap-3 px-3 py-1 text-xs border-b border-[var(--md-border)] md-bg-secondary"
+      >
+        <AbsenceLegend />
+      </div>
+
+      {/*
+        Chunk-scoped rather than pane-scoped (see `multi-hex-store.chunkErrors`):
+        one request carries every pane, so a failure is a fact about a window,
+        not about a dump. Restricting it to the visible window is also what keeps
+        it from lingering — scroll away and the note goes with the rows it
+        described. Shared with the overlay, which reports the same failure.
+      */}
+      <WindowErrorBanner
+        testIdPrefix="multi-hex"
+        firstRow={firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex)}
+        lastRow={lastVisibleIndex < 0 ? -1 : absRow(lastVisibleIndex)}
+      />
 
       {cappedOut > 0 && (
         <div
@@ -391,11 +439,11 @@ export function MultiHexViewer() {
                     >
                       <HexRow
                         rowOffset={rowOffset}
-                        getByteAt={byteReaders.get(pane.path)!}
+                        getByteAt={byteReaders.get(pane.path)!.read}
+                        getAbsenceAt={byteReaders.get(pane.path)!.absence}
                         cursorOffset={cursorOffset}
                         selectionStart={selectionStart}
                         selectionEnd={selectionEnd}
-                        focusColumn={focusColumn}
                         regionIndex={regionIndex}
                         view={viewMode}
                       />

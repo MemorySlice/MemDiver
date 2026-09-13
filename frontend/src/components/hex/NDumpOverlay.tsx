@@ -2,9 +2,15 @@
  * N-dump overlay hex viewer -- shows bytes from multiple dumps
  * with consensus classification coloring.
  */
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
+import { VarianceSwatch } from '@/components/common/VarianceSwatch';
 import { byteToHex, offsetToHex } from '@/utils/hex-codec';
+import {
+  VARIANCE_CATEGORIES,
+  VARIANCE_META,
+  varianceCategoryForCode,
+} from '@/utils/variance-classes';
 
 interface NDumpOverlayProps {
   dumpPaths: string[];
@@ -13,19 +19,27 @@ interface NDumpOverlayProps {
   pageSize?: number;
 }
 
-const CLASS_COLORS: Record<number, string> = {
-  0: 'md-text-success',              // invariant
-  1: 'md-text-accent',              // structural
-  2: 'text-[var(--md-accent-cyan)]', // pointer
-  3: 'md-text-error',              // key_candidate
-};
-
-const CLASS_BG: Record<number, string> = {
-  0: 'md-bg-success-subtle',
-  1: 'md-bg-info-subtle',
-  2: 'md-bg-cyan-subtle',
-  3: 'md-bg-error-subtle',
-};
+/**
+ * Per-byte colouring, read from the shared `VARIANCE_META` map.
+ *
+ * This pane used to carry its own palette, and it was WRONG: it painted
+ * invariant green and pointer cyan, while the hex grid paints STRUCTURAL green
+ * -- so green meant two different things depending on which pane you were
+ * looking at. Going through the map is what makes that class of drift
+ * impossible.
+ */
+function byteStyle(code: number): CSSProperties {
+  const category = varianceCategoryForCode(code);
+  if (!category) return {};
+  const { colorVar } = VARIANCE_META[category];
+  // Invariant gets the same treatment `hex.css` gives it -- muted text over a
+  // 35% tint of a token that is background-shaped and unreadable as text.
+  const invariant = category === "invariant";
+  return {
+    color: invariant ? "var(--md-text-muted)" : colorVar,
+    background: `color-mix(in srgb, ${colorVar} ${invariant ? 35 : 18}%, transparent)`,
+  };
+}
 
 export function NDumpOverlay({
   dumpPaths,
@@ -117,11 +131,15 @@ export function NDumpOverlay({
 
       {/* Legend */}
       <div className="flex gap-3 px-2 py-1 text-xs border-b border-[var(--md-border)]">
-        <span className="md-text-success">{t("ndump.legendInvariant")}</span>
-        <span className="md-text-accent">{t("ndump.legendStructural")}</span>
-        <span className="text-[var(--md-accent-cyan)]">{t("ndump.legendPointer")}</span>
-        <span className="md-text-error">{t("ndump.legendKeyCandidate")}</span>
-        <span className="text-[var(--md-accent-yellow)]">{t("ndump.legendDiffers")}</span>
+        {/* In code order; `differs` is a ring rather than a class. */}
+        {VARIANCE_CATEGORIES.map((category) => (
+          <VarianceSwatch
+            key={category}
+            className="md-text-secondary"
+            swatchClass={VARIANCE_META[category].swatchClass}
+            label={t(VARIANCE_META[category].labelKey)}
+          />
+        ))}
       </div>
 
       {/* Hex grid */}
@@ -138,14 +156,14 @@ export function NDumpOverlay({
                   const idx = row * 16 + col;
                   if (idx >= pageSize) return null;
                   const { hex, cls, differs } = byteInfo[idx];
-                  const colorCls = cls >= 0 ? CLASS_COLORS[cls] : 'md-text-muted';
-                  const bgCls = cls >= 0 ? CLASS_BG[cls] : '';
+                  const classified = varianceCategoryForCode(cls) !== null;
                   return (
                     <span
                       key={col}
-                      className={`w-5 text-center rounded-sm ${colorCls} ${bgCls} ${
-                        differs ? 'md-ring-differs' : ''
-                      }`}
+                      className={`w-5 text-center rounded-sm ${
+                        classified ? '' : 'md-text-muted'
+                      } ${differs ? 'md-ring-differs' : ''}`}
+                      style={byteStyle(cls)}
                       title={t("ndump.byteTitle", {
                         offset: (rowOffset + col).toString(16),
                         note: differs ? t("ndump.variesNote") : '',

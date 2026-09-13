@@ -63,7 +63,7 @@ export function ProcessList({ mslPath }: Props) {
               <span className="font-mono font-medium">{p.pid}</span>
               <span className="md-text-muted text-[10px]">ppid={p.ppid}</span>
               {p.is_target && (
-                <span className="text-[10px] px-1 rounded bg-[var(--md-accent-purple)] text-white">{t("processes.targetBadge")}</span>
+                <span className="text-[10px] px-1 rounded bg-[var(--md-accent-purple)] md-text-on-accent">{t("processes.targetBadge")}</span>
               )}
               {p.user && <span className="ml-auto md-text-muted text-[10px]">{p.user}</span>}
             </div>

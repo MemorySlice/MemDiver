@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 import { useHexSearch } from "@/hooks/useHexSearch";
+import { SegmentedControl } from "@/components/common/SegmentedControl";
+import type { HexViewMode } from "@/stores/hex-store";
 
 export function HexToolbar() {
   const { t } = useTranslation("hex");
@@ -93,54 +95,27 @@ export function HexToolbar() {
       >
         {t("toolbar.fileLabel", { name: fileName, size: sizeKB })}
       </span>
+      {/*
+        The same shared segmented group as `MainViewSwitcher` and the overlay's
+        two switches, so every radio-style control in the hex area behaves
+        identically for a screen reader.
+      */}
       {isMsl && (
-        <div
-          className="flex items-center shrink-0 rounded border border-[var(--md-border)] overflow-hidden"
-          role="tablist"
+        <SegmentedControl
           aria-label={t("toolbar.mslViewModeLabel")}
           title={t("toolbar.mslViewModeTitle")}
-        >
-          <button
-            role="tab"
-            aria-selected={viewMode === "raw"}
-            onClick={() => setViewMode("raw")}
-            className={
-              "px-2 py-0.5 " +
-              (viewMode === "raw"
-                ? "md-bg-accent md-text-on-accent"
-                : "hover:bg-[var(--md-bg-hover)]")
-            }
-          >
-            {t("toolbar.rawFile")}
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "vas"}
-            onClick={() => setViewMode("vas")}
-            className={
-              "px-2 py-0.5 border-l border-[var(--md-border)] " +
-              (viewMode === "vas"
-                ? "md-bg-accent md-text-on-accent"
-                : "hover:bg-[var(--md-bg-hover)]")
-            }
-          >
-            {t("toolbar.memoryVas")}
-          </button>
-          <button
-            role="tab"
-            aria-selected={viewMode === "va"}
-            onClick={() => setViewMode("va")}
-            title={t("toolbar.mslViewModeVaTitle")}
-            className={
-              "px-2 py-0.5 border-l border-[var(--md-border)] " +
-              (viewMode === "va"
-                ? "md-bg-accent md-text-on-accent"
-                : "hover:bg-[var(--md-bg-hover)]")
-            }
-          >
-            {t("toolbar.virtualAddress")}
-          </button>
-        </div>
+          selected={viewMode}
+          onSelect={(id) => setViewMode(id as HexViewMode)}
+          options={[
+            { id: "raw", label: t("toolbar.rawFile") },
+            { id: "vas", label: t("toolbar.memoryVas") },
+            {
+              id: "va",
+              label: t("toolbar.virtualAddress"),
+              title: t("toolbar.mslViewModeVaTitle"),
+            },
+          ]}
+        />
       )}
       <div className="flex items-center gap-1 shrink-0">
         <input

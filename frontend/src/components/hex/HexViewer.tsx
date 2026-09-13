@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useHexStore } from "@/stores/hex-store";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { HexRow } from "./HexRow";
+import { absenceForPageState, type AbsenceKind } from "@/utils/absence-classes";
 import { HexToolbar } from "./HexToolbar";
 import { HexLegend } from "./HexLegend";
 import { HexStatusBar } from "./HexStatusBar";
@@ -39,14 +40,13 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // Base VA that "va"-view offset 0 maps to; consensus overlay in the "va"
   // view keys its per-row fetch/lookup off this affine mapping.
   const vaSpanStart = useHexStore((s) => s.vaSpanStart);
-  // Rotates getPageStateAtStable's identity when page-states resolve so
+  // Rotates getAbsenceAtStable's identity when page-states resolve so
   // HexRow's memo invalidates and "va"-view rows repaint. See chunkVersion.
   const pageStateVersion = useHexStore((s) => s.pageStateVersion);
   const pageStatesLoaded = useHexStore((s) => s.pageStatesLoaded);
   const fetchPageStates = useHexStore((s) => s.fetchPageStates);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
-  const focusColumn = useHexStore((s) => s.focusColumn);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
   const searchOffsets = useHexStore((s) => s.searchOffsets);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
@@ -261,12 +261,30 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     [chunkVersion]
   );
 
-  const getPageStateAtStable = useCallback(
-    (offset: number) => {
+  /**
+   * The single-dump adapter onto the shared absence vocabulary.
+   *
+   * Byte-for-byte the old `view === "va"`-gated block in `HexRow`, moved to the
+   * one place that knows what a page state MEANS: `getPageStateAt` reads
+   * `vaSpanStart + offset`, so it only answers in the "va" coordinate and the
+   * gate has to travel with it. Outside "va" every unloaded byte is simply one
+   * whose chunk has not arrived, which is what `"loading"` says; "CAPTURED" and
+   * a not-yet-resolved page state say the same thing.
+   */
+  const getAbsenceAtStable = useCallback(
+    (offset: number): AbsenceKind | undefined => {
       void pageStateVersion;
-      return useHexStore.getState().getPageStateAt(offset);
+      if (viewMode !== "va") return "loading";
+      // `"loading"` on fall-through, because this getter is only ever consulted
+      // for a byte the chunk has not produced: "CAPTURED" and a not-yet-resolved
+      // page state both mean the window has not arrived. The overlay's copy
+      // falls through to `undefined` for the opposite reason — see
+      // `absenceForPageState`.
+      return (
+        absenceForPageState(useHexStore.getState().getPageStateAt(offset)) ?? "loading"
+      );
     },
-    [pageStateVersion]
+    [pageStateVersion, viewMode]
   );
 
   const getVarianceAt = useCallback(
@@ -382,14 +400,13 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
                 cursorOffset={cursorOffset}
                 selectionStart={selectionStart}
                 selectionEnd={selectionEnd}
-                focusColumn={focusColumn}
                 regionIndex={regionIndex}
                 activeFieldStart={activeFieldRange?.start ?? null}
                 activeFieldEnd={activeFieldRange?.end ?? null}
                 overlayEnabled={overlayEnabled}
                 getClassificationAt={getClassificationAtStable}
                 view={viewMode}
-                getPageStateAt={getPageStateAtStable}
+                getAbsenceAt={getAbsenceAtStable}
               />
             </div>
           ))}

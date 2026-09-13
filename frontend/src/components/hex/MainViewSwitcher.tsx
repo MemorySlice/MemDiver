@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { SegmentedControl } from "@/components/common/SegmentedControl";
 import { useDumpStore, type MainView } from "@/stores/dump-store";
 
 /**
@@ -10,8 +11,13 @@ import { useDumpStore, type MainView } from "@/stores/dump-store";
  * greyed-out segment with an explanatory tooltip at least says what the missing
  * precondition is.
  *
- * Tab semantics mirror `HexToolbar`'s Raw/VAS/VA switch so both radio-style
- * groups in the hex area behave identically for a screen reader.
+ * Tab semantics come from the shared `SegmentedControl`, which is also what
+ * `HexToolbar`'s Raw/VAS/VA group, the overlay's `Align` switch and its render
+ * mode switch draw — so every radio-style group in the hex area behaves
+ * identically for a screen reader. This one used to paint its selected segment
+ * with an open-coded `{background: "var(--md-accent-blue)"}` where its three
+ * siblings used the `md-bg-accent` / `md-text-on-accent` pair, which made it
+ * the one group a re-theme of the accent would have left behind.
  */
 export function MainViewSwitcher() {
   const { t } = useTranslation("hex");
@@ -33,44 +39,22 @@ export function MainViewSwitcher() {
   ];
 
   return (
-    <div
-      role="tablist"
+    <SegmentedControl
       aria-label={t("mainView.label")}
-      data-testid="main-view-switcher"
-      className="flex items-center shrink-0 rounded border border-[var(--md-border)] overflow-hidden text-xs"
-    >
-      {segments.map(({ view, label, title, needsTwo }, index) => {
+      testId="main-view-switcher"
+      className="text-xs"
+      selected={mainView}
+      onSelect={(id) => setMainView(id as MainView)}
+      options={segments.map(({ view, label, title, needsTwo }) => {
         const disabled = needsTwo && !enoughDumps;
-        return (
-          <button
-            key={view}
-            role="tab"
-            type="button"
-            data-testid={`main-view-${view}`}
-            aria-selected={mainView === view}
-            aria-disabled={disabled || undefined}
-            disabled={disabled}
-            title={disabled ? t("mainView.needTwoTitle") : title}
-            onClick={() => setMainView(view)}
-            className={
-              "px-2 py-0.5 " +
-              (index > 0 ? "border-l border-[var(--md-border)] " : "") +
-              (mainView === view ? "font-semibold " : "hover:bg-[var(--md-bg-hover)] ") +
-              (disabled ? "opacity-40 cursor-not-allowed" : "")
-            }
-            style={
-              mainView === view
-                ? {
-                    background: "var(--md-accent-blue)",
-                    color: "var(--md-bg-primary)",
-                  }
-                : undefined
-            }
-          >
-            {label}
-          </button>
-        );
+        return {
+          id: view,
+          label,
+          testId: `main-view-${view}`,
+          disabled,
+          title: disabled ? t("mainView.needTwoTitle") : title,
+        };
       })}
-    </div>
+    />
   );
 }

@@ -163,3 +163,97 @@ def test_committed_region_spec_caps_hostile_region_size():
         _committed_region_spec(
             reader=None, mem_info=mem_info, spans=[], consumed=[], page=4096,
         )
+
+
+# ---------------------------------------------------------------------------
+# Already-MSL passthrough (import_dump dispatch on fmt == "msl")
+# ---------------------------------------------------------------------------
+
+
+def _make_msl(path, *, regions=3, key=None):
+    """Write a real multi-region .msl, optionally encrypted, and return it."""
+    from memdiver.msl.writer import MslEncryptionConfig, MslWriter
+
+    kwargs = {}
+    if key is not None:
+        kwargs["encryption"] = MslEncryptionConfig(raw_key=key)
+    w = MslWriter(path, pid=7, **kwargs)
+    for i in range(regions):
+        w.add_memory_region(0x1000 * (i + 1), bytes([0xA0 + i]) * 4096)
+    w.add_end_of_capture()
+    w.write()
+    return path
+
+
+def test_import_dump_stages_msl_unchanged(tmp_path):
+    """A .msl source needs no conversion. It used to fall through to
+    import_raw_dump, which wrapped the whole container as ONE opaque region at
+    VA 0 — a nested MSL blob, useless for comparison."""
+    from memdiver.msl.importer import import_dump
+
+    src = _make_msl(tmp_path / "in.msl", regions=3)
+    original = src.read_bytes()
+    out = tmp_path / "out.msl"
+
+    result = import_dump(src, out)
+
+    assert out.read_bytes() == original, "must be a byte-for-byte copy"
+    assert result.regions_written == 3, "must report the container's real region count"
+    assert result.total_bytes == src.stat().st_size
+    assert result.output_path == out
+
+
+def test_import_dump_msl_same_path_is_a_noop(tmp_path):
+    """copyfile() truncates its destination first, so src == dst would zero the
+    very file being imported."""
+    from memdiver.msl.importer import import_dump
+
+    src = _make_msl(tmp_path / "same.msl", regions=2)
+    original = src.read_bytes()
+
+    result = import_dump(src, src)
+
+    assert src.read_bytes() == original
+    assert result.regions_written == 2
+
+
+def test_import_dump_encrypted_msl_is_staged_not_rejected(tmp_path):
+    """An encrypted container opened without key material is still a valid
+    .msl. It must be staged intact; only the region walk is skipped."""
+    import os
+
+    from memdiver.msl.importer import import_dump
+
+    src = _make_msl(tmp_path / "enc.msl", regions=2, key=os.urandom(32))
+    original = src.read_bytes()
+    out = tmp_path / "enc-out.msl"
+
+    result = import_dump(src, out)
+
+    assert out.read_bytes() == original
+    assert result.regions_written == 0, "blocks are behind AEAD; report honestly"
+    assert result.total_bytes == src.stat().st_size
+
+
+def test_import_dump_rejects_corrupt_msl_and_leaves_no_output(tmp_path):
+    """Validation happens BEFORE the copy, so a malformed source leaves no
+    partial output and only ValueError escapes (the parser contract)."""
+    from memdiver.msl.importer import import_dump
+
+    bad = tmp_path / "bad.msl"
+    bad.write_bytes(b"MEMSLICE" + b"\x00" * 16)  # right magic, truncated body
+    out = tmp_path / "bad-out.msl"
+
+    with pytest.raises(ValueError):
+        import_dump(bad, out)
+    assert not out.exists(), "a rejected import must not leave a partial file"
+
+
+def test_import_dump_raw_path_is_still_a_one_region_noop(tmp_path):
+    """Pins the raw no-op regression: only the msl branch is new."""
+    from memdiver.msl.importer import import_dump
+
+    raw = tmp_path / "plain.dump"
+    raw.write_bytes(b"\xAA" * 8192)
+    result = import_dump(raw, tmp_path / "plain.msl")
+    assert result.regions_written == 1

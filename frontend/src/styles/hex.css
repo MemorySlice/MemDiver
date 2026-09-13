@@ -131,9 +131,18 @@
   text-decoration: underline wavy var(--md-hl-strings);
 }
 
+/* The in-flight placeholder. The PENDING-ness is carried by the glyph (`··`),
+   not by a dimmer colour: `opacity: 0.4` on top of --md-text-muted composited
+   to #4d5054 on --md-bg-primary, a 2.05:1 read that WCAG AA (SC 1.4.3) fails
+   outright, and no opacity below 1.0 clears 4.5:1 on all four grounds a hex
+   row sits on (the best, 0.9, still lands at 4.27:1 on --md-bg-tertiary). The
+   `··` already says "not a byte" and distinguishes this from the hatched
+   absence causes, so the colour has no second job to do.
+   This is also what made the app-wide contrast rule intermittently RED: the
+   cells only exist while a window is in flight, so the burst (256 cells at
+   once) landed on whichever tab happened to race the fetch. */
 .hex-loading {
   color: var(--md-text-muted);
-  opacity: 0.4;
 }
 
 /* --- MSL page-state swatches (CoverageMap legend + region strips) --- */
@@ -155,25 +164,390 @@
 }
 
 /* Consensus overlay colors */
+/* These read the `--md-variance-*` tokens, which are defined for BOTH themes in
+   globals.css -- the previous hard-coded literals were the dark values inlined,
+   so light mode never re-themed. The `.md-variance-swatch` legend rules below
+   read the SAME tokens, which is what makes it impossible for a legend swatch
+   to disagree with the byte it claims to explain. Keep the byte rules compound
+   (`.hex-byte.consensus-*`): `tests/e2e/specs/multi-dump-overlay.spec.ts` counts
+   painted bytes with a class selector, and a rule that also matched a legend
+   element would let a legend pass as evidence that bytes were painted. */
 .hex-byte.consensus-invariant,
 .hex-char.consensus-invariant {
-  opacity: 0.4;
+  /* Invariant is the BACKGROUND the signal stands out against, so it stays
+     de-emphasised -- but as a muted text colour over a faint tint rather than
+     as bare `opacity`, which was invisible in a swatch, a contrast hazard, and
+     indistinguishable from "not loaded". The token is background-shaped
+     (#cccccc / #3d3d3d) and unreadable as text, hence the tint. */
+  color: var(--md-text-muted);
+  background: color-mix(in srgb, var(--md-variance-invariant) 35%, transparent);
 }
 
 .hex-byte.consensus-structural,
 .hex-char.consensus-structural {
-  color: #6a9955;
+  color: var(--md-variance-structural);
 }
 
 .hex-byte.consensus-pointer,
 .hex-char.consensus-pointer {
-  color: #569cd6;
+  color: var(--md-variance-pointer);
 }
 
 .hex-byte.consensus-key-candidate,
 .hex-char.consensus-key-candidate {
-  color: #ff6b6b;
+  color: var(--md-variance-key-candidate);
   font-weight: bold;
+}
+
+/* High contrast: de-emphasis by dimming is the first thing to go when a user
+   has asked for maximum separation. Full-strength text plus a real outline
+   keeps invariant legible AND still distinct from the classified bands. */
+.high-contrast .hex-byte.consensus-invariant,
+.high-contrast .hex-char.consensus-invariant {
+  color: var(--md-text-primary);
+  opacity: 1;
+  outline: 1px solid var(--md-border);
+}
+
+/* --- Distinct-value ramp (overlay `variants` / `glyph` render modes) --- */
+/* The ordinal ramp for "how many DIFFERENT bytes live at this offset".
+   DERIVED from `--md-seq-3`, never `--md-seq-N` raw: the raw ordinal tokens are
+   chart-ink, chosen to be read AS the mark. Here the mark is hex text sitting
+   ON the colour, so the same tokens would be unreadable at the dark end —
+   light-mode `--md-seq-5` is #024b8c, near-black-blue. One hue at rising
+   opacity keeps the ramp monotone and self-evidently ordered, and because it
+   mixes with `transparent` it composites over whatever the cell already sits
+   on (selection, hover, row stripe) instead of erasing it.
+   `--md-seq-3` is redefined per theme on the same <html> element that carries
+   `.dark`, so these five re-resolve on a theme switch with no dark-mode block.
+   Percentages stop at 48%: measured against `--md-text-primary` that is the
+   last step still clearing 4.5:1 in the DARK theme, where mixing a light blue
+   INTO a dark ground raises the background towards the text. Light mode has far
+   more headroom, so the ceiling is set by the tighter of the two. */
+:root {
+  --md-variant-1: color-mix(in srgb, var(--md-seq-3) 12%, transparent);
+  --md-variant-2: color-mix(in srgb, var(--md-seq-3) 21%, transparent);
+  --md-variant-3: color-mix(in srgb, var(--md-seq-3) 30%, transparent);
+  --md-variant-4: color-mix(in srgb, var(--md-seq-3) 39%, transparent);
+  --md-variant-5: color-mix(in srgb, var(--md-seq-3) 48%, transparent);
+}
+
+/* Kept compound for the same reason the consensus byte rules are: a legend is
+   not a byte, and `tests/e2e/specs/multi-dump-overlay.spec.ts` counts painted
+   bytes by class. `font-weight: 500` is the design's: a tinted cell is a cell
+   worth reading, and the extra weight says so without spending another colour.
+   The text colour stays a plain foreground token so light, dark and
+   `.high-contrast` all keep their own contrast guarantees automatically. */
+.hex-byte.variant-1,
+.hex-char.variant-1,
+.hex-byte.variant-2,
+.hex-char.variant-2,
+.hex-byte.variant-3,
+.hex-char.variant-3,
+.hex-byte.variant-4,
+.hex-char.variant-4,
+.hex-byte.variant-5,
+.hex-char.variant-5 {
+  color: var(--md-text-primary);
+  font-weight: 500;
+}
+
+.hex-byte.variant-1,
+.hex-char.variant-1 {
+  background: var(--md-variant-1);
+}
+.hex-byte.variant-2,
+.hex-char.variant-2 {
+  background: var(--md-variant-2);
+}
+.hex-byte.variant-3,
+.hex-char.variant-3 {
+  background: var(--md-variant-3);
+}
+.hex-byte.variant-4,
+.hex-char.variant-4 {
+  background: var(--md-variant-4);
+}
+.hex-byte.variant-5,
+.hex-char.variant-5 {
+  background: var(--md-variant-5);
+}
+
+/* High contrast: a five-step opacity ramp is exactly the kind of separation a
+   user asking for maximum contrast has told us they cannot rely on. The tints
+   stay (they still order the cells for everyone else) but each tinted cell also
+   gets a real outline, so "tinted at all" is legible as a shape rather than as
+   a shade. Only the top two steps are pushed, so the ramp stays monotone. */
+.high-contrast .hex-byte.variant-1,
+.high-contrast .hex-char.variant-1,
+.high-contrast .hex-byte.variant-2,
+.high-contrast .hex-char.variant-2,
+.high-contrast .hex-byte.variant-3,
+.high-contrast .hex-char.variant-3,
+.high-contrast .hex-byte.variant-4,
+.high-contrast .hex-char.variant-4,
+.high-contrast .hex-byte.variant-5,
+.high-contrast .hex-char.variant-5 {
+  outline: 1px solid var(--md-border);
+  font-weight: 700;
+}
+
+/* --- Solo underline (the rail's solo view) --- */
+/* Same five ordinal steps, spent on a 2 px rule instead of a fill. In solo view
+   the grid paints ONE dump's real bytes, so the value must keep full contrast
+   on the plain row ground; the cross-dump variance rides underneath it.
+   A SEPARATE token ramp from `--md-variant-1…5`, and deliberately much denser:
+   those percentages are capped at 48% because hex text sits ON them, whereas a
+   2 px rule carries no text and a 12% mix of it would be invisible. The top
+   step is the full token, so "every dump differs" reads as a solid rule. */
+:root {
+  --md-variant-underline-1: color-mix(in srgb, var(--md-seq-3) 40%, transparent);
+  --md-variant-underline-2: color-mix(in srgb, var(--md-seq-3) 55%, transparent);
+  --md-variant-underline-3: color-mix(in srgb, var(--md-seq-3) 70%, transparent);
+  --md-variant-underline-4: color-mix(in srgb, var(--md-seq-3) 85%, transparent);
+  --md-variant-underline-5: var(--md-seq-3);
+}
+
+/* `margin-bottom: -2px` is load bearing, not a nudge. `.hex-byte` is an
+   inline-block whose height comes from the row's 20px line-height, so a border
+   would make its box 22px tall inside a 20px row and push the byte grid out of
+   alignment with the offset gutter. The negative margin gives the 2px back to
+   the layout while the rule still paints, so a solo row occupies exactly the
+   same box as an overlay row and the virtualizer's fixed row height stays true.
+   A border rather than an inset box-shadow because a hex cell can already carry
+   a search-highlight box-shadow, and the later rule would win outright —
+   silently erasing one of the two marks. */
+.hex-byte.variant-underline-1,
+.hex-char.variant-underline-1,
+.hex-byte.variant-underline-2,
+.hex-char.variant-underline-2,
+.hex-byte.variant-underline-3,
+.hex-char.variant-underline-3,
+.hex-byte.variant-underline-4,
+.hex-char.variant-underline-4,
+.hex-byte.variant-underline-5,
+.hex-char.variant-underline-5 {
+  color: var(--md-text-primary);
+  font-weight: 500;
+  margin-bottom: -2px;
+}
+
+.hex-byte.variant-underline-1,
+.hex-char.variant-underline-1 {
+  border-bottom: 2px solid var(--md-variant-underline-1);
+}
+.hex-byte.variant-underline-2,
+.hex-char.variant-underline-2 {
+  border-bottom: 2px solid var(--md-variant-underline-2);
+}
+.hex-byte.variant-underline-3,
+.hex-char.variant-underline-3 {
+  border-bottom: 2px solid var(--md-variant-underline-3);
+}
+.hex-byte.variant-underline-4,
+.hex-char.variant-underline-4 {
+  border-bottom: 2px solid var(--md-variant-underline-4);
+}
+.hex-byte.variant-underline-5,
+.hex-char.variant-underline-5 {
+  border-bottom: 2px solid var(--md-variant-underline-5);
+}
+
+/* High contrast: thicken the rule and bold the value rather than flattening the
+   ramp to one colour. A user who has asked for maximum contrast still needs to
+   tell step 2 from step 5, and thickness is a second, non-colour channel; the
+   extra pixel comes out of the same negative margin so the row height holds. */
+.high-contrast .hex-byte.variant-underline-1,
+.high-contrast .hex-char.variant-underline-1,
+.high-contrast .hex-byte.variant-underline-2,
+.high-contrast .hex-char.variant-underline-2,
+.high-contrast .hex-byte.variant-underline-3,
+.high-contrast .hex-char.variant-underline-3,
+.high-contrast .hex-byte.variant-underline-4,
+.high-contrast .hex-char.variant-underline-4,
+.high-contrast .hex-byte.variant-underline-5,
+.high-contrast .hex-char.variant-underline-5 {
+  border-bottom-width: 3px;
+  margin-bottom: -3px;
+  font-weight: 700;
+}
+
+/* --- The dump rail --- */
+/* The design's 198px, expressed in rem so it tracks the user's root font size
+   instead of pinning a control full of text to a pixel count chosen at one
+   zoom level. A token rather than a utility class because the rail and its
+   collapsed strip must agree about the width, and the grid beside it is what
+   pays for every pixel of it. */
+:root {
+  --md-rail-width: 12.375rem;
+  --md-rail-collapsed-width: 2rem;
+}
+
+/* --- Legend swatches (shared by every variance legend) --- */
+/* Deliberately a SEPARATE, non-compound class: a legend is not a byte, and the
+   byte rules above must never match one. Each swatch reads the same token as
+   its byte rule, so the legend cannot drift from the grid. */
+.md-variance-swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  border: 1px solid var(--md-border);
+  vertical-align: middle;
+}
+.md-variance-swatch.variance-invariant {
+  background: color-mix(in srgb, var(--md-variance-invariant) 35%, transparent);
+}
+.md-variance-swatch.variance-structural {
+  background: var(--md-variance-structural);
+}
+.md-variance-swatch.variance-pointer {
+  background: var(--md-variance-pointer);
+}
+.md-variance-swatch.variance-key-candidate {
+  background: var(--md-variance-key-candidate);
+}
+/* The NON-INVARIANT UNION chip: structural + pointer + key_candidate, which is
+   the only query that finds a real key whole (a planted 48-byte TLS secret is
+   27 key_candidate + 18 pointer + 3 structural bytes). It paints no byte, so it
+   gets no byte rule -- only a swatch, and that swatch is the three bands it
+   covers, in variance order, so the chip visibly IS the union of the three
+   chips beside it rather than a sixth colour with a meaning of its own. */
+.md-variance-swatch.variance-non-invariant {
+  background: linear-gradient(
+    135deg,
+    var(--md-variance-structural) 0%,
+    var(--md-variance-structural) 33%,
+    var(--md-variance-pointer) 33%,
+    var(--md-variance-pointer) 66%,
+    var(--md-variance-key-candidate) 66%,
+    var(--md-variance-key-candidate) 100%
+  );
+}
+/* A RING, not a fill -- `differs` is painted on bytes as an inset ring (see
+   `.cross-dump-differs` below), and a legend has to show the TREATMENT, not
+   merely a colour, or it teaches the wrong thing to look for. */
+.md-variance-swatch.variance-differs {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--md-accent-yellow) 60%, transparent);
+}
+/* The five ramp steps, reading the SAME `--md-variant-*` tokens as the byte
+   rules above, so the legend cannot drift from the grid it explains. */
+.md-variance-swatch.variant-1 {
+  background: var(--md-variant-1);
+}
+.md-variance-swatch.variant-2 {
+  background: var(--md-variant-2);
+}
+.md-variance-swatch.variant-3 {
+  background: var(--md-variant-3);
+}
+.md-variance-swatch.variant-4 {
+  background: var(--md-variant-4);
+}
+.md-variance-swatch.variant-5 {
+  background: var(--md-variant-5);
+}
+/* The absence swatches show the TREATMENT, for the same reason: two hatches
+   and a ruled tint, reading the same tokens as the byte rules below. */
+.md-variance-swatch.absence-gap {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--md-page-unmapped) 0 2px,
+    transparent 2px 4px
+  );
+}
+.md-variance-swatch.absence-absent {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--md-page-failed) 0 2px,
+    transparent 2px 4px
+  );
+}
+.md-variance-swatch.absence-error {
+  background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
+  box-shadow: inset 0 -2px 0 0 var(--md-page-failed);
+}
+
+/* --- Absence: WHY there is no byte here (multi-dump aligned viewers) --- */
+/* The design's rule, made visual: a byte present in some dumps and absent in
+   others gets a VOID cell and is NEVER folded into "mismatch" — "this page was
+   not captured" and "this byte changed" are different findings. The two
+   genuinely-absent causes are therefore HATCHED rather than tinted: a hatch
+   cannot be mistaken for one of the flat consensus colours, survives
+   greyscale, and reads as void rather than as a value. `HexRow` refuses to put
+   a consensus class on a cell carrying one of these, so the two vocabularies
+   cannot overlap on the same byte.
+   Tokens only (`--md-page-*`), so light, dark and high contrast all re-theme;
+   the design canvas specified `--color-neutral-400` for its single void state,
+   which is this repo's `--md-page-unmapped`. */
+
+/* No correspondence: the alignment put nothing at this index, for ANY dump. */
+.hex-byte.byte-gap,
+.hex-char.byte-gap {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--md-page-unmapped) 0 2px,
+    transparent 2px 4px
+  );
+  color: var(--md-page-unmapped);
+}
+
+/* Not in THIS dump: the alignment holds the index, this dump does not hold the
+   byte. Same hatch, the page-state "failed" hue — the same colour the single
+   view already uses for "this page was not captured". */
+.hex-byte.byte-absent,
+.hex-char.byte-absent {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--md-page-failed) 0 2px,
+    transparent 2px 4px
+  );
+  color: var(--md-page-failed);
+}
+
+/* Load failure: OUR problem, not the data's, so it is flat rather than hatched
+   and carries a rule instead. The inset is on the BOTTOM edge specifically so
+   `.cross-dump-differs` — a full inset RING (see below) — still composes on the
+   same cell; a full-ring shadow here would replace it and silently drop the
+   disagreement marker. */
+.hex-byte.byte-error,
+.hex-char.byte-error {
+  background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
+  box-shadow: inset 0 -2px 0 0 var(--md-page-failed);
+  color: var(--md-page-failed);
+}
+
+/* Selection must survive a void cell. `.selected` is a BACKGROUND and the
+   hatches are declared after it, so on a hatched cell the selection would be
+   painted over and simply disappear — the user would lose track of what they
+   had selected. The design's own selection treatment is an outline precisely
+   because an outline composes with any fill, so that is what a selected void
+   cell gets. */
+.hex-byte.selected.byte-gap,
+.hex-char.selected.byte-gap,
+.hex-byte.selected.byte-absent,
+.hex-char.selected.byte-absent,
+.hex-byte.selected.byte-error,
+.hex-char.selected.byte-error {
+  outline: 2px solid var(--md-text-primary);
+  outline-offset: -1px;
+}
+
+/* High contrast: a 2px hatch on a 22px cell is the first thing to disappear
+   when a user has asked for maximum separation, so the cells gain a real
+   border on top of the hatch. */
+.high-contrast .hex-byte.byte-gap,
+.high-contrast .hex-char.byte-gap {
+  outline: 1px solid var(--md-page-unmapped);
+  outline-offset: -1px;
+}
+.high-contrast .hex-byte.byte-absent,
+.high-contrast .hex-char.byte-absent,
+.high-contrast .hex-byte.byte-error,
+.high-contrast .hex-char.byte-error {
+  outline: 1px solid var(--md-page-failed);
+  outline-offset: -1px;
 }
 
 /* --- Cross-dump disagreement (N-dump aligned overlay) --- */

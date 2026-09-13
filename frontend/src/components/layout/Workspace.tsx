@@ -39,12 +39,18 @@ import { HexViewer } from "@/components/hex/HexViewer";
 import { MultiHexViewer } from "@/components/hex/MultiHexViewer";
 import { HexOverlayPane } from "@/components/hex/HexOverlayPane";
 import { OverlayByteInspector } from "@/components/hex/OverlayByteInspector";
+import { VarianceClassBrowser } from "@/components/hex/VarianceClassBrowser";
+import {
+  OVERLAY_DETAIL_TABS,
+  useOverlayDetailStore,
+} from "@/stores/overlay-detail-store";
 import { HexOverlay } from "@/components/hex/HexOverlay";
 import { HexComparison } from "@/components/hex/HexComparison";
 import { useHexStore } from "@/stores/hex-store";
 import { NeighborhoodOverlayPanel } from "@/components/hex/NeighborhoodOverlayPanel";
 import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
+import { useInfiniteScrollSentinel } from "@/hooks/useInfiniteScrollSentinel";
 import { NotificationStack } from "@/components/NotificationStack";
 import { ConsensusChart } from "@/components/charts/ConsensusChart";
 import { CandidatePanel } from "@/components/charts/CandidatePanel";
@@ -87,10 +93,9 @@ function Toolbar() {
         <img src="/memdiver-logo.svg" alt="" className="h-6 w-6" />
         <span className="font-bold md-text-accent text-sm">MemDiver</span>
         <span
-          className="text-xs px-2 py-0.5 rounded uppercase"
+          className="text-xs px-2 py-0.5 rounded uppercase md-text-on-accent"
           style={{
             background: mode === "verification" ? "var(--md-accent-blue)" : "var(--md-accent-purple)",
-            color: "white",
           }}
         >
           {t(`modeBadge.${mode}`)}
@@ -320,16 +325,7 @@ function DatasetOverview({ path }: { path: string }) {
 
   // Auto-load the next page when the sentinel scrolls into view. The "Load
   // more" button remains as an accessible, keyboard-triggerable fallback.
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const node = sentinelRef.current;
-    if (!node || !hasMore) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) loadMore();
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [hasMore, loadMore]);
+  const sentinelRef = useInfiniteScrollSentinel(hasMore, loadingMore, loadMore);
 
   // Open a dataset dump: register it, make it active, and switch to file mode
   // so the hex viewer mounts on it (same path as the import flow).
@@ -518,7 +514,7 @@ function DetailPanel() {
   // structure/neighborhood panels because the user is looking at a byte stream
   // whose whole point is the cross-dump comparison.
   if (mainView === "overlay" && inputMode === "file") {
-    return <OverlayByteInspector />;
+    return <OverlayDetailPanel />;
   }
 
   if (neighborhoodOverlay) {
@@ -550,6 +546,64 @@ function DetailPanel() {
           <span className="ml-2 md-text-muted">{t("libraryHits", { n: lib.hits.length })}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The overlay's right-hand panel: two questions, one at a time.
+ *
+ *   Byte    — "what does every dump hold AT THE CURSOR?"   (cursor-driven)
+ *   Regions — "where is EVERY key candidate in this dump?" (class-driven)
+ *
+ * They are not variants of one view and they must not be stacked: the inspector
+ * follows the cursor and the browser MOVES it, so a panel showing both would
+ * scroll itself every time the user clicked a row. The tab lives in
+ * `overlay-detail-store` rather than in local state because the control that
+ * opens Regions is a category chip in the LEFT pane's legend.
+ */
+function OverlayDetailPanel() {
+  const { t } = useTranslation("hex");
+  const tab = useOverlayDetailStore((s) => s.tab);
+  const setTab = useOverlayDetailStore((s) => s.setTab);
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden md-bg-secondary">
+      {/*
+        The same `role="tablist"` idiom as `MainViewSwitcher` and
+        `OverlayRenderModeSwitch`, deliberately rather than freshly invented:
+        this workspace already has segmented groups, and a third one that
+        behaved differently would teach a screen-reader user that this is a
+        different kind of control.
+      */}
+      <div
+        role="tablist"
+        aria-label={t("regions.tabsLabel")}
+        data-testid="overlay-detail-tabs"
+        className="flex items-center shrink-0 text-xs border-b border-[var(--md-border)]"
+      >
+        {OVERLAY_DETAIL_TABS.map((name) => (
+          <button
+            key={name}
+            role="tab"
+            type="button"
+            data-testid={`overlay-detail-tab-${name}`}
+            aria-selected={tab === name}
+            onClick={() => setTab(name)}
+            className={
+              "px-3 py-1 " +
+              (tab === name
+                ? "md-bg-accent md-text-on-accent"
+                : "hover:bg-[var(--md-bg-hover)]")
+            }
+          >
+            {t(name === "byte" ? "regions.tabByte" : "regions.tabRegions")}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-hidden">
+        {tab === "byte" ? <OverlayByteInspector /> : <VarianceClassBrowser />}
+      </div>
     </div>
   );
 }
@@ -680,7 +734,7 @@ function BottomTabs() {
             )}
             {t === "results" && totalHits > 0 && (
               <span
-                className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-[var(--md-accent-blue)] text-white"
+                className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-[var(--md-accent-blue)] md-text-on-accent"
                 aria-live="polite"
               >
                 {totalHits}

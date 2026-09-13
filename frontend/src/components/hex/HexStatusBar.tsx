@@ -1,11 +1,38 @@
 import { useTranslation } from "react-i18next";
+import { useAlignedSelection, useOverlayComposition } from "@/hooks/useAlignedPanes";
+import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
+import { useMultiHexStore } from "@/stores/multi-hex-store";
+import { pluralityAt } from "./consensus-byte";
 import {
   MAX_WINDOW_ROWS,
   windowCount,
   clampWindowStart,
 } from "./window-utils";
 
+/**
+ * The always-on footer — and, since the overlay stopped painting the anchor's
+ * bytes, the only thing on screen that says WHOSE bytes those are.
+ *
+ * The layer line is a forensics requirement rather than a nicety. The grid can
+ * now be showing one dump's real bytes or a weighted plurality across several,
+ * and the two look identical: same monospace hex, same classes, same ring. An
+ * analyst who quotes a byte has to be able to say where it came from without
+ * remembering which chip they last clicked, so the footer states it on every
+ * frame — the same argument `HexAlignmentChip` makes for naming the alignment
+ * method every time instead of only when something looks wrong.
+ *
+ * `Agreement: k/N` is the companion fact: of the N included dumps PRESENT at
+ * the cursor, how many actually hold the byte being painted. `N` counts present
+ * dumps rather than included ones so that `k/N` is self-consistent (an absent
+ * dump agrees with nothing and disagrees with nothing); when nobody is present
+ * the ratio has no denominator and the field says `n/a (void)` instead of
+ * inventing `0/0`.
+ *
+ * Both fields are shown only in the aligned overlay. The single-dump and
+ * side-by-side viewers mount this same bar and have no layer to name: every
+ * pane there is one dump's own bytes, said by the pane header.
+ */
 export function HexStatusBar() {
   const { t } = useTranslation("hex");
   // Per-field selectors so chunk-load writes (pendingFetches / chunks) do
@@ -19,6 +46,27 @@ export function HexStatusBar() {
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const setWindowStart = useHexStore((s) => s.setWindowStart);
   const chunkError = useHexStore((s) => s.chunkError);
+
+  // The overlay layer, named. `mainView` rather than a prop because this bar is
+  // mounted by three different viewers and the layer is a property of which one
+  // is on screen, not of who rendered the bar.
+  const mainView = useDumpStore((s) => s.mainView);
+  // Rotates the agreement figure as the window's bytes land, the same way
+  // `OverlayByteInspector` keeps its table filling in.
+  const chunkVersionByPath = useMultiHexStore((s) => s.chunkVersionByPath);
+  const { selected } = useAlignedSelection();
+  // The SAME source `HexOverlayPane` reads for the grid it captions. Both files
+  // used to carry a comment saying the two must not disagree while each derived
+  // the answer its own way; this is the one source those comments argued for.
+  const { soloDump, includedPaths, weightFor } = useOverlayComposition(selected);
+
+  const isOverlay = mainView === "overlay";
+
+  void chunkVersionByPath;
+  const agreement =
+    isOverlay && cursorOffset !== null
+      ? pluralityAt(cursorOffset, includedPaths, weightFor)
+      : null;
   const offsetLabel = format === "msl" && viewMode === "vas" ? t("statusBar.offsetLabelVas") : t("statusBar.offsetLabelOffset");
 
   // All three MSL view modes need a distinct label. Collapsing "va" into the
@@ -53,6 +101,23 @@ export function HexStatusBar() {
   return (
     <div className="flex items-center justify-between px-3 py-1 border-t border-[var(--md-border)] md-bg-secondary text-xs md-text-muted">
       <div className="flex items-center gap-3">
+        {isOverlay && (
+          <span data-testid="hex-status-layer">
+            {soloDump
+              ? t("statusBar.layerSolo", { name: soloDump.name })
+              : t("statusBar.layerOverlay", { n: includedPaths.length })}
+          </span>
+        )}
+        {isOverlay && cursorOffset !== null && (
+          <span data-testid="hex-status-agreement">
+            {agreement && agreement.present > 0
+              ? t("statusBar.agreement", {
+                  agreeing: agreement.agreeing,
+                  present: agreement.present,
+                })
+              : t("statusBar.agreementVoid")}
+          </span>
+        )}
         {cursorOffset !== null && (
           <span>{t("statusBar.cursor", { label: offsetLabel, offset: cursorOffset.toString(16).padStart(8, "0") })}</span>
         )}

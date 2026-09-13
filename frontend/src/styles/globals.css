@@ -11,9 +11,17 @@
   --md-bg-hover: #e8e9eb;
   --md-bg-selected: #cce5ff;
 
+  /* Text ramp, retuned for WCAG AA (SC 1.4.3, 4.5:1) rather than for taste.
+     The old pair (#666666 / #888888) put 11-12px muted copy at 3.0-3.3:1 on
+     every surface, and secondary at 4.4:1 on --md-bg-hover/--md-bg-selected.
+     These clear 4.5:1 against ALL FIVE grounds this theme paints text on --
+     --md-bg-primary/secondary/tertiary/hover/selected -- worst case 4.61:1
+     (muted on --md-bg-selected). The three levels stay ordered and separated
+     (primary:secondary 1.95:1, secondary:muted 1.39:1), so "quieter" still
+     reads as quieter. */
   --md-text-primary: #212121;
-  --md-text-secondary: #666666;
-  --md-text-muted: #888888;
+  --md-text-secondary: #4a4f55;
+  --md-text-muted: #5f646b;
   --md-text-bright: #000000;
 
   --md-accent-blue: #2a6db5;
@@ -34,7 +42,11 @@
   --md-byte-key: #cc2222;
   --md-byte-static: #1a8a70;
   --md-byte-dynamic: #b87a00;
-  --md-byte-zero: #bfbfbf;
+  /* Zero bytes read as the quietest ink in the palette, not as an
+     unreadable one: this tracks --md-text-muted per theme so `00` stays
+     recessive while clearing 4.5:1. The old values (1.26-1.84:1) also
+     made the a11y sweep flake whenever a zero-heavy window painted. */
+  --md-byte-zero: #5f646b;
   --md-byte-ascii: #2a6db5;
   --md-byte-entropy: #8b3d85;
   --md-byte-structural: #3d7a28;
@@ -106,9 +118,20 @@
   --md-bg-hover: #2a2d2e;
   --md-bg-selected: #094771;
 
+  /* Text ramp, retuned for WCAG AA -- see the light-theme note above.
+     The old pair (#808080 / #6a737d) sat at 2.9-4.2:1; the status footer's
+     layer line measured 3.18:1. These clear 4.5:1 on --md-bg-primary,
+     --md-bg-secondary, --md-bg-tertiary and --md-bg-hover (worst 4.90:1,
+     muted on tertiary) and keep the ladder (primary:secondary 1.41:1,
+     secondary:muted 1.34:1).
+     --md-bg-selected (#094771) is the one ground muted cannot clear (3.49:1):
+     nothing dimmer than --md-text-primary does, and darkening the selection
+     tint far enough would gut the selection's own non-text contrast in the
+     hex grid. Handled where it actually occurs instead -- see
+     .md-selected-surface below. */
   --md-text-primary: #d4d4d4;
-  --md-text-secondary: #808080;
-  --md-text-muted: #6a737d;
+  --md-text-secondary: #adb4bf;
+  --md-text-muted: #949ba6;
   --md-text-bright: #ffffff;
 
   --md-accent-blue: #569cd6;
@@ -129,7 +152,7 @@
   --md-byte-key: #ff6b6b;
   --md-byte-static: #4ec9b0;
   --md-byte-dynamic: #ffd93d;
-  --md-byte-zero: #3d3d3d;
+  --md-byte-zero: #949ba6;
   --md-byte-ascii: #569cd6;
   --md-byte-entropy: #c586c0;
   --md-byte-structural: #6a9955;
@@ -162,7 +185,13 @@
 
   --md-page-captured: #6a9955;
   --md-page-failed: #f44747;
-  --md-page-unmapped: #6a737d;
+  /* The neutral "void" ink. It was a byte-for-byte copy of the OLD
+     --md-text-muted, and hex.css .byte-gap uses it as a GLYPH colour, so it
+     inherited that token's 3.46:1 failure. Moved with the neutral ramp rather
+     than left behind: same role, same family, now 5.95:1 on --md-bg-primary.
+     The hatch stripes that also use it lighten a touch, which is the same
+     direction the whole dark neutral ramp moved. */
+  --md-page-unmapped: #949ba6;
 
   --md-field-0: #569cd6;
   --md-field-1: #6a9955;
@@ -226,6 +255,18 @@ body {
 .md-bg-accent { background-color: var(--md-accent); }
 .md-text-on-accent { color: var(--md-bg-primary); }
 .md-text-secondary { color: var(--md-text-secondary); }
+/* A selected surface promotes its own quiet text.
+   --md-bg-selected is a saturated emphasis tint, and in dark mode (#094771)
+   nothing dimmer than --md-text-primary clears 4.5:1 on it -- muted lands at
+   3.49:1. Rather than brighten the muted token app-wide until it is
+   indistinguishable from secondary (which would collapse the three-level text
+   ramp everywhere to fix one surface), the SURFACE opts its descendants up:
+   a card the user has chosen reads at full strength, which is also what the
+   selection is trying to say. Applied by adding .md-selected-surface wherever
+   an element paints --md-bg-selected behind body copy. */
+.md-selected-surface .md-text-secondary,
+.md-selected-surface .md-text-muted { color: var(--md-text-primary); }
+
 .md-text-muted { color: var(--md-text-muted); }
 .md-text-error { color: var(--md-accent-red); }
 .md-text-warning { color: var(--md-accent-orange); }
@@ -266,13 +307,14 @@ body {
   --md-byte-key: #e60000;
   --md-byte-static: #007a5e;
   --md-byte-dynamic: #a06800;
-  --md-byte-zero: #999999;
+  --md-byte-zero: #53585f;
   --md-byte-ascii: #0055aa;
   --md-byte-entropy: #7a2875;
   --md-byte-structural: #2a6618;
   --md-border: #888888;
   --md-text-primary: #111111;
   --md-text-secondary: #444444;
+  --md-text-muted: #53585f;
   --md-focus-ring: #0044aa;
 }
 
@@ -280,13 +322,14 @@ body {
   --md-byte-key: #ff8080;
   --md-byte-static: #66ddbb;
   --md-byte-dynamic: #ffdd55;
-  --md-byte-zero: #555555;
+  --md-byte-zero: #b0b7c2;
   --md-byte-ascii: #77bbee;
   --md-byte-entropy: #dd99dd;
   --md-byte-structural: #88cc66;
   --md-border: #888888;
   --md-text-primary: #eeeeee;
-  --md-text-secondary: #bbbbbb;
+  --md-text-secondary: #c9cfd8;
+  --md-text-muted: #b0b7c2;
   --md-focus-ring: #ffd633;
 }
 

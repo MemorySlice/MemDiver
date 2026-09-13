@@ -55,7 +55,14 @@
     "intervalTitle": "0x{{va}}–0x{{end}} · {{state}} · {{count}} pages"
   },
   "row": {
-    "variance": "var: {{value}}"
+    "variance": "var: {{value}}",
+    "absence": {
+      "loading": "Not loaded yet - this window is still being fetched",
+      "gap": "No correspondence - the alignment places no byte here in any dump",
+      "notInDump": "Not in this dump - the page was not captured or not mapped here",
+      "error": "Could not be loaded - the request for this window failed"
+    },
+    "variants": "{{n}} distinct values across dumps"
   },
   "ndump": {
     "dumpsLabel": "Dumps ({{active}}/{{total}}):",
@@ -93,7 +100,7 @@
     "title": "Variance",
     "jumpTitle": "Cross-dump variance — click to jump",
     "legendChanges": "Changes",
-    "legendKey": "Key candidate"
+    "legendKey": "Key Candidate"
   },
   "statusBar": {
     "offsetLabelVas": "VAS",
@@ -106,7 +113,11 @@
     "selection": "Sel: 0x{{start}}–0x{{end}} ({{length}} bytes)",
     "byte": "Byte: {{value}}",
     "byteEmpty": "Byte: —",
-    "fileInfo": "{{size}} KB | {{rows}} rows"
+    "fileInfo": "{{size}} KB | {{rows}} rows",
+    "layerOverlay": "Viewing: Overlay · weighted plurality of {{n}}",
+    "layerSolo": "Viewing: {{name}} · solo",
+    "agreement": "Agreement: {{agreeing}}/{{present}}",
+    "agreementVoid": "Agreement: n/a (void)"
   },
   "window": {
     "range": "rows {{start}}–{{end}} of {{total}}",
@@ -135,7 +146,11 @@
     "running": "Aligning…",
     "truncated": "Window truncated",
     "truncatedTitle": "The aligned window was clipped to the shortest dump; bytes past the clip are not compared.",
-    "comparedTitle": "{{compared}} bytes compared, {{discarded}} discarded, {{sources}} sources"
+    "comparedTitle": "{{compared}} bytes compared, {{discarded}} discarded, {{sources}} sources",
+    "discardSummary": "Why are bytes missing? {{discarded}} bytes ({{percent}}%) were left out of this comparison",
+    "discardIntersection": "The aligned window holds only memory that EVERY selected dump captured, at the same ASLR-invariant address. A page one dump never captured - or never mapped - is left out for all of them, so gaps are normal and are not a sign that anything went wrong.",
+    "discardAnonymousOrdinal": "Anonymous mappings have no name to align by, so they are keyed by type, size and the order they appear in within each dump. One extra anonymous mapping in one dump shifts the order of every later one, which can drop whole stretches of memory from the comparison.",
+    "discardNotMismatch": "Bytes left out are drawn as hatched cells in the grid, never as a difference: \"this page was not captured\" and \"this byte changed\" are different findings."
   },
   "pane": {
     "origin": "Origin",
@@ -154,13 +169,17 @@
     "paneCap": "Showing {{shown}} of {{selected}} selected dumps.",
     "paneCapHint": "Switch to Overlay to compare all of them at once.",
     "paneError": "Could not load {{name}}: {{error}}",
-    "windowError": "Some bytes in this window could not be loaded: {{error}}"
+    "windowError": "Some bytes in this window could not be loaded: {{error}}",
+    "windowErrorRetry": "Retry",
+    "windowErrorMany": "Bytes in {{chunks}} windows on screen could not be loaded: {{error}}"
   },
   "overlayPane": {
     "label": "Aligned overlay",
     "noAnchor": "Select at least two dumps to overlay them.",
     "noConsensusTitle": "No consensus for this selection",
     "noConsensusBody": "Run consensus to classify every byte as invariant, structural, pointer or key candidate across the selected dumps.",
+    "staleConsensusTitle": "Consensus covers different dumps",
+    "staleConsensusBody": "This consensus was built over a different set of dumps, so its classes describe other bytes. Re-run it over the dumps selected now.",
     "runConsensus": "Run consensus to classify",
     "running": "Running consensus…",
     "rawOffsetTitle": "VA alignment requires an aligned consensus",
@@ -181,6 +200,110 @@
     "differs": "differs from the anchor",
     "colDump": "Dump",
     "colByte": "Byte",
-    "colChar": "Char"
+    "colChar": "Char",
+    "groundTruth": "Read from each dump — never the overlay's computed byte."
+  },
+  "absence": {
+    "legendGap": "No correspondence",
+    "legendNotInDump": "Not in this dump",
+    "legendError": "Load failed"
+  },
+  "alignSwitch": {
+    "label": "Align",
+    "deltaFit": "delta-fit",
+    "rawOffsets": "raw offsets",
+    "deltaFitTitle": "Put bytes in correspondence by ASLR-invariant address, so the same address in every dump lands in the same column.",
+    "rawOffsetsTitle": "Compare byte 0x1000 with byte 0x1000, ignoring where either was mapped. Expect a flood of variance — that is the control condition, not a finding.",
+    "running": "Rebuilding the alignment…",
+    "rawCaution": "Raw offsets is the control condition. Nothing here is aligned, so almost every byte differs — that flood is expected, and it is evidence the delta-fit build is doing work, not a finding about memory."
+  },
+  "renderMode": {
+    "label": "Overlay render mode",
+    "class": "Class",
+    "variants": "Variants",
+    "glyph": "Glyph",
+    "classTitle": "Colour each byte by its consensus class",
+    "variantsTitle": "Colour each byte by how many distinct values the dumps hold there",
+    "glyphTitle": "Print a colour-free mark per byte: ■ identical, 2–6 variants, ░ void",
+    "needTwoTitle": "At least 2 dumps must be aligned for a render mode to mean anything",
+    "legendIdentical": "identical",
+    "legendMaxVariants": "6 variants",
+    "legendVoid": "void",
+    "legendGlyphIdentical": "identical",
+    "legendGlyphVariants": "2–6 variants",
+    "legendGlyphVoid": "void"
+  },
+  "rail": {
+    "label": "Dump rail",
+    "sectionHead": "Aligned set · {{n}} dumps",
+    "overlay": "Σ Overlay",
+    "overlayAction": "Show the overlay of every included dump",
+    "overlayWeighted": "weighted",
+    "overlayEqual": "equal",
+    "pluralityNote": "Where the dumps disagree, this byte is computed and may exist in no single dump. The byte inspector shows what each one really holds.",
+    "soloAction": "Show {{name}} alone",
+    "includeAction": "Count {{name}} in the consensus",
+    "excludeAction": "Leave {{name}} out of the consensus",
+    "lastIncludedTitle": "At least one dump has to stay in the consensus",
+    "excludedTitle": "Left out of the consensus",
+    "weightAction": "Weight for {{name}}: {{weight}}× — cycles 1.0, 1.5, 0.5",
+    "weightValue": "{{weight}}×",
+    "statsHead": "Alignment coverage",
+    "statsCompared": "{{bytes}} bytes compared",
+    "statsDiscarded": "{{bytes}} discarded ({{percent}}%)",
+    "statsPending": "No aligned window yet",
+    "collapse": "Collapse the dump rail",
+    "restore": "Show the dump rail"
+  },
+  "regions": {
+    "chipsLabel": "Browse bytes by cross-dump class",
+    "chipTitle": "Show every {{label}} region in this dump",
+    "countUnknown": "—",
+    "countBytes": "{{value}} bytes",
+    "countInView": "{{value}} in view",
+    "category": {
+      "changing": "Changing"
+    },
+    "title": "Regions",
+    "titleFor": "{{label}} regions",
+    "tabByte": "Byte",
+    "tabRegions": "Regions",
+    "tabsLabel": "Detail view",
+    "bytes": "{{value}} B",
+    "breakdownEntry": "{{label}} {{value}}",
+    "unclassified": "unclassified",
+    "approximate": "spans a page boundary — range is approximate",
+    "returnedOfTotal": "{{returned}} of {{total}} shown",
+    "returnedInView": "{{returned}} in the loaded window",
+    "loadMore": "Load more",
+    "loading": "Loading regions…",
+    "empty": "No region of this class is at least the minimum length. Try the Changing chip — a real key is class-mixed, so a single-class query can miss it entirely.",
+    "error": "Could not list regions: {{message}}",
+    "jumpTitle": "Jump the viewer to this region",
+    "jumpUnavailable": "No navigable offset for this region in the current view — see the note above.",
+    "noJump": "These regions cannot be jumped to in the current view: the consensus is in raw file offsets while the viewer is addressing virtual addresses, or the anchor dump is still locked. Unlock the anchor, or switch the viewer's coordinate.",
+    "differsWindowOnly": "Differs is computed from the bytes currently loaded, not from the whole dump — the count and the list describe the window in view.",
+    "mixedClassNote": "Real key material is class-mixed: a planted 48-byte TLS secret classifies as 27 key candidate + 18 pointer + 3 structural bytes, so a single-class query shatters it into shards shorter than the minimum length and can return nothing at all. Changing queries all three non-invariant bands at once and keeps it whole.",
+    "announce": "Region {{index}} of {{total}}: {{label}}, {{bytes}} bytes at {{offset}}"
+  },
+  "varianceLegend": {
+    "summary": "What do these colours mean?",
+    "band": {
+      "invariant": "(variance ≤ {{value}})",
+      "structural": "(variance ≤ {{value}})",
+      "pointer": "(variance ≤ {{value}})",
+      "key_candidate": "(variance > {{value}})"
+    },
+    "desc": {
+      "invariant": "— every compared dump holds the same value here. Constants, code, padding.",
+      "structural": "— the value moves a little between dumps: lengths, counters, flags, small indices.",
+      "pointer": "— the value moves the way an address does: heap and stack pointers shifted by allocation and ASLR.",
+      "keyCandidate": "— the value is different in every dump with no structure to it. That is what an ephemeral secret looks like, and it is also what a nonce, a random ID or an uninitialised buffer looks like.",
+      "differs": "— the aligned dumps simply do not agree on this byte. Drawn as a ring around the byte rather than a fill, so it composes with whichever class colour is underneath instead of hiding it."
+    },
+    "thresholdsUnknown": "This build did not report the variance bands it used, so the boundaries above are omitted rather than guessed.",
+    "invariantDimmed": "Invariant is deliberately dimmed. It is almost every byte in a dump, and it is the background the changing bytes have to stand out against — not a finding in itself.",
+    "differsRing": "Differs is a ring, not a fill, precisely so a byte can be both \"pointer\" and \"the dumps disagree here\" at once.",
+    "mixedClass": "A region is rarely one class. A planted 48-byte TLS secret measured here as 27 key candidate + 18 pointer + 3 structural bytes, so asking for key candidates alone can return nothing. The Changing chip asks for all three non-invariant bands together."
   }
 }

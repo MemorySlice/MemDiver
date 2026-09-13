@@ -117,6 +117,28 @@ EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
         "capability.",
     ),
     (
+        "memdiver.app.tools_consensus.class_regions_from_vector",
+        "The SAME compute as the registered consensus.class_regions, entered "
+        "with a vector the caller already holds instead of building one. Web "
+        "(the consensus_id branch of POST /consensus/regions) and library "
+        "reach it; CLI and MCP have no vector to hand it, so registering it "
+        "would GROW KNOWN_PARITY_GAPS by two entries on a shrink-only baseline "
+        "for a function that is not a separate capability.",
+    ),
+    (
+        "memdiver.app.tools_consensus.dump_index_for",
+        "NOT A PRODUCER: a one-line selector resolver (an int index or a dump "
+        "path -> the dump's position in the build order). It is PUBLIC for the "
+        "reason app.composition.raise_if_locked is — "
+        "api.routers.analysis._reject_dumps_outside_consensus has to resolve a "
+        "selector EXACTLY the way _select_dumps does, or a request passes the "
+        "router's 409 gate and is then rejected by the producer over a "
+        "difference in path spelling, and a router reaching for another "
+        "module's PRIVATE name is worse than the duplication it replaces. It "
+        "computes nothing, opens nothing and has no surface of its own, so "
+        "registering it would invent a capability that does not exist.",
+    ),
+    (
         "memdiver.app.tools.import_raw_dump",
         "Back-compat alias that just calls import_dump — same compute, not a "
         "distinct capability. The MCP import_raw_dump tool routes here.",

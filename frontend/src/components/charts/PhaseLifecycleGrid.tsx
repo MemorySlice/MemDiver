@@ -60,7 +60,7 @@ export const PhaseLifecycleGrid = memo(function PhaseLifecycleGrid({
                       background: present
                         ? "var(--md-accent-green)"
                         : "var(--md-bg-tertiary)",
-                      color: present ? "white" : "transparent",
+                      color: present ? "var(--md-bg-primary)" : "transparent",
                       fontSize: 11,
                     }}
                   >

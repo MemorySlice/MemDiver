@@ -99,7 +99,7 @@ export function PluginPreview({
           </button>
           <button
             onClick={handleDownload}
-            className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white"
+            className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent"
           >
             {t("common:download")}
           </button>

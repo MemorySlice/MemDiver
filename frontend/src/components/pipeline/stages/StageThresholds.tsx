@@ -434,7 +434,7 @@ export function StageThresholds({ onAdvance }: Props) {
           type="button"
           disabled={submitting}
           onClick={() => void submit()}
-          className="text-xs px-4 py-1.5 rounded bg-[var(--md-accent-blue)] text-white disabled:opacity-50"
+          className="text-xs px-4 py-1.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
           title={t("stages.thresholds.runTitle", {
             optional:
               (nsweepOn ? t("stages.thresholds.chainSweep") : "") +

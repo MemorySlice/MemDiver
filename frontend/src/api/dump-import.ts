@@ -44,6 +44,12 @@ export async function uploadDump(file: File): Promise<DumpUploadResult> {
  */
 export async function importDumpFile(file: File): Promise<ImportedDump> {
   const data = await uploadDump(file);
+  // The label comes from the server-side name, which is now
+  // `<dropped stem>-<uuid8>.msl` — recognisable AND unique. Using `file.name`
+  // instead was tried and reverted: importing run_0001 and run_0002 of the same
+  // tool (both literally named `memslicer.msl`) then produced two panes with
+  // identical labels. The old bug was the opposite extreme — an unrecognisable
+  // `tmpvqb05sie.msl` — and the server-side rename is what fixed that.
   const name = data.output.split(/[\\/]/).pop() || data.output;
   const id = useDumpStore.getState().addDump({
     path: data.output,

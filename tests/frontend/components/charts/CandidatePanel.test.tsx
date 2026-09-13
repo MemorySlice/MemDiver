@@ -216,7 +216,7 @@ describe("CandidateTable rendering", () => {
     render(<CandidatePanel />);
     const rows = await screen.findAllByTestId("candidate-row");
     // 22 key_candidate > 18 pointer > 8 structural.
-    expect(within(rows[0]).getByText("Key candidate")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("Key Candidate")).toBeInTheDocument();
   });
 
   it("jumps the hex viewer to the clicked row's offset", async () => {

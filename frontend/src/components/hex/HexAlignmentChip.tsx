@@ -1,9 +1,11 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { useConsensusStore } from "@/stores/consensus-store";
+import { useConsensusRun } from "@/stores/consensus-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
+// The identity behind this denominator is subtle enough that `DumpRail` and
+// this chip must not each own a copy — see `./alignment-stats`.
+import { discardedFraction } from "./alignment-stats";
 
 /**
  * Says, permanently and in words, WHAT put these bytes side by side.
@@ -33,18 +35,24 @@ const METHOD_KEY = {
   file_offset: "alignment.file_offset",
 } as const;
 
+
 export function HexAlignmentChip({ paths, hasMsl }: HexAlignmentChipProps) {
   const { t } = useTranslation("hex");
   const alignment = useMultiHexStore((s) => s.alignment);
   const truncated = useMultiHexStore((s) => s.truncated);
   const aslrNormalize = useDumpStore((s) => s.aslrNormalize);
-  const runConsensus = useConsensusStore((s) => s.runConsensus);
-  const [running, setRunning] = useState(false);
+  // Shared with the align switch and the raw-offset banner, both of which
+  // render alongside this chip — see `useConsensusRun`.
+  const { running, run } = useConsensusRun();
 
   const method = alignment?.method;
   const label = method ? t(METHOD_KEY[method]) : t("alignment.pending");
   const warnings = alignment?.warnings ?? [];
   const offerRerun = method === "file_offset" && hasMsl && paths.length > 1;
+  // Absence is the NORMAL case here, not an incident — so the note is offered
+  // whenever anything at all was dropped, and folded away by default.
+  const discarded = alignment?.bytes_discarded ?? 0;
+  const discardedPercent = alignment ? discardedFraction(alignment) * 100 : 0;
 
   return (
     <div
@@ -92,19 +100,39 @@ export function HexAlignmentChip({ paths, hasMsl }: HexAlignmentChipProps) {
         </span>
       )}
 
+      {alignment && discarded > 0 && (
+        /*
+          Why bytes are missing, where the analyst already asks the question.
+          A `<details>` rather than a panel or a tooltip: it is keyboard
+          operable and screen-reader legible with no JS, it starts closed so
+          the chip stays a chip, and it sits next to the numbers it explains.
+          Follows `CandidatePanel`'s `CandidateLegend`.
+        */
+        <details data-testid="hex-alignment-discard-note" className="w-full">
+          <summary className="cursor-pointer md-text-muted">
+            {t("alignment.discardSummary", {
+              discarded,
+              percent: discardedPercent.toFixed(1),
+            })}
+          </summary>
+          <div className="mt-1 space-y-1 md-text-muted">
+            <p>{t("alignment.discardIntersection")}</p>
+            <p>{t("alignment.discardAnonymousOrdinal")}</p>
+            <p>{t("alignment.discardNotMismatch")}</p>
+          </div>
+        </details>
+      )}
+
       {offerRerun && (
         <button
           type="button"
           data-testid="hex-alignment-run-consensus"
           disabled={running}
           className="ml-auto px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] disabled:opacity-50"
-          onClick={() => {
-            setRunning(true);
-            // The ASLR-normalize toggle is what turns raw file offsets into a
-            // virtual-address alignment, so the re-run honours whatever the
-            // user has set rather than silently choosing for them.
-            void runConsensus(paths, aslrNormalize).finally(() => setRunning(false));
-          }}
+          // The ASLR-normalize toggle is what turns raw file offsets into a
+          // virtual-address alignment, so the re-run honours whatever the user
+          // has set rather than silently choosing for them.
+          onClick={() => run(paths, aslrNormalize)}
         >
           {running ? t("alignment.running") : t("alignment.runConsensus")}
         </button>

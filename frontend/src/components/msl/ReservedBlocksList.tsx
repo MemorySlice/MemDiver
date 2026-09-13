@@ -48,8 +48,8 @@ export function ReservedBlocksList({ mslPath, endpoint, title }: Props) {
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold md-text-accent">{title}</h3>
         <span
-          className="text-[9px] px-1.5 py-0.5 rounded"
-          style={{ background: badgeColor, color: "white" }}
+          className="text-[9px] px-1.5 py-0.5 rounded md-text-on-accent"
+          style={{ background: badgeColor }}
           title={data.note}
         >
           {badgeLabel}

@@ -4,20 +4,35 @@ import { useTranslation } from "react-i18next";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ConsensusIcon } from "@/components/common/Icons";
+import { VARIANCE_META, type VarianceCategory } from "@/utils/variance-classes";
 
 interface ConsensusChartProps {
   onNavigate?: (tab: "analysis") => void;
 }
 
-const CLASS_INFO: { key: string; labelKey: string; color: string; descKey: string }[] = [
-  { key: "invariant", labelKey: "consensus.class.invariant.label", color: "var(--md-accent-green)", descKey: "consensus.class.invariant.desc" },
-  { key: "structural", labelKey: "consensus.class.structural.label", color: "var(--md-accent-blue)", descKey: "consensus.class.structural.desc" },
-  { key: "pointer", labelKey: "consensus.class.pointer.label", color: "var(--md-accent-cyan)", descKey: "consensus.class.pointer.desc" },
-  { key: "key_candidate", labelKey: "consensus.class.keyCandidate.label", color: "var(--md-accent-red)", descKey: "consensus.class.keyCandidate.desc" },
+/**
+ * The histogram bands.
+ *
+ * Both the colour AND the label now come from the shared `VARIANCE_META` map.
+ * The palette was already shared -- this was the fifth private copy of it, and
+ * the copies disagreed. The LABELS had the same problem one step later: this
+ * file's `charts` namespace said "Key Candidate" and `candidates.json` said
+ * "Key candidate", so the same backend class was two different words two panels
+ * apart. Only the longer, chart-specific `desc` stays local, which is exactly
+ * the split `VarianceMeta` already draws between `labelKey` and
+ * `descriptionKey`.
+ */
+const CLASS_INFO: { key: VarianceCategory; color: string; descKey: string }[] = [
+  { key: "invariant", color: VARIANCE_META.invariant.colorVar, descKey: "consensus.class.invariant.desc" },
+  { key: "structural", color: VARIANCE_META.structural.colorVar, descKey: "consensus.class.structural.desc" },
+  { key: "pointer", color: VARIANCE_META.pointer.colorVar, descKey: "consensus.class.pointer.desc" },
+  { key: "key_candidate", color: VARIANCE_META.key_candidate.colorVar, descKey: "consensus.class.keyCandidate.desc" },
 ];
 
 export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: ConsensusChartProps = {}) {
-  const { t } = useTranslation("charts");
+  // Two namespaces: the band LABELS are the shared variance vocabulary, which
+  // lives in `hex`; everything else on this chart is `charts`.
+  const { t } = useTranslation(["charts", "hex"]);
   const { available, size, numDumps, counts } = useConsensusStore(
     useShallow((s) => ({
       available: s.available,
@@ -48,7 +63,7 @@ export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: Conse
         <span>{t("consensus.dumpsAnalyzed", { value: numDumps })}</span>
       </div>
       <div className="space-y-2">
-        {CLASS_INFO.map(({ key, labelKey, color, descKey }) => {
+        {CLASS_INFO.map(({ key, color, descKey }) => {
           const count = counts[key] ?? 0;
           const pct = size > 0 ? (count / size) * 100 : 0;
           return (
@@ -58,7 +73,9 @@ export const ConsensusChart = memo(function ConsensusChart({ onNavigate }: Conse
                 style={{ background: color }}
                 title={t(descKey)}
               />
-              <span className="min-w-[90px] font-medium">{t(labelKey)}</span>
+              <span className="min-w-[90px] font-medium">
+                {t(`hex:${VARIANCE_META[key].labelKey}`)}
+              </span>
               <div className="flex-1 h-4 rounded bg-[var(--md-bg-tertiary)] overflow-hidden">
                 <div
                   className="h-full rounded transition-all"

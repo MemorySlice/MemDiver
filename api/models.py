@@ -6,6 +6,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from memdiver.app.tools_consensus import (
+    DEFAULT_REGIONS_PER_PAGE,
+    MAX_REGIONS_PER_PAGE,
+)
 from memdiver.app.tools_pipeline import DEFAULT_MAX_RETURNED_REGIONS
 from memdiver.core.input_schemas import OUTPUT_FORMATS
 from memdiver.engine.key_location import (
@@ -119,6 +123,47 @@ class AlignedWindowRequest(BaseModel):
     normalize: bool = False
     classify: bool = True
     include_bytes: bool = True
+    keys: list[AlignedWindowKey] = Field(default_factory=list)
+
+
+class ConsensusRegionsRequest(BaseModel):
+    """Request body for ``POST /api/analysis/consensus/regions``.
+
+    Every occurrence of a consensus class, paginated and JUMPABLE — the list
+    behind "show me every key candidate", where clicking a row scrolls the hex
+    viewer to that byte.
+
+    POST, not GET, for the two reasons :class:`AlignedWindowRequest` gives and
+    they apply verbatim: N key triples do not fit a query string, and key
+    material must stay out of access logs, shell history and ``Referer``. The
+    keys are not decoration — resolving a ``"vas"`` anchor offset means OPENING
+    (and therefore decrypting) the anchor container.
+
+    Exactly ONE of ``consensus_id`` / ``dump_paths``, for the same reason:
+    "which correspondence are these regions in" has to have exactly one answer.
+
+    ``classes`` omitted is the NON-INVARIANT UNION, not "every class" and not
+    "key_candidate". Real key material is class-mixed, so a per-class query
+    shatters a real secret into shards; ``"non_invariant"`` names the union
+    explicitly. See ``app.tools_consensus.class_regions_from_vector``.
+    """
+
+    consensus_id: str | None = None
+    dump_paths: list[str] | None = None
+    #: Class names ("invariant"/"structural"/"pointer"/"key_candidate"), raw
+    #: integer codes as strings, or the ``"non_invariant"`` union alias.
+    classes: list[str] | None = None
+    min_length: int = 8
+    max_length: int = 0
+    #: Exclusive slab-offset cursor — the previous page's ``next_after``.
+    after: int = -1
+    limit: int = Field(DEFAULT_REGIONS_PER_PAGE, ge=1, le=MAX_REGIONS_PER_PAGE)
+    #: The dump whose coordinate the jump offsets are expressed in. Spelled
+    #: ``anchor_path`` for the reason :class:`AlignedWindowRequest` documents.
+    anchor_path: str | None = None
+    anchor_view: Literal["va", "vas", "raw"] = "va"
+    include_anchor_offsets: bool = True
+    normalize: bool = False
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 

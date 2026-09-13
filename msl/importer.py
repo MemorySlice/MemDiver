@@ -2,6 +2,7 @@
 
 import functools
 import logging
+import shutil
 import struct
 from dataclasses import dataclass
 from math import ceil
@@ -778,6 +779,61 @@ def import_raw_dump(
     )
 
 
+@_reject_malformed_dump
+def import_msl_passthrough(
+    src_path: Path,
+    output_path: Path,
+) -> ImportResult:
+    """Stage an already-MSL container unchanged.
+
+    A ``.msl`` source needs no conversion: it is already the target format.
+    Routing it through :func:`import_raw_dump` (which is what happened before
+    this branch existed) wrapped the whole container as ONE opaque region at
+    VA 0 — a nested MSL blob, not a memory image, and useless for comparison.
+
+    The source is validated by parsing it, then copied byte-for-byte. An
+    encrypted container opened without key material is still a *valid* ``.msl``,
+    so it is staged too; only its region walk is skipped (see below).
+    """
+    from .enums import TagStatus
+    from .reader import MslReader
+
+    # Validate BEFORE copying, so a malformed source leaves no partial output
+    # and the only exception type that escapes is ValueError (MslParseError) —
+    # the parser contract the fuzz suite pins.
+    with MslReader(src_path) as reader:
+        if reader.tag_status is TagStatus.NOT_ENCRYPTED:
+            regions_written = len(reader.collect_regions())
+            key_hints_written = len(reader.collect_key_hints())
+        else:
+            # Blocks live behind AEAD; without key material there is nothing to
+            # count. The container is intact and still worth staging, so report
+            # zero rather than failing the import.
+            logger.info(
+                "staging encrypted MSL %s (tag_status=%s); region counts "
+                "unavailable without key material",
+                src_path.name, reader.tag_status.value,
+            )
+            regions_written = 0
+            key_hints_written = 0
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Guard the degenerate in-place import: copyfile() truncates its destination
+    # first, so src == dst would zero the very file being imported.
+    if not (output_path.exists() and output_path.samefile(src_path)):
+        # copyfile(), not copy2(): the destination wants a fresh mtime, which is
+        # what the API's LRU quota prune orders on.
+        shutil.copyfile(src_path, output_path)
+
+    return ImportResult(
+        source_path=src_path,
+        output_path=output_path,
+        regions_written=regions_written,
+        key_hints_written=key_hints_written,
+        total_bytes=src_path.stat().st_size,
+    )
+
+
 def import_run_directory(
     run_dir: Path,
     output_dir: Path,
@@ -845,16 +901,21 @@ def import_dump(
 ) -> ImportResult:
     """Import any supported dump into .msl, dispatching on detected format.
 
-    Routes minidumps to :func:`import_minidump`, ELF ET_CORE files to
-    :func:`import_elf_core` (falling back to raw if the ELF is not a
-    parseable core), and everything else to :func:`import_raw_dump`. The
-    raw path is preserved unchanged so plain .dump imports are a no-op
-    regression.
+    Routes already-MSL containers to :func:`import_msl_passthrough` (a
+    validated byte-for-byte copy — no conversion), minidumps to
+    :func:`import_minidump`, ELF ET_CORE files to :func:`import_elf_core`
+    (falling back to raw if the ELF is not a parseable core), and everything
+    else to :func:`import_raw_dump`. The raw path is preserved unchanged so
+    plain .dump imports are a no-op regression.
     """
     src_path = Path(src_path)
     with open(src_path, "rb") as fh:
         head = fh.read(512)
     fmt = detect_format(head)
+
+    if fmt == "msl":
+        # Already the target format — stage it, do not re-wrap it.
+        return import_msl_passthrough(src_path, output_path)
 
     if fmt == "minidump":
         return import_minidump(

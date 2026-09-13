@@ -2,6 +2,8 @@ import { memo, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
+import { VarianceSwatch } from "@/components/common/VarianceSwatch";
+import { VARIANCE_META, varianceCategoryForCode } from "@/utils/variance-classes";
 
 // Number of bins requested for the strip. Kept below the backend cap (4096)
 // and roughly one bin per few strip pixels so the down-sampled heatmap reads
@@ -19,18 +21,23 @@ interface Props {
 /**
  * Pick a strip color for one bin. Stable bins (no changing bytes) paint
  * nothing so the strip background shows through; changing bins are tinted by
- * their peak class (structural → green, pointer → blue, key-candidate → red),
- * with opacity proportional to the fraction of bytes that change. `high`
- * (key-candidate fraction) forces red so likely key material stands out.
+ * their peak class, with opacity proportional to the fraction of bytes that
+ * change. `high` (key-candidate fraction) forces the key-candidate colour so
+ * likely key material stands out.
+ *
+ * The colour comes from `VARIANCE_META`, not a local ladder, so the strip, the
+ * hex grid and every legend name one class with one colour. The peak level is
+ * clamped into the CHANGING bands: a bin that reaches here has changing bytes,
+ * so level 0 ("invariant") would contradict its own input — it floors to
+ * structural, exactly the colour the pre-map ladder gave it.
  */
 function binBackground(changing: number, high: number, level: number): string | undefined {
   if (changing <= 0) return undefined;
-  const colorVar =
-    high > 0 || level >= 3
-      ? "var(--md-accent-red)"
-      : level === 2
-        ? "var(--md-accent-blue)"
-        : "var(--md-accent-green)";
+  const category =
+    high > 0
+      ? "key_candidate"
+      : (varianceCategoryForCode(Math.min(3, Math.max(1, level))) ?? "structural");
+  const { colorVar } = VARIANCE_META[category];
   const fraction = Math.min(1, Math.max(changing, high));
   const pct = Math.max(25, Math.round(fraction * 100));
   return `color-mix(in srgb, ${colorVar} ${pct}%, transparent)`;
@@ -114,20 +121,14 @@ export const ConsensusVarianceMinimap = memo(function ConsensusVarianceMinimap({
         )}
       </div>
       <div className="flex flex-col gap-0.5 text-[8px] md-text-muted">
-        <span>
-          <span
-            className="inline-block w-2 h-2 rounded-sm mr-1 align-middle"
-            style={{ background: "var(--md-accent-green)" }}
-          />
-          {t("variance.legendChanges")}
-        </span>
-        <span>
-          <span
-            className="inline-block w-2 h-2 rounded-sm mr-1 align-middle"
-            style={{ background: "var(--md-accent-red)" }}
-          />
-          {t("variance.legendKey")}
-        </span>
+        <VarianceSwatch
+          swatchClass={VARIANCE_META.structural.swatchClass}
+          label={t("variance.legendChanges")}
+        />
+        <VarianceSwatch
+          swatchClass={VARIANCE_META.key_candidate.swatchClass}
+          label={t("variance.legendKey")}
+        />
       </div>
     </div>
   );

@@ -112,7 +112,7 @@ export function HitsList(): JSX.Element | null {
               type="button"
               onClick={() => handleOpen(h, i)}
               disabled={pendingHit !== null}
-              className="text-xs px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="text-xs px-2 py-0.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               title={t("run.dashboard.openInHexTitle")}
             >
               {pendingHit === i ? t("run.dashboard.opening") : t("run.dashboard.openInHex")}

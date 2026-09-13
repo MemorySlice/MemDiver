@@ -64,7 +64,7 @@ function RawArtifactList({ taskId, artifacts }: RawListProps) {
                 <a
                   href={artifactDownloadUrl(taskId, a.name)}
                   download
-                  className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] text-white"
+                  className="text-[11px] px-2 py-0.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent"
                 >
                   {t("common:download")}
                 </a>

@@ -74,6 +74,10 @@ def create_server():
     # tolerance an agent sees advertised must be the one the scorer applies.
     from memdiver.engine.detector_metrics import DEFAULT_TOLERANCE_BYTES
 
+    # Same reason: the region page size an agent sees advertised must be the
+    # one the producer actually serves.
+    from memdiver.app.tools_consensus import DEFAULT_REGIONS_PER_PAGE
+
     from memdiver.app import tools_consensus
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
@@ -693,6 +697,56 @@ def create_server():
             anchor_view=anchor_view, offset=offset, slab_offset=slab_offset,
             length=length, normalize=normalize, classify=classify,
             include_bytes=include_bytes,
+            key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
+        ).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def consensus_regions(
+        dump_paths: List[str],
+        classes: Optional[List[str]] = None,
+        min_length: int = 8,
+        max_length: int = 0,
+        after: int = -1,
+        limit: int = DEFAULT_REGIONS_PER_PAGE,
+        anchor_path: Optional[str] = None,
+        anchor_view: str = "va",
+        include_anchor_offsets: bool = True,
+        normalize: bool = False,
+        key_material_by_path: Optional[dict] = None,
+    ) -> str:
+        """List EVERY occurrence of a consensus class, paginated and jumpable.
+
+        The complement of ``aligned_window``: that tool answers "what is at
+        this offset in all N dumps", this one answers "where are all the
+        offsets worth looking at". Each row carries its slab coordinates, its
+        label, its per-class byte mix, and — when ``anchor_path`` is given —
+        the NAVIGABLE OFFSET in that dump's ``anchor_view``, so the next call
+        can be ``read_hex`` / ``aligned_window`` at that offset with no
+        coordinate arithmetic of your own. ``-1`` means "not addressable in
+        that view"; the envelope's ``anchor.jumpable`` says so for the page.
+
+        OMIT ``classes`` unless you know better. The default is the
+        NON-INVARIANT UNION (structural + pointer + key_candidate), because
+        real key material is class-MIXED: a measured 48-byte TLS 1.2 secret is
+        22 KEY_CANDIDATE + 18 POINTER + 8 STRUCTURAL bytes, so
+        ``classes=["key_candidate"]`` does not return that secret — it shatters
+        it into 3-byte shards that ``min_length`` then discards.
+        ``"non_invariant"`` names the union explicitly.
+
+        Page with the CURSOR, not a page number: pass the previous response's
+        ``next_after`` as ``after``. ``total`` sizes the whole result set and
+        ``counts`` is the whole-build class histogram.
+
+        ``key_material_by_path`` is ``{dump_path: {key_file|passphrase|
+        kem_key_file}}`` — per dump, because a corpus routinely mixes plaintext
+        captures with containers encrypted under different keys.
+        """
+        return json.dumps(tools_consensus.class_regions_result(
+            _session, dump_paths=dump_paths, classes=classes,
+            min_length=min_length, max_length=max_length, after=after,
+            limit=limit, anchor_path=anchor_path, anchor_view=anchor_view,
+            include_anchor_offsets=include_anchor_offsets, normalize=normalize,
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
         ).payload)
 

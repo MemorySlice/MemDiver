@@ -409,7 +409,7 @@ export function AnalysisPanel() {
 
       <div className="flex items-center gap-2">
         <button onClick={inputMode === "file" ? handleRunFile : handleRun} disabled={!canRun}
-          className="px-3 py-1.5 rounded text-white disabled:opacity-40 transition-opacity flex items-center gap-1.5"
+          className="px-3 py-1.5 rounded md-text-on-accent disabled:opacity-40 transition-opacity flex items-center gap-1.5"
           style={{ background: "var(--md-accent-blue)" }}>
           {isRunning && <span className="md-spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />}
           {isRunning ? t("panel.running") : t("panel.runAnalysis")}

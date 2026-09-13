@@ -237,3 +237,172 @@ def test_batch_validation_empty_library_dirs(client):
         },
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Missing dump paths are 404s, not 500s with an ASGI traceback.
+#
+# Regression for the import bug: the import endpoint handed the client a
+# server-side path that no longer existed, and every consensus call on it
+# escaped as a bare FileNotFoundError. Because that is not a CapabilityError it
+# bypassed the global error funnel entirely — 500 + full traceback, retried on
+# every scroll tick. ``raise_server_exceptions=False`` so a regression shows up
+# here as a 500 response rather than an exception.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def strict_client(tmp_env):
+    app = create_app()
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
+def test_run_consensus_missing_dump_is_404(strict_client, tmp_path):
+    missing = [str(tmp_path / "gone_a.msl"), str(tmp_path / "gone_b.msl")]
+    resp = strict_client.post(
+        "/api/analysis/consensus", json={"dump_paths": missing}
+    )
+    assert resp.status_code == 404, resp.text
+    assert "gone_a.msl" in resp.text
+
+
+def test_consensus_aligned_window_missing_dump_is_404(strict_client, tmp_path):
+    """The exact call the hex viewer makes for every visible chunk."""
+    missing = [str(tmp_path / "gone_a.msl"), str(tmp_path / "gone_b.msl")]
+    resp = strict_client.post(
+        "/api/analysis/consensus/aligned-window",
+        json={
+            "dump_paths": missing,
+            "anchor": "dump",
+            "anchor_path": missing[0],
+            "view": "raw",
+            "offset": 0,
+            "length": 4096,
+            "dumps": missing,
+            "include_bytes": True,
+            "classify": True,
+        },
+    )
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    # The funnel envelope from core.service_errors.CapabilityError.to_dict().
+    assert body.get("category") == "NOT_FOUND", body
+    assert "gone" in body.get("error", "")
+
+
+def test_run_consensus_one_missing_dump_is_404_not_500(strict_client, tmp_path):
+    good = tmp_path / "good.dump"
+    good.write_bytes(b"\xAA" * 4096)
+    resp = strict_client.post(
+        "/api/analysis/consensus",
+        json={"dump_paths": [str(good), str(tmp_path / "gone.msl")]},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+# ---------------------------------------------------------------------------
+# A consensus build must SAY which dumps it was built over.
+#
+# Without the echo a `consensus_id` is unattributable: the client cannot tell
+# whether the build in its store describes the dumps currently selected, so it
+# keeps projecting a build made over {X, Y} onto a later selection {A, B} —
+# wrong slab, wrong classes, bogus cross-dump "Differs" rings, and nothing on
+# the wire that could have detected it.
+# ---------------------------------------------------------------------------
+
+
+def test_run_consensus_echoes_dump_paths_and_normalize(strict_client, tmp_path):
+    a = tmp_path / "echo_a.dump"
+    b = tmp_path / "echo_b.dump"
+    a.write_bytes(b"\xAA" * 4096)
+    b.write_bytes(b"\xBB" * 4096)
+
+    resp = strict_client.post(
+        "/api/analysis/consensus",
+        json={"dump_paths": [str(a), str(b)], "normalize": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dump_paths"] == [str(a), str(b)]
+    assert body["normalize"] is True
+
+
+def test_run_consensus_echoes_normalize_false_by_default(strict_client, tmp_path):
+    a = tmp_path / "plain_a.dump"
+    b = tmp_path / "plain_b.dump"
+    a.write_bytes(b"\x01" * 2048)
+    b.write_bytes(b"\x02" * 2048)
+
+    resp = strict_client.post(
+        "/api/analysis/consensus",
+        json={"dump_paths": [str(a), str(b)]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["normalize"] is False
+
+
+# ---------------------------------------------------------------------------
+# A consensus build must also say WHAT CLASS each region is, and at what BANDS.
+#
+# Both rows and bands were being thrown away. Without ``classification`` the UI
+# legend had to infer a region's class from ``mean_variance``, and without
+# ``thresholds`` it had to compare that number against hard-coded 0/200/3000
+# literals — a second copy of ``core.variance``'s bands, in TypeScript, free to
+# drift the moment a build is run with custom thresholds. The CLI ``consensus``
+# command has always emitted ``classification``; this is the web surface
+# catching up.
+# ---------------------------------------------------------------------------
+
+
+def _mixed_consensus(client, tmp_path):
+    """Two dumps whose first half is identical and whose second half is not.
+
+    Guarantees BOTH region lists are non-empty: the invariant prefix is a
+    static region, the differing suffix a volatile one.
+    """
+    a = tmp_path / "classified_a.dump"
+    b = tmp_path / "classified_b.dump"
+    a.write_bytes(b"\x00" * 2048 + b"\x00" * 2048)
+    b.write_bytes(b"\x00" * 2048 + b"\xFF" * 2048)
+    resp = client.post(
+        "/api/analysis/consensus", json={"dump_paths": [str(a), str(b)]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_run_consensus_carries_classification_on_every_region(
+    strict_client, tmp_path,
+):
+    body = _mixed_consensus(strict_client, tmp_path)
+
+    assert body["static_regions"], body
+    assert body["volatile_regions"], body
+    for row in body["static_regions"]:
+        assert row["classification"] == "invariant"
+    for row in body["volatile_regions"]:
+        assert row["classification"] == "key_candidate"
+    # The pre-existing row fields are untouched.
+    assert set(body["static_regions"][0]) == {
+        "start", "end", "length", "mean_variance", "classification"}
+
+
+def test_run_consensus_reports_the_bands_its_classes_were_cut_at(
+    strict_client, tmp_path,
+):
+    """Resolved, never null: "null" reads to a client as "unknown", not as
+    "the defaults". The numbers come from ``core.variance``, so a change to
+    the bands reaches the legend instead of silently disagreeing with it."""
+    from memdiver.core.variance import DEFAULT_THRESHOLDS
+
+    body = _mixed_consensus(strict_client, tmp_path)
+
+    assert body["thresholds"] == {
+        "invariant_max": DEFAULT_THRESHOLDS.invariant_max,
+        "structural_max": DEFAULT_THRESHOLDS.structural_max,
+        "pointer_max": DEFAULT_THRESHOLDS.pointer_max,
+    }
+    # And they really do bound the rows they were reported with.
+    for row in body["volatile_regions"]:
+        assert row["mean_variance"] > body["thresholds"]["pointer_max"]

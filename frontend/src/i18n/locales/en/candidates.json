@@ -1,0 +1,73 @@
+{
+  "title": "Candidate regions",
+  "subtitle": "Regions whose bytes changed across the loaded dumps, ranked.",
+  "class": {
+    "invariant": "Invariant",
+    "structural": "Structural",
+    "pointer": "Pointer",
+    "key_candidate": "Key Candidate",
+    "unclassified": "Unclassified"
+  },
+  "needDumps": "Select at least 2 dumps of the same process to compare them.",
+  "idle": "Run Consensus (Dumps panel) to rank the regions that changed across these dumps, or apply the filters below directly.",
+  "apply": "Apply filters",
+  "applying": "Ranking…",
+  "running": "Comparing dumps and ranking candidates…",
+  "errorTitle": "Candidate search failed",
+  "summary": "Showing {{returned}} of {{total}} regions across {{dumps}} dumps.",
+  "truncated": "Truncated to the {{max}} best-ranked rows; narrow the filters to see the rest.",
+  "fallbackEntropyOnly": "Too few dumps for trustworthy cross-dump variance — these rows were ranked on entropy alone and carry no byte classes.",
+  "empty": {
+    "title": "No regions matched.",
+    "description": "That is a result, not an error: most bytes of a process are invariant across a phase series. Widen the length range, lower the entropy threshold, or add a class."
+  },
+  "filters": {
+    "legend": "Filters",
+    "classes": "Byte classes",
+    "classesHint": "Defaults to every non-invariant class — real key material is class-mixed.",
+    "minLength": "Min length",
+    "maxLength": "Max length",
+    "maxLengthAny": "0 = no limit",
+    "entropyThreshold": "Entropy threshold",
+    "entropyUnit": "bits/byte",
+    "alignment": "Alignment",
+    "alignmentUnit": "bytes"
+  },
+  "table": {
+    "caption": "Ranked candidate regions",
+    "rank": "#",
+    "offset": "Offset",
+    "length": "Length",
+    "class": "Class",
+    "score": "Score",
+    "variance": "Variance",
+    "entropy": "Entropy",
+    "unclassified": "unclassified",
+    "jumpTitle": "Jump to this offset in the hex viewer",
+    "jumpUnavailable": "Jump unavailable: this consensus was aligned across dumps, so the offset is a position in the aligned region set rather than an offset in any one dump."
+  },
+  "alignmentBanner": {
+    "label": "Aligned by",
+    "method": {
+      "module_offset": "module + offset (ASLR-invariant)",
+      "virtual_address": "virtual address",
+      "file_offset": "flat file offset"
+    },
+    "compared": "{{bytes}} bytes compared",
+    "discarded": "{{bytes}} bytes discarded",
+    "sizesDiffered": "dump sizes differed",
+    "warningsTitle": "This comparison is questionable"
+  },
+  "legend": {
+    "summary": "What a candidate is, and what it is not",
+    "honesty": "A candidate is a region whose bytes CHANGED across the dumps you loaded. It is not a proven key: nothing here decrypts anything. Confirm one with the pcap oracle or a brute-force run before believing it.",
+    "ranking": "Rank comes from a weighted blend of the region's byte-class mix, its cross-dump variance, its own entropy and its length. Every component is on the row, so a rank can be recomputed by hand.",
+    "coordinate": "Offsets are in the comparison coordinate named by the alignment banner. Under flat file-offset alignment they are file offsets; under an aligned method they index the aligned span, not the file.",
+    "class": {
+      "invariant": "Invariant — identical in every dump (variance 0).",
+      "structural": "Structural — low variance; lengths, counters, flags.",
+      "pointer": "Pointer — medium variance; addresses moving with the heap.",
+      "key_candidate": "Key Candidate — high variance; the band random key bytes fall in."
+    }
+  }
+}

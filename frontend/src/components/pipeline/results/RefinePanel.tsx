@@ -120,7 +120,7 @@ export function RefinePanel() {
           disabled={loading}
         />
         <button
-          className="px-3 py-1.5 text-xs font-medium bg-[var(--md-accent-blue)] hover:opacity-90 disabled:bg-[var(--md-bg-hover)] disabled:text-[var(--md-text-muted)] rounded text-white"
+          className="px-3 py-1.5 text-xs font-medium bg-[var(--md-accent-blue)] hover:opacity-90 disabled:bg-[var(--md-bg-hover)] disabled:text-[var(--md-text-muted)] rounded md-text-on-accent"
           onClick={handleRefine}
           disabled={loading || !paths.trim()}
         >

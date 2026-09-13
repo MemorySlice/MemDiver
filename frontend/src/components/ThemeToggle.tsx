@@ -32,7 +32,7 @@ export function ThemeToggle() {
         onClick={toggleHighContrast}
         className={`px-1.5 py-1 rounded text-xs font-bold transition-colors ${
           highContrast
-            ? "bg-[var(--md-accent-blue)] text-white"
+            ? "bg-[var(--md-accent-blue)] md-text-on-accent"
             : "hover:bg-[var(--md-bg-hover)] text-[var(--md-text-secondary)]"
         }`}
         title={t("app.highContrastTitle", {

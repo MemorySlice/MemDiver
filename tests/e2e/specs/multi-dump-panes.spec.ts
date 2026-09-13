@@ -68,8 +68,27 @@ async function addDumpByPath(page: Page, dumpPath: string): Promise<void> {
 }
 
 /**
+ * Build the consensus from the viewer's own empty state, then wait for panes.
+ *
+ * The multi-dump viewers REFUSE to paint without a consensus built over the
+ * current selection: with none, the aligned-window request falls back to
+ * `dump_paths` and the backend re-derives the whole consensus for every 8 KiB
+ * chunk; with one built over OTHER dumps it would answer in a slab this
+ * selection never produced. `NoConsensusPrompt` is that fence, and the button
+ * inside it is the supported way through — so clicking it is part of the flow
+ * under test, not a workaround.
+ */
+async function buildConsensusFromPrompt(page: Page): Promise<void> {
+  const prompt = page.getByTestId("hex-overlay-no-consensus");
+  if (await prompt.count()) {
+    await page.getByTestId("hex-overlay-run-consensus").click();
+  }
+  await expect(page.getByTestId("multi-hex-viewer")).toBeVisible({ timeout: 90_000 });
+}
+
+/**
  * Session dump A + dump B added by server path, in the VAS coordinate, with the
- * side-by-side layout mounted. Returns both dump ids.
+ * side-by-side layout mounted over a consensus. Returns both dump ids.
  */
 async function twoDumpsSideBySide(page: Page): Promise<{ id1: string; id2: string }> {
   await enterWorkspaceWithMsl(page, aslrMslRun1Path);
@@ -79,7 +98,7 @@ async function twoDumpsSideBySide(page: Page): Promise<{ id1: string; id2: strin
   const id1 = await dumpIdByName(page, RUN_1);
   const id2 = await dumpIdByName(page, RUN_2);
   await page.getByTestId("main-view-sideBySide").click();
-  await expect(page.getByTestId("multi-hex-viewer")).toBeVisible({ timeout: 20_000 });
+  await buildConsensusFromPrompt(page);
   return { id1, id2 };
 }
 
@@ -192,9 +211,9 @@ test.describe("multi-dump side-by-side panes", () => {
     await expect(sideBySide).not.toHaveAttribute("aria-disabled", "true");
     await expect(sideBySide).toHaveText("Side by side (2)");
 
-    // --- 4. Two panes render.
+    // --- 4. Two panes render, once a consensus describes the selection.
     await sideBySide.click();
-    await expect(page.getByTestId("multi-hex-viewer")).toBeVisible({ timeout: 20_000 });
+    await buildConsensusFromPrompt(page);
     await expect(page.getByTestId(`hex-pane-header-${id1}`)).toBeVisible();
     await expect(page.getByTestId(`hex-pane-header-${id2}`)).toBeVisible();
     await expect(page.locator('[data-testid^="hex-pane-header-"]')).toHaveCount(2);

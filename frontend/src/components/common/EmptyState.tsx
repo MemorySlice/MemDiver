@@ -78,7 +78,7 @@ export function EmptyState(props: EmptyStateProps) {
               type="button"
               onClick={primaryCta.onClick}
               disabled={primaryCta.disabled}
-              className="px-3 py-1.5 rounded text-white text-xs disabled:opacity-40 transition-opacity"
+              className="px-3 py-1.5 rounded md-text-on-accent text-xs disabled:opacity-40 transition-opacity"
               style={{ background: "var(--md-accent-blue)" }}
             >
               {primaryCta.label}

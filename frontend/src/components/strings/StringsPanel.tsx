@@ -230,7 +230,7 @@ export function StringsPanel({ dumpPath }: Props) {
               </button>
               <button
                 onClick={confirmHighlightAll}
-                className="px-2 py-1 rounded border border-[var(--md-accent-blue)] bg-[var(--md-accent-blue)] text-white hover:opacity-90 transition-opacity"
+                className="px-2 py-1 rounded border border-[var(--md-accent-blue)] bg-[var(--md-accent-blue)] md-text-on-accent hover:opacity-90 transition-opacity"
               >
                 {t("strings.highlightAllConfirm")}
               </button>

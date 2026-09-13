@@ -254,6 +254,25 @@ def test_cached_dump_source_msl_path_uses_cache(msl_path):
     assert get_default_cache().stats()["size"] == 1
 
 
+def test_cached_dump_source_reuses_the_pooled_run_index(msl_path):
+    """Successive requests must SHARE the captured-run index, not rebuild it.
+
+    ``cached_dump_source`` hands out a fresh ``MslDumpSource`` view per
+    request — ``borrow_reader`` resets ``_size`` and ``_va_span_cache`` — so an
+    index parked on the view would be cold every request and the whole-container
+    walk it replaced would be back. Parking it on the POOLED READER is what
+    makes it warm; this pins that placement.
+    """
+    with cached_dump_source(msl_path) as first:
+        first_index = first._run_index()
+        # Per-request view state genuinely IS cold, which is why the index
+        # cannot live here.
+        assert first._va_span_cache is None
+    with cached_dump_source(msl_path) as second:
+        assert second is not first
+        assert second._run_index() is first_index
+
+
 def test_cached_dump_source_raw_path_does_not_touch_cache(tmp_path):
     """A raw .dump path should not populate the cache at all."""
     raw = tmp_path / "fake.dump"
