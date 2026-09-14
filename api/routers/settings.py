@@ -1,9 +1,17 @@
-"""Settings router — read and configure the server's upload directory.
+"""Settings router — the server-side settings a user chooses in the UI.
 
-``upload_dir`` is configure-on-first-use (see api/config.py and
-api/upload_dir.py): there is no silent default, so this is the endpoint the
-first-run flow uses to let the user choose where uploaded packet captures and
-memory dumps are stored.
+Two resources, both persisted in ``memdiver_home()/config.json``:
+
+* ``upload-dir`` — configure-on-first-use (see api/config.py and
+  api/upload_dir.py): there is no silent default, so this is the endpoint the
+  first-run flow uses to let the user choose where uploaded packet captures and
+  memory dumps are stored.
+* ``favourites`` / ``last-dir`` — the file browser's saved directories and the
+  place it should reopen on (see api/favourites.py). Server-side rather than in
+  the browser because ``localStorage`` is keyed by origin, so a different
+  ``--port`` or a cleared cache would silently empty the list.
+
+The handlers stay thin: every rule lives in the module that owns the setting.
 """
 
 from __future__ import annotations
@@ -16,6 +24,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from memdiver.api.config import get_settings
+from memdiver.api.favourites import (
+    add_favourite,
+    read_favourites,
+    read_last_dir,
+    remove_favourite,
+    write_last_dir,
+)
 from memdiver.api.upload_dir import (
     legacy_dir_report,
     migrate_legacy,
@@ -37,6 +52,21 @@ class UploadDirRequest(BaseModel):
     migrate_legacy: bool = Field(
         False, description="Also move files out of the legacy /tmp upload dir"
     )
+
+
+class FavouriteRequest(BaseModel):
+    """Body for ``POST /api/settings/favourites``."""
+
+    path: str = Field(..., description="Absolute directory to save as a favourite")
+    label: str | None = Field(
+        None, description="Display name; defaults to the directory's own name"
+    )
+
+
+class LastDirRequest(BaseModel):
+    """Body for ``PUT /api/settings/last-dir``."""
+
+    path: str = Field(..., description="Directory the file browser was last used in")
 
 
 def _env_pinned() -> bool:
@@ -134,3 +164,54 @@ def set_upload_dir(req: UploadDirRequest) -> dict:
     status["migrated"] = migrated
     status["skipped"] = skipped
     return status
+
+
+# ---------------------------------------------------------------------------
+# File browser: favourite directories and the last place it was
+# ---------------------------------------------------------------------------
+#
+# Every mutation answers with the WHOLE list rather than with the entry it
+# touched. The client then has nothing to merge — it adopts what the server
+# says — so two browser tabs cannot drift into two different lists.
+
+
+@router.get("/favourites")
+def get_favourites() -> dict:
+    """List the saved favourite directories."""
+    return {"favourites": read_favourites()}
+
+
+@router.post("/favourites")
+def save_favourite(req: FavouriteRequest) -> dict:
+    """Save a directory as a favourite, or relabel one already saved."""
+    try:
+        favourites = add_favourite(req.path, req.label)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"favourites": favourites}
+
+
+@router.delete("/favourites")
+def delete_favourite(path: str) -> dict:
+    """Remove a favourite.
+
+    Deliberately not validated: a favourite whose directory has since been
+    deleted or unmounted is exactly the one a user most wants to remove, and
+    refusing it would strand the entry forever.
+    """
+    return {"favourites": remove_favourite(path)}
+
+
+@router.get("/last-dir")
+def get_last_dir() -> dict:
+    """Report the directory the file browser should reopen on."""
+    return {"path": read_last_dir()}
+
+
+@router.put("/last-dir")
+def put_last_dir(req: LastDirRequest) -> dict:
+    """Remember where the file browser was last used."""
+    try:
+        return {"path": write_last_dir(req.path)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -479,6 +479,40 @@ describe("MultiHexViewer window-error banner", () => {
   });
 });
 
+describe("MultiHexViewer failed rebuild", () => {
+  /**
+   * A failed rebuild leaves `consensusId` / `builtFrom` describing the PREVIOUS
+   * build — deliberately, because that build is still the right answer for the
+   * dumps it was made over — so the fence below stays open and the panes keep
+   * painting. That is correct and it is also silent: the only thing rendering
+   * the store's `error` was the sidebar dump list, so an analyst who asked for
+   * a rebuild watched nothing change and had nothing near the bytes telling
+   * them the coordinate they asked for was never applied.
+   */
+  it("says on the hex surface that the panes are still the previous build", () => {
+    seed(2);
+    act(() => {
+      useConsensusStore.setState({ error: "Consensus failed: 500 boom" });
+    });
+
+    render(<MultiHexViewer />);
+
+    const banner = screen.getByTestId("multi-hex-consensus-error");
+    expect(banner).toHaveTextContent("Consensus failed: 500 boom");
+    expect(banner).toHaveTextContent(/previous build/i);
+    // Over a LIVE grid, never instead of one.
+    expect(screen.getByTestId("multi-hex-viewer")).toBeInTheDocument();
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it("shows nothing while the last build succeeded", () => {
+    seed(2);
+    render(<MultiHexViewer />);
+
+    expect(screen.queryByTestId("multi-hex-consensus-error")).toBeNull();
+  });
+});
+
 describe("MultiHexViewer consensus fence", () => {
   /**
    * Side-by-side had NO consensus guard at all: with none in the store the
@@ -540,5 +574,36 @@ describe("MultiHexViewer consensus fence", () => {
 
     expect(screen.getByTestId("multi-hex-viewer")).toBeInTheDocument();
     expect(screen.queryByTestId("hex-overlay-no-consensus")).not.toBeInTheDocument();
+  });
+});
+
+describe("MultiHexViewer failed build behind the fence", () => {
+  /**
+   * Side-by-side draws the same fence, so it inherits the same blind spot: its
+   * `ConsensusErrorBanner` is mounted past `consensusUsable` and cannot render
+   * while the prompt is up. The prompt is shared precisely so the answer cannot
+   * differ between the two layouts — this is the assertion that keeps it shared.
+   */
+  it("says why the build failed instead of re-offering the button in silence", () => {
+    seed(3, MODULE_ALIGNMENT, null);
+    act(() => {
+      useConsensusStore.setState({ error: "Consensus failed: 500 boom" });
+    });
+
+    render(<MultiHexViewer />);
+
+    expect(screen.getByTestId("hex-overlay-consensus-failed")).toHaveTextContent(
+      "Consensus failed: 500 boom",
+    );
+    expect(screen.getByTestId("hex-overlay-run-consensus")).toBeInTheDocument();
+    // The banner past the fence is still unreachable here; this is not it.
+    expect(screen.queryByTestId("multi-hex-consensus-error")).toBeNull();
+  });
+
+  it("stays quiet while no attempt has failed", () => {
+    seed(3, MODULE_ALIGNMENT, null);
+    render(<MultiHexViewer />);
+
+    expect(screen.queryByTestId("hex-overlay-consensus-failed")).toBeNull();
   });
 });

@@ -33,6 +33,21 @@ import {
  * side-by-side viewers mount this same bar and have no layer to name: every
  * pane there is one dump's own bytes, said by the pane header.
  */
+
+/**
+ * One dump's OWN byte at `offset`, or `undefined` where it holds none.
+ *
+ * `isPresentAt` is the sole authority on presence, exactly as in the grid:
+ * `getByteAt` hands back the stored `0` for a byte the dump does not hold, and
+ * a status bar that printed `Byte: 0x00 (0)` over a hole would be stating a
+ * value no dump contains.
+ */
+function soloByteAt(path: string, offset: number): number | undefined {
+  const store = useMultiHexStore.getState();
+  if (!store.isPresentAt(path, offset)) return undefined;
+  return store.getByteAt(path, offset);
+}
+
 export function HexStatusBar() {
   const { t } = useTranslation("hex");
   // Per-field selectors so chunk-load writes (pendingFetches / chunks) do
@@ -58,7 +73,7 @@ export function HexStatusBar() {
   // The SAME source `HexOverlayPane` reads for the grid it captions. Both files
   // used to carry a comment saying the two must not disagree while each derived
   // the answer its own way; this is the one source those comments argued for.
-  const { soloDump, includedPaths, weightFor } = useOverlayComposition(selected);
+  const { soloDump, soloPath, includedPaths, weightFor } = useOverlayComposition(selected);
 
   const isOverlay = mainView === "overlay";
 
@@ -67,6 +82,31 @@ export function HexStatusBar() {
     isOverlay && cursorOffset !== null
       ? pluralityAt(cursorOffset, includedPaths, weightFor)
       : null;
+
+  /**
+   * The byte the GRID is painting at the cursor — whoever is painting it.
+   *
+   * This used to be `hex-store.getByteAt`, the ANCHOR's own cache, in a bar
+   * that captions the same cell with `Solo: <name>` and `Agreement: k/N`
+   * derived from the plurality over the included dumps. Solo a non-anchor dump
+   * and the three disagreed: the grid showed B's bytes, the caption said B, and
+   * `Byte:` reported A's. That caption-versus-grid split is the exact failure
+   * `useOverlayComposition` was introduced to make impossible, so the readout is
+   * resolved from the same composition and the same `pluralityAt` result the
+   * agreement figure beside it already uses.
+   *
+   * Outside the overlay the anchor's cache is still the right answer: the
+   * single-dump viewer IS the anchor, and every side-by-side pane says whose
+   * bytes it holds in its own header.
+   */
+  const cursorByte =
+    cursorOffset === null
+      ? undefined
+      : !isOverlay
+        ? useHexStore.getState().getByteAt(cursorOffset)
+        : soloPath
+          ? soloByteAt(soloPath, cursorOffset)
+          : agreement?.byte;
   const offsetLabel = format === "msl" && viewMode === "vas" ? t("statusBar.offsetLabelVas") : t("statusBar.offsetLabelOffset");
 
   // All three MSL view modes need a distinct label. Collapsing "va" into the
@@ -131,12 +171,12 @@ export function HexStatusBar() {
           </span>
         )}
         {cursorOffset !== null && (
-          <span>
-            {(() => {
-              const b = useHexStore.getState().getByteAt(cursorOffset);
-              if (b === undefined) return t("statusBar.byteEmpty");
-              return t("statusBar.byte", { value: `0x${b.toString(16).padStart(2, "0")} (${b})` });
-            })()}
+          <span data-testid="hex-status-byte">
+            {cursorByte === undefined
+              ? t("statusBar.byteEmpty")
+              : t("statusBar.byte", {
+                  value: `0x${cursorByte.toString(16).padStart(2, "0")} (${cursorByte})`,
+                })}
           </span>
         )}
         {chunkError && (

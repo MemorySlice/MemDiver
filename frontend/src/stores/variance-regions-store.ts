@@ -159,15 +159,25 @@ interface BrowseContext {
   viewMode: HexViewMode;
   /** The selected set, for the no-consensus `dump_paths` fallback. */
   paths: string[];
+  /**
+   * Which loaded window the byte cache is currently holding.
+   *
+   * Only `"differs"` uses it — see `requestKeyFor`. It is the cache identity
+   * plus `multi-hex-store.windowVersion`, which moves when chunks ARRIVE or are
+   * evicted and pointedly NOT when the user merely scrolls over cached bytes.
+   */
+  windowFingerprint: string;
 }
 
 function liveContext(): BrowseContext {
   const hex = useHexStore.getState();
+  const cache = useMultiHexStore.getState();
   return {
     consensusId: useConsensusStore.getState().consensusId,
     anchorPath: hex.dumpPath,
     viewMode: hex.viewMode,
-    paths: useMultiHexStore.getState().lastRequest?.paths ?? [],
+    paths: cache.lastRequest?.paths ?? [],
+    windowFingerprint: `${cache.identity ?? "-"}:${cache.windowVersion}`,
   };
 }
 
@@ -178,6 +188,22 @@ function liveContext(): BrowseContext {
  * the obvious ones: a different build, a different anchor, a different category
  * or a different `min_length` is a different list, and the cursor from one is
  * meaningless in another.
+ *
+ * ── The sixth term, and why ONLY `"differs"` carries it ─────────────────────
+ * Every other category is enumerated by the server over the whole dump, so the
+ * answer does not depend on what the byte cache happens to hold. `"differs"`
+ * IS the byte cache: it is computed from the loaded window and says so
+ * (`windowScoped`). With the five terms above it had a CONSTANT identity, so
+ * the mounted loader's `requestKey === liveRequestKey(...)` check early-returned
+ * forever and the rows were computed exactly once — click "Differs" while the
+ * window is still arriving and the list said "Nothing here" permanently while
+ * the UI labelled it "in view".
+ *
+ * The term is `multi-hex-store.windowVersion`, not a scroll position or a
+ * `lastRequest` object identity: it moves when chunks ARRIVE or are evicted and
+ * stays put while the user scrolls over bytes that are already cached, which is
+ * exactly the per-scroll-tick churn that was deliberately removed from
+ * `ensureLoaded`.
  */
 function requestKeyFor(
   context: BrowseContext,
@@ -190,6 +216,7 @@ function requestKeyFor(
     context.viewMode,
     category,
     minLength,
+    category === "differs" ? context.windowFingerprint : "-",
   ].join("|");
 }
 
@@ -372,17 +399,69 @@ const IDLE = {
   anchorJumpable: false,
 } satisfies Partial<VarianceRegionsState>;
 
-/** The list-only half of a fresh query: keeps `category` / `minLength`. */
+/**
+ * The list-only half of a fresh query: keeps `category` / `minLength`.
+ *
+ * `loading: false` belongs HERE rather than at each call site, and its absence
+ * was a real wedge. Every caller of this is RE-KEYING — the rows it drops
+ * belong to a query the app has left — which also orphans any request in
+ * flight: the response is discarded by the guard in `loadMore` and therefore
+ * never clears the flag it set. `selectCategory` spelled `loading: false` out
+ * by hand and was fine; `setMinLength` did not, and left the store stuck on
+ * "Loading…" forever — `loadMore` refuses while `loading`, and so does the
+ * mounted loader, so only `reset()` or a category switch got out.
+ *
+ * `counts` is blanked deliberately and stays blanked: see the store doc.
+ *
+ * `loadMore` sets `loading: true` AFTER spreading this, so the one path that
+ * really is starting a request still wins.
+ */
 function clearedPage() {
   return {
     regions: [] as VarianceRegion[],
     total: 0,
     nextAfter: REGION_CURSOR_START,
     activeIndex: -1,
+    loading: false,
     error: null,
     counts: {} as Partial<Record<ByteClassName, number>>,
     anchorJumpable: false,
   };
+}
+
+/**
+ * The generation of the most recently ISSUED request.
+ *
+ * ── Why a generation and not an `AbortController` ───────────────────────────
+ * Both fix the bug; this one fits where the bug is. `requestKey` alone cannot
+ * express "a DIFFERENT episode of the same query": click Pointer -> Key
+ * candidate -> Pointer before the first answer lands and requests #1 and #3
+ * both carry `K(pointer)`, both pass the landing guard, and both `concat` their
+ * page — the list shows page one twice, `regions.length` contradicts `total`,
+ * and `jumpNext` walks duplicates. A monotonic counter captured at send time
+ * and compared at landing time makes every episode distinct, which is exactly
+ * what the guard was missing.
+ *
+ * An `AbortController` would additionally free the socket, which is worth
+ * having — but `fetchConsensusRegions` takes no `AbortSignal` today, so it
+ * would mean widening `@/api/consensus-regions` as well, and the duplicate rows
+ * are a *landing* defect, not a transport one. The counter keeps the fix inside
+ * the store that has the bug and needs no new plumbing to be exact.
+ *
+ * Module-level and never reset: `reset()` zeroing it would let a request issued
+ * before the reset match a generation issued after it.
+ */
+let latestGeneration = 0;
+
+/**
+ * Invalidate whatever is in flight and return the generation that replaces it.
+ *
+ * Called by every re-key path (`selectCategory`, `setMinLength`, `reset`) as
+ * well as by `loadMore` itself, so "the newest request wins" is stated once.
+ */
+function nextGeneration(): number {
+  latestGeneration += 1;
+  return latestGeneration;
 }
 
 export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) => ({
@@ -399,14 +478,18 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
    */
   selectCategory: (category) => {
     if (get().category === category) return;
+    // Whatever is in flight now answers a question nobody is asking. Without
+    // this, Pointer -> Key candidate -> Pointer lands TWO page-ones under the
+    // same `requestKey` and the list shows page one twice. See `nextGeneration`.
+    nextGeneration();
     if (category === null) {
       set({ ...IDLE, minLength: get().minLength });
       return;
     }
+    // `loading: false` comes from `clearedPage` — see its doc.
     set({
       ...clearedPage(),
       category,
-      loading: false,
       requestKey: null,
       windowScoped: category === "differs",
     });
@@ -415,6 +498,7 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
   setMinLength: (minLength) => {
     const next = Math.max(1, Math.floor(minLength));
     if (get().minLength === next) return;
+    nextGeneration();
     // The page is dropped, not kept: `min_length` is part of `requestKey`, so
     // rows loaded under the old one belong to a different list.
     set({ ...clearedPage(), minLength: next, requestKey: null });
@@ -459,6 +543,12 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     // END OF LIST. `-1` here is the cursor sentinel, never offset zero.
     if (!fresh && after === NO_HONEST_ANSWER) return;
 
+    // This request supersedes any other. `loading` already fences off a second
+    // concurrent `loadMore`, so the only thing this can invalidate is a request
+    // ORPHANED by a re-key — which is precisely the one that would otherwise
+    // land a duplicate page. See `nextGeneration`.
+    const generation = nextGeneration();
+
     // Cleared NOW, not when the answer lands: a key change means the loaded
     // rows are expressed in a coordinate the viewer has already left, and
     // showing them for one more round trip is the bug this store guards.
@@ -491,7 +581,11 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
       // Stale-response guard, mirroring `multi-hex-store.fetchChunks`: if the
       // view, the anchor, the build or the query changed while this was in
       // flight, the offsets it carries are in the wrong coordinate.
-      if (get().requestKey !== key) return;
+      //
+      // The generation is the half `requestKey` cannot express — an A -> B -> A
+      // round trip comes back to the SAME key, and comparing only the key let
+      // both episodes append their page.
+      if (get().requestKey !== key || generation !== latestGeneration) return;
       set((prev) => ({
         // `concat` rather than a spread literal: the page is appended in one
         // bulk copy instead of element-by-element through the spread, which
@@ -504,7 +598,7 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
         loading: false,
       }));
     } catch (err) {
-      if (get().requestKey !== key) return;
+      if (get().requestKey !== key || generation !== latestGeneration) return;
       set({ loading: false, error: readableFailure(err) });
     }
   },
@@ -567,5 +661,10 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     get().jumpToIndex(Math.max(activeIndex - 1, 0));
   },
 
-  reset: () => set({ ...IDLE }),
+  reset: () => {
+    // Same reason as `selectCategory`: a request issued before the reset must
+    // not fold its page into the list the next query builds.
+    nextGeneration();
+    set({ ...IDLE });
+  },
 }));

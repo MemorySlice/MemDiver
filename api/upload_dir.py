@@ -11,7 +11,9 @@ and the user chooses the location the first time they upload.
 This module is the single funnel for that choice:
 
 * :func:`read_user_upload_dir` / :func:`write_user_upload_dir` persist it in the
-  user-local, git-untracked ``memdiver_home()/config.json``.
+  user-local, git-untracked ``memdiver_home()/config.json``, through the shared
+  read-modify-write in :mod:`memdiver.api.user_prefs` — the file carries other
+  features' settings too, so no write here may clobber them.
 * :func:`validate_candidate` rejects a chosen path that would reintroduce the
   problem (temp dirs), damage the system, or hijack imports.
 * :func:`legacy_dir_report` / :func:`migrate_legacy` offer a one-time move of
@@ -23,13 +25,14 @@ module during settings validation without a cycle.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+from memdiver.api.user_prefs import read_pref, read_prefs, user_config_path, write_pref
 
 logger = logging.getLogger("memdiver.api.upload_dir")
 
@@ -42,19 +45,6 @@ _SYSTEM_DIRS = (
     "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/boot", "/dev",
     "/proc", "/sys", "/System", "/Library", "/Applications",
 )
-
-
-def user_config_path() -> Path:
-    """Return the user-local prefs file the chosen directory is stored in.
-
-    ``memdiver_home()/config.json`` — the *untracked* per-user file, shared with
-    the setup wizard's ``skip_duckdb_setup`` flag. Deliberately NOT the
-    repo-root ``config.json`` that ``Settings.config_path`` points at: that file
-    is git-tracked, and this is the only setting the server itself *writes*.
-    """
-    from memdiver.core.constants import memdiver_home
-
-    return memdiver_home() / "config.json"
 
 
 def legacy_dir() -> Path:
@@ -86,17 +76,11 @@ def _temp_roots() -> tuple[Path, ...]:
 # ---------------------------------------------------------------------------
 
 
-def _read_prefs() -> dict:
-    """Return the parsed user prefs file, or ``{}`` when absent/unreadable."""
-    path = user_config_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to read %s: %s", path, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
+#: Kept as this module's own name for the prefs reader. The primitives moved to
+#: :mod:`memdiver.api.user_prefs` when the file browser's favourites became a
+#: second setting in the same file; the alias keeps every existing caller and
+#: test that reaches for ``upload_dir._read_prefs`` working unchanged.
+_read_prefs = read_prefs
 
 
 def read_user_upload_dir() -> Path | None:
@@ -105,7 +89,7 @@ def read_user_upload_dir() -> Path | None:
     Tolerant by design: a corrupt or unreadable prefs file must degrade to
     "unconfigured" (which fails closed) rather than break every request.
     """
-    raw = _read_prefs().get(USER_CONFIG_KEY)
+    raw = read_pref(USER_CONFIG_KEY)
     if not isinstance(raw, str) or not raw.strip():
         return None
     return Path(raw)
@@ -114,21 +98,13 @@ def read_user_upload_dir() -> Path | None:
 def write_user_upload_dir(path: Path) -> None:
     """Persist *path* into the user prefs file, atomically and non-destructively.
 
-    Read-modify-write: the file also carries the setup wizard's
-    ``skip_duckdb_setup`` flag, so the other keys must survive. The write goes
-    to a sibling ``.json.tmp`` chmod'd 0o600 and is then ``replace``-d into
-    place, so a crash mid-write cannot truncate the prefs file and lose the
-    wizard state.
+    The atomicity and the read-modify-write both live in
+    :func:`memdiver.api.user_prefs.write_pref` — the prefs file also carries the
+    setup wizard's ``skip_duckdb_setup`` flag and the file browser's favourite
+    directories, so the other keys must survive this write.
     """
-    target = user_config_path()
-    prefs = _read_prefs()
-    prefs[USER_CONFIG_KEY] = str(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(prefs, indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(target)
-    logger.info("Persisted upload_dir=%s to %s", path, target)
+    write_pref(USER_CONFIG_KEY, str(path))
+    logger.info("Persisted upload_dir=%s to %s", path, user_config_path())
 
 
 # ---------------------------------------------------------------------------

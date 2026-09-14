@@ -341,3 +341,90 @@ def test_upload_prunes_oldest_import_over_quota(client, isolated_env, monkeypatc
     total = sum(p.stat().st_size for p in imports_dir.iterdir() if p.is_file())
     assert total <= 20 * 1024
     assert outs[-1].is_file(), "the just-imported container is never evicted"
+
+
+# ---------------------------------------------------------------------------
+# The quota is a policy for the directory MemDiver OWNS, never the caller's
+# ---------------------------------------------------------------------------
+
+
+def test_upload_never_prunes_a_caller_supplied_output_dir(
+    client, isolated_env, monkeypatch,
+):
+    """Regression (data loss): an ``output_dir`` naming an existing corpus used
+    to be LRU-pruned like the server-owned ``imports/`` directory, so importing
+    one dump into a directory already over quota permanently deleted the
+    caller's oldest ``.msl`` containers. The quota only ever described a
+    server-managed cache; the caller's own directory is not one.
+    """
+    from memdiver.api.config import get_settings as _get
+
+    _get().dump_quota_bytes = 8 * 1024  # far below the corpus below
+
+    corpus = isolated_env / "uploads" / "my_corpus"
+    corpus.mkdir()
+    existing = []
+    for i in range(3):
+        p = corpus / f"corpus_{i}.msl"
+        _write_msl(p, regions=3)
+        existing.append(p)
+    before = {p: p.read_bytes() for p in existing}
+    assert sum(len(b) for b in before.values()) > 8 * 1024, "corpus must exceed quota"
+
+    resp = client.post(
+        "/api/dumps/upload",
+        params={"output_dir": str(corpus)},
+        files={"file": ("t.dump", b"\xAA" * 8192, "application/octet-stream")},
+    )
+    assert resp.status_code == 200, resp.text
+    out = Path(resp.json()["output"]).resolve()
+    assert out.parent == corpus.resolve()
+    assert out.is_file()
+
+    for p, blob in before.items():
+        assert p.is_file(), f"the caller's own container {p.name} was deleted"
+        assert p.read_bytes() == blob
+
+
+def test_upload_leaves_an_existing_caller_output_dir_permissions_alone(
+    client, isolated_env,
+):
+    """``ensure_ready`` chmods unconditionally, which is right for the
+    directories MemDiver creates and wrong for one the caller already had: an
+    import must not silently narrow a user directory to 0o700. Containment
+    keeps the confidentiality property — the directory must live inside the
+    upload dir, which is itself 0o700."""
+    import os
+    import stat
+
+    shared = isolated_env / "uploads" / "shared_out"
+    shared.mkdir()
+    os.chmod(shared, 0o755)  # mkdir's mode is masked by the umask; chmod is not
+    before = stat.S_IMODE(shared.stat().st_mode)
+    assert before == 0o755
+
+    resp = client.post(
+        "/api/dumps/upload",
+        params={"output_dir": str(shared)},
+        files={"file": ("t.dump", b"\xAA" * 4096, "application/octet-stream")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert stat.S_IMODE(shared.stat().st_mode) == before
+
+
+def test_upload_creates_a_missing_caller_output_dir_private(client, isolated_env):
+    """Declining to re-permission an EXISTING directory must not weaken one
+    MemDiver creates itself: a fresh output_dir is still born 0o700 (mkdir's
+    mode is masked by the umask, so it is chmod'd explicitly)."""
+    import stat
+
+    fresh = isolated_env / "uploads" / "fresh_out"
+    assert not fresh.exists()
+
+    resp = client.post(
+        "/api/dumps/upload",
+        params={"output_dir": str(fresh)},
+        files={"file": ("t.dump", b"\xAA" * 4096, "application/octet-stream")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert stat.S_IMODE(fresh.stat().st_mode) == 0o700

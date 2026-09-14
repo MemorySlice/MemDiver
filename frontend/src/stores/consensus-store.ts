@@ -166,6 +166,25 @@ interface ConsensusState {
   reset: () => void;
 }
 
+/**
+ * Which build is the CURRENT one.
+ *
+ * `useConsensusRun`'s in-flight flag stops a second build being started from
+ * the four affordances that offer one, but it is not — and cannot be — the
+ * whole answer: `runConsensus` is a store action and anything holding the
+ * store can call it directly, which is exactly how the dump list used to issue
+ * a build the flag never saw. Two builds in flight then race, and because the
+ * responses land in whatever order the server finishes them, the EARLIER one
+ * could overwrite `consensusId` / `builtFrom` / `builtNormalized` and leave the
+ * viewers projecting a superseded build onto the grid.
+ *
+ * A generation counter answers that at the only place it can be answered — the
+ * moment a response is about to be written. Module scope rather than store
+ * state because nothing renders it: it is bookkeeping about this client, the
+ * same argument `multi-hex-store`'s retry timers make.
+ */
+let runGeneration = 0;
+
 export const useConsensusStore = create<ConsensusState>((set, get) => ({
   available: false,
   loading: false,
@@ -186,6 +205,10 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
   vaOverview: null,
 
   runConsensus: async (dumpPaths, normalize) => {
+    // Claimed BEFORE the request goes out, compared after it lands: a run that
+    // is no longer the newest writes nothing at all — not the build, not the
+    // error, and not `loading`, which belongs to whichever run is still going.
+    const generation = ++runGeneration;
     set({ loading: true, error: null });
     try {
       const res = await fetch("/api/analysis/consensus", {
@@ -198,6 +221,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
         throw new Error(`Consensus failed: ${res.status} ${detail}`);
       }
       const json = await res.json();
+      if (generation !== runGeneration) return;
       set({
         available: true,
         loading: false,
@@ -222,15 +246,38 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
         vaOverview: null,
       });
     } catch (err) {
+      if (generation !== runGeneration) return;
+      /**
+       * The PREVIOUS build is deliberately left standing.
+       *
+       * A failed rebuild says nothing about the build already in the store: it
+       * was computed over real dumps and, where `builtFrom` still covers the
+       * selection, it is still the correct answer for them. Clearing
+       * `consensusId` here would drop the viewers behind `NoConsensusPrompt`
+       * and throw away a usable alignment because a LATER request 500'd, and
+       * where the selection has moved on `consensusCoversSelection` already
+       * fences the stale build off without any help from this branch.
+       *
+       * What was missing is not the blanking, it is the SAYING SO: `error` is
+       * the record that the rebuild failed and that the grid is therefore
+       * still the older build, and `ConsensusErrorBanner` puts it on the hex
+       * surface where the bytes it qualifies are.
+       */
       set({
         loading: false,
         error: err instanceof Error ? err.message : String(err),
+        // `available` describes the LAST request, not the data: an id still in
+        // the store keeps `fetchRange` answering, exactly as before.
         available: false,
       });
     }
   },
 
-  adoptIncremental: ({ consensusId, size, numDumps, counts }) =>
+  adoptIncremental: ({ consensusId, size, numDumps, counts }) => {
+    // A finalized session is a NEWER build than anything still on the wire, so
+    // it claims the generation too — otherwise a `runConsensus` started before
+    // Finalize lands afterwards and quietly replaces the adopted id.
+    runGeneration += 1;
     set({
       available: true,
       loading: false,
@@ -256,7 +303,8 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       pageClassifications: new Map(),
       vaClassifications: new Map(),
       vaOverview: null,
-    }),
+    });
+  },
 
   matchesSelection: (paths) => consensusCoversSelection(get().builtFrom, paths),
 
@@ -356,7 +404,9 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
   toggleOverlay: () =>
     set((state) => ({ overlayEnabled: !state.overlayEnabled })),
 
-  reset: () =>
+  reset: () => {
+    // Nothing in flight may repopulate a store the app has just torn down.
+    runGeneration += 1;
     set({
       available: false,
       loading: false,
@@ -375,7 +425,8 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       pageClassifications: new Map(),
       vaClassifications: new Map(),
       vaOverview: null,
-    }),
+    });
+  },
 }));
 
 /** What `useConsensusRun` hands a re-run affordance. */

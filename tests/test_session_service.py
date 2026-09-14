@@ -7,6 +7,8 @@ save. Complements the HTTP-level coverage in ``test_session_roundtrip.py``.
 
 from __future__ import annotations
 
+import gzip
+import json
 import sys
 from pathlib import Path
 
@@ -41,6 +43,43 @@ FULL_PAYLOAD = {
     "analysis_result": {"sentinel": "svc"},
     "bookmarks": [{"offset": 16, "length": 4, "label": "b"}],
     "investigation_offset": 128,
+    # Schema v2 multi-dump workspace. Every entry carries EXACTLY the four
+    # persistable keys, so the sanitiser is an identity here and the
+    # iterate-the-payload assertions below extend for free.
+    "dumps": [
+        {"path": "/d/a.msl", "name": "a.msl", "size": 1024, "format": "msl"},
+        {"path": "/d/b.raw", "name": "b.raw", "size": 2048, "format": "raw"},
+    ],
+    "active_dump_path": "/d/b.raw",
+    "selected_dump_paths": ["/d/a.msl", "/d/b.raw"],
+    "collapsed_dump_paths": ["/d/a.msl"],
+    "origin_dump_path": "/d/a.msl",
+    "main_view": "overlay",
+    "aslr_normalize": True,
+    "dump_weights": {"/d/a.msl": 0.5, "/d/b.raw": 2.0},
+    "excluded_dump_paths": ["/d/b.raw"],
+    "solo_dump_path": "/d/a.msl",
+    "rail_collapsed": True,
+}
+
+# The complete set of keys a persisted dump entry is allowed to carry.
+PERSISTABLE_DUMP_KEYS = {"path", "name", "size", "format"}
+
+# A dump entry as the frontend's DumpEntry could naively serialize it: the
+# four legal keys plus PLAINTEXT recovered secrets.
+DUMP_WITH_SECRETS = {
+    "path": "/d/secret.msl",
+    "name": "secret.msl",
+    "size": 4096,
+    "format": "msl",
+    "passphrase": "hunter2",
+    "key_material": {
+        "passphrase": "hunter2",
+        "key_hex": "deadbeef",
+        "kem_key_hex": "cafebabe",
+    },
+    "tag_status": "valid",
+    "id": "b0f3a1e2-0000-4000-8000-000000000000",
 }
 
 
@@ -130,3 +169,63 @@ def test_session_store_delete_static_method(tmp_path):
 def test_session_store_delete_missing_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         SessionStore.delete("ghost", tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Security: the dump-entry key whitelist
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_dumps_drops_key_material_and_passphrase():
+    sanitized = session_service._sanitize_dumps([DUMP_WITH_SECRETS])
+    assert len(sanitized) == 1
+    assert set(sanitized[0]) == PERSISTABLE_DUMP_KEYS
+    assert sanitized[0]["path"] == "/d/secret.msl"
+    assert "hunter2" not in str(sanitized)
+
+
+def test_sanitize_dumps_tolerates_junk():
+    assert session_service._sanitize_dumps(None) == []
+    assert session_service._sanitize_dumps("not-a-list") == []
+    # Non-mapping entries are skipped, not fatal.
+    assert session_service._sanitize_dumps([None, 42, {"path": "/ok"}]) == [
+        {"path": "/ok", "name": "", "size": 0, "format": ""}
+    ]
+
+
+def test_payload_to_snapshot_strips_secrets_from_dumps():
+    """Direct (non-HTTP) callers cannot smuggle key material onto the snapshot."""
+    payload = dict(FULL_PAYLOAD)
+    payload["dumps"] = [DUMP_WITH_SECRETS]
+    snap = session_service.payload_to_snapshot(payload)
+
+    assert len(snap.dumps) == 1
+    assert set(snap.dumps[0]) == PERSISTABLE_DUMP_KEYS
+    assert "hunter2" not in str(snap.dumps)
+
+
+def test_save_session_never_writes_secrets_to_disk(tmp_path):
+    """The whitelist holds all the way to the bytes on disk."""
+    payload = dict(FULL_PAYLOAD)
+    payload["session_name"] = "secret_free"
+    payload["dumps"] = [DUMP_WITH_SECRETS]
+    saved = session_service.save_session(payload, tmp_path)
+
+    text = gzip.decompress(saved.read_bytes()).decode("utf-8")
+    assert "hunter2" not in text
+    assert "deadbeef" not in text
+    assert "cafebabe" not in text
+    assert "key_material" not in text
+    # The legal part survived.
+    assert "/d/secret.msl" in text
+
+    persisted = json.loads(text)
+    assert [set(d) for d in persisted["dumps"]] == [PERSISTABLE_DUMP_KEYS]
+
+
+def test_save_session_without_dumps_still_works(tmp_path):
+    payload = {k: v for k, v in FULL_PAYLOAD.items() if k != "dumps"}
+    payload["session_name"] = "no_dumps"
+    session_service.save_session(payload, tmp_path)
+    loaded = session_service.load_session("no_dumps", tmp_path)
+    assert loaded.dumps == []

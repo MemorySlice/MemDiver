@@ -22,5 +22,24 @@
     "coverage": "Coverage",
     "keyHints": "Key Hints",
     "modules": "Modules ({{n}})"
+  },
+  "newSessionGuard": {
+    "title": "Start a new session?",
+    "body": "Your current workspace has changes that are not saved yet.",
+    "summaryDumps_one": "{{count}} dump loaded",
+    "summaryDumps_other": "{{count}} dumps loaded",
+    "summaryAnalysis": "analysis results",
+    "summaryBookmarks_one": "{{count}} bookmark",
+    "summaryBookmarks_other": "{{count}} bookmarks",
+    "nameLabel": "Save as",
+    "namePlaceholder": "Session name",
+    "nameTaken": "A session named “{{name}}” already exists and will be overwritten.",
+    "save": "Save and start new",
+    "discard": "Discard and start new",
+    "discardHint": "Discarded work is kept as a recovery copy you can reopen from the session list.",
+    "saving": "Saving…",
+    "saveFailed": "Could not save the session. Your workspace has not been changed.",
+    "recoveryFailed": "Could not write the recovery copy. Discarding now would lose this work.",
+    "discardAnyway": "Discard anyway"
   }
 }

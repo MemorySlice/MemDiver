@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { saveSession, deleteSession } from "@/api/client";
+import { deleteSession } from "@/api/client";
 import { useSessionLoader } from "@/hooks/useSessionLoader";
-import { buildSessionSnapshot } from "@/utils/buildSessionSnapshot";
+import { persistSession } from "@/utils/session-persistence";
 
 export function SessionManager() {
   const { t } = useTranslation("session");
@@ -22,7 +22,9 @@ export function SessionManager() {
 
   const handleSave = async () => {
     try {
-      await saveSession(buildSessionSnapshot(saveName || "session"));
+      // Via persistSession so a manual save also marks the workspace clean --
+      // otherwise the "unsaved work" guard would still prompt straight after.
+      await persistSession(saveName || "session");
       setMessage(t("manager.saved"));
       setSaveName("");
       refreshSessions();

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-import { useVarianceRegionsStore } from "@/stores/variance-regions-store";
+import { liveRequestKey, useVarianceRegionsStore } from "@/stores/variance-regions-store";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -1092,5 +1092,182 @@ describe("a consensus rebuild (the align switch)", () => {
     // Landing it anyway would serve the previous build's offsets under the new
     // one — the aligned-coordinate form of the `"vas"`/`"va"` bug.
     expect(useVarianceRegionsStore.getState().regions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CANCELLATION: an orphaned request that re-keys back to the SAME key
+// ---------------------------------------------------------------------------
+
+/**
+ * `requestKey` alone cannot express "a different EPISODE of the same query".
+ *
+ * Pointer -> Key candidate -> Pointer, all three before the first answer lands,
+ * and requests #1 and #3 carry the identical key. Comparing only the key let
+ * both pass the landing guard and both `concat` their page: the list showed
+ * page one twice, `regions.length` contradicted `total`, and `jumpNext` walked
+ * duplicates. `nextGeneration` is the missing half.
+ */
+describe("request cancellation", () => {
+  it("discards an orphaned request that re-keys back to the same key", async () => {
+    seedWorkspace("va");
+    let landFirst: (value: Response) => void = () => {};
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        landFirst = resolve;
+      }),
+    );
+
+    useVarianceRegionsStore.getState().selectCategory("pointer");
+    const first = useVarianceRegionsStore.getState().loadMore();
+
+    // Two more clicks before #1 lands. The third is the SAME query as the
+    // first — same build, same anchor, same view, same category, same floor.
+    useVarianceRegionsStore.getState().selectCategory("key_candidate");
+    useVarianceRegionsStore.getState().selectCategory("pointer");
+
+    fetchMock.mockResolvedValue(asResponse(pageBody(rowsAt([2048, 3072]))));
+    await useVarianceRegionsStore.getState().loadMore();
+    await flush();
+
+    landFirst(asResponse(pageBody(rowsAt([0, 1024]))));
+    await first;
+    await flush();
+
+    // Only the newest episode's page is in the list.
+    expect(slabStarts()).toEqual([2048, 3072]);
+    // The invariant the duplicate broke: the list is the size the server says.
+    expect(useVarianceRegionsStore.getState().regions).toHaveLength(
+      useVarianceRegionsStore.getState().total,
+    );
+  });
+
+  it("discards an orphaned request after reset, even back on the same query", async () => {
+    seedWorkspace("va");
+    let land: (value: Response) => void = () => {};
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        land = resolve;
+      }),
+    );
+    useVarianceRegionsStore.getState().selectCategory("non_invariant");
+    const inFlight = useVarianceRegionsStore.getState().loadMore();
+
+    useVarianceRegionsStore.getState().reset();
+    useVarianceRegionsStore.getState().selectCategory("non_invariant");
+    fetchMock.mockResolvedValue(asResponse(pageBody(rowsAt([4096]))));
+    await useVarianceRegionsStore.getState().loadMore();
+
+    land(asResponse(pageBody(rowsAt([0, 1024]))));
+    await inFlight;
+    await flush();
+
+    expect(slabStarts()).toEqual([4096]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE "Loading…" WEDGE
+// ---------------------------------------------------------------------------
+
+/**
+ * Every re-key path orphans whatever is in flight, and an orphaned response is
+ * discarded by the landing guard — so it never clears the `loading` it set.
+ * `selectCategory` spelled `loading: false` out by hand; `setMinLength` did
+ * not, and the store sat on "Loading…" forever: `loadMore` refuses while
+ * loading and so does the mounted loader, so only `reset()` or a category
+ * switch got out. `clearedPage` now owns the flag, so every re-key path agrees.
+ */
+describe("setMinLength while a request is in flight", () => {
+  it("does not wedge the store on loading", async () => {
+    seedWorkspace("va");
+    let land: (value: Response) => void = () => {};
+    fetchMock.mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        land = resolve;
+      }),
+    );
+    useVarianceRegionsStore.getState().selectCategory("non_invariant");
+    const inFlight = useVarianceRegionsStore.getState().loadMore();
+    expect(useVarianceRegionsStore.getState().loading).toBe(true);
+
+    useVarianceRegionsStore.getState().setMinLength(64);
+
+    expect(useVarianceRegionsStore.getState().loading).toBe(false);
+
+    land(asResponse(pageBody(rowsAt([0]))));
+    await inFlight;
+    await flush();
+    expect(useVarianceRegionsStore.getState().loading).toBe(false);
+
+    // And the list really can load again under the new floor.
+    fetchMock.mockResolvedValue(asResponse(pageBody(rowsAt([4096]))));
+    await useVarianceRegionsStore.getState().loadMore();
+    expect(slabStarts()).toEqual([4096]);
+    expect(requestBodies()[1].min_length).toBe(64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE DIFFERS WINDOW TERM
+// ---------------------------------------------------------------------------
+
+/**
+ * `"differs"` is derived FROM the loaded window, so the window is part of its
+ * identity. Without that term the key was constant, the mounted loader's
+ * `requestKey === liveRequestKey(...)` check early-returned forever, and
+ * clicking "Differs" before the bytes arrived said "Nothing here" permanently
+ * while the UI labelled it "in view".
+ */
+describe("the differs request key", () => {
+  it("re-keys as the loaded window changes, so a later window is not ignored", async () => {
+    seedWorkspace("raw");
+
+    // Clicked while the byte cache is still empty: honestly nothing to show.
+    useVarianceRegionsStore.getState().selectCategory("differs");
+    await useVarianceRegionsStore.getState().loadMore();
+    const emptyKey = useVarianceRegionsStore.getState().requestKey;
+    expect(useVarianceRegionsStore.getState().regions).toEqual([]);
+    // The loader would early-return right now, and rightly so.
+    expect(liveRequestKey("differs", 8)).toBe(emptyKey);
+
+    // The window arrives.
+    seedLoadedWindow(100, 148);
+
+    // ...and the loader now sees a different query, which is the whole fix.
+    expect(liveRequestKey("differs", 8)).not.toBe(emptyKey);
+    await useVarianceRegionsStore.getState().loadMore();
+    expect(useVarianceRegionsStore.getState().regions).toHaveLength(1);
+  });
+
+  it("re-keys on a windowVersion bump alone — a chunk landing in place", () => {
+    seedWorkspace("raw");
+    seedLoadedWindow(100, 148);
+    const before = liveRequestKey("differs", 8);
+
+    // What `applyResponse` does when another chunk lands.
+    useMultiHexStore.setState({
+      windowVersion: useMultiHexStore.getState().windowVersion + 1,
+    });
+
+    expect(liveRequestKey("differs", 8)).not.toBe(before);
+  });
+
+  /**
+   * The other half of the fix: the churn that was deliberately removed must not
+   * come back. A server-backed category is enumerated over the whole dump, so
+   * its answer does not depend on what the cache holds, and its key must not
+   * move when the window does.
+   */
+  it("leaves a server-backed key alone when the window moves", () => {
+    seedWorkspace("raw");
+    const before = liveRequestKey("non_invariant", 8);
+
+    seedLoadedWindow(100, 148);
+    useMultiHexStore.setState({
+      windowVersion: useMultiHexStore.getState().windowVersion + 1,
+    });
+
+    expect(liveRequestKey("non_invariant", 8)).toBe(before);
   });
 });

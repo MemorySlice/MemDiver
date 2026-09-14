@@ -5,6 +5,7 @@ import { getRegionForOffset, highlightClass } from "./highlight-utils";
 import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
 import type { HexViewMode } from "@/stores/hex-store";
 import { ABSENCE_META, type AbsenceKind } from "@/utils/absence-classes";
+import { markRings } from "./ground-classes";
 import { VARIANCE_META, varianceCategoryForCode } from "@/utils/variance-classes";
 import {
   GLYPH_IDENTICAL,
@@ -309,7 +310,16 @@ export const HexRow = memo(function HexRow({
     // Class mode only: in the other two the variant count already SAYS that the
     // dumps disagree, and ringing every tinted cell would double-encode one
     // fact as two marks — the noise that makes a grid unreadable.
-    const differsAcrossDumps = classMode && (getDiffersAt?.(byteOffset) ?? false);
+    //
+    // ...and inside the SAME `!isVoidCell` gate as the two branches above, for
+    // the same reason and one sharper one. `differsAt` reads the backend's
+    // `variants`, which covers the whole REQUESTED set, while the absence that
+    // voided this cell was decided over the INCLUDED set — so exclude all but
+    // one dump, park on a byte that dump lacks and two excluded dumps differ
+    // on, and the cell was hatched `byte-absent` AND ringed `cross-dump-differs`
+    // at once: a stated disagreement about a byte nothing on screen holds.
+    const differsAcrossDumps =
+      classMode && !isVoidCell && (getDiffersAt?.(byteOffset) ?? false);
     if (differsAcrossDumps) classes.push(VARIANCE_META.differs.byteClass);
 
     // The absence treatment, composed LAST so a hatch or a page-state tint
@@ -320,6 +330,14 @@ export const HexRow = memo(function HexRow({
     if (absenceMeta && (!absenceMeta.voids || !loaded)) {
       classes.push(absenceMeta.cellClass);
     }
+
+    // The selection and the search hit are BACKGROUNDS, and every tint pushed
+    // above is declared LATER in `hex.css` — so on a tinted cell the user's own
+    // mark silently loses the cascade and the selection vanishes under the
+    // pointer. `markRings` states that fact on the cell and the stylesheet
+    // answers with an OUTLINE, which composes with any fill. Called last, so it
+    // sees every class the cell ended up with.
+    markRings(classes);
 
     const classStr = classes.join(" ");
     let tooltip = region?.label ?? "";

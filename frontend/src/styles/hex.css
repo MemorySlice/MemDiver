@@ -507,31 +507,23 @@
 }
 
 /* Load failure: OUR problem, not the data's, so it is flat rather than hatched
-   and carries a rule instead. The inset is on the BOTTOM edge specifically so
-   `.cross-dump-differs` — a full inset RING (see below) — still composes on the
-   same cell; a full-ring shadow here would replace it and silently drop the
-   disagreement marker. */
+   and carries a rule instead.
+   CORRECTION (this comment used to claim the bottom inset "composes" with
+   `.cross-dump-differs`): it does not, and no pair of separate rules can.
+   `box-shadow` is not additive across rules — two rules at the same (0,2,0)
+   specificity are resolved by the cascade, so the LATER one replaces the
+   earlier outright, and `.cross-dump-differs` below is the later one. What
+   actually keeps the two marks off each other is structural rather than
+   stylistic: `HexRow` refuses `cross-dump-differs` on a void cell, and every
+   `.byte-error` cell is by definition void (`ABSENCE_META.error.voids`), so the
+   combination this comment worried about cannot be produced at all. The bottom
+   inset stays because it is the treatment the `absence-error` legend swatch
+   mirrors, not because it survives a ring. */
 .hex-byte.byte-error,
 .hex-char.byte-error {
   background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
   box-shadow: inset 0 -2px 0 0 var(--md-page-failed);
   color: var(--md-page-failed);
-}
-
-/* Selection must survive a void cell. `.selected` is a BACKGROUND and the
-   hatches are declared after it, so on a hatched cell the selection would be
-   painted over and simply disappear — the user would lose track of what they
-   had selected. The design's own selection treatment is an outline precisely
-   because an outline composes with any fill, so that is what a selected void
-   cell gets. */
-.hex-byte.selected.byte-gap,
-.hex-char.selected.byte-gap,
-.hex-byte.selected.byte-absent,
-.hex-char.selected.byte-absent,
-.hex-byte.selected.byte-error,
-.hex-char.selected.byte-error {
-  outline: 2px solid var(--md-text-primary);
-  outline-offset: -1px;
 }
 
 /* High contrast: a 2px hatch on a 22px cell is the first thing to disappear
@@ -550,13 +542,63 @@
   outline-offset: -1px;
 }
 
+/* --- Selection and search must survive a cell that already has a ground --- */
+/* `.hex-byte.selected` and `.hex-byte.highlight-search` are BACKGROUNDS at
+   specificity (0,2,0), and so are THIRTY-ONE other classes in this file — the
+   `highlight-*` bands, the eight `.field-color-*` field colours, the three
+   `.nb-*` neighborhood tints, the two page-state tints, `.consensus-invariant`,
+   `.variant-1…5` and the three absence treatments. Every one of them is
+   declared later than `.selected`, so every one of them wins outright, and the
+   result was that dragging a selection across a tinted cell made the selection
+   VANISH under the pointer while a search hit on an invariant byte lost its
+   yellow ground.
+   Escalating specificity is not the fix — that is an arms race, and the next
+   background class to be added would start it again. Neither is naming the
+   competitors in an `:is(...)` list here, which is what these rules used to do:
+   that list named nine of the thirty-one and quietly left the field colours,
+   the neighborhood tints, the page-state tints and every highlight band
+   unfixed. The enumeration now lives in `./ground-classes.ts`, beside the code
+   that pushes those classes and covered by a test that re-derives the same set
+   from THIS file — so a new background rule below fails the suite instead of
+   silently eating the next selection.
+   The treatment is unchanged and is the design's own: an OUTLINE, because an
+   outline is a different property from a fill, so the cascade never puts the
+   two in competition and the cell keeps BOTH its meaning-bearing tint and the
+   user's mark. `HexRow` appends the marker only when the ground is genuinely
+   taken, so a plain selection stays a clean contiguous band and a plain search
+   hit keeps its unringed yellow fill.
+   Kept at (0,3,0) and declared here, after the `.high-contrast` outlines
+   above: a user who asked for maximum separation has not asked to lose their
+   selection. Search first, selection second — a cell that is both is one the
+   user is actively dragging over, and the later rule is the one that paints. */
+.hex-byte.highlight-search.search-ring,
+.hex-char.highlight-search.search-ring {
+  outline: 2px solid var(--md-hl-search);
+  outline-offset: -1px;
+}
+
+.hex-byte.selected.selection-ring,
+.hex-char.selected.selection-ring {
+  outline: 2px solid var(--md-text-primary);
+  outline-offset: -1px;
+}
+
 /* --- Cross-dump disagreement (N-dump aligned overlay) --- */
 /* A RING, not a background: background is already spoken for by the variance
    heatmap, the search highlight and the "va"-view page-state tint, and this has
    to compose with all three on the same byte. Declared after the consensus
    colours above so it reads as a ring drawn on top of the class colour.
    Mirrors `.md-ring-differs` in globals.css, inset so it stays inside the
-   22px byte cell. */
+   22px byte cell.
+   Note what "composes" does and does not mean here: this ring composes with a
+   BACKGROUND (a different property), never with another `box-shadow`. On a cell
+   that also carries `.field-color-N` — the only reachable pairing, since
+   `HexRow` keeps the ring off void cells — this rule is later and its ring
+   REPLACES that field's bottom rule. That is the right way round of the two:
+   the ring is the cross-dump finding, the field rule is a label the `title`
+   also carries. Making them compose would mean one compound rule per field
+   colour restating both shadows, which is eight rules to keep in step with two
+   others. */
 .hex-byte.cross-dump-differs,
 .hex-char.cross-dump-differs {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-accent-yellow) 60%, transparent);

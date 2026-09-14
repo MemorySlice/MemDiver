@@ -402,6 +402,53 @@ class TestReadRangeValid:
             assert data[:PAGE_SIZE] == bytes([0xA1]) * PAGE_SIZE
             assert data[PAGE_SIZE:] == bytes([0xB2]) * PAGE_SIZE
 
+    def test_read_range_valid_never_reports_the_truncated_tail_as_captured(
+        self, abutting_msl_path,
+    ):
+        """A run whose ``avail < length`` must report only the COPIED bytes.
+
+        ``CapturedRun.length`` is the run's NOMINAL size; ``avail`` is how much
+        of it the buffer actually holds (a container truncated mid-payload).
+        The copy is clamped by ``avail``, so the rest of the run stays
+        zero-filled — and reporting the run's full VA overlap would hand that
+        filler back as CAPTURED, the exact false presence this method exists to
+        prevent.
+
+        The truncation is injected at the index seam rather than by truncating
+        the file, because the block-level length checks usually reject a
+        short container outright: ``avail`` exists precisely for the case
+        where they do not, so that is the case this pins.
+        """
+        half = PAGE_SIZE // 2
+        with MslDumpSource(abutting_msl_path) as src:
+            real = src._run_index()
+            assert real is not None and len(real.by_va) == 2, "fixture must have 2 runs"
+            truncated = real.by_va[0]._replace(avail=half)
+            by_va = (truncated,) + real.by_va[1:]
+            patched = real._replace(
+                runs=by_va,
+                by_va=by_va,
+                va_starts=tuple(r.va_start for r in by_va),
+                vas_starts=tuple(r.vas_offset for r in by_va),
+            )
+            src._reader.captured_run_index = lambda: patched
+
+            data, runs = src.read_range_valid(0, 2 * PAGE_SIZE, view="va")
+
+        # The run over the truncated region stops at `avail`; it therefore no
+        # longer abuts the second region, so the two do NOT merge.
+        assert runs == [(0, half), (PAGE_SIZE, PAGE_SIZE)]
+        # Every reported byte is a byte that was really copied...
+        assert data[:half] == bytes([0xA1]) * half
+        assert data[PAGE_SIZE:] == bytes([0xB2]) * PAGE_SIZE
+        # ...and the zero-filled tail is outside every run.
+        assert data[half:PAGE_SIZE] == b"\x00" * (PAGE_SIZE - half)
+        assert all(
+            not (start <= pos < start + run_len)
+            for pos in range(half, PAGE_SIZE)
+            for start, run_len in runs
+        )
+
     def test_read_range_valid_on_vas_and_raw_covers_the_returned_length(
         self, msl_path,
     ):

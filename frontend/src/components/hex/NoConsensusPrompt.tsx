@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { useConsensusRun } from "@/stores/consensus-store";
+import { useConsensusRun, useConsensusStore } from "@/stores/consensus-store";
 import { useDumpStore } from "@/stores/dump-store";
 
 /**
@@ -36,6 +36,24 @@ interface Props {
  * into two different answers to the same question, and so the testids the E2E
  * specs key on (`hex-overlay-no-consensus` / `hex-overlay-run-consensus`)
  * describe one component rather than two copies of it.
+ *
+ * ── Why the failure is told HERE ─────────────────────────────────────────────
+ * `ConsensusErrorBanner` says the same thing for the same store field, but it
+ * is mounted PAST each viewer's `consensusUsable` fence — so it is unreachable
+ * in exactly the case where the analyst pressed the button on this screen. A
+ * build started from here and failed used to re-enable the button and change
+ * nothing else: the click looked like it had been swallowed, and the only
+ * report of what went wrong was in the Dumps sidebar on another tab.
+ *
+ * The two components do not merge, because they state different facts. Past
+ * the fence a failed rebuild means "the bytes below are still the PREVIOUS
+ * build's"; here there is no previous build to fall back to, and the sentence
+ * that matters is simply why the attempt failed.
+ *
+ * `error` is orthogonal to `variant` rather than a third value of it: the
+ * variant says what is on the shelf, the error says what happened the last time
+ * anyone asked. The store clears `error` at the start of every run, so a
+ * message on screen always describes the most recent attempt.
  */
 export function NoConsensusPrompt({ paths, variant = "missing" }: Props) {
   const { t } = useTranslation("hex");
@@ -43,6 +61,7 @@ export function NoConsensusPrompt({ paths, variant = "missing" }: Props) {
   // The app's ONE in-flight flag, so this prompt is disabled while a build
   // started from the chip, the banner or the align switch is still running.
   const { running, run } = useConsensusRun();
+  const error = useConsensusStore((s) => s.error);
 
   const titleKey =
     variant === "stale" ? "overlayPane.staleConsensusTitle" : "overlayPane.noConsensusTitle";
@@ -58,6 +77,15 @@ export function NoConsensusPrompt({ paths, variant = "missing" }: Props) {
       <div className="text-center max-w-md space-y-2">
         <p className="text-sm font-medium">{t(titleKey)}</p>
         <p className="text-xs md-text-secondary">{t(bodyKey)}</p>
+        {error && (
+          <p
+            data-testid="hex-overlay-consensus-failed"
+            role="status"
+            className="text-xs md-text-error"
+          >
+            {t("overlayPane.buildFailed", { error })}
+          </p>
+        )}
         <button
           type="button"
           data-testid="hex-overlay-run-consensus"

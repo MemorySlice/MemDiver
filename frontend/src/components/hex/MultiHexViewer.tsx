@@ -23,6 +23,8 @@ import { HexStatusBar } from "./HexStatusBar";
 import { HexToolbar } from "./HexToolbar";
 import { NoConsensusPrompt } from "./NoConsensusPrompt";
 import { WindowErrorBanner } from "./WindowErrorBanner";
+import { chunkErrorSignature } from "./chunk-error-signal";
+import { ConsensusErrorBanner } from "./ConsensusErrorBanner";
 import { buildRegionIndex } from "./highlight-utils";
 import { MAX_PANES, PANE_COLUMN_WIDTH_PX, visiblePanes } from "./multi-window-utils";
 import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
@@ -52,6 +54,15 @@ import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
 /** One pane's byte reader and the reason its reads come back empty. */
 interface PaneReaders {
   version: number;
+  /**
+   * The failed-chunk signature these readers were built under.
+   *
+   * `version` alone is not enough: it is bumped in `applyResponse` only, so a
+   * chunk whose request FAILED leaves it untouched and the cached reader keeps
+   * answering "still loading" for bytes the store now calls `"error"`. See
+   * `chunk-error-signal`.
+   */
+  errorKey: string;
   read: (offset: number) => number | undefined;
   /**
    * WHY that read came back empty. Paired with `read` and rotated with it,
@@ -101,6 +112,11 @@ export function MultiHexViewer() {
 
   const chunkVersionByPath = useMultiHexStore((s) => s.chunkVersionByPath);
   const byPath = useMultiHexStore((s) => s.byPath);
+  // A scalar, NOT the `chunkErrors` map: the map is copied on every successful
+  // response too, so subscribing to it would repaint every pane on every chunk
+  // that lands. See `chunk-error-signal` for why that distinction is the whole
+  // point of this value.
+  const chunkErrorKey = useMultiHexStore((s) => chunkErrorSignature(s.chunkErrors));
 
   // Only to tell the two fences apart: "nothing built yet" and "built over
   // other dumps" are different facts and need different sentences.
@@ -197,7 +213,7 @@ export function MultiHexViewer() {
     for (const pane of panes) {
       const version = chunkVersionByPath.get(pane.path) ?? 0;
       const cached = cache.get(pane.path);
-      if (cached && cached.version === version) {
+      if (cached && cached.version === version && cached.errorKey === chunkErrorKey) {
         readers.set(pane.path, cached);
         continue;
       }
@@ -208,12 +224,12 @@ export function MultiHexViewer() {
       };
       const absence = (offset: number) =>
         useMultiHexStore.getState().absenceAt(pane.path, offset) ?? undefined;
-      const entry = { version, read, absence };
+      const entry = { version, errorKey: chunkErrorKey, read, absence };
       cache.set(pane.path, entry);
       readers.set(pane.path, entry);
     }
     return readers;
-  }, [panes, chunkVersionByPath]);
+  }, [panes, chunkVersionByPath, chunkErrorKey]);
 
   /**
    * A click anywhere in a pane focuses it; only a click in the ALREADY focused
@@ -337,6 +353,15 @@ export function MultiHexViewer() {
         firstRow={firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex)}
         lastRow={lastVisibleIndex < 0 ? -1 : absRow(lastVisibleIndex)}
       />
+
+      {/*
+        A failed REBUILD is a different failure from a failed window fetch, and
+        it is the quieter of the two: the panes keep painting, in the previous
+        build's alignment, with nothing else on screen saying the coordinate the
+        analyst asked for was never applied. Past the fence above, so "still the
+        previous build" is true wherever this renders.
+      */}
+      <ConsensusErrorBanner testIdPrefix="multi-hex" paths={selectedPaths} />
 
       {cappedOut > 0 && (
         <div

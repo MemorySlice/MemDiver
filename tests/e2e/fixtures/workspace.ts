@@ -21,7 +21,7 @@ const FTUE_SEEN_PAYLOAD = [
  * localStorage via an init script. This runs before every navigation
  * on the page, so reloads and redirects stay covered.
  */
-async function disableFtueViaStorage(page: Page): Promise<void> {
+export async function disableFtueViaStorage(page: Page): Promise<void> {
   const payload = JSON.stringify(FTUE_SEEN_PAYLOAD);
   await page.addInitScript(
     ({ key, value }) => {
@@ -40,7 +40,7 @@ async function disableFtueViaStorage(page: Page): Promise<void> {
  * storage disabled, race condition), close it by clicking the popover's
  * close button and wait for the overlay SVG to detach.
  */
-async function dismissFtueIfPresent(page: Page): Promise<void> {
+export async function dismissFtueIfPresent(page: Page): Promise<void> {
   const overlay = page.locator("svg.driver-overlay");
   try {
     // Quick probe — don't block the happy path.
@@ -99,7 +99,8 @@ export async function enterWorkspaceWithMsl(
   // skipped).
   await page.getByRole("button", { name: /^Next$/ }).click();
 
-  // Wait for the "Start Analysis" button to appear (final step).
+  // Wait for the final step. The wizard defaults to "Auto-Analyze", so the
+  // button reads "Start Analysis" here whatever we go on to choose.
   const startBtn = page.getByRole("button", { name: /Start Analysis/i });
   await expect(startBtn).toBeVisible({ timeout: 20_000 });
 
@@ -122,7 +123,15 @@ export async function enterWorkspaceWithMsl(
     }
   }
 
-  await startBtn.click();
+  // The button names what will actually happen, so choosing "Inspect Only"
+  // renames it. Asserted rather than matched loosely: this fixture is on the
+  // inspect path for nearly every spec in the suite, which makes it the right
+  // place for a regression in that label to fail loudly.
+  const finalBtn = opts.autoAnalyze
+    ? startBtn
+    : page.getByRole("button", { name: /^Open Workspace$/i });
+  await expect(finalBtn).toBeVisible({ timeout: 10_000 });
+  await finalBtn.click();
 
   // Workspace shell: toolbar contains "MemDiver" brand and the side
   // tabs render with data-testid="tab-*".
@@ -159,12 +168,13 @@ export async function enterWorkspaceWithDataset(
   await page.getByRole("button", { name: /Dataset Directory/i }).first().click();
   await page.getByRole("button", { name: /^Next$/ }).click();
 
-  // Analysis step: Inspect Only avoids kicking off heavy dataset analysis.
+  // Analysis step: Inspect Only avoids kicking off heavy dataset analysis —
+  // and renames the final button, since no analysis is about to start.
   const inspectOnly = page.getByRole("button", { name: /^Inspect Only/i }).first();
   if (await inspectOnly.isVisible().catch(() => false)) {
     await inspectOnly.click();
   }
-  await page.getByRole("button", { name: /Start Analysis/i }).click();
+  await page.getByRole("button", { name: /^Open Workspace$/i }).click();
 
   await expect(page.locator('[data-testid="dataset-overview"]')).toBeVisible({
     timeout: 20_000,

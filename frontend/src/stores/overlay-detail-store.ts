@@ -28,14 +28,21 @@ export const OVERLAY_DETAIL_TABS = ["byte", "regions"] as const;
 
 export type OverlayDetailTab = (typeof OVERLAY_DETAIL_TABS)[number];
 
+/**
+ * `"byte"` needs nothing: a cursor is always somewhere, whereas the region list
+ * needs a consensus and a round trip.
+ */
+export const DEFAULT_OVERLAY_DETAIL_TAB: OverlayDetailTab = "byte";
+
 interface OverlayDetailState {
   tab: OverlayDetailTab;
   setTab(tab: OverlayDetailTab): void;
+  /** Starting a new session must not leave the previous one's tab selected. */
+  reset(): void;
 }
 
 export const useOverlayDetailStore = create<OverlayDetailState>((set) => ({
-  // `"byte"` is the default because it needs nothing: a cursor is always
-  // somewhere, whereas the region list needs a consensus and a round trip.
-  tab: "byte",
+  tab: DEFAULT_OVERLAY_DETAIL_TAB,
   setTab: (tab) => set({ tab }),
+  reset: () => set({ tab: DEFAULT_OVERLAY_DETAIL_TAB }),
 }));

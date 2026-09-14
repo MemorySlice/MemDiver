@@ -17,6 +17,14 @@ export interface DumpEntry {
   sameProcess: boolean;
   tagStatus?: TagStatus;
   keyMaterial?: KeyMaterial;
+  /**
+   * The file backing this dump could not be found on disk.
+   *
+   * Re-derived on every session restore and NEVER persisted: a dump missing
+   * yesterday may be back today (an unmounted volume, a moved directory), so
+   * a stored flag would be a lie the next time the file resolves fine.
+   */
+  missing?: boolean;
 }
 
 /**
@@ -30,6 +38,49 @@ export interface DumpEntry {
  * `viewMode` stays the legacy pairwise switch. Not persisted to localStorage.
  */
 export type MainView = "single" | "sideBySide" | "overlay";
+
+const MAIN_VIEWS: readonly MainView[] = ["single", "sideBySide", "overlay"];
+
+/**
+ * Narrows an untrusted string (a saved session file, a Marimo-authored one)
+ * to a `MainView`. A value outside the vocabulary degrades to "single" rather
+ * than being cast through, which would make the layout switch render nothing.
+ */
+export function isMainView(value: unknown): value is MainView {
+  return (
+    typeof value === "string" && (MAIN_VIEWS as readonly string[]).includes(value)
+  );
+}
+
+/** One dump as it survives a save/load round trip: no ids, no secrets. */
+export interface DumpHydrationEntry {
+  path: string;
+  name: string;
+  size: number;
+  format: string;
+}
+
+/**
+ * Everything a restored workspace needs, expressed entirely in PATHS. Ids are
+ * minted here, so the caller gets the path→id map back to translate anything
+ * else it holds.
+ */
+export interface DumpHydrationSpec {
+  dumps: DumpHydrationEntry[];
+  activeDumpPath?: string | null;
+  selectedDumpPaths?: string[];
+  collapsedDumpPaths?: string[];
+  originDumpPath?: string | null;
+  mainView?: string;
+  aslrNormalize?: boolean;
+}
+
+/** A post-restore correction to one dump, applied by `markDumpResolution`. */
+export interface DumpResolutionPatch {
+  id: string;
+  size?: number;
+  missing?: boolean;
+}
 
 /**
  * The slice of state the selection invariants relate to each other.
@@ -145,6 +196,23 @@ interface DumpState extends SelectionShape {
   aslrNormalize: boolean;
 
   addDump: (entry: Omit<DumpEntry, "id" | "sameProcess">) => string;
+  /**
+   * Replaces the whole dump list from a saved session, returning `path → id`
+   * so the caller can translate its own path-keyed state.
+   *
+   * Deliberately NOT a loop over `addDump`: that mints one reconcile per dump,
+   * claims focus and origin for whichever dump happens to arrive first, and
+   * offers no way to restore a deliberate active/origin/mainView. This
+   * replaces the list wholesale, dedupes by path, and runs the invariants
+   * exactly ONCE — so a file carrying a dead `origin_dump_path` or
+   * `main_view: "overlay"` with a single dump is REPAIRED rather than trusted.
+   */
+  hydrateDumps: (spec: DumpHydrationSpec) => Map<string, string>;
+  /**
+   * Applies every patch in a SINGLE `set`. N separate `set`s would be N
+   * re-renders of every dump-list subscriber, one per resolved path.
+   */
+  markDumpResolution: (patches: DumpResolutionPatch[]) => void;
   removeDump: (id: string) => void;
   setActiveDump: (id: string) => void;
   /**
@@ -249,6 +317,81 @@ export const useDumpStore = create<DumpState>((set, get) => ({
     });
     return id;
   },
+
+  hydrateDumps: (spec) => {
+    const idByPath = new Map<string, string>();
+    const dumps: DumpEntry[] = [];
+    for (const entry of spec.dumps) {
+      // Dedupe by path: the path is the identity across a save/load round
+      // trip, and two panes over one file would double its vote in the
+      // consensus reducer.
+      if (idByPath.has(entry.path)) continue;
+      const id = crypto.randomUUID();
+      idByPath.set(entry.path, id);
+      dumps.push({
+        id,
+        path: entry.path,
+        name: entry.name,
+        size: entry.size,
+        format: entry.format === "msl" ? "msl" : "raw",
+        sameProcess: true,
+        // `keyMaterial` and `tagStatus` are deliberately absent: neither is
+        // persisted, and inventing either here would make the badge claim an
+        // unlock that no key backs.
+      });
+    }
+
+    const toId = (path: string | null | undefined): string | null =>
+      path === null || path === undefined ? null : (idByPath.get(path) ?? null);
+    const toIds = (paths: readonly string[] | undefined): string[] => {
+      const out: string[] = [];
+      for (const path of paths ?? []) {
+        const id = idByPath.get(path);
+        if (id !== undefined && !out.includes(id)) out.push(id);
+      }
+      return out;
+    };
+
+    set(() => ({
+      // The id-keyed pairwise fields cannot survive a restore: their ids named
+      // dumps from the previous session and are dangling now. Null them rather
+      // than leaving `HexOverlay` pointed at nothing.
+      comparisonDumpIds: null,
+      viewMode: "single",
+      aslrNormalize: spec.aslrNormalize ?? false,
+      // One reconcile for the whole restore. Everything the file got wrong —
+      // an origin path for a dump that is no longer in the list, an "overlay"
+      // layout over a single dump, a selection naming unknown paths — is
+      // repaired by the invariants instead of being trusted.
+      ...reconcileSelection({
+        dumps,
+        activeDumpId: toId(spec.activeDumpPath),
+        selectedDumpIds: toIds(spec.selectedDumpPaths),
+        visibleDumps: new Set(toIds(spec.collapsedDumpPaths)),
+        mainView: isMainView(spec.mainView) ? spec.mainView : "single",
+        originDumpId: toId(spec.originDumpPath),
+      }),
+    }));
+
+    return idByPath;
+  },
+
+  markDumpResolution: (patches) =>
+    set((state) => {
+      if (patches.length === 0) return {};
+      const byId = new Map(patches.map((p) => [p.id, p]));
+      return {
+        dumps: state.dumps.map((d) => {
+          const patch = byId.get(d.id);
+          if (!patch) return d;
+          return {
+            ...d,
+            size: patch.size ?? d.size,
+            missing: patch.missing ?? d.missing,
+          };
+        }),
+      };
+    }),
 
   removeDump: (id) =>
     set((state) => {

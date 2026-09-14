@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -35,7 +37,47 @@ DUMP_UPLOAD_MAX_BYTES = 4 * 1024 ** 3
 IMPORTS_SUBDIR = "imports"
 
 
-def _import_dir(output_dir: str, settings: Settings) -> Path:
+class ImportTarget(NamedTuple):
+    """Where a converted ``.msl`` is written, and who owns that directory.
+
+    ``server_owned`` is the whole point of this record. Two policies — the LRU
+    quota prune and the unconditional ``0o700`` chmod — are only ever correct
+    for a directory MemDiver itself created and manages (the ``imports/``
+    subdirectory). Applied to a directory the caller named, both damage data
+    the caller already had there. Deriving that distinction back out of the
+    path at the call site would mean re-implementing the precedence rules
+    below; :func:`_import_dir` states it instead.
+    """
+
+    path: Path
+    server_owned: bool
+
+
+def _ensure_caller_dir(path: Path) -> Path:
+    """Create *path* if absent, without re-permissioning one that already exists.
+
+    :func:`~memdiver.api.upload_dir.ensure_ready` chmods **unconditionally**,
+    which is right for the directories MemDiver owns (the upload-dir root and
+    ``imports/``) and wrong here: a caller-supplied ``output_dir`` may be a
+    pre-existing corpus directory whose mode the user chose deliberately, and
+    silently narrowing it to ``0o700`` is a side effect no import asked for.
+    Nothing is lost by declining: the path is already forced to live inside the
+    configured upload directory, which ``ensure_ready`` pinned to ``0o700``
+    when it was validated — so its contents stay unreadable to other local
+    users either way.
+
+    A directory MemDiver *does* create here is still born ``0o700``: ``mkdir``'s
+    mode is masked by the process umask, so it is chmod'd once, on creation
+    only.
+    """
+    existed = path.is_dir()
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if not existed:
+        os.chmod(path, 0o700)
+    return path
+
+
+def _import_dir(output_dir: str, settings: Settings) -> ImportTarget:
     """Resolve the directory a converted ``.msl`` is written to.
 
     Precedence, most to least specific:
@@ -44,7 +86,8 @@ def _import_dir(output_dir: str, settings: Settings) -> Path:
        upload directory; otherwise the converted ``.msl`` could be written
        anywhere the server process can reach (arbitrary write). This is the one
        branch that needs the containment root, and therefore the one branch
-       that can answer 409 when no upload directory has been chosen.
+       that can answer 409 when no upload directory has been chosen. It is also
+       the one branch MemDiver does **not** own — hence ``server_owned=False``.
     2. ``<upload_dir>/imports`` when an upload directory *is* configured —
        resolved from the injected settings rather than ``upload_dir_or_409``, so
        this branch never 409s.
@@ -61,9 +104,10 @@ def _import_dir(output_dir: str, settings: Settings) -> Path:
         # frontend flow (no output_dir) keeps working on a server where no
         # upload directory has been chosen yet.
         try:
-            return ensure_ready(ensure_within(upload_dir_or_409(), Path(output_dir)))
+            resolved = ensure_within(upload_dir_or_409(), Path(output_dir))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        return ImportTarget(_ensure_caller_dir(resolved), server_owned=False)
 
     base = settings.upload_dir if settings.upload_dir is not None else memdiver_home()
     try:
@@ -76,7 +120,7 @@ def _import_dir(output_dir: str, settings: Settings) -> Path:
             status_code=400,
             detail="upload directory misconfigured: imports path escapes the base directory",
         ) from exc
-    return ensure_ready(resolved)
+    return ImportTarget(ensure_ready(resolved), server_owned=True)
 
 
 def _import_output_path(out_dir: Path, filename: str | None) -> Path:
@@ -143,8 +187,8 @@ async def upload_dump(
 
     out_path: Path | None = None
     try:
-        out_dir = _import_dir(output_dir, settings)
-        out_path = _import_output_path(out_dir, file.filename)
+        target = _import_dir(output_dir, settings)
+        out_path = _import_output_path(target.path, file.filename)
         result = await asyncio.to_thread(
             tools.import_dump, session, str(tmp_path), str(out_path), pid
         )
@@ -156,16 +200,25 @@ async def upload_dump(
             tmp_path.unlink(missing_ok=True)
 
     # Bound the imports dir: evict oldest containers (never this one) once the
-    # aggregate exceeds the quota. Restricted to ``.msl`` because a
-    # caller-supplied output_dir may be a directory holding other files.
-    # Best-effort — a prune hiccup must not fail a successful import.
-    prune_dir_to_quota(
-        out_dir,
-        settings.dump_quota_bytes,
-        keep=out_path,
-        label="imported dump",
-        suffixes=(".msl",),
-    )
+    # aggregate exceeds the quota. Best-effort — a prune hiccup must not fail a
+    # successful import.
+    #
+    # ONLY for the directory MemDiver owns. The quota was designed for the
+    # server-managed ``imports/`` subdirectory, where every ``.msl`` was put
+    # there by an import and evicting the oldest is a cache policy. A
+    # caller-supplied ``output_dir`` is the caller's own directory — it may
+    # already hold a corpus of ``.msl`` containers that nothing else will ever
+    # re-create, and pruning it is silent, permanent data loss. The ``.msl``
+    # suffix filter bounds the blast radius but cannot prevent that, because
+    # ``.msl`` is exactly what such a corpus is made of.
+    if target.server_owned:
+        prune_dir_to_quota(
+            target.path,
+            settings.dump_quota_bytes,
+            keep=out_path,
+            label="imported dump",
+            suffixes=(".msl",),
+        )
 
     # Response shape is deliberately unchanged (source/output/regions_written/
     # key_hints_written/total_bytes). The client already holds the name the user

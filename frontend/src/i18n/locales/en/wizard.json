@@ -5,12 +5,17 @@
     "pathPlaceholder": "Type a path and press Enter",
     "loading": "Loading...",
     "selectDirectory": "Select This Directory",
-    "bookmark": {
-      "add": "Bookmark this folder",
-      "remove": "Remove bookmark",
-      "expand": "Expand bookmarks",
-      "collapse": "Collapse bookmarks",
-      "title": "Bookmarks ({{count}})"
+    "favourites": {
+      "heading": "Favourites",
+      "title": "Favourites ({{count}})",
+      "empty": "No favourites yet — use ☆ Favourite to save the folder you are in.",
+      "save": "Favourite",
+      "saved": "Favourited",
+      "add": "Save this folder to your favourites",
+      "remove": "Remove from favourites",
+      "removeNamed": "Remove {{label}} from favourites",
+      "expand": "Expand favourites",
+      "collapse": "Collapse favourites"
     },
     "entries": {
       "parentDirectory": "Parent directory",
@@ -68,7 +73,9 @@
     "validateFailed": "Could not validate path. Is the backend running?"
   },
   "nav": {
-    "startAnalysis": "Start Analysis"
+    "startAnalysis": "Start Analysis",
+    "openWorkspace": "Open Workspace",
+    "backToSessions": "Back to sessions"
   },
   "algorithms": {
     "entropy_scan": {

@@ -211,6 +211,83 @@ describe("HexStatusBar agreement", () => {
   });
 });
 
+describe("HexStatusBar byte readout", () => {
+  /**
+   * The readout used to come from `hex-store.getByteAt` — the ANCHOR's cache —
+   * in a bar that captions the same cell `Solo: <name>` and `Agreement: k/N`
+   * over the included dumps. Solo a non-anchor dump and all three disagreed:
+   * the grid showed B's bytes, the caption said B, and `Byte:` reported A's.
+   * That is exactly the caption-versus-grid split `useOverlayComposition` was
+   * introduced to make impossible.
+   */
+  it("reports the SOLOED dump's byte, not the anchor's", () => {
+    const dumps = seed({
+      bytes: { "/dumps/d0.msl": 0xaa, "/dumps/d1.msl": 0xbb, "/dumps/d2.msl": 0xaa },
+    });
+    act(() => {
+      useDumpRailStore.getState().setSolo(dumps[1].path);
+    });
+    render(<HexStatusBar />);
+
+    expect(screen.getByTestId("hex-status-layer")).toHaveTextContent(/d1\.msl · solo/);
+    expect(screen.getByTestId("hex-status-byte")).toHaveTextContent("Byte: 0xbb (187)");
+  });
+
+  it("says the byte is absent where the soloed dump has none", () => {
+    const dumps = seed({ bytes: { "/dumps/d0.msl": 0xaa } });
+    act(() => {
+      useDumpRailStore.getState().setSolo(dumps[1].path);
+    });
+    render(<HexStatusBar />);
+
+    expect(screen.getByTestId("hex-status-byte")).toHaveTextContent("Byte: —");
+  });
+
+  /**
+   * In the overlay the grid paints the weighted plurality, which where the
+   * dumps disagree is a value that may sit in no single dump — so the readout
+   * has to come from the same reduction the `Agreement` figure beside it does,
+   * not from any one dump's cache.
+   */
+  it("reports the plurality byte the overlay is painting", () => {
+    seed({
+      bytes: { "/dumps/d0.msl": 0xaa, "/dumps/d1.msl": 0xbb, "/dumps/d2.msl": 0xbb },
+    });
+    render(<HexStatusBar />);
+
+    expect(screen.getByTestId("hex-status-agreement")).toHaveTextContent("Agreement: 2/3");
+    expect(screen.getByTestId("hex-status-byte")).toHaveTextContent("Byte: 0xbb (187)");
+  });
+
+  it("drops an excluded dump out of the byte it reports", () => {
+    const dumps = seed({
+      bytes: { "/dumps/d0.msl": 0xaa, "/dumps/d1.msl": 0xbb, "/dumps/d2.msl": 0xbb },
+    });
+    act(() => {
+      useDumpRailStore.getState().toggleIncluded(dumps[1].path);
+      useDumpRailStore.getState().toggleIncluded(dumps[2].path);
+    });
+    render(<HexStatusBar />);
+
+    expect(screen.getByTestId("hex-status-byte")).toHaveTextContent("Byte: 0xaa (170)");
+  });
+
+  /**
+   * Outside the overlay the anchor's own cache is still the right source: the
+   * single-dump viewer IS the anchor, and every side-by-side pane says whose
+   * bytes it holds in its own header.
+   */
+  it("still reads the anchor's cache outside the overlay", () => {
+    seed({ mainView: "single", bytes: { "/dumps/d0.msl": 0xaa } });
+    act(() => {
+      useHexStore.setState({ getByteAt: () => 0x5a });
+    });
+    render(<HexStatusBar />);
+
+    expect(screen.getByTestId("hex-status-byte")).toHaveTextContent("Byte: 0x5a (90)");
+  });
+});
+
 describe("HexStatusBar existing fields", () => {
   /**
    * The layer and agreement fields are ADDITIVE. Losing the cursor, the byte or

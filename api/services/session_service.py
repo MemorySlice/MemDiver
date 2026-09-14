@@ -14,14 +14,54 @@ from __future__ import annotations
 
 import datetime
 import logging
+from collections.abc import Mapping as _MappingABC
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from memdiver.api.path_safety import safe_filename
 from memdiver.engine.session_store import _EXT as _SESSION_EXT
 from memdiver.engine.session_store import SessionSnapshot, SessionStore
 
 logger = logging.getLogger("memdiver.api.services.session_service")
+
+# The ONLY keys a persisted dump entry may carry. This is a whitelist, and it
+# is a security control rather than a tidiness one: the frontend's DumpEntry
+# also holds a `keyMaterial` block (passphrase / key_hex / kem_key_hex) of
+# PLAINTEXT recovered secrets, and session files are unprotected gzipped JSON
+# under ~/.memdiver/sessions/.
+#
+# `api.routers.sessions.SessionDumpEntry` already filters the HTTP path. This
+# second, independent filter covers every DIRECT caller of the service — the
+# Marimo notebook, the library API, tests — which never passes through
+# Pydantic. Two guards, because one guard that someone can route around is
+# not a guard.
+_DUMP_ENTRY_DEFAULTS: Dict[str, Any] = {
+    "path": "",
+    "name": "",
+    "size": 0,
+    "format": "",
+}
+
+
+def _sanitize_dumps(dumps: Any) -> List[Dict[str, Any]]:
+    """Reduce each dump entry to exactly the four persistable keys.
+
+    Anything else — ``key_material``, ``passphrase``, ``tag_status``, an
+    unknown future key — is dropped. Non-mapping entries are skipped rather
+    than raising: a malformed dump list must not fail an otherwise valid save.
+    """
+    if not isinstance(dumps, (list, tuple)):
+        return []
+    sanitized: List[Dict[str, Any]] = []
+    for entry in dumps:
+        if not isinstance(entry, _MappingABC):
+            continue
+        sanitized.append({
+            key: entry.get(key, default)
+            for key, default in _DUMP_ENTRY_DEFAULTS.items()
+        })
+    return sanitized
+
 
 
 def payload_to_snapshot(
@@ -38,9 +78,13 @@ def payload_to_snapshot(
 
     Unknown keys in ``payload`` are ignored rather than rejected. This
     mirrors ``SessionStore.load`` which also filters to dataclass fields.
+
+    ``dumps`` entries are additionally reduced to the four persistable keys
+    by :func:`_sanitize_dumps` — see its docstring for why that matters.
     """
     fields = SessionSnapshot.__dataclass_fields__
     data = {k: v for k, v in payload.items() if k in fields}
+    data["dumps"] = _sanitize_dumps(data.get("dumps"))
     data.setdefault("created_at", datetime.datetime.now().isoformat())
     data["memdiver_version"] = memdiver_version
     # Server stamps the schema version regardless of what the client sent.

@@ -30,6 +30,7 @@ def _cmd_web(args: argparse.Namespace) -> int:
     try:
         import uvicorn
         from memdiver.api.config import get_settings
+        from memdiver.api.frontend_build import frontend_build_warning
         from memdiver.api.main import create_app
         from memdiver.api.security import InsecureBindError, enforce_bind_guardrail
     except ImportError:
@@ -48,6 +49,15 @@ def _cmd_web(args: argparse.Namespace) -> int:
         # backstop, so the catch is kept here (not delegated upward).
         return to_cli_exit(exc)
     print(f"MemDiver starting on http://{settings.host}:{port}", file=sys.stderr, flush=True)
+    # The UI this serves is a PREBUILT bundle, and a stale one is invisible:
+    # same URL, no error, the change simply missing. Say so before the first
+    # request rather than letting the user debug code that was never shipped to
+    # their browser. stderr, next to the line above, because this is guidance
+    # the operator must see — not a diagnostic to be filtered out by a log
+    # level that is configured later (uvicorn owns logging from here on).
+    warning = frontend_build_warning()
+    if warning:
+        print(f"\n{warning}", file=sys.stderr, flush=True)
     try:
         app = create_app()
         uvicorn.run(app, host=settings.host, port=port, log_level="info")

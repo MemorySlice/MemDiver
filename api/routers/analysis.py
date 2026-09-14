@@ -518,13 +518,18 @@ def consensus_aligned_window(
     ``bytes_valid`` run. THE CLIENT NEVER RECEIVES A PEER COORDINATE IT HAS TO
     APPLY — ``segments[].dumps[].va``/``offset`` are provenance only.
 
-    ``differs`` (``gaps``-style runs) and ``variants`` (per index, like
-    ``classes``) carry the cross-dump comparison: an index differs iff at least
-    two dumps are PRESENT and at least two present values disagree, and
-    ``variants[i]`` counts the distinct values the present dumps hold (``0`` =
-    nobody present). They are computed over exactly the dumps this request
-    selected, which is why they cannot be derived client-side from a byte
-    cache that still holds de-selected dumps.
+    ``variants`` (per index, like ``classes``) carries the cross-dump
+    comparison: ``variants[i]`` counts the distinct values the PRESENT dumps
+    hold at ``i`` — ``0`` = nobody present, ``1`` = every present dump agrees.
+    So "the dumps disagree here" is ``variants[i] >= 2``; a byte only one dump
+    holds counts ``1`` and is NOT a disagreement, because absence and change
+    are different findings. There is deliberately no separate ``differs``
+    field: it was exactly ``variants >= 2``, since a value is only counted
+    once per distinct byte among those present.
+
+    It is computed over exactly the dumps this request selected, which is why
+    it cannot be derived client-side from a byte cache that still holds
+    de-selected dumps.
 
     POST, not GET: N dump paths plus N key triples do not fit a query string,
     and key material must stay out of access logs, history and ``Referer``.

@@ -7,13 +7,12 @@ import { SettingsMenu } from "@/components/settings/SettingsMenu";
 import { useAppStore } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
-import { buildSessionSnapshot } from "@/utils/buildSessionSnapshot";
 import { ModeBanner } from "@/components/analysis/ModeBanner";
 import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
 import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
 import { EntropyChart } from "@/components/charts/EntropyChart";
-import { getEntropy, getVasRegions, saveSession, getNotebookStatus, listDatasetRuns } from "@/api/client";
+import { getEntropy, getVasRegions, getNotebookStatus, listDatasetRuns } from "@/api/client";
 import type { EntropyData, DatasetRun } from "@/api/types";
 import type { VasEntry } from "@/components/charts/types";
 import { BookmarkList } from "@/components/investigation/BookmarkList";
@@ -65,6 +64,10 @@ import { KeyVerificationPanel } from "@/components/verification/KeyVerificationP
 import PipelinePanel from "@/components/pipeline/PipelinePanel";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { notifyError } from "@/utils/errorNotifier";
+import { useNewSessionGuard } from "@/hooks/useNewSessionGuard";
+import { useBeforeUnloadGuard } from "@/hooks/useBeforeUnloadGuard";
+import { NewSessionDialog } from "@/components/session/NewSessionDialog";
+import { persistSession } from "@/utils/session-persistence";
 
 function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal" | "vertical" }) {
   const isHorizontal = orientation === "horizontal";
@@ -79,10 +82,9 @@ function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal"
   );
 }
 
-function Toolbar() {
+function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   const { t } = useTranslation("layout");
   const mode = useAppStore((s) => s.mode);
-  const resetWizard = useAppStore((s) => s.resetWizard);
   const [notebookAvailable, setNotebookAvailable] = useState(false);
   useEffect(() => {
     getNotebookStatus().then((d) => setNotebookAvailable(d.available)).catch(() => {});
@@ -102,9 +104,16 @@ function Toolbar() {
         </span>
       </div>
       <div className="flex items-center gap-2">
+        {/*
+          The trailing slash on "/notebook/" is load-bearing. Starlette compiles
+          a Mount as `path + "/{path:path}"`, so Mount("/notebook") never matches
+          the bare "/notebook" -- the "/" StaticFiles catch-all matches instead,
+          looks for a file named "notebook" in dist, and 404s. The server also
+          redirects /notebook -> /notebook/ for hand-typed URLs.
+        */}
         {notebookAvailable && (
           <a
-            href="/notebook"
+            href="/notebook/"
             target="_blank"
             rel="noopener"
             className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
@@ -114,7 +123,9 @@ function Toolbar() {
           </a>
         )}
         <button
-          onClick={resetWizard}
+          onClick={onNewSession}
+          title={t("newSessionTitle")}
+          data-testid="new-session"
           className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary"
         >
           {t("newSession")}
@@ -799,7 +810,11 @@ function BottomTabs() {
 }
 
 export function Workspace() {
-  const resetWizard = useAppStore((s) => s.resetWizard);
+  // Called once, here, on purpose: Ctrl+N is registered in this component while
+  // the toolbar button lives two components away, so this is the nearest place
+  // that can put BOTH on the same guarded entry point.
+  const guard = useNewSessionGuard();
+  useBeforeUnloadGuard();
   const sidebarRef = useRef<PanelImperativeHandle>(null);
 
   const toggleSidebar = useCallback(() => {
@@ -813,25 +828,28 @@ export function Workspace() {
   }, []);
 
   const handleCtrlS = useCallback(() => {
-    saveSession(buildSessionSnapshot("autosave"))
+    // Goes through persistSession so the workspace is marked clean on success;
+    // otherwise the guard would keep claiming there is unsaved work right after
+    // the user saved.
+    persistSession("autosave")
       .catch(() => {/* silently ignore autosave errors */});
   }, []);
 
   const shortcuts = useMemo(() => ({
-    "ctrl+n": () => resetWizard(),
+    "ctrl+n": guard.requestNewSession,
     "ctrl+s": handleCtrlS,
     "ctrl+g": () => {
       const input = document.querySelector<HTMLInputElement>('input[placeholder="0x offset"]');
       input?.focus();
     },
     "ctrl+b": () => toggleSidebar(),
-  }), [resetWizard, handleCtrlS, toggleSidebar]);
+  }), [guard.requestNewSession, handleCtrlS, toggleSidebar]);
 
   useKeyboardShortcuts(shortcuts);
 
   return (
     <div className="h-screen flex flex-col" style={{ background: "var(--md-bg-primary)" }}>
-      <Toolbar />
+      <Toolbar onNewSession={guard.requestNewSession} />
       <Group orientation="vertical" id="memdiver-v-layout" className="flex-1">
         <Panel id="top" defaultSize="60%" minSize="25%">
           <Group orientation="horizontal" id="memdiver-h-layout">
@@ -877,6 +895,7 @@ export function Workspace() {
         </Panel>
       </Group>
       <NotificationStack />
+      {guard.open && <NewSessionDialog guard={guard} />}
     </div>
   );
 }

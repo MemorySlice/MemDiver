@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useDumpStore } from "../../stores/dump-store";
-import { useConsensusStore } from "../../stores/consensus-store";
+import { useConsensusRun, useConsensusStore } from "../../stores/consensus-store";
 import { useAppStore } from "@/stores/app-store";
 import { AddDumpButton } from "./AddDumpButton";
 import { TagStatusBadge } from "./TagStatusBadge";
@@ -68,14 +68,19 @@ export function DumpList() {
   const consensusCounts = useConsensusStore((s) => s.counts);
   const overlayEnabled = useConsensusStore((s) => s.overlayEnabled);
   const toggleOverlay = useConsensusStore((s) => s.toggleOverlay);
-  const runConsensus = useConsensusStore((s) => s.runConsensus);
+  // The app's ONE way to start a build, shared with `HexAlignmentChip`,
+  // `OverlayAlignSwitch`, `NoConsensusPrompt` and the overlay's raw-offset
+  // banner. This row used to call `runConsensus` straight off the store, so the
+  // in-flight flag those four disable themselves on was never set: a slow build
+  // started here left all four live and a second POST could be issued over it.
+  const { running: consensusRunning, run } = useConsensusRun();
 
   const mode = useAppStore((s) => s.mode);
   // An empty selection means "all of them" (store invariant I2), so the count
   // the button promises has to be computed the same way the paths are.
   const selectedCount = selectedDumpIds.length || dumps.length;
   const enoughSelected = selectedCount >= 2;
-  const canRunConsensus = enoughSelected && !consensusLoading;
+  const canRunConsensus = enoughSelected && !consensusLoading && !consensusRunning;
   const allRaw = dumps.length > 0 && dumps.every((d) => d.format === "raw");
 
   /*
@@ -101,7 +106,7 @@ export function DumpList() {
   const handleRunConsensus = () => {
     // Honours the selection instead of silently sweeping every loaded dump —
     // with nine imported, the old behaviour was a correctness surprise.
-    runConsensus(getSelectedDumpPaths(), aslrNormalize);
+    run(getSelectedDumpPaths(), aslrNormalize);
   };
 
   return (

@@ -1410,3 +1410,184 @@ describe("reset", () => {
     expect(state.getByteAt(DUMP_A, 0)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE ALIGNMENT SWITCH
+// ---------------------------------------------------------------------------
+
+/**
+ * `OverlayAlignSwitch` rebuilds the consensus over the SAME dumps in the OTHER
+ * coordinate, and `runConsensus` mints a new `consensus_id` for it.
+ *
+ * With the id out of `identityFor`, nothing about the cache key moved: every
+ * visible chunk was already cached, `ensureLoaded` returned early, and the
+ * panes went on painting delta-fit bytes under a `raw offsets` build. Worse,
+ * `alignment` is written ONLY by `applyResponse`, so with no request there was
+ * no update and the switch — which derives its selected segment from
+ * `alignment.method` — snapped straight back. The control looked dead.
+ */
+describe("cache identity: the consensus build", () => {
+  const bothDumps = [
+    { path: DUMP_A, bytes: [0xaa] },
+    { path: DUMP_B, bytes: [0xbb] },
+  ];
+
+  it("refetches when a rebuild mints a new id over an unchanged path set", async () => {
+    fetchMock.mockResolvedValue(asResponse(windowBody(bothDumps, [0])));
+
+    load([DUMP_A, DUMP_B], 0, 0, "cns-1");
+    await flush();
+    expect(callsForOffset(0)).toBe(1);
+
+    // Same anchor, same view, same dumps. ONLY the build changed.
+    load([DUMP_A, DUMP_B], 0, 0, "cns-2");
+    await flush();
+
+    expect(callsForOffset(0)).toBe(2);
+    expect(requestBodies().at(-1)?.consensus_id).toBe("cns-2");
+  });
+
+  it("keeps 'no build' distinct from a real id", async () => {
+    fetchMock.mockResolvedValue(asResponse(windowBody(bothDumps, [0])));
+
+    load([DUMP_A, DUMP_B], 0, 0, null);
+    await flush();
+    load([DUMP_A, DUMP_B], 0, 0, "cns-1");
+    await flush();
+
+    expect(callsForOffset(0)).toBe(2);
+  });
+
+  /**
+   * The visible symptom, end to end: the switch stops snapping back because
+   * the new build's `alignment` actually reaches the store.
+   */
+  it("adopts the new build's alignment instead of keeping the old one", async () => {
+    fetchMock.mockResolvedValue(asResponse(windowBody(bothDumps, [0])));
+    load([DUMP_A, DUMP_B], 0, 0, "cns-1");
+    await flush();
+    expect(useMultiHexStore.getState().alignment?.method).toBe("module_offset");
+
+    fetchMock.mockResolvedValue(
+      asResponse(
+        windowBody(bothDumps, [0], {
+          alignment: {
+            method: "file_offset",
+            bytes_compared: 1,
+            bytes_discarded: 0,
+            sizes_differed: false,
+            n_sources: 2,
+            warnings: [],
+          },
+        }),
+      ),
+    );
+    load([DUMP_A, DUMP_B], 0, 0, "cns-2");
+    await flush();
+
+    expect(useMultiHexStore.getState().alignment?.method).toBe("file_offset");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// windowVersion
+// ---------------------------------------------------------------------------
+
+/**
+ * The one term a window-DERIVED consumer needs: `variance-regions-store`'s
+ * `"differs"` category is computed from the loaded window, so its query
+ * identity has to move when the window's content does — and pointedly NOT when
+ * the user merely scrolls over bytes that are already cached, which is the
+ * per-scroll-tick churn `lastRequest`'s stability exists to delete.
+ */
+describe("windowVersion", () => {
+  it("moves when a chunk lands", async () => {
+    fetchMock.mockResolvedValue(windowResponse([{ path: DUMP_A, bytes: [1] }], [0]));
+    const before = useMultiHexStore.getState().windowVersion;
+
+    load([DUMP_A]);
+    await flush();
+
+    expect(useMultiHexStore.getState().windowVersion).toBeGreaterThan(before);
+  });
+
+  it("stays put across scroll ticks that change nothing", async () => {
+    fetchMock.mockResolvedValue(windowResponse([{ path: DUMP_A, bytes: [1] }], [0]));
+    load([DUMP_A]);
+    await flush();
+    const settled = useMultiHexStore.getState().windowVersion;
+
+    load([DUMP_A]);
+    load([DUMP_A]);
+
+    expect(useMultiHexStore.getState().windowVersion).toBe(settled);
+  });
+
+  it("moves on reset, and never backwards", async () => {
+    fetchMock.mockResolvedValue(windowResponse([{ path: DUMP_A, bytes: [1] }], [0]));
+    load([DUMP_A]);
+    await flush();
+    const loaded = useMultiHexStore.getState().windowVersion;
+
+    useMultiHexStore.getState().reset();
+
+    // A counter that restarted at 0 would hand a consumer back a number it
+    // already held, and the reset would read as "nothing changed".
+    expect(useMultiHexStore.getState().windowVersion).toBeGreaterThan(loaded);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// absenceAt vs a chunk-level failure
+// ---------------------------------------------------------------------------
+
+/**
+ * `chunkErrors` is keyed by CHUNK — one request carries every pane — while
+ * `evictToBudget` evicts per `(path, offset)`. So one pane's chunk can be
+ * dropped, re-requested and fail while every other pane still holds correct
+ * bytes at that index. Asking the failure first painted an error over a cell
+ * whose byte was sitting right there, and `getByteAt` / `isPresentAt` — which
+ * ignore failures entirely — disagreed with it.
+ */
+describe("absenceAt with a failed chunk", () => {
+  it("lets a pane's own byte outrank the chunk-level failure", async () => {
+    fetchMock.mockResolvedValue(
+      asResponse(
+        windowBody(
+          [
+            { path: DUMP_A, bytes: [0xaa, 0xaa] },
+            // B holds index 0 only: index 1 is a genuine absence.
+            { path: DUMP_B, bytes: [0xbb, 0x00], valid: [[0, 1]] },
+          ],
+          [0, 0],
+        ),
+      ),
+    );
+    load([DUMP_A, DUMP_B]);
+    await flush();
+
+    const identity = useMultiHexStore.getState().identity;
+    expect(identity).not.toBeNull();
+    useMultiHexStore.setState({
+      chunkErrors: new Map([
+        [
+          `${identity}|0`,
+          { message: "boom", attempts: 0, nextRetryAt: Date.now() + 1000 },
+        ],
+      ]),
+    });
+
+    const state = useMultiHexStore.getState();
+    // A byte we HAVE is not an absence, whatever the last request did.
+    expect(state.absenceAt(DUMP_A, 0)).toBeNull();
+    expect(state.absenceAt(DUMP_B, 0)).toBeNull();
+    // ...and it agrees with the two getters that never consulted the failure.
+    expect(state.isPresentAt(DUMP_A, 0)).toBe(true);
+    expect(state.getByteAt(DUMP_A, 0)).toBe(0xaa);
+    // Where the pane really has no byte, the failed request IS the best answer
+    // available, so the vocabulary is unchanged.
+    expect(state.absenceAt(DUMP_B, 1)).toBe("error");
+    // And the banner still fires: the chunk really did fail.
+    expect(state.getChunkError(0)).toBe("boom");
+  });
+});

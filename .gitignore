@@ -66,3 +66,7 @@ docs/issue-drafts/
 docs/dev/
 
 .coverage
+
+# The e2e backend's own MemDiver home (XDG_DATA_HOME in tests/e2e/playwright.config.ts):
+# project.duckdb, the session store and the preferences file the suite resets.
+/tests/e2e/.memdiver-home/

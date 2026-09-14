@@ -163,6 +163,70 @@ describe("HexRow getDiffersAt composes with the other layers", () => {
   });
 });
 
+describe("HexRow getDiffersAt stops at a void cell", () => {
+  /**
+   * The ring is gated on `!isVoidCell`, exactly like the consensus-class and
+   * variant-ramp branches beside it — and for a sharper reason than symmetry.
+   *
+   * `differsAt` reads the backend's `variants`, which covers the whole
+   * REQUESTED set, while the absence that voided the cell was decided over the
+   * INCLUDED set. Exclude all but one dump, park on a byte that dump lacks and
+   * two EXCLUDED dumps differ on, and the cell came out hatched `byte-absent`
+   * AND ringed `cross-dump-differs`: a stated disagreement about a byte nothing
+   * on screen holds.
+   */
+  it("rings no cell that has no byte", () => {
+    const { container } = renderRow({
+      getByteAt: () => undefined,
+      getAbsenceAt: () => "not-in-dump",
+      getDiffersAt: () => true,
+    });
+
+    const cell = hexCell(container, 0);
+    expect(cell).toHaveClass("byte-absent");
+    expect(cell).not.toHaveClass("cross-dump-differs");
+  });
+
+  it("says nothing about disagreement in the void cell's tooltip either", () => {
+    const { container } = renderRow({
+      getByteAt: () => undefined,
+      getAbsenceAt: () => "no-correspondence",
+      getDiffersAt: () => true,
+    });
+
+    const title = hexCell(container, 0).getAttribute("title") ?? "";
+    expect(title).not.toMatch(/varies across dumps/i);
+  });
+
+  /**
+   * A LOAD FAILURE is a void cause too, which is what makes the pairing
+   * `hex.css` used to worry about — `.byte-error`'s bottom rule under
+   * `.cross-dump-differs`'s full ring — unreachable rather than merely rare.
+   */
+  it("rings no cell whose window failed to load", () => {
+    const { container } = renderRow({
+      getByteAt: () => undefined,
+      getAbsenceAt: () => "error",
+      getDiffersAt: () => true,
+    });
+
+    const cell = hexCell(container, 0);
+    expect(cell).toHaveClass("byte-error");
+    expect(cell).not.toHaveClass("cross-dump-differs");
+  });
+
+  /** A page-state cause is NOT void — the byte is there — so it still rings. */
+  it("still rings a tinted, non-void cell", () => {
+    const { container } = renderRow({
+      view: "va",
+      getAbsenceAt: () => "failed",
+      getDiffersAt: () => true,
+    });
+
+    expect(hexCell(container, 0)).toHaveClass("cross-dump-differs");
+  });
+});
+
 describe("HexRow differs tooltip", () => {
   /**
    * The ring is the primary signal and `OverlayByteInspector` is the primary

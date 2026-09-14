@@ -10,7 +10,13 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("memdiver.engine.session_store")
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
+# Oldest on-disk schema this build can still read. v1 files need no
+# migration shim: every v2 field is additive with a default, and both
+# ``SessionStore.load`` and ``session_service.payload_to_snapshot``
+# filter to ``SessionSnapshot.__dataclass_fields__``, so missing keys
+# simply fall back to those defaults.
+MIN_READABLE_SCHEMA_VERSION = 1
 _MAGIC = "_memdiver_session"
 _EXT = ".memdiver"
 
@@ -56,6 +62,35 @@ class SessionSnapshot:
     bookmarks: List[Dict[str, Any]] = field(default_factory=list)
     investigation_offset: Optional[int] = None
 
+    # --- Multi-dump workspace (schema v2) -----------------------------------
+    # All defaulted, so a v1 file loads unchanged. Everything here is keyed by
+    # dump PATH, never by the frontend's per-session ``crypto.randomUUID()``
+    # dump ids, which are meaningless once written to a file.
+    #
+    # SECURITY: a ``dumps`` entry holds EXACTLY ``path``, ``name``, ``size``
+    # and ``format``. The frontend's ``DumpEntry`` also carries a
+    # ``keyMaterial`` block (passphrase / key_hex / kem_key_hex) -- plaintext
+    # recovered secrets -- and session files are unprotected gzipped JSON under
+    # ``~/.memdiver/sessions/``. Nothing outside those four keys may ever reach
+    # disk; the enforcing whitelists are ``SessionDumpEntry`` in
+    # ``api.routers.sessions`` (HTTP callers) and ``_sanitize_dumps`` in
+    # ``api.services.session_service`` (direct callers).
+    dumps: List[Dict[str, Any]] = field(default_factory=list)
+    active_dump_path: str = ""
+    selected_dump_paths: List[str] = field(default_factory=list)
+    # Named for what it is: the frontend calls the same set ``visibleDumps``,
+    # but it actually holds the COLLAPSED panes. That misnomer stops here.
+    collapsed_dump_paths: List[str] = field(default_factory=list)
+    origin_dump_path: str = ""
+    main_view: str = "single"
+    aslr_normalize: bool = False
+
+    # Dump rail (weighting / exclusion), also path-keyed.
+    dump_weights: Dict[str, float] = field(default_factory=dict)
+    excluded_dump_paths: List[str] = field(default_factory=list)
+    solo_dump_path: str = ""
+    rail_collapsed: bool = False
+
 
 class SessionStore:
     """Save and load MemDiver session snapshots."""
@@ -80,7 +115,17 @@ class SessionStore:
 
     @staticmethod
     def load(path: Path) -> SessionSnapshot:
-        """Deserialize a .memdiver file into a SessionSnapshot."""
+        """Deserialize a .memdiver file into a SessionSnapshot.
+
+        Accepts any schema version in
+        ``[MIN_READABLE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION]``.
+
+        No migration shim is needed for v1 files: every v2 field was added
+        additively with a default, and the ``__dataclass_fields__`` filter
+        below drops unknown keys while missing keys fall back to those
+        defaults. A v1 file therefore loads as a v2 snapshot with an empty
+        dump list, which is exactly right -- a v1 session had no dump list.
+        """
         raw = Path(path).read_bytes()
         if raw[:2] == b"\x1f\x8b":  # gzip magic
             text = gzip.decompress(raw).decode("utf-8")
@@ -93,6 +138,11 @@ class SessionStore:
             raise ValueError(
                 f"Session file version {data['schema_version']} "
                 f"is newer than supported {CURRENT_SCHEMA_VERSION}"
+            )
+        if data.get("schema_version", MIN_READABLE_SCHEMA_VERSION) < MIN_READABLE_SCHEMA_VERSION:
+            raise ValueError(
+                f"Session file version {data['schema_version']} "
+                f"is older than supported {MIN_READABLE_SCHEMA_VERSION}"
             )
         data.pop(_MAGIC, None)
         return SessionSnapshot(**{
@@ -138,11 +188,13 @@ class SessionStore:
         return SessionStore.default_dir() / f"{fname}{_EXT}"
 
     @staticmethod
-    def list_sessions(directory: Path = None) -> List[Dict[str, str]]:
+    def list_sessions(directory: Path = None) -> List[Dict[str, Any]]:
         """List available session files with basic metadata.
 
         Uses lightweight parsing — extracts only header fields without
-        constructing full SessionSnapshot objects.
+        constructing full SessionSnapshot objects. ``dump_count`` is free:
+        the whole file is already gunzipped and parsed here, so reporting it
+        costs no extra I/O.
         """
         d = Path(directory) if directory else SessionStore.default_dir()
         if not d.exists():
@@ -162,12 +214,13 @@ class SessionStore:
                         "mode": data.get("mode", ""),
                         "input_mode": data.get("input_mode", ""),
                         "input_path": data.get("input_path", ""),
+                        "dump_count": len(data.get("dumps") or []),
                     })
             except Exception:
                 sessions.append({"path": str(f), "name": f.stem,
                                  "display_name": f.stem,
                                  "created_at": "", "mode": "", "input_mode": "",
-                                 "input_path": ""})
+                                 "input_path": "", "dump_count": 0})
         return sessions
 
 

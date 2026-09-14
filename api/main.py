@@ -7,10 +7,10 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from memdiver.api.config import get_settings
@@ -251,8 +251,23 @@ def create_app() -> FastAPI:
             # is refused (see security.guard_notebook_websocket).
             marimo_app = guard_notebook_websocket(marimo_app, settings)
             app.mount("/notebook", marimo_app)
+
+            # Starlette compiles a Mount as ``path + "/{path:path}"``, so the
+            # mount above only matches "/notebook/..." -- never the bare
+            # "/notebook". Without this route that bare path falls through to
+            # the "/" StaticFiles catch-all registered below, which looks for a
+            # file named "notebook" in the bundle and 404s. Router-level
+            # redirect_slashes cannot save it either: it only runs when NO route
+            # matched, and the catch-all always matches.
+            #
+            # Registered inside this branch on purpose: with no mount to land
+            # on, redirecting would only trade one 404 for another.
+            @app.get("/notebook", include_in_schema=False)
+            def notebook_redirect() -> RedirectResponse:
+                return RedirectResponse("/notebook/")
+
             _notebook_available = True
-            logger.info("Marimo notebook mounted at /notebook")
+            logger.info("Marimo notebook mounted at /notebook/")
         else:
             _notebook_error = f"Notebook file not found: {notebook_path}"
     except ImportError:
@@ -268,18 +283,27 @@ def create_app() -> FastAPI:
     def notebook_status():
         return {"available": _notebook_available, "error": _notebook_error}
 
-    # Serve built React frontend if dist/ exists. Allow an env override
-    # (MEMDIVER_FRONTEND_DIST, matching the Settings env_prefix) for
-    # packaged/relocated deployments where the source-tree-relative default
-    # does not apply. Degrades safely via the .is_dir() guard below.
-    import os
+    # Serve the built React frontend if it exists. Resolution (including the
+    # MEMDIVER_FRONTEND_DIST override for packaged/relocated deployments) lives
+    # in api/frontend_build.py, which also owns the staleness check `memdiver
+    # web` prints — the two must never disagree about which directory is being
+    # served. Degrades safely via the .is_dir() guard below.
+    from memdiver.api.frontend_build import frontend_dist_path
 
-    _frontend_override = os.environ.get("MEMDIVER_FRONTEND_DIST")
-    frontend_dist = (
-        Path(_frontend_override)
-        if _frontend_override
-        else Path(__file__).parent.parent / "frontend" / "dist"
-    )
+    frontend_dist = frontend_dist_path()
+
+    # The bundle ships favicon.svg but no favicon.ico, and index.html points at
+    # the logo. A browser still asks for /favicon.ico on any page that declares
+    # no icon of its own (an error page, the Marimo mount), so answer it with
+    # the SVG the bundle already has rather than logging a 404 every time.
+    # Registered before the "/" catch-all below, which would otherwise take it.
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        icon = frontend_dist / "favicon.svg"
+        if not icon.is_file():
+            raise HTTPException(status_code=404, detail="favicon not found")
+        return FileResponse(icon, media_type="image/svg+xml")
+
     if frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 

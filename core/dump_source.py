@@ -644,11 +644,19 @@ class MslDumpSource:
             ov_end = min(c_end, req_end)
             begin = ov_start - run.va_start
             stop = min(ov_end - run.va_start, run.avail)
-            if stop > begin:
+            # The reported run must cover the bytes actually COPIED, never the
+            # full overlap. ``stop`` is clamped by ``run.avail`` — the bytes the
+            # container really holds for this run — so a truncated run
+            # (``avail < length``) leaves a zero-filled tail inside the overlap.
+            # Reporting ``ov_end - ov_start`` here would mark that filler
+            # CAPTURED: the same false presence, from the same zero bytes, that
+            # this method replaced ``len(data)`` to prevent.
+            copied = stop - begin
+            if copied > 0:
                 dst = ov_start - req_start
-                buf[dst:dst + (stop - begin)] = \
-                    self._reader.read_view(run.buf_offset + begin, stop - begin)
-            _append_merged_run(runs, ov_start - req_start, ov_end - ov_start)
+                buf[dst:dst + copied] = \
+                    self._reader.read_view(run.buf_offset + begin, copied)
+                _append_merged_run(runs, dst, copied)
         return (bytes(buf), runs)
 
     def _read_range_va(self, offset: int, length: int) -> bytes:

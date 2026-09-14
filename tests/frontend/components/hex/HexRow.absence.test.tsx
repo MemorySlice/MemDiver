@@ -147,19 +147,79 @@ describe("HexRow absence excludes the consensus vocabulary", () => {
   });
 
   /**
-   * The disagreement RING is the one thing that still composes: it carries no
-   * background of its own, and `.byte-error`'s inset is on the bottom edge
-   * precisely so the ring survives on the same cell.
+   * CORRECTED. This case used to assert the opposite — that the ring "still
+   * composes" with the error state, on the strength of a comment in `hex.css`
+   * claiming `.byte-error`'s bottom inset was placed so a full inset ring could
+   * sit on the same cell. Both the comment and the assertion were wrong, in two
+   * independent ways:
+   *
+   *  - Stylistically: `.byte-error` and `.cross-dump-differs` are separate
+   *    rules at the same (0,2,0) specificity, and `box-shadow` is not additive
+   *    across rules. The later one REPLACES the earlier, so the cell never
+   *    carried both marks — it silently lost the error rule.
+   *  - Substantively, which is what actually settles it: `differsAt` reads the
+   *    backend's `variants` over the whole REQUESTED set, while the absence
+   *    that voided this cell was decided over the INCLUDED set. Ringing a void
+   *    cell therefore states a disagreement about a byte nothing on screen
+   *    holds — the same conflation of "absent" with "changed" this whole
+   *    vocabulary exists to prevent, and the reason the consensus-class and
+   *    variant-ramp branches are already gated on `!isVoidCell`.
+   *
+   * So the ring is gated like its two siblings, and the pairing the `hex.css`
+   * comment worried about is now unreachable rather than merely unpainted.
    */
-  it("still composes the cross-dump ring with the error state", () => {
+  it.each(STATES)("puts no cross-dump ring on a %s cell", (state) => {
     const { container } = renderRow({
-      getAbsenceAt: () => "error",
+      getAbsenceAt: () => state,
+      overlayEnabled: true,
+      getDiffersAt: () => true,
+    });
+
+    expect(hexCell(container, 0)).not.toHaveClass("cross-dump-differs");
+  });
+
+  /**
+   * The gate is on VOIDNESS, not on absence: a page-state cause tints a byte
+   * the backend really did send, so that cell still holds data the other dumps
+   * can disagree with and still earns the ring.
+   */
+  it("still rings a tinted cell that holds a byte", () => {
+    const { container } = renderRow({
+      getByteAt: () => 0x41,
+      view: "va",
+      getAbsenceAt: () => "failed",
       getDiffersAt: () => true,
     });
 
     const cell = hexCell(container, 0);
-    expect(cell).toHaveClass("byte-error");
+    expect(cell).toHaveClass("page-failed");
     expect(cell).toHaveClass("cross-dump-differs");
+  });
+
+  /**
+   * What the error state DOES compose with: the user's own marks. They are
+   * expressed as an outline rather than a background precisely so a cell that
+   * already has a ground keeps both (see `hex-css-cascade.test.ts`).
+   */
+  it("keeps the selection and the search hit on an errored cell", () => {
+    const { container } = render(
+      <HexRow
+        rowOffset={0}
+        getByteAt={noBytes}
+        cursorOffset={0}
+        selectionStart={0}
+        selectionEnd={0}
+        regionIndex={buildRegionIndex([
+          { offset: 0, length: 1, type: "search", label: "hit" },
+        ])}
+        getAbsenceAt={() => "error"}
+      />,
+    );
+
+    const cell = hexCell(container, 0);
+    expect(cell).toHaveClass("byte-error");
+    expect(cell).toHaveClass("selected");
+    expect(cell).toHaveClass("highlight-search");
   });
 });
 

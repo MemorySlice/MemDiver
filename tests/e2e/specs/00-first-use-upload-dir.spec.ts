@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, statSync } from "node:fs";
-import { test, expect, type Page } from "@playwright/test";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { tab } from "../fixtures/selectors";
 import {
   pcapFixtureAvailable,
@@ -28,21 +28,45 @@ import { enterWorkspaceWithMsl } from "../fixtures/workspace";
  *      claim, and it is asserted on the wire (``filename`` + ``size`` of the
  *      second POST equal the fixture's) rather than merely "a path appeared".
  *
- * FILE NAME: this must sort before ``pcap-upload-run.spec.ts`` (and before
- * ``stride-coverage.spec.ts``), because Playwright runs spec files in path
- * order with ``fullyParallel: false, workers: 1`` and both of those now
- * configure the directory in a ``beforeAll``. "first-use-…" does; the
- * originally-briefed "upload-dir-first-use…" would have sorted *after* both.
+ * FILE NAME: the ``00-`` prefix is load bearing, not decoration. Playwright
+ * runs spec files in path order with ``fullyParallel: false, workers: 1``, and
+ * THREE other specs configure the upload directory in a ``beforeAll`` so they
+ * can run standalone: ``emit-plugin``, ``pcap-upload-run`` and
+ * ``stride-coverage``. Any of them running first leaves the backend configured
+ * and silently costs this file its first-use test. The original name only
+ * cleared two of the three — ``emit-plugin`` sorts before "first-use-…", which
+ * is exactly what happened: in a full-suite run the first-use test skipped
+ * while the spec still reported green. A prefix that sorts before every letter
+ * is the only version of this that a new spec name cannot break.
  *
- * DETERMINISM CAVEAT (read before "fixing" the conditional stub below): the
- * chosen directory is persisted to ``memdiver_home()/config.json`` and the
- * running server keeps it in its ``@lru_cache``d ``Settings``. There is
- * deliberately no un-configure endpoint, so after the first green run on a
- * machine the real backend can never emit the first-use 409 again. When the
- * server reports itself already configured we therefore serve the backend's
- * byte-exact 409 body once and fall through, so steps 2-4 are identical on a
- * virgin machine and a warm one. On a fresh checkout / CI the server reports
- * unconfigured and the REAL 409 flows with nothing stubbed.
+ * WARM BACKENDS, and why this is two tests rather than one.
+ *
+ * The chosen directory is persisted to ``memdiver_home()/config.json`` and the
+ * running server keeps it in its ``@lru_cache``d ``Settings``; the POST handler
+ * mutates that instance in place rather than clearing the cache, and there is
+ * deliberately no un-configure endpoint. So a server that has been configured
+ * can never emit the first-use 409 again — only a fresh process can.
+ *
+ * ``playwright.config.ts`` therefore gives the backend an ``XDG_DATA_HOME`` of
+ * its own and deletes the preferences file as part of the spawn command, which
+ * makes "a freshly spawned e2e backend is unconfigured" true by construction.
+ * What it cannot cover is ``reuseExistingServer``: run the suite twice locally
+ * without stopping the server and the second run meets a warm one.
+ *
+ * That case is why the journey below is split in two:
+ *
+ *   - The FIRST-USE test states facts about the BACKEND — the 409 and the
+ *     "Not configured" screen. Against a warm server those facts are not
+ *     observable, so it SKIPS, loudly and with the remedy in the message. It
+ *     never stubs, so a green tick there always means the real thing happened.
+ *   - The RECOVERY test states a fact about the UI — that a 409 becomes a
+ *     prompt and the held File is re-POSTed by itself. A 409 is a 409 whoever
+ *     produced it, so against a warm server this one serves the backend's
+ *     byte-exact body once and carries on, and annotates the run to say so.
+ *
+ * The old shape ran both claims in one test with the stub always available,
+ * which meant a warm machine reported a green "configure-on-first-use" check
+ * having verified neither the 409 nor the screen that explains it.
  */
 
 const BACKEND_PORT = process.env.BACKEND_PORT ?? "8091";
@@ -122,6 +146,32 @@ async function closeSettings(page: Page): Promise<void> {
   await expect(page.getByTestId("settings-storage")).toBeHidden();
 }
 
+/**
+ * What the backend says about its upload directory.
+ *
+ * Answering 200 while unconfigured is itself part of the contract: the screen
+ * that offers to fix the problem is rendered from this response, so a 404 or a
+ * 500 here would take the remedy down with the fault.
+ */
+async function uploadDirStatus(request: APIRequestContext): Promise<UploadDirStatus> {
+  const probe = await request.get(`${BACKEND_URL}/api/settings/upload-dir`);
+  expect(
+    probe.status(),
+    "GET /api/settings/upload-dir must answer 200 even while unconfigured",
+  ).toBe(200);
+  return (await probe.json()) as UploadDirStatus;
+}
+
+/** The skip reason a warm backend earns, with the remedy in it. */
+function warmBackendSkip(state: UploadDirStatus): string {
+  return (
+    `this backend already has an upload directory (${state.path}) and cannot be ` +
+    "returned to the first-use state — get_settings() is lru_cached and the POST " +
+    "handler mutates it in place. Stop the server on BACKEND_PORT and re-run: a " +
+    "spawned e2e backend starts from a cleared preferences file."
+  );
+}
+
 test.describe("B0 — configure-on-first-use upload directory", { tag: "@requires-pcap" }, () => {
   test.skip(!pcapFixtureAvailable, "pcap fixture (matched.msl + session_tls13.pcap) missing");
 
@@ -131,18 +181,77 @@ test.describe("B0 — configure-on-first-use upload directory", { tag: "@require
     mkdirSync(UPLOAD_DIR, { recursive: true });
   });
 
-  test("unconfigured upload dir → prompt → save → the upload finishes by itself", async ({
+  /**
+   * The BACKEND half of B0, and the half that cannot be faked.
+   *
+   * Nothing here is stubbed or branched: either the server really is in the
+   * first-use state and every assertion below is about it, or this test skips
+   * and says so. That is the whole point of splitting it out — a warm machine
+   * used to report this claim green having checked the opposite branch.
+   *
+   * Declared first so the recovery test that follows still meets an
+   * unconfigured server: this one reads, it never chooses a directory.
+   */
+  test("fails closed, and says so on screen, until a directory is chosen", async ({
+    page,
+    request,
+  }) => {
+    const state = await uploadDirStatus(request);
+    test.skip(
+      state.env_pinned,
+      "MEMDIVER_UPLOAD_DIR is set on this backend; the UI cannot configure a pinned dir.",
+    );
+    test.skip(state.configured, warmBackendSkip(state));
+
+    // --- The wire: fails CLOSED, not into a world-writable temp dir ---
+    // Driven from the API rather than the browser: this is a statement about
+    // the endpoint, and the UI journey that consumes it is the next test.
+    const rejected = await request.post(`${BACKEND_URL}/api/pcaps/upload`, {
+      multipart: {
+        file: {
+          name: CAPTURE_NAME,
+          mimeType: "application/vnd.tcpdump.pcap",
+          buffer: readFileSync(pcapCapturePath),
+        },
+      },
+    });
+    expect(rejected.status(), "an upload with nowhere to go is refused").toBe(409);
+    // The token, not the prose: `upload-dir-error.ts` matches on it, so a
+    // backend that reworded the sentence would still be recognised — and one
+    // that dropped the token would silently stop opening the prompt.
+    expect((await rejected.json()) as { detail: string }).toHaveProperty(
+      "detail",
+      expect.stringContaining("upload_dir_unconfigured:"),
+    );
+
+    // --- The screen: Storage reflects the SERVER, not a localStorage guess ---
+    await enterWorkspaceWithMsl(page, pcapMatchedMslPath, { autoAnalyze: false });
+    await openStorageSection(page);
+    await expect(page.getByText("Storage", { exact: true })).toBeVisible();
+    await expect(page.getByText("Upload Directory", { exact: true })).toBeVisible();
+    const unset = page.getByTestId("settings-upload-dir-unset");
+    await expect(unset).toBeVisible();
+    await expect(unset).toHaveText("Not configured");
+    await expect(page.getByTestId("settings-upload-dir-choose")).toHaveText("Choose...");
+    await closeSettings(page);
+  });
+
+  /**
+   * The UI half: a 409 becomes a prompt, and the File the user already picked
+   * is re-POSTed by itself.
+   *
+   * A 409 is a 409 whoever produced it, so this one runs against a warm backend
+   * too — serving the body byte-for-byte once and annotating the run to say the
+   * fault was injected. What it must never do is imply the BACKEND was checked;
+   * that claim belongs to the test above.
+   */
+  test("turns the 409 into a prompt that finishes the upload by itself", async ({
     page,
     request,
   }) => {
     test.setTimeout(120_000);
 
-    const probe = await request.get(`${BACKEND_URL}/api/settings/upload-dir`);
-    expect(
-      probe.status(),
-      "GET /api/settings/upload-dir must answer 200 even while unconfigured",
-    ).toBe(200);
-    const state = (await probe.json()) as UploadDirStatus;
+    const state = await uploadDirStatus(request);
     test.skip(
       state.env_pinned,
       "MEMDIVER_UPLOAD_DIR is set on this backend; the UI cannot configure a pinned dir.",
@@ -175,9 +284,17 @@ test.describe("B0 — configure-on-first-use upload directory", { tag: "@require
       }
     });
 
-    // See the DETERMINISM CAVEAT in the file docstring.
+    // See "WARM BACKENDS" in the file docstring. The annotation is the point:
+    // a reader of the report can tell an injected 409 from a real one without
+    // reading this file.
     let stubServed = false;
     if (state.configured) {
+      test.info().annotations.push({
+        type: "injected-fault",
+        description:
+          `the backend is already configured (${state.path}), so the first-use 409 ` +
+          "was served by this spec, not by the server",
+      });
       await page.route("**/api/pcaps/upload", async (route) => {
         if (stubServed) {
           await route.fallback();
@@ -194,19 +311,10 @@ test.describe("B0 — configure-on-first-use upload directory", { tag: "@require
 
     await enterWorkspaceWithMsl(page, pcapMatchedMslPath, { autoAnalyze: false });
 
-    // --- Settings → Storage reflects the SERVER, not a localStorage guess ---
-    await openStorageSection(page);
-    await expect(page.getByText("Storage", { exact: true })).toBeVisible();
-    await expect(page.getByText("Upload Directory", { exact: true })).toBeVisible();
-    if (state.configured) {
-      await expect(page.getByTestId("settings-upload-dir-path")).toHaveText(state.path!);
-    } else {
-      const unset = page.getByTestId("settings-upload-dir-unset");
-      await expect(unset).toBeVisible();
-      await expect(unset).toHaveText("Not configured");
-      await expect(page.getByTestId("settings-upload-dir-choose")).toHaveText("Choose...");
-    }
-    await closeSettings(page);
+    // The "Not configured" screen is the previous test's claim, and the
+    // configured one is asserted at the end of this test against the directory
+    // the prompt actually chose — which is a sharper check than echoing back
+    // whatever the server happened to hold on the way in.
 
     // --- Reach the pcap dropzone: pipeline → recipe → dumps → oracle ---
     await page.locator(tab("pipeline")).first().click();
@@ -244,11 +352,30 @@ test.describe("B0 — configure-on-first-use upload directory", { tag: "@require
     await expect(pathBar).toBeVisible();
     await pathBar.click();
     await pathBar.fill(UPLOAD_DIR);
+    /**
+     * Prove the browse actually LANDED in UPLOAD_DIR before selecting.
+     *
+     * `FileBrowser` renders the path bar as `editPath ?? currentPath` and only
+     * clears `editPath` when a browse SUCCEEDS, so while the field is being
+     * edited its value is the text just typed into it — identical whether the
+     * browse succeeded, failed, or is still in flight. Asserting that value
+     * therefore proves nothing, and on a failed or pending browse
+     * `currentPath` is still the home directory the browser opens on, which
+     * "Select This Directory" would then commit in silence. Under full-suite
+     * load that is precisely what happened: the guard passed and the prompt
+     * was handed `/Users/danielbaier`, which `validate_candidate` rejects.
+     *
+     * The response the backend gave for THIS directory is the fact worth
+     * waiting for, so it is what the spec waits for.
+     */
+    const browsed = page.waitForResponse(async (resp) => {
+      if (!new URL(resp.url()).pathname.endsWith("/api/path/browse")) return false;
+      if (!resp.ok()) return false;
+      const body = (await resp.json().catch(() => null)) as { current?: string } | null;
+      return typeof body?.current === "string" && body.current.endsWith(UPLOAD_DIR_LEAF);
+    });
     await pathBar.press("Enter");
-    // Prove the browse actually LANDED in UPLOAD_DIR before selecting: on a
-    // failed browse FileBrowser keeps `currentPath`, so "Select This Directory"
-    // would silently commit whatever directory it was showing before. Matched
-    // by suffix because /api/path/browse echoes its own normalised form.
+    await browsed;
     await expect(pathBar).toHaveValue(new RegExp(`${UPLOAD_DIR_LEAF}/?$`));
     const selectDir = page.getByRole("button", { name: "Select This Directory" });
     await expect(selectDir).toBeEnabled();

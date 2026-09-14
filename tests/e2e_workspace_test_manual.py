@@ -52,16 +52,17 @@ def test_wizard_and_file_load(page):
     page.wait_for_timeout(500)
     screenshot(page, "03_analysis_step")
 
-    # Click "Start Analysis"
-    start_btn = page.locator('button:has-text("Start Analysis")')
+    # Click the final button. "Inspect Only" was chosen above, which renames it
+    # from "Start Analysis" to "Open Workspace" — no analysis is starting.
+    start_btn = page.locator('button:has-text("Open Workspace")')
     if start_btn.is_visible(timeout=3000):
         start_btn.click()
-        print("  Clicked: Start Analysis")
+        print("  Clicked: Open Workspace")
     else:
-        # Maybe button text differs
-        start_btn = page.locator('button:has-text("Start")')
+        # Auto-Analyze still says "Start Analysis".
+        start_btn = page.locator('button:has-text("Start Analysis")')
         start_btn.click()
-        print("  Clicked: Start (fallback)")
+        print("  Clicked: Start Analysis (fallback)")
 
     page.wait_for_timeout(2000)
     page.wait_for_load_state("networkidle")

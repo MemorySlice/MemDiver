@@ -456,6 +456,12 @@ def test_all_routes_are_protected_or_intentionally_open():
             # FastAPI's docs UI registers more than the exact "/docs" path
             # (e.g. "/docs/oauth2-redirect"); all of it is safe-by-design.
             continue
+        if path == "/favicon.ico":
+            # A static icon out of the frontend bundle, in the same class as the
+            # "/" StaticFiles mount skipped above: it serves no data and reveals
+            # nothing a token would protect. It exists as an explicit route only
+            # because that catch-all mount would otherwise answer it with a 404.
+            continue
 
         pytest.fail(
             f"Route {path!r} (methods={methods}) is neither protected by "

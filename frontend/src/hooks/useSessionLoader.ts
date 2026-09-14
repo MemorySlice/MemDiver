@@ -4,6 +4,9 @@ import type { SessionInfo } from "@/api/types";
 import { useAppStore } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { applyHitsToStores } from "@/utils/apply-hits";
+import { buildSessionSnapshot } from "@/utils/buildSessionSnapshot";
+import { markSessionSaved, settleSessionBaseline } from "@/utils/session-persistence";
+import { isRecoverySession } from "@/utils/session-names";
 
 interface LoadOptions {
   onError?: (msg: string) => void;
@@ -42,7 +45,7 @@ export function useSessionLoader() {
     async (name: string, opts?: LoadOptions) => {
       try {
         const snap = await loadSession(name);
-        useAppStore.getState().restoreSession(snap);
+        await useAppStore.getState().restoreSession(snap);
         if (snap.analysis_result) {
           const setResult = useAnalysisStore.getState().setResult;
           setResult(
@@ -51,6 +54,27 @@ export function useSessionLoader() {
           applyHitsToStores(
             snap.analysis_result as unknown as Parameters<typeof applyHitsToStores>[0],
           );
+        }
+        // A session that was just loaded is, by definition, saved, so the
+        // unsaved-work guard must not prompt about it. Marking it here -- after
+        // the restore has fully settled -- is what covers BOTH entry points,
+        // since SessionLanding and SessionManager both come through this hook.
+        //
+        // It digests what `buildSessionSnapshot` WOULD write rather than the
+        // snapshot the server just sent. Those are not the same object: the
+        // stored file carries server-stamped fields the UI never produces, so
+        // comparing against it would leave every restored session permanently
+        // "dirty" and prompt on the very first click.
+        //
+        // The recovery copy is the deliberate exception: it is a safety net the
+        // user never asked for, so it stays unsaved to nudge a real save under
+        // a name they chose.
+        if (!isRecoverySession(name)) {
+          markSessionSaved(buildSessionSnapshot(""));
+          // The restore is not finished settling when its promise resolves;
+          // see `settleSessionBaseline`. Without this the workspace turns
+          // "dirty" on its own a moment after opening.
+          settleSessionBaseline();
         }
         opts?.onSuccess?.(name);
       } catch (e) {

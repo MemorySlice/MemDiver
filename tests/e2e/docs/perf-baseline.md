@@ -48,7 +48,7 @@ Notes:
   every time the fixture entered the workspace. Under the full suite,
   this left the backend saturated and caused flakes in `format`,
   `strings`, and cascading failures. Fix: `enterWorkspaceWithMsl` now
-  clicks "Inspect Only" before "Start Analysis". Individual specs
+  clicks "Inspect Only" before "Open Workspace". Individual specs
   that need analysis should trigger it explicitly.
 - After the fix, the strings first-row time drops back to well under
   2.5 s on this machine, so the 4500 ms target has plenty of headroom.

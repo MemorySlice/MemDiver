@@ -199,6 +199,24 @@ export interface MultiHexState {
   /** Identity under which each chunk offset was stored. */
   chunkIdentity: Map<number, string>;
 
+  /**
+   * Bumped whenever the SET of loaded chunks changes — a response landed, the
+   * byte budget evicted, panes were released, the cache was reset.
+   *
+   * Deliberately NOT bumped by a scroll: `ensureLoaded` re-runs on every
+   * virtualizer row change, and a counter that moved with it would be the same
+   * per-scroll-tick churn `lastRequest`'s stability was introduced to delete.
+   * It moves only when the window's CONTENT moved.
+   *
+   * Exists for the one consumer that derives findings FROM the loaded window
+   * rather than from the server: `variance-regions-store`'s `"differs"`
+   * category has no whole-dump enumeration to page through, so the loaded
+   * window is part of its query identity. Without this term its `requestKey`
+   * was constant, the mounted loader early-returned forever, and clicking
+   * "Differs" before the window had arrived said "Nothing here" permanently.
+   */
+  windowVersion: number;
+
   alignment: AlignedWindowResponse["alignment"] | null;
   truncated: boolean;
   budgetBytes: number;
@@ -284,9 +302,27 @@ export interface MultiHexState {
  * Omitting `selectionKey` here would serve the previous selection's classes
  * under the new one — the single most likely bug in this file, and the reason
  * `tests/frontend/stores/multi-hex-store.test.ts` pins it explicitly.
+ *
+ * `consensusId` is load bearing for exactly the same reason, one gesture along.
+ * `OverlayAlignSwitch` rebuilds over the SAME dumps in the OTHER coordinate:
+ * `runConsensus` mints a new id, and `delta-fit` vs `raw offsets` puts different
+ * bytes, different classes and different variant counts at the same window
+ * index. With the id out of the identity nothing about the key moved, every
+ * visible chunk was already cached, `ensureLoaded` returned early — and the
+ * panes went on painting the previous build while `alignment` (written only by
+ * `applyResponse`) never updated, so the switch snapped back and looked dead.
+ *
+ * `null` — no build, the `dump_paths` fallback — is spelled distinctly rather
+ * than as an empty term, so "no consensus" can never collide with a real id.
  */
-function identityFor(anchorPath: string, view: HexViewMode, paths: string[]): string {
-  return `${anchorPath}|${view}|${selectionKey(paths)}`;
+function identityFor(
+  anchorPath: string,
+  view: HexViewMode,
+  paths: string[],
+  consensusId: string | null,
+): string {
+  const build = consensusId === null ? "-" : `c:${consensusId}`;
+  return `${anchorPath}|${view}|${selectionKey(paths)}|${build}`;
 }
 
 function cacheKeyFor(identity: string, chunkOffset: number): string {
@@ -647,14 +683,15 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
   lastRequest: null,
   identity: null,
   chunkIdentity: new Map(),
+  windowVersion: 0,
   alignment: null,
   truncated: false,
   budgetBytes: DEFAULT_BUDGET_BYTES,
 
-  ensureLoaded: ({ anchorPath, view, paths, startRow, endRow, consensusId, anchorSize }) => {
+  ensureLoaded:({ anchorPath, view, paths, startRow, endRow, consensusId, anchorSize }) => {
     if (!anchorPath || paths.length === 0) return;
 
-    const identity = identityFor(anchorPath, view, paths);
+    const identity = identityFor(anchorPath, view, paths, consensusId);
     if (get().identity !== identity) {
       // Only the identity moves here; the chunks stay put and simply stop
       // matching, so a flip back to the previous selection can still hit
@@ -771,8 +808,17 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
   /**
    * The check ORDER is the contract, and each step answers a different question:
    *
-   *   1. `error`             — the request for this window failed. Nothing below
-   *                            can be known, so it is asked first.
+   *   0. THIS PANE HOLDS THE BYTE — the one thing that outranks a failure.
+   *                            `evictToBudget` evicts per `(path, offset)`, so
+   *                            one pane's chunk can be dropped, re-requested
+   *                            and fail while every OTHER pane still holds
+   *                            correct bytes at that index. The failure is
+   *                            recorded against the CHUNK, so asking it first
+   *                            painted an error over cells whose byte was
+   *                            sitting right there. A byte we have is not an
+   *                            absence, whatever the last request did.
+   *   1. `error`             — the request for this window failed and this pane
+   *                            has no byte to show for it.
    *   2. `loading`           — no chunk under the LIVE identity: either it has
    *                            not arrived or it belongs to a previous anchor /
    *                            view / selection, which is the same thing here.
@@ -789,11 +835,19 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
   absenceAt: (path, offset) => {
     const state = get();
     const window = chunkWindowAt(state, offset);
-    if (window.failure) return "error";
     const chunk = currentChunk(state, path, offset);
+    const index = chunk ? offset - chunk.offset : -1;
+    // Step 0: does THIS pane hold a byte here? Only this question may overrule
+    // a chunk-level failure, and it overrules nothing else — a present byte
+    // with no class is still `no-correspondence` below, exactly as before.
+    const held =
+      chunk !== undefined &&
+      index >= 0 &&
+      index < chunk.valid.length &&
+      chunk.valid[index] === 1;
+    if (window.failure && !held) return "error";
     if (!chunk) return "loading";
     if (classAt(window, offset) === undefined) return "no-correspondence";
-    const index = offset - chunk.offset;
     if (index < 0 || index >= chunk.valid.length) return "no-correspondence";
     return chunk.valid[index] === 1 ? null : "not-in-dump";
   },
@@ -880,7 +934,13 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
         prev.variantChunks,
         prev.chunkIdentity,
       );
-      return { byPath, chunkVersionByPath, ...pruned };
+      // The loaded window just lost every chunk of every dropped pane.
+      return {
+        byPath,
+        chunkVersionByPath,
+        windowVersion: prev.windowVersion + 1,
+        ...pruned,
+      };
     });
   },
 
@@ -899,6 +959,10 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
       lastRequest: null,
       identity: null,
       chunkIdentity: new Map(),
+      // Monotonic, not zeroed: a window-derived consumer holding the previous
+      // value must see the reset as a CHANGE, and a counter that restarted at
+      // 0 would hand it back the number it already had.
+      windowVersion: get().windowVersion + 1,
       alignment: null,
       truncated: false,
       // The byte budget too: it is a tuning knob, not accumulated data, and a
@@ -1133,7 +1197,12 @@ function scheduleRetry(
     if (!failure || failure.attempts >= MAX_CHUNK_RETRIES) return;
     if (state.pending.has(key)) return;
     const req = state.lastRequest;
-    if (!req || identityFor(req.anchorPath, req.view, req.paths) !== identity) return;
+    if (
+      !req ||
+      identityFor(req.anchorPath, req.view, req.paths, req.consensusId) !== identity
+    ) {
+      return;
+    }
     fetchChunks(set, { identity, offsets: [chunkOffset], ...req });
   }, delayMs);
   retryTimers.set(key, handle);
@@ -1228,6 +1297,9 @@ function applyResponse(
     chunkVersionByPath,
     pending,
     chunkErrors,
+    // A chunk arrived (and the budget may have evicted others): the loaded
+    // window is not the window it was. See `windowVersion`.
+    windowVersion: prev.windowVersion + 1,
     alignment: response.alignment,
     truncated: response.truncated,
     ...pruned,

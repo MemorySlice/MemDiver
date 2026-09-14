@@ -98,7 +98,31 @@ export interface DumpRailState {
   toggleSolo(path: string): void;
   setCollapsed(collapsed: boolean): void;
   toggleCollapsed(): void;
+  /**
+   * Restores the rail from a saved session.
+   *
+   * Every weight is coerced to one of `DUMP_WEIGHTS`, and the default is
+   * stored as ABSENCE — the store's documented contract. Writing an explicit
+   * `1.0` instead would make `hasUnevenWeights` report "weighted" for a
+   * workspace nobody ever weighted, i.e. the badge would start lying the
+   * moment a session was restored.
+   */
+  hydrate(spec: DumpRailHydrationSpec): void;
   reset(): void;
+}
+
+/** The rail's persisted shape: already path-keyed, so no translation needed. */
+export interface DumpRailHydrationSpec {
+  weightByPath?: Record<string, number>;
+  excludedPaths?: readonly string[];
+  soloPath?: string | null;
+  collapsed?: boolean;
+}
+
+/** Narrows an untrusted number to one of the three legal weights. */
+export function coerceWeight(value: unknown): DumpWeight {
+  const found = DUMP_WEIGHTS.find((w) => w === value);
+  return found ?? DEFAULT_DUMP_WEIGHT;
 }
 
 const initial = () => ({
@@ -150,6 +174,24 @@ export const useDumpRailStore = create<DumpRailState>((set, get) => ({
   setCollapsed: (collapsed) => set({ collapsed }),
 
   toggleCollapsed: () => set((state) => ({ collapsed: !state.collapsed })),
+
+  hydrate: (spec) => {
+    const weightByPath = new Map<string, DumpWeight>();
+    for (const [path, raw] of Object.entries(spec.weightByPath ?? {})) {
+      const weight = coerceWeight(raw);
+      // Absence IS the default. See the contract note on `hydrate`.
+      if (weight !== DEFAULT_DUMP_WEIGHT) weightByPath.set(path, weight);
+    }
+    set({
+      weightByPath,
+      excludedPaths: new Set(spec.excludedPaths ?? []),
+      // "" is how "no solo" travels on the wire (the snapshot field is a plain
+      // string), and it must come back as null -- an empty-string soloPath
+      // would match no dump yet still read as "something is soloed".
+      soloPath: spec.soloPath ? spec.soloPath : null,
+      collapsed: spec.collapsed ?? false,
+    });
+  },
 
   reset: () => set(initial()),
 }));

@@ -18,6 +18,10 @@
  * load-bearing one is `viewMode`: a `"vas"` <-> `"va"` switch changes the
  * coordinate `anchor_offset` is expressed in, so a list that survives it serves
  * offsets in the coordinate the viewer has already left.
+ *
+ * `windowVersion` is the one term that is not a user gesture, and it exists for
+ * the one category whose answer is derived FROM the byte cache rather than
+ * enumerated by the server — see the comment on it below.
  */
 
 import { useEffect } from "react";
@@ -57,6 +61,21 @@ export function useVarianceRegionsLoader(): void {
   const anchorPath = useHexStore((s) => s.dumpPath);
   const consensusId = useConsensusStore((s) => s.consensusId);
   const lastRequest = useMultiHexStore((s) => s.lastRequest);
+  /**
+   * The `"differs"` term of the key, and the only one that is not a user
+   * gesture.
+   *
+   * That category is derived FROM the loaded window rather than enumerated by
+   * the server, so a window that grows is a different query — and without this
+   * subscription the effect never re-ran to notice. Clicking "Differs" while
+   * the window was still arriving left the list empty permanently.
+   *
+   * Cheap for every other category: `windowVersion` moves on chunk arrival and
+   * eviction, never on a scroll over cached bytes (see its doc), and a
+   * server-backed key does not contain it, so the extra effect run is one
+   * string comparison that early-returns.
+   */
+  const windowVersion = useMultiHexStore((s) => s.windowVersion);
 
   useEffect(() => {
     if (category === null) {
@@ -80,5 +99,6 @@ export function useVarianceRegionsLoader(): void {
     anchorPath,
     consensusId,
     lastRequest,
+    windowVersion,
   ]);
 }

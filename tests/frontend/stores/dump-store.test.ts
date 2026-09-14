@@ -495,3 +495,178 @@ describe("reference stability", () => {
     expect(s().visibleDumps).toBe(before);
   });
 });
+
+describe("hydrateDumps", () => {
+  /**
+   * Restoring a saved workspace is NOT a loop over `addDump`: that mints one
+   * reconcile per dump, hands focus and ORIGIN to whichever dump happens to
+   * arrive first, and offers no way to express a deliberate active/origin/
+   * mainView. `hydrateDumps` replaces the list wholesale and reconciles ONCE,
+   * which is what lets a saved file be repaired instead of trusted.
+   */
+  const A = "/dumps/a.msl";
+  const B = "/dumps/b.msl";
+  const C = "/dumps/c.raw";
+
+  const spec = (path: string) => ({
+    path,
+    name: path.split("/").pop() as string,
+    size: 64,
+    format: path.endsWith(".msl") ? "msl" : "raw",
+  });
+
+  it("returns a path -> id map for the caller to translate with", () => {
+    const idByPath = s().hydrateDumps({ dumps: [spec(A), spec(B)] });
+
+    expect([...idByPath.keys()]).toEqual([A, B]);
+    expect(s().dumps.map((d) => d.id)).toEqual([
+      idByPath.get(A),
+      idByPath.get(B),
+    ]);
+  });
+
+  it("replaces the previous list rather than appending to it", () => {
+    addDumps("old-1", "old-2");
+
+    s().hydrateDumps({ dumps: [spec(A)] });
+
+    expect(s().dumps.map((d) => d.path)).toEqual([A]);
+  });
+
+  it("dedupes by path, because path is the identity across a save", () => {
+    s().hydrateDumps({ dumps: [spec(A), spec(A), spec(B)] });
+
+    expect(s().dumps.map((d) => d.path)).toEqual([A, B]);
+  });
+
+  it("restores a deliberate active, origin, selection and collapse", () => {
+    const ids = s().hydrateDumps({
+      dumps: [spec(A), spec(B), spec(C)],
+      activeDumpPath: C,
+      selectedDumpPaths: [B, C],
+      collapsedDumpPaths: [B],
+      originDumpPath: C,
+      mainView: "overlay",
+      aslrNormalize: true,
+    });
+
+    expect(s().activeDumpId).toBe(ids.get(C));
+    expect(s().originDumpId).toBe(ids.get(C));
+    expect(s().selectedDumpIds).toEqual([ids.get(B), ids.get(C)]);
+    expect([...s().visibleDumps]).toEqual([ids.get(B)]);
+    expect(s().mainView).toBe("overlay");
+    expect(s().aslrNormalize).toBe(true);
+  });
+
+  it("repairs a dead origin and active path instead of trusting the file", () => {
+    const ids = s().hydrateDumps({
+      dumps: [spec(A), spec(B)],
+      activeDumpPath: "/dumps/deleted.msl",
+      originDumpPath: "/dumps/deleted.msl",
+      selectedDumpPaths: ["/dumps/deleted.msl"],
+    });
+
+    // I6 re-points ORIGIN at the first dump; I2 reads the now-empty selection
+    // as "everything"; I3 focuses the first selected dump.
+    expect(s().originDumpId).toBe(ids.get(A));
+    expect(s().selectedDumpIds).toEqual([ids.get(A), ids.get(B)]);
+    expect(s().activeDumpId).toBe(ids.get(A));
+  });
+
+  it("degrades a multi-dump layout that only has one dump left", () => {
+    s().hydrateDumps({ dumps: [spec(A)], mainView: "sideBySide" });
+
+    expect(s().mainView).toBe("single");
+  });
+
+  it("coerces a main view outside the vocabulary to single", () => {
+    s().hydrateDumps({ dumps: [spec(A), spec(B)], mainView: "kaleidoscope" });
+
+    expect(s().mainView).toBe("single");
+  });
+
+  it("coerces an unknown format to raw", () => {
+    s().hydrateDumps({
+      dumps: [{ path: A, name: "a.msl", size: 1, format: "elf-core" }],
+    });
+
+    expect(s().dumps[0].format).toBe("raw");
+  });
+
+  it("nulls the id-keyed pairwise fields, whose ids are now dangling", () => {
+    const [a, b] = addDumps("a", "b");
+    s().setComparisonPair(a, b);
+    s().setViewMode("comparison");
+
+    s().hydrateDumps({ dumps: [spec(A), spec(B)] });
+
+    expect(s().comparisonDumpIds).toBeNull();
+    expect(s().viewMode).toBe("single");
+  });
+
+  it("never restores key material or a tag status", () => {
+    s().hydrateDumps({ dumps: [spec(A)] });
+
+    expect(s().dumps[0].keyMaterial).toBeUndefined();
+    expect(s().dumps[0].tagStatus).toBeUndefined();
+  });
+
+  it("empties the workspace for an empty spec", () => {
+    addDumps("a", "b");
+
+    s().hydrateDumps({ dumps: [] });
+
+    expect(s().dumps).toEqual([]);
+    expect(s().activeDumpId).toBeNull();
+    expect(s().originDumpId).toBeNull();
+  });
+});
+
+describe("markDumpResolution", () => {
+  it("applies every patch in a single set", () => {
+    const [a, b] = addDumps("a", "b");
+    let notifications = 0;
+    const unsubscribe = useDumpStore.subscribe(() => {
+      notifications += 1;
+    });
+
+    s().markDumpResolution([
+      { id: a, size: 10, missing: false },
+      { id: b, missing: true },
+    ]);
+    unsubscribe();
+
+    // N separate `set`s would be N re-renders of every dump-list subscriber.
+    expect(notifications).toBe(1);
+    expect(s().dumps.map((d) => [d.size, d.missing])).toEqual([
+      [10, false],
+      [1024, true],
+    ]);
+  });
+
+  it("keeps the recorded size when a patch omits it", () => {
+    const [a] = addDumps("a");
+
+    s().markDumpResolution([{ id: a, missing: true }]);
+
+    expect(s().dumps[0].size).toBe(1024);
+  });
+
+  it("ignores ids that name no live dump", () => {
+    const [a] = addDumps("a");
+
+    s().markDumpResolution([{ id: "ghost", missing: true }, { id: a, size: 7 }]);
+
+    expect(s().dumps).toHaveLength(1);
+    expect(s().dumps[0].size).toBe(7);
+  });
+
+  it("is a no-op for an empty patch list", () => {
+    addDumps("a");
+    const before = s().dumps;
+
+    s().markDumpResolution([]);
+
+    expect(s().dumps).toBe(before);
+  });
+});

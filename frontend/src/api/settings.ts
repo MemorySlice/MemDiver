@@ -3,12 +3,17 @@
  *
  * Mirrors the Pydantic models in ``api/routers/settings.py``.
  *
- * Why a dedicated module rather than another block in ``client.ts``: the upload
- * directory is *server* state (it lives in the user config file, or is pinned
- * by ``MEMDIVER_UPLOAD_DIR``), which makes it the opposite of everything in
- * ``stores/settings-store.ts`` -- that store is 100% localStorage. Keeping the
- * two apart is what stops the browser and the backend from silently diverging
- * on where uploads actually land.
+ * Why a dedicated module rather than another block in ``client.ts``: everything
+ * here is *server* state -- it lives in the user config file
+ * (``memdiver_home()/config.json``) rather than in the browser, which makes it
+ * the opposite of everything in ``stores/settings-store.ts``, a store that is
+ * 100% localStorage. Keeping the two apart is what stops the browser and the
+ * backend from silently diverging.
+ *
+ * That distinction is exactly why the file browser's FAVOURITES live here too.
+ * They were localStorage once, and localStorage is keyed by origin: running
+ * ``memdiver web`` on a different ``--port``, clearing site data, or opening
+ * the UI in a second browser each produced a silently empty list.
  */
 
 import { ApiError, request } from "./client";
@@ -94,4 +99,71 @@ export const setUploadDir = (
       method: "POST",
       body: JSON.stringify({ path, migrate_legacy: migrateLegacy }),
     }),
+  );
+
+/**
+ * A directory the user saved in the file browser.
+ *
+ * ``path`` is the identity -- the backend upserts on it, so saving the same
+ * directory twice relabels the one entry rather than making a second.
+ */
+export interface FavouriteDir {
+  path: string;
+  label: string;
+  /** Unix seconds. Set once, on first save; a relabel does not move it. */
+  added_at: number;
+}
+
+interface FavouritesResponse {
+  favourites: FavouriteDir[];
+}
+
+interface LastDirResponse {
+  path: string | null;
+}
+
+/** Read the saved favourite directories. */
+export const getFavourites = (): Promise<FavouriteDir[]> =>
+  withUnwrappedDetail(
+    request<FavouritesResponse>("/api/settings/favourites").then((r) => r.favourites),
+  );
+
+/**
+ * Save a directory as a favourite, or relabel one already saved.
+ *
+ * Resolves with the WHOLE list as the server now holds it, not just the entry
+ * touched -- the caller adopts that rather than merging, so two tabs cannot
+ * drift into two different lists. Rejects with an ``ApiError`` carrying the
+ * human reason when the path is not an existing directory.
+ */
+export const addFavourite = (path: string, label?: string): Promise<FavouriteDir[]> =>
+  withUnwrappedDetail(
+    request<FavouritesResponse>("/api/settings/favourites", {
+      method: "POST",
+      body: JSON.stringify({ path, label: label ?? null }),
+    }).then((r) => r.favourites),
+  );
+
+/** Remove a favourite. Resolves with the whole remaining list. */
+export const removeFavourite = (path: string): Promise<FavouriteDir[]> =>
+  withUnwrappedDetail(
+    request<FavouritesResponse>(
+      `/api/settings/favourites?path=${encodeURIComponent(path)}`,
+      { method: "DELETE" },
+    ).then((r) => r.favourites),
+  );
+
+/** The directory the file browser should reopen on, if the server knows one. */
+export const getLastDir = (): Promise<string | null> =>
+  withUnwrappedDetail(
+    request<LastDirResponse>("/api/settings/last-dir").then((r) => r.path),
+  );
+
+/** Remember where the file browser was last used. */
+export const setLastDir = (path: string): Promise<string | null> =>
+  withUnwrappedDetail(
+    request<LastDirResponse>("/api/settings/last-dir", {
+      method: "PUT",
+      body: JSON.stringify({ path }),
+    }).then((r) => r.path),
   );

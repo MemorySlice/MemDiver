@@ -16,6 +16,8 @@ import { useConsensusRun, useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 import { useOverlayRenderStore } from "@/stores/overlay-render-store";
+import { chunkErrorSignature } from "./chunk-error-signal";
+import { ConsensusErrorBanner } from "./ConsensusErrorBanner";
 import { overlayAbsenceAt, pluralityAt } from "./consensus-byte";
 import { DumpRail } from "./DumpRail";
 import { OverlayAlignSwitch } from "./OverlayAlignSwitch";
@@ -90,6 +92,11 @@ export function HexOverlayPane() {
 
   const chunkVersionByPath = useMultiHexStore((s) => s.chunkVersionByPath);
   const alignment = useMultiHexStore((s) => s.alignment);
+  // A scalar, NOT the `chunkErrors` map — see `chunk-error-signal`. Without it
+  // a failed window leaves `getAbsenceAt` frozen at the identity it had while
+  // the request was in flight, and the cells go on printing `··` for bytes the
+  // store now calls `"error"`.
+  const chunkErrorKey = useMultiHexStore((s) => chunkErrorSignature(s.chunkErrors));
 
   const renderMode = useOverlayRenderStore((s) => s.renderMode);
 
@@ -215,6 +222,11 @@ export function HexOverlayPane() {
     (offset: number): AbsenceKind | undefined => {
       void anchorVersion;
       void pageStateVersion;
+      // The FAILURE half of the same question. `anchorVersion` moves only when
+      // a response lands, so on its own it can never rotate this getter for a
+      // window whose request failed — and rotating THIS getter is enough to
+      // repaint the row, because `HexRow`'s memo compares every prop.
+      void chunkErrorKey;
       if (!anchorPath) return "loading";
       // Solo asks the one dump on screen; the overlay asks the whole included
       // set, because a byte three dumps hold and the anchor does not is real
@@ -228,7 +240,15 @@ export function HexOverlayPane() {
       // the byte is present, so hatching it would void a byte the grid prints.
       return absenceForPageState(useHexStore.getState().getPageStateAt(offset));
     },
-    [anchorPath, anchorVersion, includedPaths, pageStateVersion, soloPath, viewMode],
+    [
+      anchorPath,
+      anchorVersion,
+      chunkErrorKey,
+      includedPaths,
+      pageStateVersion,
+      soloPath,
+      viewMode,
+    ],
   );
 
   const handleMouseDown = useCallback(
@@ -335,6 +355,13 @@ export function HexOverlayPane() {
         firstRow={firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex)}
         lastRow={lastVisibleIndex < 0 ? -1 : absRow(lastVisibleIndex)}
       />
+
+      {/*
+        A failed REBUILD, as opposed to a failed window fetch above. The grid
+        keeps painting in the PREVIOUS build's alignment, which is why this has
+        to be said next to the bytes rather than only in the sidebar.
+      */}
+      <ConsensusErrorBanner testIdPrefix="hex-overlay" paths={selectedPaths} />
 
       {rawOffsetConsensus && (
         <div

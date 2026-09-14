@@ -123,10 +123,23 @@ beforeEach(() => {
   stubVirtualizerLayout();
 });
 
+/**
+ * The real `runConsensus`, captured before any test swaps it.
+ *
+ * Several tests below replace the ACTION via `setState` — `spyConsensus` even
+ * installs one that never settles. `reset()` restores the store's state and
+ * not its actions, and `vi.restoreAllMocks()` only knows about spies it
+ * created, so without this the swap leaks into every later test: the next
+ * component to press the button hangs on a promise from a test that has
+ * already finished.
+ */
+const REAL_RUN_CONSENSUS = useConsensusStore.getState().runConsensus;
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   act(() => {
+    useConsensusStore.setState({ runConsensus: REAL_RUN_CONSENSUS });
     useDumpStore.getState().clearAll();
     useDumpRailStore.getState().reset();
     useMultiHexStore.getState().reset();
@@ -283,6 +296,113 @@ describe("HexOverlayPane window-error banner", () => {
     render(<HexOverlayPane />);
 
     expect(screen.queryByTestId("hex-overlay-window-error")).toBeNull();
+  });
+});
+
+describe("HexOverlayPane chunk failure reaches the cells", () => {
+  /**
+   * The banner is a SIBLING of the grid, and for a while it was the only thing
+   * that moved. `getAbsenceAt` was keyed on `anchorVersion`, which
+   * `applyResponse` bumps and nothing else does — so a failed fetch, which
+   * writes only `chunkErrors` and `pending`, left the getter at the identity it
+   * had while the request was in flight, `HexRow`'s memo never re-ran, and the
+   * cells kept printing the `··` of a window still on its way.
+   *
+   * Injected AFTER the first render for that reason: seeded up front it would
+   * be answered by the initial paint and prove nothing.
+   */
+  function failVisibleChunk(message = "Internal Server Error") {
+    act(() => {
+      useMultiHexStore.setState({
+        identity: "seeded",
+        chunkErrors: new Map([["seeded|0", { message, attempts: 0, nextRetryAt: 0 }]]),
+        isPresentAt: () => false,
+        absenceAt: () => "error",
+      });
+    });
+  }
+
+  it("paints byte-error on the cells once the chunk fails", () => {
+    seed();
+    const { container } = render(<HexOverlayPane />);
+
+    expect(hexCell(container, 0)).not.toHaveClass("byte-error");
+
+    failVisibleChunk();
+
+    const cell = hexCell(container, 0);
+    expect(cell).toHaveClass("byte-error");
+    // Glyph and class have to agree; `··` beside a "load failed" class is the
+    // confusion the absence vocabulary exists to remove.
+    expect(cell).toHaveTextContent("!!");
+    expect(cell).not.toHaveClass("hex-loading");
+  });
+
+  it("takes the treatment back off once the chunk lands", () => {
+    seed();
+    const { container } = render(<HexOverlayPane />);
+    failVisibleChunk();
+
+    act(() => {
+      useMultiHexStore.setState({
+        chunkErrors: new Map(),
+        isPresentAt: () => true,
+        absenceAt: () => null,
+      });
+    });
+
+    expect(hexCell(container, 0)).not.toHaveClass("byte-error");
+  });
+});
+
+describe("HexOverlayPane failed rebuild", () => {
+  /**
+   * `runConsensus`'s failure path deliberately leaves the previous build in
+   * place — it was computed over real dumps and is still the right answer for
+   * them — so `useConsensusUsable` stays true and the grid keeps painting. That
+   * is correct and it is also silent: the analyst asked for a rebuild, watched
+   * nothing change, and had nothing on the hex surface telling them the
+   * coordinate they asked for was never applied. The only thing rendering
+   * `error` was the sidebar dump list.
+   */
+  it("says on the hex surface that the grid is still the previous build", () => {
+    seed();
+    act(() => {
+      useConsensusStore.setState({ error: "Consensus failed: 500 boom" });
+    });
+
+    render(<HexOverlayPane />);
+
+    const banner = screen.getByTestId("hex-overlay-consensus-error");
+    expect(banner).toHaveTextContent("Consensus failed: 500 boom");
+    expect(banner).toHaveTextContent(/previous build/i);
+    // A banner over a LIVE pane, never instead of one: the old build's bytes
+    // are real and the analyst keeps reading them.
+    expect(screen.getByTestId("hex-overlay-pane")).toBeInTheDocument();
+  });
+
+  it("offers the rebuild again, through the shared in-flight flag", () => {
+    const runConsensus = vi.fn(() => new Promise<void>(() => {}));
+    seed();
+    act(() => {
+      useConsensusStore.setState({ error: "boom", runConsensus });
+    });
+
+    render(<HexOverlayPane />);
+
+    fireEvent.click(screen.getByTestId("hex-overlay-consensus-retry"));
+
+    expect(runConsensus).toHaveBeenCalledTimes(1);
+    // ONE global operation: every other affordance is disabled with it.
+    expect(screen.getByTestId("hex-overlay-consensus-retry")).toBeDisabled();
+    expect(useConsensusStore.getState().runInFlight).toBe(true);
+  });
+
+  it("shows nothing while the last build succeeded", () => {
+    seed();
+    render(<HexOverlayPane />);
+
+    expect(screen.queryByTestId("hex-overlay-consensus-error")).toBeNull();
   });
 });
 
@@ -1030,5 +1150,73 @@ describe("HexOverlayPane align switch", () => {
     expect(screen.getByTestId("hex-overlay-raw-offset")).toBeInTheDocument();
     expect(screen.getByTestId("hex-overlay-enable-aslr")).toBeInTheDocument();
     expect(screen.getByTestId("hex-overlay-align-switch")).toBeInTheDocument();
+  });
+});
+
+describe("HexOverlayPane failed build behind the fence", () => {
+  /**
+   * The gap `ConsensusErrorBanner` structurally cannot cover: it is mounted
+   * PAST the `consensusUsable` fence, so in the one state where the analyst
+   * actually pressed the button it never renders. A failed build used to
+   * re-enable the button and change nothing else on screen — the click read as
+   * swallowed, and the only report of what went wrong was in the Dumps sidebar
+   * on another tab.
+   *
+   * Driven through the REAL store and a 500 off the wire rather than by setting
+   * `error` by hand: the claim is that the whole chain — button, run, store,
+   * prompt — reports the failure, and a hand-set field would pass with the
+   * button still wired to nothing.
+   */
+  it("says why the build the analyst started failed", async () => {
+    seed({ consensusId: null });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, text: async () => "boom" }) as Response),
+    );
+    render(<HexOverlayPane />);
+
+    fireEvent.click(screen.getByTestId("hex-overlay-run-consensus"));
+
+    // The store settles the failure over several microtask turns (the request,
+    // then reading its body) OUTSIDE React's batching, so the flush is awaited
+    // explicitly; one macrotask turn drains them all. `findBy*` on its own
+    // polls a DOM React has not been told to re-render.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const failure = screen.getByTestId("hex-overlay-consensus-failed");
+    expect(failure).toHaveTextContent(/500/);
+    // The failure EXPLAINS the empty state, it does not replace it: there is
+    // still no consensus, and the action is still the one to take.
+    expect(screen.getByTestId("hex-overlay-no-consensus")).toBeInTheDocument();
+    expect(screen.getByTestId("hex-overlay-run-consensus")).toBeEnabled();
+  });
+
+  it("stays quiet while no attempt has failed", () => {
+    seed({ consensusId: null });
+    render(<HexOverlayPane />);
+
+    expect(screen.queryByTestId("hex-overlay-consensus-failed")).not.toBeInTheDocument();
+  });
+
+  /**
+   * `error` is orthogonal to the variant: a re-run started from the STALE fence
+   * fails the same way and is just as invisible, so the same sentence has to
+   * reach that copy too.
+   */
+  it("reports a failed re-run from the stale fence as well", () => {
+    seed({ consensusId: "c1", builtFrom: ["/dumps/x.msl", "/dumps/y.msl"] });
+    act(() => {
+      useConsensusStore.setState({ error: "Consensus failed: 500 boom" });
+    });
+
+    render(<HexOverlayPane />);
+
+    const prompt = screen.getByTestId("hex-overlay-no-consensus");
+    expect(prompt).toHaveAttribute("data-variant", "stale");
+    expect(screen.getByTestId("hex-overlay-consensus-failed")).toHaveTextContent(
+      "Consensus failed: 500 boom",
+    );
   });
 });

@@ -11,5 +11,11 @@
   "loadingSessions": "Loading sessions...",
   "noSessions": "No saved sessions yet.",
   "noSessionsHint": "Click \"New Session\" to start analyzing a memory dump.",
-  "loadingSpinner": "Loading..."
+  "loadingSpinner": "Loading...",
+  "recovery": {
+    "title": "Recovered work",
+    "badge": "RECOVERED",
+    "hint": "Saved automatically when you last discarded a session.",
+    "deleteConfirm": "Delete the recovered work? This is the only copy."
+  }
 }

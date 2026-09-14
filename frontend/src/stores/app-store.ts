@@ -5,8 +5,16 @@ import { getPathInfo } from "@/api/client";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
 import { useDumpStore } from "@/stores/dump-store";
+import { useDumpRailStore } from "@/stores/dump-rail-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useStringsStore } from "@/stores/strings-store";
+import { useMultiHexStore } from "@/stores/multi-hex-store";
+import { useConsensusStore } from "@/stores/consensus-store";
+import { useConsensusIncrementalStore } from "@/stores/consensus-incremental-store";
+import { useVarianceRegionsStore } from "@/stores/variance-regions-store";
+import { useVerificationStore } from "@/stores/verification-store";
+import { useOverlayRenderStore } from "@/stores/overlay-render-store";
+import { useOverlayDetailStore } from "@/stores/overlay-detail-store";
 
 /** All algorithms that can run on a single dump file. */
 export const SINGLE_FILE_ALGORITHMS = [
@@ -90,6 +98,13 @@ interface AppState {
   // drop values the React UI has no widgets for.
   lastLoadedSnapshot: SessionSnapshot | null;
 
+  /**
+   * Digest of the session as it was last persisted, or `null` when this
+   * workspace has never been saved. Compared against the live snapshot to
+   * answer "is there unsaved work?"; see `utils/session-digest.ts`.
+   */
+  lastSavedDigest: string | null;
+
   // Actions
   setDatasetRoot: (root: string) => void;
   setProtocol: (name: string, version: string) => void;
@@ -107,7 +122,13 @@ interface AppState {
   toggleAlgorithm: (algo: AlgorithmName) => void;
   completeWizard: () => void;
   resetWizard: () => void;
-  restoreSession: (snap: SessionSnapshot) => void;
+  /**
+   * Load a saved session into the workspace. The returned promise settles once
+   * every restored dump has been confirmed on disk, which is when the session
+   * can honestly be called "as saved".
+   */
+  restoreSession: (snap: SessionSnapshot) => Promise<void>;
+  setLastSavedDigest: (digest: string | null) => void;
   setHexFocus: (focus: { offset: number; length: number } | null) => void;
   setHasCandidateKeys: (has: boolean) => void;
   toggleFullWidthHex: () => void;
@@ -135,6 +156,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   hasCandidateKeys: false,
   fullWidthHex: false,
   lastLoadedSnapshot: null,
+  lastSavedDigest: null,
 
   setDatasetRoot: (root) => set({ datasetRoot: root }),
   setProtocol: (name, version) =>
@@ -171,22 +193,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { inputMode, inputPath, pathInfo } = get();
     if (inputMode === "file" && inputPath) {
       const store = useDumpStore.getState();
-      if (store.dumps.some((d) => d.path === inputPath)) return;
-      const name = inputPath.split("/").pop() ?? inputPath;
-      // Extension-based detection, case-insensitive — kept consistent
-      // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
-      const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
-      store.addDump({
-        path: inputPath,
-        name,
-        // pathInfo is populated earlier in the wizard; fall back to 0
-        // intentionally if it is missing rather than blocking the add.
-        size: pathInfo?.file_size ?? 0,
-        format,
-      });
+      // `if (…) return` here used to exit completeWizard ITSELF — not a loop,
+      // not a callback — so anything added after it would silently be skipped
+      // for an already-loaded path. Expressed as a positive condition instead,
+      // so nothing in this function sits behind a bare return.
+      const alreadyLoaded = store.dumps.some((d) => d.path === inputPath);
+      if (!alreadyLoaded) {
+        const name = inputPath.split("/").pop() ?? inputPath;
+        // Extension-based detection, case-insensitive — kept consistent
+        // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
+        const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
+        store.addDump({
+          path: inputPath,
+          name,
+          // pathInfo is populated earlier in the wizard; fall back to 0
+          // intentionally if it is missing rather than blocking the add.
+          size: pathInfo?.file_size ?? 0,
+          format,
+        });
+      }
     }
   },
-  restoreSession: (snap) => {
+  restoreSession: async (snap) => {
     const resolvedMode = apiToUiInputMode(snap.input_mode);
     set({
       datasetRoot: snap.dataset_root,
@@ -205,37 +233,81 @@ export const useAppStore = create<AppState>((set, get) => ({
       appView: "workspace",
       lastLoadedSnapshot: snap,
     });
-    if (resolvedMode === "file" && snap.input_path) {
+    // Clear BEFORE hydrating. The previous implementation appended, so
+    // restoring session B while A was open merged the two dump lists into one
+    // workspace that matched neither saved file.
+    useDumpStore.getState().clearAll();
+    useDumpRailStore.getState().reset();
+
+    // Branch on the dump list, NEVER on `schema_version`: a v2 file saved from
+    // the wizard before any dump was added carries an empty list and still
+    // has to take the legacy single-`input_path` path.
+    const savedDumps = snap.dumps ?? [];
+    if (savedDumps.length > 0) {
+      useDumpStore.getState().hydrateDumps({
+        dumps: savedDumps,
+        activeDumpPath: snap.active_dump_path,
+        selectedDumpPaths: snap.selected_dump_paths,
+        collapsedDumpPaths: snap.collapsed_dump_paths,
+        originDumpPath: snap.origin_dump_path,
+        mainView: snap.main_view,
+        aslrNormalize: snap.aslr_normalize,
+      });
+      useDumpRailStore.getState().hydrate({
+        weightByPath: snap.dump_weights,
+        excludedPaths: snap.excluded_dump_paths,
+        soloPath: snap.solo_dump_path,
+        collapsed: snap.rail_collapsed,
+      });
+    } else if (resolvedMode === "file" && snap.input_path) {
       const filePath = snap.input_path;
-      const store = useDumpStore.getState();
-      if (store.dumps.some((d) => d.path === filePath)) return;
       const name = filePath.split("/").pop() ?? filePath;
       // Extension-based detection, case-insensitive — kept consistent
       // with AddDumpButton (name.toLowerCase().endsWith(".msl")).
       const format = name.toLowerCase().endsWith(".msl") ? "msl" : "raw";
-      // Fetch file size from API. Only the network call is async, so this
-      // runs in a fire-and-forget async block; the dump is added once the
-      // size resolves (or on failure, with a size-0 fallback below).
-      void (async () => {
-        let fileSize = 0;
-        try {
-          const info = await getPathInfo(filePath);
-          fileSize = info.file_size ?? 0;
-        } catch {
-          // getPathInfo failed (e.g. file moved since the session was
-          // saved); intentionally fall back to size 0 so the dump still
-          // restores rather than aborting the whole session restore.
-          fileSize = 0;
-        }
-        store.addDump({
-          path: filePath,
-          name,
-          size: fileSize,
-          format,
+      // The old "already loaded? then `return`" guard exited restoreSession
+      // itself, which would now skip the resolution pass below. It is also no
+      // longer needed: `clearAll` above plus `hydrateDumps`' dedupe-by-path
+      // make a duplicate impossible. The recorded size is 0 until the
+      // resolution pass answers.
+      useDumpStore
+        .getState()
+        .hydrateDumps({ dumps: [{ path: filePath, name, size: 0, format }] });
+    }
+
+    // One fire-and-forget resolution pass for BOTH branches: confirm each file
+    // still exists and refresh its size.
+    const loaded = useDumpStore.getState().dumps;
+    if (loaded.length > 0) {
+      const targets = loaded.map((d) => ({ id: d.id, path: d.path }));
+      // Awaited rather than fired and forgotten: the caller marks the restored
+      // workspace "saved" once this settles, and doing that before the sizes
+      // land would bake a pre-resolution snapshot into the digest and leave the
+      // session looking dirty the moment the real sizes arrived.
+      await (async () => {
+        const settled = await Promise.allSettled(
+          targets.map((t) => getPathInfo(t.path)),
+        );
+        const patches = settled.map((outcome, i) => {
+          const id = targets[i].id;
+          // TRAP: getPathInfo does NOT throw for a deleted file. The endpoint
+          // answers HTTP 200 with `exists: false`, so a `catch` alone never
+          // fires for a moved dump. "Rejected OR !exists OR !is_file" is the
+          // only honest test.
+          if (outcome.status === "rejected") return { id, missing: true };
+          const info = outcome.value;
+          if (!info.exists || !info.is_file) return { id, missing: true };
+          return { id, size: info.file_size ?? 0, missing: false };
         });
+        // Missing dumps are MARKED, never dropped or deselected: the next
+        // Ctrl+S autosave would otherwise quietly rewrite the analyst's
+        // workspace to exclude a dump they only unplugged a drive for. Their
+        // recorded size is kept for the same reason.
+        useDumpStore.getState().markDumpResolution(patches);
       })();
     }
   },
+  setLastSavedDigest: (digest) => set({ lastSavedDigest: digest }),
   setHexFocus: (focus) => set({ hexFocus: focus }),
   setHasCandidateKeys: (has) => set({ hasCandidateKeys: has }),
   toggleFullWidthHex: () =>
@@ -262,6 +334,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       templateName: "Auto-detect",
       fullWidthHex: false,
       mode: "verification",
+      lastLoadedSnapshot: null,
+      // A fresh workspace has nothing saved. Leaving the previous session's
+      // digest here would make the next dirty-check compare against work that
+      // is no longer loaded.
+      lastSavedDigest: null,
     });
     // Clear sibling stores. These are plain runtime getState() calls; no
     // sibling store references app-store at module-eval time, so static
@@ -272,5 +349,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     useDumpStore.getState().clearAll();
     useHexStore.getState().reset();
     useStringsStore.getState().clear();
+    // The overlay/consensus family. These were omitted when the list above was
+    // written, so a new session used to open holding the PREVIOUS session's
+    // consensus, panes, variance regions, rail weights and -- worst of the set
+    // -- whatever ciphertext and key bytes had been typed into the key
+    // verification form.
+    useMultiHexStore.getState().reset();
+    useConsensusStore.getState().reset();
+    useConsensusIncrementalStore.getState().reset();
+    useVarianceRegionsStore.getState().reset();
+    useDumpRailStore.getState().reset();
+    useVerificationStore.getState().reset();
+    useOverlayRenderStore.getState().reset();
+    useOverlayDetailStore.getState().reset();
   },
 }));

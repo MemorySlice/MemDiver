@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { deleteSession } from "@/api/client";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionLoader } from "@/hooks/useSessionLoader";
+import { isRecoverySession } from "@/utils/session-names";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 const MODE_LABEL_KEYS: Record<string, string> = {
@@ -38,6 +39,17 @@ export function SessionLanding() {
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
 
+  // The recovery copy must be the first thing on screen -- it is the way back
+  // from a discard, and someone looking for it is looking for lost work.
+  // Sorting cannot do this: the API orders by filename descending, and "_"
+  // (0x5F) sorts below every lowercase letter, so "__recovery__" would land
+  // near the bottom of the list. Partition instead.
+  const orderedSessions = useMemo(() => {
+    const recovery = sessions.filter((s) => isRecoverySession(s.name));
+    const rest = sessions.filter((s) => !isRecoverySession(s.name));
+    return [...recovery, ...rest];
+  }, [sessions]);
+
   const handleLoad = async (name: string) => {
     setLoadingSession(name);
     try {
@@ -53,7 +65,10 @@ export function SessionLanding() {
   };
 
   const handleDelete = async (name: string) => {
-    if (!window.confirm(t("deleteConfirm", { name }))) return;
+    const confirmMessage = isRecoverySession(name)
+      ? t("recovery.deleteConfirm")
+      : t("deleteConfirm", { name });
+    if (!window.confirm(confirmMessage)) return;
     try {
       await deleteSession(name);
       refreshSessions();
@@ -103,14 +118,31 @@ export function SessionLanding() {
             </div>
           ) : (
             <div className="space-y-2">
-              {sessions.map((s) => (
+              {orderedSessions.map((s) => {
+                // The server has no notion of a reserved name: the file stem IS
+                // the session_name IS the display_name it reports back. So the
+                // recovery entry can only be relabelled here -- never hidden
+                // behind a friendlier name from the API.
+                const isRecovery = isRecoverySession(s.name);
+                return (
                 <div
                   key={s.path}
+                  data-testid={isRecovery ? "recovery-session" : undefined}
                   className="md-panel p-3 flex items-center gap-3 hover:bg-[var(--md-bg-hover)] transition-colors rounded"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm truncate">{s.display_name || s.name}</span>
+                      <span className="font-medium text-sm truncate">
+                        {isRecovery ? t("recovery.title") : s.display_name || s.name}
+                      </span>
+                      {isRecovery && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0 md-text-on-accent"
+                          style={{ background: "var(--md-accent-orange)" }}
+                        >
+                          {t("recovery.badge")}
+                        </span>
+                      )}
                       {s.input_mode && (
                         <span
                           className="text-[10px] px-1.5 py-0.5 rounded uppercase shrink-0 md-text-on-accent"
@@ -133,6 +165,9 @@ export function SessionLanding() {
                     {s.created_at && (
                       <p className="text-[10px] md-text-muted mt-0.5">{formatDate(s.created_at)}</p>
                     )}
+                    {isRecovery && (
+                      <p className="text-[10px] md-text-muted mt-0.5">{t("recovery.hint")}</p>
+                    )}
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <button
@@ -150,7 +185,8 @@ export function SessionLanding() {
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

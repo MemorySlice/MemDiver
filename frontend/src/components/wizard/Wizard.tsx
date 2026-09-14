@@ -342,13 +342,26 @@ function StepAnalysis() {
 
 export function Wizard() {
   const { t } = useTranslation("wizard");
-  const { wizardStep, setWizardStep, completeWizard, pathInfo, inputPath } = useAppStore(
+  const {
+    wizardStep,
+    setWizardStep,
+    setAppView,
+    completeWizard,
+    pathInfo,
+    inputPath,
+    analysisApproach,
+  } = useAppStore(
     useShallow((s) => ({
       wizardStep: s.wizardStep,
       setWizardStep: s.setWizardStep,
+      setAppView: s.setAppView,
       completeWizard: s.completeWizard,
       pathInfo: s.pathInfo,
       inputPath: s.inputPath,
+      // Read here only to name the button below. `StepAnalysis` owns the
+      // choice itself; this component just has to stop promising an analysis
+      // the user has declined.
+      analysisApproach: s.analysisApproach,
     })),
   );
   const [pathError, setPathError] = useState<string | null>(null);
@@ -368,12 +381,19 @@ export function Wizard() {
     setPathError(null);
   }, [inputPath]);
 
+  // Back from step 0 leaves the wizard entirely rather than doing nothing.
+  // Without this the wizard is a dead end: it is reached from the session list
+  // (and from "New Session"), and every route out of it used to require
+  // completing it. Note `escape` is bound to this callback too, so Escape at
+  // step 0 now also returns to the session list.
   const goBack = useCallback(() => {
     const step = useAppStore.getState().wizardStep;
     if (step > 0) {
       setWizardStep(step - 1);
+    } else {
+      setAppView("landing");
     }
-  }, [setWizardStep]);
+  }, [setWizardStep, setAppView]);
 
   const validateAndAdvance = useCallback(async () => {
     const path = useAppStore.getState().inputPath.trim();
@@ -417,6 +437,16 @@ export function Wizard() {
   useKeyboardShortcuts(shortcuts);
 
   const isLast = wizardStep === steps.length - 1;
+  /**
+   * What the final button promises.
+   *
+   * Both modes land on the workspace; only "auto" goes on to run the
+   * algorithms (see the effect in `AnalysisPanel`). Calling it "Start Analysis"
+   * after the user has explicitly chosen "Inspect Only" promised the one thing
+   * that step exists to decline.
+   */
+  const finalActionKey =
+    analysisApproach === "inspect" ? "nav.openWorkspace" : "nav.startAnalysis";
   const nextDisabled =
     currentStepName === "Select Data"
       ? !inputPath.trim() || validating
@@ -439,10 +469,9 @@ export function Wizard() {
         <div className="flex justify-between">
           <button
             onClick={goBack}
-            disabled={wizardStep === 0}
             className="px-4 py-2 rounded border border-[var(--md-border)] disabled:opacity-30 hover:bg-[var(--md-bg-hover)] transition-colors"
           >
-            {t("common:back")}
+            {wizardStep === 0 ? t("nav.backToSessions") : t("common:back")}
           </button>
           <button
             onClick={goForward}
@@ -452,7 +481,7 @@ export function Wizard() {
               background: nextDisabled ? "var(--md-text-muted)" : "var(--md-accent-blue)",
             }}
           >
-            {validating ? "\u23F3" : isLast ? t("nav.startAnalysis") : t("common:next")}
+            {validating ? "\u23F3" : isLast ? t(finalActionKey) : t("common:next")}
           </button>
         </div>
       </div>

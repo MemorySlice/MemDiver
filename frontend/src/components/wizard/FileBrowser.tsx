@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { browsePath } from "@/api/client";
 import type { BrowseEntry } from "@/api/types";
 import { useBrowserStore, normalizePath } from "@/stores/browser-store";
-import { FileBrowserBookmarks } from "./FileBrowserBookmarks";
+import { FileBrowserFavourites } from "./FileBrowserFavourites";
 import { FileBrowserPathBar } from "./FileBrowserPathBar";
 import { FileBrowserEntryList, ENTRY_ROW_ATTR } from "./FileBrowserEntryList";
 
@@ -33,12 +33,16 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const addBookmark = useBrowserStore((s) => s.addBookmark);
-  const removeBookmark = useBrowserStore((s) => s.removeBookmark);
-  const bookmarks = useBrowserStore((s) => s.bookmarks);
-  const isBookmarked = useBrowserStore((s) => s.isBookmarked(currentPath));
+  const addFavourite = useBrowserStore((s) => s.addFavourite);
+  const removeFavourite = useBrowserStore((s) => s.removeFavourite);
+  const rememberLastDir = useBrowserStore((s) => s.rememberLastDir);
+  const loadFavourites = useBrowserStore((s) => s.load);
+  const favouritesLoaded = useBrowserStore((s) => s.loaded);
+  const lastDir = useBrowserStore((s) => s.lastDir);
+  const isFavourite = useBrowserStore((s) => s.isFavourite(currentPath));
 
-  const loadDirectory = useCallback(async (path?: string) => {
+  /** Browse to `path` (or the server's default). Returns whether it landed. */
+  const loadDirectory = useCallback(async (path?: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
     try {
@@ -46,33 +50,65 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
       if (result.error) {
         setError(result.error);
         setEntries([]);
-      } else {
-        setCurrentPath(result.current);
-        setEditPath(null);
-        setParentPath(result.parent);
-        setEntries(result.entries);
+        return false;
       }
+      setCurrentPath(result.current);
+      setEditPath(null);
+      setParentPath(result.parent);
+      setEntries(result.entries);
+      return true;
     } catch {
       setError(t("browser.browseError"));
+      return false;
     } finally {
       setLoading(false);
     }
   }, [t]);
 
   useEffect(() => {
-    loadDirectory();
-  }, [loadDirectory]);
+    void loadFavourites();
+  }, [loadFavourites]);
+
+  /**
+   * Open where the user left off, not at `$HOME` every single time.
+   *
+   * Deliberately waits for the favourites load rather than browsing home first
+   * and jumping afterwards: that would spend two requests to show the user a
+   * directory they did not ask for. `loaded` becomes true even when the load
+   * FAILED, so a backend that cannot answer still opens the dialog — at home,
+   * exactly as before.
+   *
+   * The remembered directory can also have been deleted or unmounted since,
+   * which `browsePath` reports as an error and which would otherwise leave an
+   * empty dialog with no way forward. So a failed seed falls back to home.
+   */
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (!favouritesLoaded || openedRef.current) return;
+    openedRef.current = true;
+    void (async () => {
+      const landed = await loadDirectory(lastDir ?? undefined);
+      if (!landed && lastDir) await loadDirectory();
+    })();
+  }, [favouritesLoaded, lastDir, loadDirectory]);
 
   const handleEntryClick = (entry: BrowseEntry) => {
     if (entry.is_dir) {
       loadDirectory(entry.path);
     } else {
+      // The containing directory, not the file: what we reopen on is a place
+      // to browse, and a file is not one.
+      rememberLastDir(currentPath);
       onSelect(entry.path);
     }
   };
 
   const handleSelectCurrentDir = () => {
-    if (currentPath) onSelect(currentPath);
+    if (!currentPath) return;
+    // Remembered on the way OUT rather than on every navigation: one prefs
+    // write per use of the dialog, instead of one per directory glanced at.
+    rememberLastDir(currentPath);
+    onSelect(currentPath);
   };
 
   const filter = deriveFilter(editPath, currentPath);
@@ -81,12 +117,11 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
     [entries, filter],
   );
 
-  const toggleCurrentBookmark = () => {
+  const toggleCurrentFavourite = () => {
     const norm = normalizePath(currentPath);
     if (!norm) return;
-    const existing = bookmarks.find((b) => b.path === norm);
-    if (existing) removeBookmark(existing.id);
-    else addBookmark(norm);
+    if (isFavourite) void removeFavourite(norm);
+    else void addFavourite(norm);
   };
 
   const focusFirstEntry = () => {
@@ -97,6 +132,7 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div
+        data-testid="file-browser"
         className="w-full max-w-lg mx-4 rounded-lg shadow-xl border border-[var(--md-border)]"
         style={{ background: "var(--md-bg-secondary)", maxHeight: "70vh" }}
       >
@@ -138,12 +174,12 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
               focusFirstEntry();
             }
           }}
-          isBookmarked={isBookmarked}
-          canBookmark={!!currentPath}
-          onToggleBookmark={toggleCurrentBookmark}
+          isFavourite={isFavourite}
+          canFavourite={!!currentPath}
+          onToggleFavourite={toggleCurrentFavourite}
         />
 
-        <FileBrowserBookmarks onNavigate={loadDirectory} />
+        <FileBrowserFavourites onNavigate={loadDirectory} />
 
         <FileBrowserEntryList
           ref={listRef}

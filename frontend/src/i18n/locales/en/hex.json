@@ -180,6 +180,7 @@
     "noConsensusBody": "Run consensus to classify every byte as invariant, structural, pointer or key candidate across the selected dumps.",
     "staleConsensusTitle": "Consensus covers different dumps",
     "staleConsensusBody": "This consensus was built over a different set of dumps, so its classes describe other bytes. Re-run it over the dumps selected now.",
+    "buildFailed": "The last attempt failed, so there is still nothing to show: {{error}}",
     "runConsensus": "Run consensus to classify",
     "running": "Running consensus…",
     "rawOffsetTitle": "VA alignment requires an aligned consensus",
@@ -202,6 +203,12 @@
     "colByte": "Byte",
     "colChar": "Char",
     "groundTruth": "Read from each dump — never the overlay's computed byte."
+  },
+  "consensusError": {
+    "title": "Consensus rebuild failed",
+    "body": "The bytes below are still classified by the PREVIOUS build — the rebuild you asked for never replaced it: {{error}}",
+    "retry": "Try the rebuild again",
+    "retrying": "Running consensus…"
   },
   "absence": {
     "legendGap": "No correspondence",

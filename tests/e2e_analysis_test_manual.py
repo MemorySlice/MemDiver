@@ -355,7 +355,8 @@ def test_ui_entropy_tab(page):
         inspect_btn.click()
     page.wait_for_timeout(500)
 
-    page.locator('button:has-text("Start Analysis")').click()
+    # "Inspect Only" renames the final button: nothing is being analysed.
+    page.locator('button:has-text("Open Workspace")').click()
     page.wait_for_timeout(2000)
     page.wait_for_load_state("networkidle")
 

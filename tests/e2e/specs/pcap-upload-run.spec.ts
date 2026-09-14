@@ -71,7 +71,7 @@ test.describe("Pcap-oracle pipeline run", { tag: "@requires-pcap" }, () => {
   // 409 until something chooses one. Idempotent on purpose: a 200 (just
   // configured / re-configured) and a 409 (pinned by MEMDIVER_UPLOAD_DIR) are
   // both fine, so this hook never fails on the response — it only removes this
-  // spec's dependence on first-use-upload-dir.spec.ts having run first. Not a
+  // spec's dependence on 00-first-use-upload-dir.spec.ts having run first. Not a
   // temp dir: api/upload_dir.validate_candidate rejects every temp root.
   test.beforeAll(async ({ request }) => {
     const uploadDir = path.join(os.homedir(), ".memdiver", "e2e-uploads");

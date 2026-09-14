@@ -132,6 +132,159 @@ describe("consensus-store thresholds", () => {
   });
 });
 
+describe("consensus-store generation guard", () => {
+  /**
+   * `useConsensusRun`'s in-flight flag stops the four UI affordances starting a
+   * second build, but it is not the whole answer: `runConsensus` is a store
+   * action, and anything holding the store could call it directly — which is
+   * how the dump list used to issue a build the flag never saw. Two builds then
+   * race, and since the responses land in whatever order the server finishes
+   * them, the EARLIER one could overwrite `consensusId` / `builtFrom` /
+   * `builtNormalized` and leave the viewers projecting a superseded build.
+   */
+  function deferredFetch() {
+    const settle: ((body: unknown) => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((res) => {
+            settle.push((body) => res(okResponse(body)));
+          }),
+      ),
+    );
+    return settle;
+  }
+
+  it("never lets an earlier build overwrite a later one", async () => {
+    const settle = deferredFetch();
+
+    const first = useConsensusStore.getState().runConsensus([A], false);
+    const second = useConsensusStore.getState().runConsensus([A, B], true);
+
+    // The NEWER request answers first...
+    settle[1]({ consensus_id: "c2", dump_paths: [A, B], normalize: true, size: 8 });
+    await second;
+    // ...and the older one straggles in behind it.
+    settle[0]({ consensus_id: "c1", dump_paths: [A], normalize: false, size: 4 });
+    await first;
+
+    const state = useConsensusStore.getState();
+    expect(state.consensusId).toBe("c2");
+    expect(state.builtFrom).toEqual([A, B]);
+    expect(state.builtNormalized).toBe(true);
+    expect(state.size).toBe(8);
+    // `loading` belongs to whichever run is still going; a superseded one must
+    // not clear it either.
+    expect(state.loading).toBe(false);
+  });
+
+  it("never lets an earlier FAILURE mark a later build broken", async () => {
+    const settle: ((ok: boolean) => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((res) => {
+            settle.push((ok) =>
+              res(
+                ok
+                  ? okResponse({ consensus_id: "c2", dump_paths: [A, B] })
+                  : ({ ok: false, status: 500, text: async () => "boom" } as Response),
+              ),
+            );
+          }),
+      ),
+    );
+
+    const first = useConsensusStore.getState().runConsensus([A], false);
+    const second = useConsensusStore.getState().runConsensus([A, B], false);
+
+    settle[1](true);
+    await second;
+    settle[0](false);
+    await first;
+
+    const state = useConsensusStore.getState();
+    expect(state.consensusId).toBe("c2");
+    expect(state.error).toBeNull();
+    expect(state.available).toBe(true);
+  });
+
+  it("keeps a finalized incremental build safe from a straggling run", async () => {
+    const settle = deferredFetch();
+
+    const run = useConsensusStore.getState().runConsensus([A, B], false);
+    useConsensusStore.getState().adoptIncremental({
+      consensusId: "session-1",
+      size: 256,
+      numDumps: 3,
+      counts: null,
+    });
+
+    settle[0]({ consensus_id: "c1", dump_paths: [A, B] });
+    await run;
+
+    expect(useConsensusStore.getState().consensusId).toBe("session-1");
+  });
+
+  it("lets nothing in flight repopulate a store that has been reset", async () => {
+    const settle = deferredFetch();
+
+    const run = useConsensusStore.getState().runConsensus([A, B], false);
+    useConsensusStore.getState().reset();
+
+    settle[0]({ consensus_id: "c1", dump_paths: [A, B] });
+    await run;
+
+    expect(useConsensusStore.getState().consensusId).toBeNull();
+  });
+});
+
+describe("consensus-store failed rebuild", () => {
+  /**
+   * A failed rebuild says nothing about the build already in the store: it was
+   * computed over real dumps and, where `builtFrom` still covers the selection,
+   * it is still the correct answer for them. Clearing `consensusId` here would
+   * drop both multi-dump viewers behind `NoConsensusPrompt` and throw away a
+   * usable alignment because a LATER request 500'd. What the failure must do is
+   * be SAYABLE — `error` is the record `ConsensusErrorBanner` puts on the hex
+   * surface, where the bytes it qualifies are.
+   */
+  it("leaves the previous build standing and records why the rebuild failed", async () => {
+    useConsensusStore.setState({
+      consensusId: "c1",
+      builtFrom: [A, B],
+      builtNormalized: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, text: async () => "boom" }) as Response),
+    );
+
+    await useConsensusStore.getState().runConsensus([A, B], true);
+
+    const state = useConsensusStore.getState();
+    expect(state.consensusId).toBe("c1");
+    expect(state.builtFrom).toEqual([A, B]);
+    expect(state.builtNormalized).toBe(false);
+    expect(state.error).toMatch(/500/);
+    expect(state.loading).toBe(false);
+  });
+
+  it("clears the record the moment another build starts", async () => {
+    useConsensusStore.setState({ error: "boom" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => okResponse({ consensus_id: "c2", dump_paths: [A, B] })),
+    );
+
+    await useConsensusStore.getState().runConsensus([A, B], false);
+
+    expect(useConsensusStore.getState().error).toBeNull();
+  });
+});
+
 describe("consensus-store matchesSelection", () => {
   function build(builtFrom: string[]) {
     useConsensusStore.setState({ consensusId: "c1", builtFrom });

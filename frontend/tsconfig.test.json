@@ -31,7 +31,16 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
     // `vite/client` supplies the `*?raw` module declaration that
     // ../tests/frontend/stores/hex-store.test.ts relies on.
-    "types": ["vite/client"],
+    //
+    // `node` is here because the suite RUNS in node: vitest executes these
+    // files in a node process with a jsdom environment layered on top, so a
+    // test that reads a file off disk (`hex-css-cascade.test.ts` loads the real
+    // hex.css and resolves it through jsdom's cascade) is using the runtime it
+    // actually has. `?raw` is not an alternative for that particular file:
+    // vitest's default `css: false` intercepts every `.css` id before the raw
+    // loader sees it and hands back an empty string, which would make the test
+    // pass against nothing at all.
+    "types": ["vite/client", "node"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],

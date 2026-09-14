@@ -47,7 +47,15 @@ function seed(n: number, over: Partial<ReturnType<typeof useDumpStore.getState>>
 
 beforeEach(() => {
   useDumpStore.getState().clearAll();
-  useConsensusStore.setState({ available: false, loading: false, error: null, counts: null });
+  // `runInFlight` too: it is global and a test that leaves a build "running"
+  // would disable the button for every test after it.
+  useConsensusStore.setState({
+    available: false,
+    loading: false,
+    runInFlight: false,
+    error: null,
+    counts: null,
+  });
   useAppStore.setState({ mode: "verification" });
 });
 
@@ -200,7 +208,9 @@ describe("DumpList consensus scope", () => {
   });
 
   it("runs over the SELECTED dumps, not every loaded one", () => {
-    const runConsensus = vi.fn();
+    // `runConsensus` returns a promise the shared runner chains `.finally` on;
+    // a bare `vi.fn()` hands back `undefined` and the click throws.
+    const runConsensus = vi.fn(() => Promise.resolve());
     useConsensusStore.setState({ runConsensus });
     seed(4, { selectedDumpIds: ["d1", "d3"], activeDumpId: "d1" });
     render(<DumpList />);
@@ -208,6 +218,37 @@ describe("DumpList consensus scope", () => {
     fireEvent.click(screen.getByTestId("dump-run-consensus"));
 
     expect(runConsensus).toHaveBeenCalledWith(["/dumps/d1.msl", "/dumps/d3.msl"], false);
+  });
+
+  /**
+   * This row used to call `runConsensus` straight off the store, so the ONE
+   * in-flight flag the hex-side affordances disable themselves on was never
+   * set: start a slow build here and `OverlayAlignSwitch`, `HexAlignmentChip`
+   * and `NoConsensusPrompt` all stayed live, each able to POST a second build
+   * over the first.
+   */
+  it("raises the shared in-flight flag the hex-side affordances read", () => {
+    const runConsensus = vi.fn(() => new Promise<void>(() => {}));
+    useConsensusStore.setState({ runConsensus });
+    seed(3);
+    render(<DumpList />);
+
+    fireEvent.click(screen.getByTestId("dump-run-consensus"));
+
+    expect(useConsensusStore.getState().runInFlight).toBe(true);
+  });
+
+  it("refuses a second build while one it started is still running", () => {
+    const runConsensus = vi.fn(() => new Promise<void>(() => {}));
+    useConsensusStore.setState({ runConsensus });
+    seed(3);
+    render(<DumpList />);
+
+    fireEvent.click(screen.getByTestId("dump-run-consensus"));
+    expect(screen.getByTestId("dump-run-consensus")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("dump-run-consensus"));
+    expect(runConsensus).toHaveBeenCalledTimes(1);
   });
 });
 

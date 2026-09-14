@@ -1,6 +1,6 @@
 """Backend round-trip regression test for the /api/sessions/ endpoint.
 
-Posts a SessionPayload with all 21 data fields populated with non-default
+Posts a SessionPayload with all 32 data fields populated with non-default
 values, then GETs the saved session back and asserts field equality. This
 is the guard against the silent-field-drop class of bug flagged in
 .claude-work/plans/curried-jumping-lantern.md (PR 1 Session round-trip).
@@ -62,6 +62,23 @@ FULL_PAYLOAD = {
         {"offset": 4096, "length": 16, "label": "candidate_b"},
     ],
     "investigation_offset": 1024,
+    # Schema v2 multi-dump workspace fields.
+    "dumps": [
+        {"path": "/tmp/dump_a.msl", "name": "dump_a.msl",
+         "size": 8192, "format": "msl"},
+        {"path": "/tmp/dump_b.raw", "name": "dump_b.raw",
+         "size": 16384, "format": "raw"},
+    ],
+    "active_dump_path": "/tmp/dump_b.raw",
+    "selected_dump_paths": ["/tmp/dump_a.msl", "/tmp/dump_b.raw"],
+    "collapsed_dump_paths": ["/tmp/dump_b.raw"],
+    "origin_dump_path": "/tmp/dump_a.msl",
+    "main_view": "overlay",
+    "aslr_normalize": True,
+    "dump_weights": {"/tmp/dump_a.msl": 0.25, "/tmp/dump_b.raw": 4.0},
+    "excluded_dump_paths": ["/tmp/dump_b.raw"],
+    "solo_dump_path": "/tmp/dump_a.msl",
+    "rail_collapsed": True,
 }
 
 

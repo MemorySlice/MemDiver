@@ -194,3 +194,74 @@ describe("dump rail reset", () => {
     expect(after.isIncluded(B)).toBe(true);
   });
 });
+
+describe("dump rail hydrate", () => {
+  /**
+   * Absence is the store's contract for the default weight, and
+   * `hasUnevenWeights` is what reads that contract. A restore that wrote an
+   * explicit `1.0` would make the `weighted` badge claim a reading nobody
+   * weighted.
+   */
+  it("stores the default weight as absence so hasUnevenWeights stays honest", () => {
+    useDumpRailStore.getState().hydrate({ weightByPath: { [A]: 1, [B]: 1 } });
+
+    const after = useDumpRailStore.getState();
+    expect(after.weightByPath.size).toBe(0);
+    expect(after.weightAt(A)).toBe(DEFAULT_DUMP_WEIGHT);
+    expect(hasUnevenWeights(after.weightByPath)).toBe(false);
+  });
+
+  it("keeps a legal non-default weight", () => {
+    useDumpRailStore.getState().hydrate({ weightByPath: { [A]: 1.5, [B]: 0.5 } });
+
+    const after = useDumpRailStore.getState();
+    expect(after.weightAt(A)).toBe(1.5);
+    expect(after.weightAt(B)).toBe(0.5);
+    expect(hasUnevenWeights(after.weightByPath)).toBe(true);
+  });
+
+  it("coerces a weight outside the vocabulary back to the default", () => {
+    // A 1.37 from a hand-edited file, or a value that pre-dates the vocabulary.
+    useDumpRailStore.getState().hydrate({ weightByPath: { [A]: 1.37, [B]: 0 } });
+
+    const after = useDumpRailStore.getState();
+    expect(after.weightByPath.size).toBe(0);
+    expect(after.weightAt(A)).toBe(DEFAULT_DUMP_WEIGHT);
+    expect(hasUnevenWeights(after.weightByPath)).toBe(false);
+  });
+
+  it("restores exclusions, the solo and the collapse", () => {
+    useDumpRailStore
+      .getState()
+      .hydrate({ excludedPaths: [B], soloPath: A, collapsed: true });
+
+    const after = useDumpRailStore.getState();
+    expect(after.isIncluded(A)).toBe(true);
+    expect(after.isIncluded(B)).toBe(false);
+    expect(after.soloPath).toBe(A);
+    expect(after.collapsed).toBe(true);
+  });
+
+  it("replaces the previous rail rather than merging into it", () => {
+    const store = useDumpRailStore.getState();
+    store.setWeight(A, 0.5);
+    store.toggleIncluded(A);
+    store.setSolo(A);
+    store.setCollapsed(true);
+
+    store.hydrate({});
+
+    const after = useDumpRailStore.getState();
+    expect(after.weightByPath.size).toBe(0);
+    expect(after.excludedPaths.size).toBe(0);
+    expect(after.soloPath).toBeNull();
+    expect(after.collapsed).toBe(false);
+  });
+
+  it("coerces every legal weight through the public vocabulary", () => {
+    for (const weight of DUMP_WEIGHTS) {
+      useDumpRailStore.getState().hydrate({ weightByPath: { [A]: weight } });
+      expect(useDumpRailStore.getState().weightAt(A)).toBe(weight as DumpWeight);
+    }
+  });
+});

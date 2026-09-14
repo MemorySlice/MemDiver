@@ -148,6 +148,8 @@ export interface SessionInfo {
   mode: string;
   input_mode: string;
   input_path: string;
+  /** How many dumps the saved workspace holds. `0` for a v1 file. */
+  dump_count?: number;
 }
 
 export interface SessionSnapshot {
@@ -185,6 +187,45 @@ export interface SessionSnapshot {
   // Investigation state
   bookmarks: Array<{ offset: number; length: number; label: string }>;
   investigation_offset: number | null;
+
+  // --- Multi-dump workspace (schema_version 2) -----------------------------
+  // Every field below is OPTIONAL so a v1 response still typechecks: the
+  // backend defaults them, and a session saved before this feature existed
+  // simply has none of them.
+  //
+  // Persisted BY PATH, never by dump id: frontend dump ids are per-session
+  // `crypto.randomUUID()` values and are meaningless in a saved file.
+  //
+  // SECURITY: `dumps` carries exactly `path/name/size/format`. It must never
+  // grow `keyMaterial` (plaintext recovered secrets) or `tagStatus` (a stored
+  // "valid" without its key would make the badge claim "unlocked").
+  dumps?: SessionDumpEntry[];
+  active_dump_path?: string | null;
+  selected_dump_paths?: string[];
+  /**
+   * Paths whose pane is folded away. Named for what it is: the in-memory
+   * field is `dump-store.visibleDumps`, which is actually a COLLAPSED set
+   * (see `MultiHexViewer`), and the misnomer stops at the store boundary.
+   */
+  collapsed_dump_paths?: string[];
+  origin_dump_path?: string | null;
+  main_view?: string;
+  aslr_normalize?: boolean;
+
+  // Dump rail
+  dump_weights?: Record<string, number>;
+  excluded_dump_paths?: string[];
+  /** "" means "no solo"; the wire contract has no null here. */
+  solo_dump_path?: string;
+  rail_collapsed?: boolean;
+}
+
+/** The only dump fields that reach disk. See the security note above. */
+export interface SessionDumpEntry {
+  path: string;
+  name: string;
+  size: number;
+  format: string;
 }
 
 // Task lifecycle types live in ./pipeline as the single source of truth. They
