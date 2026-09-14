@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
+  DEFAULT_REGION_MIN_LENGTH,
   NON_INVARIANT_UNION,
   NO_HONEST_ANSWER,
   anchorSpan,
@@ -17,6 +18,7 @@ import {
 } from "@/stores/variance-regions-store";
 import { offsetToHex } from "@/utils/hex-codec";
 import { VARIANCE_META } from "@/utils/variance-classes";
+import { RegionFilterBar } from "@/components/hex/RegionFilterBar";
 import { VarianceSwatch } from "@/components/common/VarianceSwatch";
 
 /**
@@ -84,11 +86,29 @@ export function VarianceClassBrowser() {
   const loading = useVarianceRegionsStore((s) => s.loading);
   const error = useVarianceRegionsStore((s) => s.error);
   const windowScoped = useVarianceRegionsStore((s) => s.windowScoped);
+  const minLength = useVarianceRegionsStore((s) => s.minLength);
+  const maxLength = useVarianceRegionsStore((s) => s.maxLength);
   const anchorJumpable = useVarianceRegionsStore((s) => s.anchorJumpable);
   const jumpToIndex = useVarianceRegionsStore((s) => s.jumpToIndex);
   const loadMore = useVarianceRegionsStore((s) => s.loadMore);
 
   const hasMore = nextAfter !== NO_HONEST_ANSWER;
+
+  /** Anything other than the server's own floor and no ceiling. */
+  const sizeFiltered = minLength !== DEFAULT_REGION_MIN_LENGTH || maxLength !== 0;
+  const singleClass =
+    category !== null && category !== NON_INVARIANT_UNION && category !== "differs";
+  /**
+   * The empty state that has to explain itself.
+   *
+   * A length filter on ONE class is the harshest query this panel can ask, and
+   * it is the one an analyst hunting a 48-byte secret types first. The secret
+   * is ~27 key_candidate + 18 pointer + 3 structural bytes, so no single-class
+   * run inside it is 48 bytes long and "Key Candidate, min 32" returns nothing
+   * for a secret that is genuinely there. Saying "no regions" would let the
+   * user conclude the dump is clean; this points at the union chip instead.
+   */
+  const emptyIsFilterArtifact = singleClass && sizeFiltered;
 
   /**
    * Jump, and STAY.
@@ -124,6 +144,8 @@ export function VarianceClassBrowser() {
           ? t("regions.title")
           : t("regions.titleFor", { label: t(BROWSE_META[category].labelKey) })}
       </h3>
+
+      <RegionFilterBar />
 
       {/*
         The jump is silent without this: a scroll two panes away is invisible to
@@ -187,7 +209,9 @@ export function VarianceClassBrowser() {
 
       {!loading && !error && regions.length === 0 && (
         <p className="md-text-secondary" data-testid="variance-class-browser-empty">
-          {t("regions.empty")}
+          {emptyIsFilterArtifact && category !== null
+            ? t("regions.emptySizeFiltered", { label: t(BROWSE_META[category].labelKey) })
+            : t("regions.empty")}
         </p>
       )}
 

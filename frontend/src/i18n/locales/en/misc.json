@@ -103,6 +103,7 @@
   "strings": {
     "encodingAscii": "ASCII",
     "encodingUtf8": "UTF-8",
+    "encodingLabel": "String encoding",
     "minLabel": "Min:",
     "extract": "Extract",
     "filterPlaceholder": "Filter strings...",

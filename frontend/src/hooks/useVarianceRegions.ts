@@ -44,7 +44,14 @@ import {
  */
 export function useVarianceRegionsLoader(): void {
   const category = useVarianceRegionsStore((s) => s.category);
+  // The whole filter, term for term. Every one of these is a term of
+  // `requestKey`, and a term missing HERE is the quiet half of the bug: the
+  // guard below would find the stale key equal to the live one, early-return,
+  // and leave the PREVIOUS filter's rows on screen under the new controls —
+  // plausible rows at the wrong sizes, which no type checker catches.
   const minLength = useVarianceRegionsStore((s) => s.minLength);
+  const maxLength = useVarianceRegionsStore((s) => s.maxLength);
+  const sort = useVarianceRegionsStore((s) => s.sort);
   // Subscribed, not merely read: when a load ENDS the effect has to look again.
   // A request that was in flight while the view mode changed is accepted by the
   // store (its key matched at send time) and is expressed in the coordinate the
@@ -87,11 +94,13 @@ export function useVarianceRegionsLoader(): void {
     // anyway, and the effect will run again when its answer lands.
     if (state.loading) return;
     // Page one for this exact query is already in the store.
-    if (state.requestKey === liveRequestKey(category, minLength)) return;
+    if (state.requestKey === liveRequestKey(category, minLength, maxLength, sort)) return;
     void loadMore();
   }, [
     category,
     minLength,
+    maxLength,
+    sort,
     loading,
     selectCategory,
     loadMore,

@@ -84,6 +84,7 @@ function pageBody(
     union: true,
     min_length: 8,
     max_length: 0,
+    sort: "offset",
     after: -1,
     next_after: -1,
     total: 1,

@@ -194,20 +194,30 @@ def search_bytes(
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
+    pattern_format: str = "hex",
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Search a dump for every occurrence of a hex byte pattern.
+    """Search a dump for every occurrence of a byte pattern.
 
-    ``pattern_hex`` accepts an optional leading ``0x`` and surrounding
-    whitespace. ``cursor`` resumes a previous paged scan (pass the
-    ``next_cursor`` from the last response). For MSL files, ``view`` selects
-    the byte source: ``raw`` (default) → .msl container bytes; ``vas`` →
-    flattened captured memory projection.
+    ``pattern_hex`` is the raw pattern TEXT (the name is historical);
+    ``pattern_format`` says how to read it — ``hex`` (default, optional
+    leading ``0x``, whitespace ignored), ``text`` (UTF-8), ``utf16le`` for
+    wide strings, ``base64``, or ``u32le``/``u32be``/``u64le``/``u64be`` for a
+    numeric value or pointer. The response echoes ``pattern_format`` and the
+    RESOLVED bytes in ``pattern_hex``, so a caller can always see what was
+    actually searched for.
+
+    ``cursor`` resumes a previous paged scan (pass the ``next_cursor`` from
+    the last response). For MSL files, ``view`` selects the byte source:
+    ``raw`` (default) → .msl container bytes; ``vas`` → flattened captured
+    memory projection; ``va`` → the sparse full VA span, matching only bytes
+    the dump really captured.
     """
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         return _http_inspect(lambda: tools_inspect.search_bytes_result(
             session, dump_path, pattern_hex, view=view,
             max_results=max_results, cursor=cursor,
+            pattern_format=pattern_format,
         ))
 
 

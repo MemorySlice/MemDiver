@@ -31,6 +31,14 @@ class _RegionedRawSource:
     # Subclasses override.
     format_name: str = "regioned_raw"
 
+    #: No ``"va"`` projection: the sidecar carries a VA map, but nothing
+    #: here serves a sparse full-VA view, so asking for one is an error
+    #: a caller should be told about rather than a crash.
+    #: Views this source can serve. Read through
+    #: :func:`core.dump_source.supported_views`, never off the Protocol —
+    #: the Protocol is ``runtime_checkable`` and must not grow members.
+    SUPPORTED_VIEWS = ("raw", "vas")
+
     #: The ``.maps`` sidecar is a real virtual-address map, so cross-dump
     #: consensus can align these captures by VA
     #: (:mod:`memdiver.engine.consensus_va`) instead of falling back to flat
@@ -213,28 +221,34 @@ class _RegionedRawSource:
                 break
         return bytes(result)
 
-    def find_all(self, needle: bytes, view: str = "raw") -> List[int]:
+    def find_all(
+        self, needle: bytes, view: str = "raw", limit: int = 0,
+    ) -> List[int]:
         # An empty needle would make the underlying byte/mmap search yield one
         # hit per byte (effective hang). gcore guards this the same way.
         if not needle:
             return []
         self._ensure_open()
         if view == "raw":
-            return self._reader.find_all(needle)
+            return self._reader.find_all(needle, limit)
         if view != "vas":
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
-        return self._find_all_vas(needle)
+        return self._find_all_vas(needle, limit)
 
-    def _find_all_vas(self, needle: bytes) -> List[int]:
+    def _find_all_vas(self, needle: bytes, limit: int = 0) -> List[int]:
         """Find occurrences expressed as flat VAS offsets.
 
         VAS is simply the concatenation of all captured regions, which is
         exactly what the bin already stores. So find_all over the bin is
         find_all over VAS; we just cap it to the usable prefix.
         """
+        # NOT capped on the raw scan: hits past `usable_end` are filtered out
+        # below, so capping first could return a short page made entirely of
+        # discarded offsets. Cap the KEPT hits instead.
         raw_hits = self._reader.find_all(needle)
         usable_end = self._cum_offsets[self._usable_region_count] if self._cum_offsets else 0
-        return [h for h in raw_hits if h < usable_end]
+        kept = [h for h in raw_hits if h < usable_end]
+        return kept[:limit] if limit else kept
 
     def find_first(self, needle: bytes, view: str = "raw") -> Optional[int]:
         """First offset of ``needle`` in *view*, or ``None`` (presence query).

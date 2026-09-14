@@ -2,6 +2,12 @@ import { useCallback, useRef, useState } from "react";
 
 interface SearchResult {
   offsets: number[];
+  /**
+   * The format the server actually used. For a caller that sent `auto` this
+   * is the only place the resolution is visible; the web UI resolves `auto`
+   * itself and sends a concrete format, so there the two always agree.
+   */
+  resolvedFormat: string;
   // Byte length of the pattern these offsets came from, as reported by the
   // backend. Pairs atomically with `offsets` so consumers never have to
   // re-derive it from a live input that may have changed since the search.
@@ -13,6 +19,7 @@ interface SearchResult {
 
 const EMPTY_RESULT: SearchResult = {
   offsets: [],
+  resolvedFormat: "",
   patternLen: 0,
   truncated: false,
   isSearching: false,
@@ -24,7 +31,11 @@ export function useHexSearch(dumpPath: string) {
   const abortRef = useRef<AbortController | null>(null);
 
   const search = useCallback(
-    async (patternHex: string, view: string = "raw") => {
+    async (
+      pattern: string,
+      view: string = "raw",
+      patternFormat: string = "hex",
+    ) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -34,7 +45,8 @@ export function useHexSearch(dumpPath: string) {
       try {
         const res = await fetch(
           `/api/inspect/byte-search?dump_path=${encodeURIComponent(dumpPath)}` +
-            `&pattern_hex=${encodeURIComponent(patternHex)}` +
+            `&pattern_hex=${encodeURIComponent(pattern)}` +
+            `&pattern_format=${encodeURIComponent(patternFormat)}` +
             `&view=${encodeURIComponent(view)}&max_results=500`,
           { signal: controller.signal },
         );
@@ -46,6 +58,7 @@ export function useHexSearch(dumpPath: string) {
         }
         setResults({
           offsets: data.offsets || [],
+          resolvedFormat: data.pattern_format || "",
           patternLen: data.pattern_len || 0,
           truncated: data.truncated || false,
           isSearching: false,

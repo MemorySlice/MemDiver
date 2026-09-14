@@ -51,8 +51,7 @@
     ],
     "strings": [
       "scrollable-region-focusable#.h-full.flex-col.text-xs > .overflow-auto.flex-1",
-      "scrollable-region-focusable#.min-h-0.flex-1.flex > .overflow-auto.flex-1",
-      "select-name#select"
+      "scrollable-region-focusable#.min-h-0.flex-1.flex > .overflow-auto.flex-1"
     ],
     "verify-key": [
       "scrollable-region-focusable#.min-h-0.flex-1.flex > .overflow-auto.flex-1"

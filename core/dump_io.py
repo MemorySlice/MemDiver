@@ -9,8 +9,15 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger("memdiver.dump_io")
 
 
-def find_all_offsets(buf, needle: bytes) -> List[int]:
+def find_all_offsets(buf, needle: bytes, limit: int = 0) -> List[int]:
     """Return every offset of *needle* in *buf*, including overlapping matches.
+
+    ``limit`` caps how many offsets are COLLECTED (0 = uncapped). It exists
+    because the result list is the memory hazard, not the scan: a one-byte
+    needle over a multi-gigabyte dump yields hundreds of millions of Python
+    ints long before any caller's page limit gets to apply. A caller that
+    passes ``limit`` must treat a full-length result as "at least this many",
+    never as a total.
 
     Works over anything supporting ``.find(needle, start)`` (``bytes`` or an
     ``mmap`` object). Overlapping matches are preserved by advancing the
@@ -38,6 +45,8 @@ def find_all_offsets(buf, needle: bytes) -> List[int]:
         if idx == -1:
             break
         offsets.append(idx)
+        if limit and len(offsets) >= limit:
+            break
         start = idx + 1
     return offsets
 
@@ -145,11 +154,11 @@ class DumpReader:
         end = min(offset + length, len(self._mmap))
         return self._mmap[offset:end]
 
-    def find_all(self, needle: bytes) -> List[int]:
+    def find_all(self, needle: bytes, limit: int = 0) -> List[int]:
         """Find all occurrences of needle in the mapped file."""
         if self._mmap is None:
             return []
-        return find_all_offsets(self._mmap, needle)
+        return find_all_offsets(self._mmap, needle, limit)
 
     def find_first(self, needle: bytes) -> Optional[int]:
         """Find the first occurrence of needle in the mapped file.

@@ -9,6 +9,7 @@ N×d observation matrix is never materialized.
 """
 
 import bisect
+import heapq
 import logging
 from array import array
 from dataclasses import dataclass
@@ -1162,6 +1163,63 @@ class ConsensusVector:
         """
         classes = normalize_byte_classes(byte_class)
         return sum(1 for _run in self._kept_runs(classes, min_length, max_length))
+
+    def rank_regions_by_length(
+        self, byte_class: ByteClassSpec, *,
+        min_length: int = 1, max_length: int = 0,
+        descending: bool = True, offset: int = 0,
+        limit: int = 200,
+    ) -> List[StaticRegion]:
+        """One page of regions ordered by LENGTH rather than by slab offset.
+
+        The "show me the biggest key candidates first" query. An analyst
+        hunting a secret of a known size does not want to walk 17,000 regions
+        in address order, and a client-side sort of the rows already loaded
+        would rank one page against itself and call it the top of the list —
+        true only by accident.
+
+        SORTS WITHOUT MATERIALIZING. Built on :meth:`_kept_runs`, which yields
+        ``(start, end)`` with no variance reduction and no labelling, so the
+        heap walks cheap tuples; only the ``offset + limit + 1`` survivors are
+        turned into :class:`StaticRegion` (the ``+ 1`` is the one row past the
+        page that lets a caller report ``truncated`` without counting twice).
+        Ordering a whole slab through :meth:`get_regions` would reintroduce
+        exactly the ~10^5-10^6 ``.mean()`` calls :meth:`iter_regions` exists
+        to avoid.
+
+        TIE-BREAK. The key is ``(length, start)``, a TOTAL order, so paging is
+        deterministic and equal-length regions never reshuffle between pages.
+        The two directions are not mirror images: descending negates ``start``
+        so that ties still surface the LOWEST offset first, which is the
+        reading order of every other list in this app.
+
+        :param descending: Longest first when ``True``, shortest first
+            otherwise.
+        :param offset: How many ranked rows to skip — a RANK cursor, not a
+            slab offset. Sorted pagination cannot use the slab-offset cursor
+            :meth:`iter_regions` takes, because rank order and slab order are
+            unrelated.
+        :param limit: Rows per page.
+        """
+        classes = normalize_byte_classes(byte_class)
+        offset = max(0, int(offset))
+        limit = max(1, int(limit))
+        wanted = offset + limit + 1
+        runs = self._kept_runs(classes, min_length, max_length)
+        if descending:
+            ranked = heapq.nlargest(
+                wanted, runs, key=lambda r: (r[1] - r[0], -r[0]))
+        else:
+            ranked = heapq.nsmallest(
+                wanted, runs, key=lambda r: (r[1] - r[0], r[0]))
+        return [
+            StaticRegion(
+                start=start, end=end,
+                mean_variance=self._region_mean_variance(start, end),
+                classification=self._region_label(start, end, classes),
+            )
+            for start, end in ranked[offset:]
+        ]
 
     def get_regions(
         self, byte_class: ByteClassSpec, *,

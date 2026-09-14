@@ -146,7 +146,10 @@ test.describe("dump import + hex viewer", () => {
 
     // Search for byte 0's own value → guarantees ≥1 hit that is in the initial
     // viewport, so its `highlight-search` class is assertable without scrolling.
-    const find = page.getByPlaceholder("hex pattern e.g. deadbeef");
+    // By testid, not by placeholder: the box now accepts several needle
+    // formats, so its placeholder is no longer the word "hex" and a
+    // placeholder locator would silently stop finding it.
+    const find = page.getByTestId("hex-search-pattern");
     await find.fill(byteVal);
     await find.press("Enter");
     await expect(page.getByText(/\d+\+? hits/)).toBeVisible({ timeout: 15_000 });

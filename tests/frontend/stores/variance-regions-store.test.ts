@@ -79,6 +79,7 @@ function pageBody(
     union: true,
     min_length: 8,
     max_length: 0,
+    sort: "offset",
     after: -1,
     next_after: -1,
     total: regions.length,
@@ -1229,13 +1230,13 @@ describe("the differs request key", () => {
     const emptyKey = useVarianceRegionsStore.getState().requestKey;
     expect(useVarianceRegionsStore.getState().regions).toEqual([]);
     // The loader would early-return right now, and rightly so.
-    expect(liveRequestKey("differs", 8)).toBe(emptyKey);
+    expect(liveRequestKey("differs", 8, 0, "offset")).toBe(emptyKey);
 
     // The window arrives.
     seedLoadedWindow(100, 148);
 
     // ...and the loader now sees a different query, which is the whole fix.
-    expect(liveRequestKey("differs", 8)).not.toBe(emptyKey);
+    expect(liveRequestKey("differs", 8, 0, "offset")).not.toBe(emptyKey);
     await useVarianceRegionsStore.getState().loadMore();
     expect(useVarianceRegionsStore.getState().regions).toHaveLength(1);
   });
@@ -1243,14 +1244,14 @@ describe("the differs request key", () => {
   it("re-keys on a windowVersion bump alone — a chunk landing in place", () => {
     seedWorkspace("raw");
     seedLoadedWindow(100, 148);
-    const before = liveRequestKey("differs", 8);
+    const before = liveRequestKey("differs", 8, 0, "offset");
 
     // What `applyResponse` does when another chunk lands.
     useMultiHexStore.setState({
       windowVersion: useMultiHexStore.getState().windowVersion + 1,
     });
 
-    expect(liveRequestKey("differs", 8)).not.toBe(before);
+    expect(liveRequestKey("differs", 8, 0, "offset")).not.toBe(before);
   });
 
   /**
@@ -1261,13 +1262,220 @@ describe("the differs request key", () => {
    */
   it("leaves a server-backed key alone when the window moves", () => {
     seedWorkspace("raw");
-    const before = liveRequestKey("non_invariant", 8);
+    const before = liveRequestKey("non_invariant", 8, 0, "offset");
 
     seedLoadedWindow(100, 148);
     useMultiHexStore.setState({
       windowVersion: useMultiHexStore.getState().windowVersion + 1,
     });
 
-    expect(liveRequestKey("non_invariant", 8)).toBe(before);
+    expect(liveRequestKey("non_invariant", 8, 0, "offset")).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The length filter and the sort
+// ---------------------------------------------------------------------------
+
+/**
+ * "Show me the 32-byte runs, longest first."
+ *
+ * The analyst hunting a TLS secret knows its size (16 / 24 / 32 / 48 are the
+ * ones that exist), and a 17,000-row offset-ordered list is not an answer. Two
+ * bounds and an order turn it into one.
+ *
+ * ── The failure this suite exists to catch ──────────────────────────────────
+ * `maxLength` and `sort` are terms of `requestKey`. Leave either one OUT and
+ * the store's landing guard — and the mounted loader's `requestKey ===
+ * liveRequestKey(...)` early-return — cannot tell the new filter's list from
+ * the old one's. The result is not an error: it is the PREVIOUS filter's rows,
+ * rendered under the new controls, at sizes the user did not ask for. Nothing
+ * in the type system notices, which is exactly the shape of every coordinate
+ * bug this file already guards.
+ *
+ * ── And the second, quieter one ─────────────────────────────────────────────
+ * `"differs"` never reaches the endpoint — it is computed from the loaded
+ * window — so a filter wired only into the request body is SILENTLY INERT on
+ * the one category an analyst reaches for first. The `differs` cases below pin
+ * both bounds and both orders against the window walker itself.
+ */
+describe("the length filter and the sort", () => {
+  /** A window whose disagreement runs have deliberately different lengths. */
+  function seedRuns(runs: [number, number][]) {
+    const identity = `${DUMP_A}|raw|${DUMP_A},${DUMP_B}`;
+    const variants = new Uint8Array(CHUNK_SIZE).fill(1);
+    const classes = new Int8Array(CHUNK_SIZE).fill(-1);
+    for (const [from, to] of runs) {
+      for (let i = from; i < to; i++) {
+        variants[i] = 2;
+        classes[i] = 2;
+      }
+    }
+    useMultiHexStore.setState({
+      identity,
+      chunkIdentity: new Map([[0, identity]]),
+      variantChunks: new Map([[0, variants]]),
+      classChunks: new Map([[0, classes]]),
+      lastRequest: {
+        anchorPath: DUMP_A,
+        view: "raw",
+        paths: [DUMP_A, DUMP_B],
+        consensusId: CONSENSUS_ID,
+      },
+    });
+  }
+
+  async function loadPage() {
+    seedWorkspace();
+    fetchMock.mockResolvedValue(asResponse(pageBody(rowsAt([0, 1024]))));
+    useVarianceRegionsStore.getState().selectCategory("non_invariant");
+    await useVarianceRegionsStore.getState().loadMore();
+  }
+
+  it("starts unbounded above, in offset order", () => {
+    const state = useVarianceRegionsStore.getState();
+
+    // `0` is the wire's spelling of "no limit", not "zero-length regions".
+    expect(state.maxLength).toBe(0);
+    expect(state.sort).toBe("offset");
+  });
+
+  it("changing max_length drops the page it was loaded under", async () => {
+    await loadPage();
+
+    useVarianceRegionsStore.getState().setMaxLength(48);
+
+    const state = useVarianceRegionsStore.getState();
+    expect(state.maxLength).toBe(48);
+    expect(state.regions).toEqual([]);
+    // Not merely emptied: the KEY has to go too, or the loader early-returns
+    // against a key that still describes the previous filter.
+    expect(state.requestKey).toBeNull();
+  });
+
+  it("changing the sort drops the page rather than re-ordering it", async () => {
+    await loadPage();
+
+    useVarianceRegionsStore.getState().setSort("length_desc");
+
+    const state = useVarianceRegionsStore.getState();
+    expect(state.sort).toBe("length_desc");
+    // Sorting the loaded rows would order page ONE of an offset-ordered list
+    // and call it "longest first"; it would also invalidate `nextAfter`, whose
+    // unit follows `sort`.
+    expect(state.regions).toEqual([]);
+    expect(state.requestKey).toBeNull();
+  });
+
+  it("re-applying the same filter keeps the page a round trip paid for", async () => {
+    await loadPage();
+
+    useVarianceRegionsStore.getState().setMaxLength(0);
+    useVarianceRegionsStore.getState().setSort("offset");
+
+    expect(useVarianceRegionsStore.getState().regions).toHaveLength(2);
+  });
+
+  it("clamps max_length to a whole, non-negative count", () => {
+    useVarianceRegionsStore.getState().setMaxLength(-5);
+    expect(useVarianceRegionsStore.getState().maxLength).toBe(0);
+
+    useVarianceRegionsStore.getState().setMaxLength(32.7);
+    expect(useVarianceRegionsStore.getState().maxLength).toBe(32);
+  });
+
+  it("puts max_length and sort in the request key", () => {
+    seedWorkspace();
+    const base = liveRequestKey("non_invariant", 8, 0, "offset");
+
+    expect(liveRequestKey("non_invariant", 8, 32, "offset")).not.toBe(base);
+    expect(liveRequestKey("non_invariant", 8, 0, "length_desc")).not.toBe(base);
+    expect(liveRequestKey("non_invariant", 8, 0, "length_asc")).not.toBe(
+      liveRequestKey("non_invariant", 8, 0, "length_desc"),
+    );
+  });
+
+  it("sends both on the wire, explicitly", async () => {
+    seedWorkspace();
+    fetchMock.mockResolvedValue(asResponse(pageBody(rowsAt([0]))));
+    useVarianceRegionsStore.getState().setMinLength(32);
+    useVarianceRegionsStore.getState().setMaxLength(32);
+    useVarianceRegionsStore.getState().setSort("length_desc");
+    useVarianceRegionsStore.getState().selectCategory("non_invariant");
+    await useVarianceRegionsStore.getState().loadMore();
+
+    expect(requestBodies()[0]).toMatchObject({
+      min_length: 32,
+      max_length: 32,
+      sort: "length_desc",
+    });
+  });
+
+  it("keeps the filter across a return to idle — it is the question, not the category", async () => {
+    await loadPage();
+    useVarianceRegionsStore.getState().setMaxLength(48);
+    useVarianceRegionsStore.getState().setSort("length_asc");
+
+    useVarianceRegionsStore.getState().selectCategory(null);
+
+    const state = useVarianceRegionsStore.getState();
+    expect(state.maxLength).toBe(48);
+    expect(state.sort).toBe("length_asc");
+  });
+
+  it("reset returns both to the server's own defaults", async () => {
+    await loadPage();
+    useVarianceRegionsStore.getState().setMaxLength(16);
+    useVarianceRegionsStore.getState().setSort("length_desc");
+
+    useVarianceRegionsStore.getState().reset();
+
+    expect(useVarianceRegionsStore.getState().maxLength).toBe(0);
+    expect(useVarianceRegionsStore.getState().sort).toBe("offset");
+  });
+
+  it("filters the window-derived differs rows by max_length too", async () => {
+    seedWorkspace("raw");
+    seedRuns([
+      [100, 108], // 8 bytes
+      [200, 232], // 32 bytes
+    ]);
+
+    useVarianceRegionsStore.getState().setMaxLength(16);
+    useVarianceRegionsStore.getState().selectCategory("differs");
+    await useVarianceRegionsStore.getState().loadMore();
+
+    // Wired only into the request body, this assertion is the one that fails:
+    // `differs` never reaches the endpoint.
+    expect(
+      useVarianceRegionsStore.getState().regions.map((r) => r.anchor_offset),
+    ).toEqual([100]);
+  });
+
+  it("orders the window-derived differs rows by length, both ways", async () => {
+    seedWorkspace("raw");
+    seedRuns([
+      [100, 108], // 8 bytes
+      [200, 232], // 32 bytes
+      [300, 316], // 16 bytes
+    ]);
+    useVarianceRegionsStore.getState().selectCategory("differs");
+
+    await useVarianceRegionsStore.getState().loadMore();
+    expect(
+      useVarianceRegionsStore.getState().regions.map((r) => r.length),
+    ).toEqual([8, 32, 16]);
+
+    useVarianceRegionsStore.getState().setSort("length_desc");
+    await useVarianceRegionsStore.getState().loadMore();
+    expect(
+      useVarianceRegionsStore.getState().regions.map((r) => r.length),
+    ).toEqual([32, 16, 8]);
+
+    useVarianceRegionsStore.getState().setSort("length_asc");
+    await useVarianceRegionsStore.getState().loadMore();
+    expect(
+      useVarianceRegionsStore.getState().regions.map((r) => r.length),
+    ).toEqual([8, 16, 32]);
   });
 });

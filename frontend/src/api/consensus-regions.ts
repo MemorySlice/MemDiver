@@ -83,6 +83,21 @@ export const NON_INVARIANT_UNION = "non_invariant" as const;
 /** A class filter entry: a class name, or the union alias. */
 export type RegionClassSpec = ByteClassName | typeof NON_INVARIANT_UNION;
 
+/**
+ * The order one page of regions comes back in.
+ *
+ * `"offset"` is the historical order and the server default. The two length
+ * orders exist for the question this route is actually asked — "show me the
+ * 32-byte runs first" — and they change what the CURSOR counts in: under
+ * `"offset"` `next_after` is a slab offset, under either length sort it is a
+ * rank index. Neither is a number a client may interpret; see
+ * {@link NO_HONEST_ANSWER}.
+ */
+export type RegionSort = "offset" | "length_desc" | "length_asc";
+
+/** Server default (`api.models.ConsensusRegionsRequest.sort`). */
+export const DEFAULT_REGION_SORT: RegionSort = "offset";
+
 /** Server default (`api.models.ConsensusRegionsRequest.min_length`). */
 export const DEFAULT_REGION_MIN_LENGTH = 8;
 
@@ -101,6 +116,12 @@ export const MAX_REGIONS_PER_PAGE = 500;
  *   - `next_after: -1`   -> end of list (no further page)
  *   - `anchor_*: -1`     -> this anchor coordinate could not be resolved
  * It is never a plausible value, which is the whole point: a `0` would be.
+ *
+ * `-1` is also the ONLY value of a cursor a client may reason about. Since
+ * {@link RegionSort}, the cursor's UNIT follows `sort`: a slab offset under
+ * `"offset"`, a RANK INDEX into the sorted list under either length sort. Treat
+ * it as OPAQUE — hand `next_after` straight back as the next `after`, compare
+ * it to `-1`, and never do arithmetic on it or render it as an address.
  */
 export const NO_HONEST_ANSWER = -1;
 
@@ -128,7 +149,16 @@ export interface ConsensusRegionsRequest {
   min_length?: number;
   /** Longest region to report; `0` is unbounded (backend contract). */
   max_length?: number;
-  /** Exclusive slab-offset cursor — the previous page's `next_after`. `-1` starts. */
+  /** Page order. Server default `"offset"`; see {@link RegionSort}. */
+  sort?: RegionSort;
+  /**
+   * Exclusive cursor — the previous page's `next_after` verbatim. `-1` starts.
+   *
+   * OPAQUE. Its unit follows {@link ConsensusRegionsRequest.sort}: a slab
+   * offset under `"offset"`, a rank index into the sorted list under
+   * `"length_desc"` / `"length_asc"`. A client hands it back and compares it to
+   * `-1`; it never adds to it, and never shows it as an offset.
+   */
   after?: number;
   /** Rows per page. `1..500`; outside that the route answers 422, not a clamp. */
   limit?: number;
@@ -228,6 +258,8 @@ export interface ConsensusRegionsResponse {
   union: boolean;
   min_length: number;
   max_length: number;
+  /** The order this page was computed in, echoed. See {@link RegionSort}. */
+  sort: RegionSort;
   /** The cursor this page was asked for, echoed. `-1` = this was page one. */
   after: number;
   /**
@@ -235,6 +267,10 @@ export interface ConsensusRegionsResponse {
    *
    * `-1` here is not "offset zero" and not "unknown": the server sets it only
    * when it actually saw one region past the page. Use {@link hasNextPage}.
+   *
+   * OPAQUE, and its unit follows `sort` — a slab offset under `"offset"`, a
+   * rank index under either length sort. Hand it back as the next `after`;
+   * `-1` is the only comparison a client is entitled to make on it.
    */
   next_after: number;
   /** Size of the WHOLE result set, not of this page. Stated against `returned`. */
@@ -266,6 +302,7 @@ export interface ConsensusRegionsQuery {
   classes?: RegionClassSpec[] | null;
   minLength?: number;
   maxLength?: number;
+  sort?: RegionSort;
   after?: number;
   limit?: number;
   anchorPath?: string | null;
@@ -300,6 +337,7 @@ export function buildConsensusRegionsRequest(
     classes: query.classes ?? null,
     min_length: query.minLength ?? DEFAULT_REGION_MIN_LENGTH,
     max_length: query.maxLength ?? 0,
+    sort: query.sort ?? DEFAULT_REGION_SORT,
     after: query.after ?? REGION_CURSOR_START,
     limit: query.limit ?? DEFAULT_REGIONS_PER_PAGE,
     anchor_view: query.anchorView ?? "va",

@@ -136,12 +136,14 @@ def _cmd_inspect_strings(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect_byte_search(args: argparse.Namespace) -> int:
-    """Find every occurrence of a hex byte pattern."""
+    """Find every occurrence of a byte pattern, in any supported spelling."""
     from memdiver.mcp_server.tools_inspect import search_bytes_result
     machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
         lambda: search_bytes_result(_new_tool_session(), args.dump_path,
                                     args.pattern, view=args.view,
                                     max_results=args.max_results,
+                                    pattern_format=getattr(
+                                        args, "format", "hex"),
                                     **_inspect_key_kwargs(args)))
     return _emit_inspect(machine_payload, args.output)
 

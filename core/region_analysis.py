@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from memdiver.core.entropy import shannon_entropy
+from memdiver.core.needle import parse_needle
+from memdiver.core.service_errors import CapabilityError
 from memdiver.core.strings import extract_strings
 
 logger = logging.getLogger("memdiver.core.region_analysis")
@@ -117,10 +119,16 @@ def find_pattern(
 
 
 def parse_hex_pattern(text: str) -> Optional[bytes]:
-    """Parse hex string ("48 65 6c" or "deadbeef") into bytes, or None."""
-    if not (cleaned := text.strip()):
+    """Parse hex string ("48 65 6c" or "deadbeef") into bytes, or None.
+
+    Delegates to ``core.needle.parse_needle`` so this agrees byte for byte
+    with the search box and with ``locate_key``, but keeps its own
+    ``None``-instead-of-raise contract: callers here treat an unparseable
+    pattern as "no pattern", not as an error to report.
+    """
+    if not text.strip():
         return None
     try:
-        return bytes.fromhex(cleaned.replace(" ", ""))
-    except ValueError:
+        return parse_needle(text, "hex")
+    except CapabilityError:
         return None

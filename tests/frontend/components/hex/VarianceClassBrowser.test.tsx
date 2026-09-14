@@ -326,3 +326,63 @@ describe("VarianceClassBrowser pagination", () => {
     expect(loadMore).toHaveBeenCalled();
   });
 });
+
+/**
+ * The length filter, and the empty state it creates.
+ *
+ * A length filter on a SINGLE class is the harshest query this panel can ask,
+ * and it is the first thing an analyst hunting a 48-byte secret types. The
+ * secret is ~27 key_candidate + 18 pointer + 3 structural bytes, so no
+ * single-class run inside it is anywhere near 48 bytes long: "Key Candidate,
+ * min 32" returns nothing for a secret that is genuinely present. An empty
+ * state that just said "no regions" would let the user conclude the dump is
+ * clean, which is the one wrong conclusion this surface must not help them to.
+ */
+describe("VarianceClassBrowser length filter", () => {
+  function withFilter(minLength: number, maxLength = 0) {
+    act(() => {
+      useVarianceRegionsStore.setState({ minLength, maxLength });
+    });
+  }
+
+  it("renders the filter bar above the list", () => {
+    seed();
+    render(<VarianceClassBrowser />);
+
+    expect(screen.getByTestId("region-filter-bar")).toBeInTheDocument();
+  });
+
+  it("points an empty, size-filtered single-class query at the union chip", () => {
+    seed({ category: "key_candidate", regions: [], total: 0 });
+    withFilter(32);
+    render(<VarianceClassBrowser />);
+
+    const empty = screen.getByTestId("variance-class-browser-empty");
+    expect(empty).toHaveTextContent(/Changing chip/);
+    // The reason, not just the remedy: a user who is not told WHY will read the
+    // empty list as evidence about the dump.
+    expect(empty).toHaveTextContent(/27 key candidate \+ 18 pointer \+ 3 structural/);
+  });
+
+  it("keeps the generic empty state when no size filter is responsible", () => {
+    seed({ category: "key_candidate", regions: [], total: 0 });
+    render(<VarianceClassBrowser />);
+
+    expect(screen.getByTestId("variance-class-browser-empty")).toHaveTextContent(
+      /No region of this class is at least the minimum length/,
+    );
+  });
+
+  it("does not blame the filter for an empty UNION result", () => {
+    seed({ category: "non_invariant", regions: [], total: 0 });
+    withFilter(32, 32);
+    render(<VarianceClassBrowser />);
+
+    // The union IS the remedy the shattered-key note points at, so the
+    // "your filter shattered it, go to Changing" copy has nothing to offer a
+    // user who is already there. The generic line stands instead.
+    const empty = screen.getByTestId("variance-class-browser-empty");
+    expect(empty).not.toHaveTextContent(/harshest query/);
+    expect(empty).toHaveTextContent(/No region of this class is at least the minimum length/);
+  });
+});

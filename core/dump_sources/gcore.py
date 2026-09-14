@@ -39,6 +39,14 @@ class GCoreDumpSource:
     #: ``consensus_va.supports_va_alignment``.
     supports_va_alignment = True
 
+    #: No ``"va"`` projection — see ``_RegionedRawSource`` for the
+    #: reasoning; the PT_LOAD table could support one, but that is a
+    #: separate feature, not an error path.
+    #: Views this source can serve. Read through
+    #: :func:`core.dump_source.supported_views`, never off the Protocol —
+    #: the Protocol is ``runtime_checkable`` and must not grow members.
+    SUPPORTED_VIEWS = ("raw", "vas")
+
     def __init__(self, path: Path):
         self._path = Path(path)
         self._reader = ElfCoreReader(self._path)
@@ -156,14 +164,17 @@ class GCoreDumpSource:
                 break
         return bytes(result)
 
-    def find_all(self, needle: bytes, view: str = "raw") -> List[int]:
+    def find_all(
+        self, needle: bytes, view: str = "raw", limit: int = 0,
+    ) -> List[int]:
         """Locate every occurrence of ``needle`` in the chosen view."""
         self._ensure_open()
         if view == "raw":
-            return _find_all_in_bytes(self._reader_raw_bytes(), needle)
+            return _find_all_in_bytes(self._reader_raw_bytes(), needle, limit)
         if view != "vas":
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
-        return self._find_all_vas(needle)
+        hits = self._find_all_vas(needle)
+        return hits[:limit] if limit else hits
 
     def _reader_raw_bytes(self):
         """Return the live ``mmap`` object for the whole core file.
@@ -312,7 +323,7 @@ class GCoreDumpSource:
 # -- module-local helpers ----------------------------------------------------
 
 
-def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
+def _find_all_in_bytes(data: bytes, needle: bytes, limit: int = 0) -> List[int]:
     if not needle:
         return []
     offsets: List[int] = []
@@ -322,6 +333,8 @@ def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
         if idx == -1:
             break
         offsets.append(idx)
+        if limit and len(offsets) >= limit:
+            break
         start = idx + 1
     return offsets
 

@@ -155,7 +155,14 @@ class ConsensusRegionsRequest(BaseModel):
     classes: list[str] | None = None
     min_length: int = 8
     max_length: int = 0
-    #: Exclusive slab-offset cursor — the previous page's ``next_after``.
+    #: Row order. ``"offset"`` is address order; the length sorts answer "show me
+    #: the biggest key candidates first", which is how an analyst who knows a
+    #: secret's size actually looks for it.
+    sort: Literal["offset", "length_desc", "length_asc"] = "offset"
+    #: EXCLUSIVE cursor — the previous page's ``next_after``. Its UNIT follows
+    #: ``sort``: an aligned-space offset for ``"offset"``, a rank index for the
+    #: sorts. OPAQUE to clients, which only ever hand it back or compare it
+    #: to ``-1``; nothing may do arithmetic on it.
     after: int = -1
     limit: int = Field(DEFAULT_REGIONS_PER_PAGE, ge=1, le=MAX_REGIONS_PER_PAGE)
     #: The dump whose coordinate the jump offsets are expressed in. Spelled

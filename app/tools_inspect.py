@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
-from memdiver.core.dump_source import ViewMode
+from memdiver.core.dump_source import ViewMode, find_all_in, supported_views
+from memdiver.core.needle import detect_needle_format, parse_needle
 from memdiver.core.entropy import compute_entropy_profile, find_high_entropy_regions, shannon_entropy
 from memdiver.core.service_errors import (
     CapabilityError,
@@ -29,6 +30,14 @@ logger = logging.getLogger("memdiver.app.tools_inspect")
 MAX_HEX_LENGTH = 4096
 MAX_ENTROPY_SAMPLES = 200
 MAX_STRING_RESULTS = 500
+#: Hard ceiling on offsets collected by one byte-search scan.
+#:
+#: Not a page size -- `max_results` is that. This is the valve that stops a
+#: one-byte needle over a huge dump from building a list of every match before
+#: the page cap can apply. ~1M ints is ~40 MB, survivable; the searches an
+#: analyst actually runs land orders of magnitude below it, so `count` remains
+#: an exact total in every realistic case (`count_exact` says which).
+MAX_SEARCH_SCAN_HITS = 1_000_000
 # Bytes of read-back overlap between consecutive chunks, so strings that
 # straddle a chunk boundary are still recovered by the next scan. The first
 # TAIL_OVERLAP bytes of every non-initial chunk have already been scanned by
@@ -202,6 +211,37 @@ def _require_msl_path(path_str: str) -> Path:
     return path
 
 
+def _require_supported_view(source: object, view: str) -> None:
+    """Refuse a view this source cannot serve, as a capability error.
+
+    The built-in sources raise a bare ``ValueError`` for a view they do not
+    implement (``"va"`` on gcore/regioned-raw, say). ``_http_inspect`` catches
+    only :class:`CapabilityError`, so that ``ValueError`` escaped the funnel
+    and reached the browser as ``Search failed: 500`` — with nothing telling
+    the operator that the view, not the dump, was the problem.
+
+    This is reachable without anyone typing a search: ``viewMode`` is persisted
+    in ``localStorage``, so opening a gcore dump after using VA on an ``.msl``
+    carries ``view="va"`` straight into the hex endpoints.
+
+    Asks through :func:`supported_views` rather than the source's attribute so
+    a third-party source registered via ``register_dump_source`` — which
+    declares nothing — keeps working on the two views it has always served.
+    """
+    available = supported_views(source)
+    if view in available:
+        return
+    format_name = getattr(source, "format_name", "unknown")
+    raise UnsupportedFormatError(
+        f"view {view!r} is not available for {format_name} dumps",
+        details={
+            "view": view,
+            "format": format_name,
+            "supported_views": list(available),
+        },
+    )
+
+
 def read_hex_result(
     session: ToolSession,
     dump_path: str,
@@ -217,6 +257,9 @@ def read_hex_result(
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
+            # BEFORE size_for(): that call raises a bare ValueError for a view
+            # the source cannot serve, which is the 500 this guard replaces.
+            _require_supported_view(source, view)
             file_size = source.size_for(view)
             format_name = source.format_name
             # Surface a locked/undecryptable keyed view before the offset-bounds
@@ -262,6 +305,9 @@ def read_hex_raw_result(
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
+            # BEFORE size_for(): that call raises a bare ValueError for a view
+            # the source cannot serve, which is the 500 this guard replaces.
+            _require_supported_view(source, view)
             file_size = source.size_for(view)
             format_name = source.format_name
             # Surface a locked/undecryptable keyed view before the offset-bounds
@@ -343,34 +389,65 @@ def search_bytes_result(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    pattern_format: str = "hex",
 ) -> "ServiceResult":
-    """ServiceResult producer for :func:`search_bytes` (hex pattern search)."""
-    normalized = pattern_hex.strip()
-    if normalized[:2].lower() == "0x":
-        normalized = normalized[2:]
-    normalized = "".join(normalized.split())
-    if not normalized:
-        raise CapabilityError("Empty byte pattern")
-    try:
-        needle = bytes.fromhex(normalized)
-    except ValueError:
-        raise CapabilityError(f"Invalid hex byte pattern: {pattern_hex!r}")
-    if not needle:
-        raise CapabilityError("Empty byte pattern")
+    """ServiceResult producer for :func:`search_bytes` (byte pattern search).
+
+    ``pattern_hex`` keeps its historical name but is now the raw pattern TEXT;
+    ``pattern_format`` says how to read it (:data:`core.needle.NEEDLE_FORMATS`).
+    The default stays ``"hex"`` so every existing caller — and every script
+    pinned to this signature — searches exactly the bytes it always did.
+
+    ``"auto"`` is offered for convenience, but is deliberately NOT the default
+    on this layer: an odd-length hex string is an ERROR today and would become
+    a silent text search under ``auto``. The web UI resolves ``auto`` itself
+    and sends a concrete format, because only it can show the resolved bytes
+    before the search runs.
+    """
+    # Resolve BEFORE parsing so the payload can echo the format that was
+    # actually used. Echoing "auto" back would tell the caller only what they
+    # asked, not what they got -- and "what did this actually search for?" is
+    # the whole question a multi-format box has to keep answering.
+    resolved_format = (
+        detect_needle_format(pattern_hex)
+        if pattern_format == "auto" else pattern_format
+    )
+    needle = parse_needle(pattern_hex, resolved_format)
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
+            # BEFORE size_for(): that call raises a bare ValueError for a view
+            # the source cannot serve, which is the 500 this guard replaces.
+            _require_supported_view(source, view)
             file_size = source.size_for(view)
-            offsets = source.find_all(needle, view=view)
+            # Bounded so a SHORT needle cannot OOM the process. The page cap
+            # has always been applied by slicing a list that was already fully
+            # materialised, which is fine for a 32-byte key and fatal for a
+            # one-byte pattern over a multi-gigabyte dump (hundreds of millions
+            # of Python ints). The valve is deliberately far above any real
+            # query, so `count` stays an exact total for every sane search and
+            # only a pathological one is reported as a lower bound.
+            offsets = find_all_in(
+                source, needle, view=view, limit=MAX_SEARCH_SCAN_HITS)
+            count_exact = len(offsets) < MAX_SEARCH_SCAN_HITS
             page = offsets[cursor:cursor + max_results]
             truncated = len(offsets) > cursor + max_results
             next_cursor = cursor + max_results if truncated else 0
             payload = {
+                # The RESOLVED bytes, whatever spelling arrived. For a text or
+                # base64 needle this is the only place the caller can see what
+                # was actually searched for.
                 "pattern_hex": needle.hex(),
+                "pattern_format": resolved_format,
+                "pattern_format_requested": pattern_format,
                 "pattern_len": len(needle),
                 "offsets": page,
+                # A LOWER BOUND when `count_exact` is false: the scan stopped
+                # at the valve, so saying "N hits" flatly would be a claim the
+                # search never checked.
                 "count": len(offsets),
+                "count_exact": count_exact,
                 "truncated": truncated,
                 "next_cursor": next_cursor,
                 "view": view,
@@ -927,6 +1004,9 @@ def analyze_region_result(
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
+            # BEFORE size_for(): that call raises a bare ValueError for a view
+            # the source cannot serve, which is the 500 this guard replaces.
+            _require_supported_view(source, view)
             file_size = source.size_for(view)
             if offset < 0 or offset >= file_size:
                 raise OffsetOutOfRangeError(

@@ -36,6 +36,7 @@ import { create } from "zustand";
 
 import {
   DEFAULT_REGION_MIN_LENGTH,
+  DEFAULT_REGION_SORT,
   DEFAULT_REGIONS_PER_PAGE,
   NO_HONEST_ANSWER,
   NON_INVARIANT_UNION,
@@ -46,6 +47,7 @@ import {
   type ConsensusRegionsQuery,
   type ConsensusRegionsSource,
   type RegionClassSpec,
+  type RegionSort,
 } from "@/api/consensus-regions";
 import { keysForPaths } from "@/api/aligned-window";
 import { BYTE_CLASSES, type ByteClassName } from "@/api/candidates";
@@ -97,6 +99,17 @@ interface VarianceRegionsState {
   /** `null` = idle: nothing selected, nothing loaded, no request in flight. */
   category: VarianceBrowseCategory | null;
   minLength: number;
+  /**
+   * Longest region to list, in SLAB bytes. `0` = no limit (the wire contract).
+   *
+   * SLAB bytes, deliberately: it is `length` the filter runs against, and a row
+   * whose `anchor_contiguous` is false spans an `msl_layout` page boundary and
+   * therefore renders an `anchorSpan` that is WIDER than the length it was
+   * filtered on. The UI says so rather than quietly reconciling the two.
+   */
+  maxLength: number;
+  /** The order the list comes back in. See `RegionSort`. */
+  sort: RegionSort;
 
   /** Offset-ordered; `loadMore` APPENDS, it never replaces. */
   regions: VarianceRegion[];
@@ -144,6 +157,8 @@ interface VarianceRegionsState {
 
   selectCategory(category: VarianceBrowseCategory | null): void;
   setMinLength(minLength: number): void;
+  setMaxLength(maxLength: number): void;
+  setSort(sort: RegionSort): void;
   loadMore(): Promise<void>;
   jumpToIndex(index: number): void;
   jumpNext(): void;
@@ -186,8 +201,9 @@ function liveContext(): BrowseContext {
  *
  * `viewMode` is the load-bearing term — see the module doc. The other four are
  * the obvious ones: a different build, a different anchor, a different category
- * or a different `min_length` is a different list, and the cursor from one is
- * meaningless in another.
+ * or a different size filter is a different list, and the cursor from one is
+ * meaningless in another — doubly so since `sort`, which changes what the
+ * cursor even counts in (a slab offset, or a rank index).
  *
  * ── The sixth term, and why ONLY `"differs"` carries it ─────────────────────
  * Every other category is enumerated by the server over the whole dump, so the
@@ -209,6 +225,8 @@ function requestKeyFor(
   context: BrowseContext,
   category: VarianceBrowseCategory,
   minLength: number,
+  maxLength: number,
+  sort: RegionSort,
 ): string {
   return [
     context.consensusId ?? selectionKey(context.paths),
@@ -216,6 +234,8 @@ function requestKeyFor(
     context.viewMode,
     category,
     minLength,
+    maxLength,
+    sort,
     category === "differs" ? context.windowFingerprint : "-",
   ].join("|");
 }
@@ -233,8 +253,10 @@ function requestKeyFor(
 export function liveRequestKey(
   category: VarianceBrowseCategory,
   minLength: number,
+  maxLength: number,
+  sort: RegionSort,
 ): string {
-  return requestKeyFor(liveContext(), category, minLength);
+  return requestKeyFor(liveContext(), category, minLength, maxLength, sort);
 }
 
 /**
@@ -335,23 +357,54 @@ function differsRow(
 }
 
 /**
- * Every cross-dump disagreement run of at least `minLength` bytes that is
- * VISIBLE IN THE LOADED WINDOW.
+ * Order window-derived rows the way the server would order a page.
+ *
+ * `"differs"` is the one category the endpoint never sees, so the size filter
+ * and the sort have to be applied HERE or the controls are silently inert on
+ * exactly the category an analyst reaches for first. `"offset"` needs no work:
+ * the walk below emits runs in ascending offset by construction.
+ *
+ * Ties break by offset so the list is deterministic rather than merely stable —
+ * a window full of 8-byte runs is the normal case, not the exotic one.
+ */
+function sortRegions(rows: VarianceRegion[], sort: RegionSort): VarianceRegion[] {
+  if (sort === DEFAULT_REGION_SORT) return rows;
+  const direction = sort === "length_desc" ? -1 : 1;
+  return rows.slice().sort((a, b) =>
+    a.length === b.length
+      ? a.anchor_offset - b.anchor_offset
+      : direction * (a.length - b.length),
+  );
+}
+
+/**
+ * Every cross-dump disagreement run within `[minLength, maxLength]` bytes that
+ * is VISIBLE IN THE LOADED WINDOW, in `sort` order.
  *
  * Walks only the chunks `multi-hex-store` holds under its live identity, and
  * carries a run across a chunk boundary only when the next chunk is actually
  * adjacent — a gap in the loaded set is a gap in knowledge, not a run of
  * agreement.
+ *
+ * `maxLength === 0` is NO LIMIT, the same spelling the wire uses, so the one
+ * value an analyst types to mean "any size" means the same thing on both sides.
  */
-function differsRegionsInWindow(minLength: number): VarianceRegion[] {
+function differsRegionsInWindow(
+  minLength: number,
+  maxLength: number,
+  sort: RegionSort,
+): VarianceRegion[] {
   const cache = useMultiHexStore.getState();
   const rows: VarianceRegion[] = [];
   let runStart = -1;
   let previousEnd = -1;
 
   const close = (end: number) => {
-    if (runStart >= 0 && end - runStart >= minLength) {
-      rows.push(differsRow(cache, runStart, end));
+    if (runStart >= 0) {
+      const length = end - runStart;
+      const withinFloor = length >= minLength;
+      const withinCeiling = maxLength === 0 || length <= maxLength;
+      if (withinFloor && withinCeiling) rows.push(differsRow(cache, runStart, end));
     }
     runStart = -1;
   };
@@ -381,12 +434,14 @@ function differsRegionsInWindow(minLength: number): VarianceRegion[] {
     previousEnd = chunkEnd;
   }
   close(previousEnd);
-  return rows;
+  return sortRegions(rows, sort);
 }
 
 const IDLE = {
   category: null,
   minLength: DEFAULT_REGION_MIN_LENGTH,
+  maxLength: 0,
+  sort: DEFAULT_REGION_SORT,
   regions: [] as VarianceRegion[],
   total: 0,
   nextAfter: REGION_CURSOR_START,
@@ -400,7 +455,8 @@ const IDLE = {
 } satisfies Partial<VarianceRegionsState>;
 
 /**
- * The list-only half of a fresh query: keeps `category` / `minLength`.
+ * The list-only half of a fresh query: keeps `category` and the whole filter
+ * (`minLength` / `maxLength` / `sort`).
  *
  * `loading: false` belongs HERE rather than at each call site, and its absence
  * was a real wedge. Every caller of this is RE-KEYING — the rows it drops
@@ -456,8 +512,9 @@ let latestGeneration = 0;
 /**
  * Invalidate whatever is in flight and return the generation that replaces it.
  *
- * Called by every re-key path (`selectCategory`, `setMinLength`, `reset`) as
- * well as by `loadMore` itself, so "the newest request wins" is stated once.
+ * Called by every re-key path (`selectCategory`, the three filter setters,
+ * `reset`) as well as by `loadMore` itself, so "the newest request wins" is
+ * stated once.
  */
 function nextGeneration(): number {
   latestGeneration += 1;
@@ -483,7 +540,10 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     // same `requestKey` and the list shows page one twice. See `nextGeneration`.
     nextGeneration();
     if (category === null) {
-      set({ ...IDLE, minLength: get().minLength });
+      // The FILTER survives an idle: it is the analyst's question ("32-byte
+      // runs, longest first"), not a property of the category they left.
+      const { minLength, maxLength, sort } = get();
+      set({ ...IDLE, minLength, maxLength, sort });
       return;
     }
     // `loading: false` comes from `clearedPage` — see its doc.
@@ -504,19 +564,43 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     set({ ...clearedPage(), minLength: next, requestKey: null });
   },
 
+  /** `0` is NO LIMIT, not "zero-length regions". Same contract as the wire. */
+  setMaxLength: (maxLength) => {
+    const next = Math.max(0, Math.floor(maxLength));
+    if (get().maxLength === next) return;
+    nextGeneration();
+    // Same reason as `setMinLength`: a changed size filter is a different list,
+    // and `max_length` is a term of `requestKey`.
+    set({ ...clearedPage(), maxLength: next, requestKey: null });
+  },
+
+  /**
+   * Re-order the list.
+   *
+   * The page is DROPPED rather than re-sorted client-side. Sorting the loaded
+   * rows would order page one of an offset-ordered list and call it "longest
+   * first" — the longest region in the dump is almost never in the first 200
+   * rows. It would also invalidate `nextAfter`, whose unit follows `sort`.
+   */
+  setSort: (sort) => {
+    if (get().sort === sort) return;
+    nextGeneration();
+    set({ ...clearedPage(), sort, requestKey: null });
+  },
+
   loadMore: async () => {
-    const { category, minLength, loading } = get();
+    const { category, minLength, maxLength, sort, loading } = get();
     if (category === null || loading) return;
 
     const context = liveContext();
-    const key = requestKeyFor(context, category, minLength);
+    const key = requestKeyFor(context, category, minLength, maxLength, sort);
 
     // `"differs"` never reaches the endpoint. There is no server-side
     // whole-dump enumeration to page through, so "more" means "recompute over
     // whatever the byte cache now holds" — which is also why it is idempotent
     // and cheap to call again on every window move.
     if (category === "differs") {
-      const regions = differsRegionsInWindow(minLength);
+      const regions = differsRegionsInWindow(minLength, maxLength, sort);
       set({
         ...clearedPage(),
         regions,
@@ -563,6 +647,8 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     const query: ConsensusRegionsQuery = {
       classes: classesFor(category),
       minLength,
+      maxLength,
+      sort,
       after,
       limit: DEFAULT_REGIONS_PER_PAGE,
       anchorPath: context.anchorPath,

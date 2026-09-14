@@ -284,6 +284,7 @@ def _cmd_consensus_regions(args: argparse.Namespace) -> int:
         classes=args.classes,
         min_length=args.min_length,
         max_length=args.max_length,
+        sort=args.sort,
         after=args.after,
         limit=args.limit,
         anchor_path=args.anchor_dump,

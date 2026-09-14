@@ -275,3 +275,125 @@ def test_cmd_inspect_dispatch_unknown_action(capsys):
     rc = _cmd_inspect(argparse.Namespace(inspect_action=None))
     assert rc == 1
     assert "pick an action" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# byte-search --format (multi-format needles)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def text_dump(tmp_path) -> Path:
+    """A raw dump with an ASCII token at a known offset (8)."""
+    p = tmp_path / "token.dump"
+    p.write_bytes(b"\x00" * 8 + b"SECRET" + b"\x00" * 8)
+    return p
+
+
+def test_parser_inspect_byte_search_accepts_every_format():
+    """``--format`` is wired to ``NEEDLE_FORMATS``, not a hand-copied list.
+
+    Parametrising over the constant is what keeps the CLI from drifting behind
+    the other three surfaces: a format added to the shared tuple but not to the
+    parser would make this fail instead of silently being CLI-unreachable.
+    """
+    from memdiver.core.needle import NEEDLE_FORMATS
+
+    parser = _build_parser()
+    for fmt in NEEDLE_FORMATS:
+        args = parser.parse_args([
+            "inspect", "byte-search", "/tmp/x.msl", "--pattern", "SECRET",
+            "--format", fmt,
+        ])
+        assert args.format == fmt
+
+
+def test_parser_inspect_byte_search_format_defaults_to_hex():
+    """The default is ``hex``, NOT ``auto``: an odd-length hex string is an
+    error on the machine surfaces today, and under ``auto`` it would become a
+    silent text search. A script pinned to this command must keep searching
+    exactly the bytes it always did."""
+    parser = _build_parser()
+    args = parser.parse_args([
+        "inspect", "byte-search", "/tmp/x.msl", "--pattern", "deadbeef",
+    ])
+    assert args.format == "hex"
+
+
+def test_parser_inspect_byte_search_rejects_an_unknown_format():
+    """argparse ``choices`` must reject a near-miss spelling at PARSE time.
+
+    ``--format=utf16`` failing loudly with the valid list is the difference
+    between a one-character fix and a search that quietly ran as something
+    else.
+    """
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "inspect", "byte-search", "/tmp/x.msl", "--pattern", "SECRET",
+            "--format", "utf16",
+        ])
+
+
+def test_cmd_inspect_byte_search_text_format(tmp_path, text_dump):
+    """The handler forwards ``--format`` to the producer.
+
+    Asserting the RESOLVED ``pattern_hex`` (not just a hit count) is what
+    proves the text was encoded rather than parsed as hex: ``SECRET`` is not
+    valid hex at all, so a handler that dropped the format would error instead
+    of returning these bytes.
+    """
+    from memdiver.cli import _cmd_inspect_byte_search
+
+    out = tmp_path / "search.json"
+    args = argparse.Namespace(
+        dump_path=str(text_dump), pattern="SECRET", format="text",
+        view="raw", max_results=500, output=str(out),
+    )
+    rc = _cmd_inspect_byte_search(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["pattern_hex"] == b"SECRET".hex()
+    assert data["pattern_format"] == "text"
+    assert data["offsets"] == [8]
+
+
+def test_cmd_inspect_byte_search_without_a_format_attribute(tmp_path, text_dump):
+    """A hand-built ``Namespace`` with NO ``format`` attribute still works.
+
+    The handler reads it with ``getattr(args, "format", "hex")`` for exactly
+    this reason: the CLI is also called programmatically (and by older tests)
+    with a Namespace assembled by hand, and a bare ``args.format`` would turn
+    every such caller into an AttributeError crash the moment the flag was
+    added. The fallback must be ``hex``, so the pre-flag behaviour is what they
+    get.
+    """
+    from memdiver.cli import _cmd_inspect_byte_search
+
+    out = tmp_path / "search_nofmt.json"
+    args = argparse.Namespace(
+        dump_path=str(text_dump), pattern="534543524554",
+        view="raw", max_results=500, output=str(out),
+    )
+    assert not hasattr(args, "format")
+    rc = _cmd_inspect_byte_search(args)
+    assert rc == 0
+    data = json.loads(out.read_text())
+    assert data["pattern_format"] == "hex"
+    assert data["pattern_hex"] == b"SECRET".hex()
+    assert data["offsets"] == [8]
+
+
+def test_cmd_inspect_byte_search_invalid_pattern_exits_nonzero(tmp_path, text_dump, capsys):
+    """A bad needle is a caller error: an error dict on stdout and a non-zero
+    exit code, matching every other inspect handler — not a traceback."""
+    from memdiver.cli import _cmd_inspect_byte_search
+
+    args = argparse.Namespace(
+        dump_path=str(text_dump), pattern="abc", format="hex",
+        view="raw", max_results=500, output=None,
+    )
+    rc = _cmd_inspect_byte_search(args)
+    assert rc == 1
+    data = json.loads(capsys.readouterr().out)
+    assert "error" in data

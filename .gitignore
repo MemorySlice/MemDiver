@@ -34,6 +34,12 @@ env/
 !/package-lock.json
 !/frontend/package.json
 !/tests/e2e/package.json
+# And the shared needle-parser vectors: core/needle.py and
+# frontend/src/utils/needle.ts are the same contract written in two languages,
+# and this table is the ONLY thing that fails when they drift. Untracked, it
+# would pass every local test and then be missing for everyone else -- the
+# candidates.json failure above, repeated.
+!/tests/fixtures/needle_vectors.json
 .DS_Store
 .dSYM/
 *.dSYM/

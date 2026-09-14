@@ -115,6 +115,26 @@ describe("VarianceClassChips", () => {
     expect(screen.getByRole("button", { name: /Changing\s+4,656 bytes/ })).toBeInTheDocument();
   });
 
+  /**
+   * The chip count and the list count answer DIFFERENT questions, and once the
+   * Regions panel grew a length filter they can differ by orders of magnitude:
+   * the chip is the whole-build histogram and ignores the filter entirely,
+   * while the list's "n of N shown" counts only what matched. Side by side and
+   * unlabelled, the two read as a contradiction and the user has no way to tell
+   * which one is lying — so the chip says which one it is.
+   */
+  it("says its count is the unfiltered whole-build total", () => {
+    seedCounts();
+    render(<VarianceClassChips />);
+
+    expect(screen.getByTestId("hex-overlay-class-chip-pointer")).toHaveTextContent(
+      "3,400 bytes, unfiltered",
+    );
+    expect(
+      screen.getByTestId("hex-overlay-class-chip-pointer").getAttribute("title"),
+    ).toMatch(/ignores the length filter/);
+  });
+
   it("shows a dash, never a zero, before the histogram has arrived", () => {
     render(<VarianceClassChips />);
 

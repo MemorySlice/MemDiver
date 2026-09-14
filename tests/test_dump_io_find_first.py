@@ -276,6 +276,41 @@ class TestMslDumpSourceFindFirst:
             with pytest.raises(ValueError):
                 src.find_first(b"x", view="garbage")
 
+    def test_agrees_with_find_all_in_the_va_view(self, msl_path):
+        """The "va" view searches through an entirely separate code path
+        (``_find_first_va`` vs ``_find_all_va``, windowed over the captured
+        segments rather than over ``iter_ranges`` chunks), so the agreement
+        contract has to be pinned there independently — the "vas" sweep above
+        would not notice a "va" early-exit that stopped one window short."""
+        with MslDumpSource(msl_path) as src:
+            va_head = src.read_range(0, 8, view="va")
+            sweep_views(src, ["va"], [n for n in (va_head,) if n],
+                        empty_needle=True)
+
+    def test_va_hit_is_a_va_span_offset_not_a_file_offset(self, msl_path):
+        """A "va" hit is an offset into the VA SPAN, not an absolute virtual
+        address and not a VAS offset. All three are plausible integers, so the
+        round-trip through ``read_range(..., view="va")`` is the only thing
+        that can tell them apart."""
+        with MslDumpSource(msl_path) as src:
+            probe = src.read_range(0, 16, view="va")
+            if not probe:
+                pytest.skip("synthetic .msl fixture exposes no captured VA bytes")
+            hit = src.find_first(probe, view="va")
+            assert hit == src.find_all(probe, view="va")[0]
+            assert src.read_range(hit, len(probe), view="va") == probe
+
+    def test_va_miss_and_unopened_source_report_absent(self, msl_path):
+        """No reader means no hits, never a crash — the API layer opens
+        sources lazily, so an unopened source must not turn a presence query
+        into an exception."""
+        with MslDumpSource(msl_path) as src:
+            assert src.find_first(MISSING, view="va") is None
+            assert src.find_all(MISSING, view="va") == []
+        closed = MslDumpSource(msl_path)
+        assert closed.find_first(b"anything", view="va") is None
+        assert closed.find_all(b"anything", view="va") == []
+
 
 @pytest.fixture
 def gcore_path(tmp_path: Path) -> Path:
@@ -500,6 +535,7 @@ class TestFindFirstIn:
             (RawDumpSource(raw_path), None),
             (MslDumpSource(msl_path), "vas"),
             (MslDumpSource(msl_path), "raw"),
+            (MslDumpSource(msl_path), "va"),
             (GCoreDumpSource(gcore_path), "vas"),
             (GCoreDumpSource(gcore_path), "raw"),
             (GdbRawDumpSource(regions_dir / "gdb_raw.bin"), "vas"),

@@ -1,0 +1,249 @@
+{
+  "_comment": [
+    "Shared needle-parser test vectors, read by BOTH tests/test_needle.py and",
+    "tests/frontend/utils/needle.test.ts. core/needle.py and",
+    "frontend/src/utils/needle.ts must agree byte for byte: the web search box",
+    "previews the resolved bytes locally (a round trip per keystroke is not an",
+    "option) while the backend does the real parse, so the two implementations",
+    "are the same contract written twice. This table is what makes a drift",
+    "between them fail a test instead of silently searching for different bytes",
+    "in the preview and in the dump."
+  ],
+  "parse": [
+    {
+      "input": "deadbeef",
+      "format": "hex",
+      "expect_hex": "deadbeef"
+    },
+    {
+      "input": "0xdeadbeef",
+      "format": "hex",
+      "expect_hex": "deadbeef"
+    },
+    {
+      "input": "0XDEADBEEF",
+      "format": "hex",
+      "expect_hex": "deadbeef"
+    },
+    {
+      "input": "de ad be ef",
+      "format": "hex",
+      "expect_hex": "deadbeef"
+    },
+    {
+      "input": " de\tad\nbe ef ",
+      "format": "hex",
+      "expect_hex": "deadbeef"
+    },
+    {
+      "input": "aa",
+      "format": "hex",
+      "expect_hex": "aa"
+    },
+    {
+      "input": "password",
+      "format": "text",
+      "expect_hex": "70617373776f7264"
+    },
+    {
+      "input": "-----BEGIN",
+      "format": "text",
+      "expect_hex": "2d2d2d2d2d424547494e"
+    },
+    {
+      "input": "café",
+      "format": "text",
+      "expect_hex": "636166c3a9"
+    },
+    {
+      "input": "password",
+      "format": "utf16le",
+      "expect_hex": "700061007300730077006f0072006400"
+    },
+    {
+      "input": "AB",
+      "format": "utf16le",
+      "expect_hex": "41004200"
+    },
+    {
+      "input": "aGVsbG8gd29ybGQ=",
+      "format": "base64",
+      "expect_hex": "68656c6c6f20776f726c64"
+    },
+    {
+      "input": "LS0tLS1CRUdJTg==",
+      "format": "base64",
+      "expect_hex": "2d2d2d2d2d424547494e"
+    },
+    {
+      "input": "0x7f9c1234",
+      "format": "u32le",
+      "expect_hex": "34129c7f"
+    },
+    {
+      "input": "0x7f9c1234",
+      "format": "u32be",
+      "expect_hex": "7f9c1234"
+    },
+    {
+      "input": "305419896",
+      "format": "u32le",
+      "expect_hex": "78563412"
+    },
+    {
+      "input": "1",
+      "format": "u64le",
+      "expect_hex": "0100000000000000"
+    },
+    {
+      "input": "1",
+      "format": "u64be",
+      "expect_hex": "0000000000000001"
+    },
+    {
+      "input": "0",
+      "format": "u32be",
+      "expect_hex": "00000000"
+    },
+    {
+      "input": "dead",
+      "format": "auto",
+      "expect_hex": "dead"
+    },
+    {
+      "input": "0xdead",
+      "format": "auto",
+      "expect_hex": "dead"
+    },
+    {
+      "input": "password",
+      "format": "auto",
+      "expect_hex": "70617373776f7264"
+    },
+    {
+      "input": "dea",
+      "format": "auto",
+      "expect_hex": "646561"
+    }
+  ],
+  "detect": [
+    {
+      "input": "dead",
+      "expect": "hex"
+    },
+    {
+      "input": "deadbeef",
+      "expect": "hex"
+    },
+    {
+      "input": "0xDEADBEEF",
+      "expect": "hex"
+    },
+    {
+      "input": "de ad be ef",
+      "expect": "hex"
+    },
+    {
+      "input": "cafe",
+      "expect": "hex"
+    },
+    {
+      "input": "face",
+      "expect": "hex"
+    },
+    {
+      "input": "dea",
+      "expect": "text"
+    },
+    {
+      "input": "password",
+      "expect": "text"
+    },
+    {
+      "input": "Set-Cookie",
+      "expect": "text"
+    },
+    {
+      "input": "-----BEGIN",
+      "expect": "text"
+    },
+    {
+      "input": "12345",
+      "expect": "text"
+    },
+    {
+      "input": "aGVsbG8gd29ybGQxMjM0",
+      "expect": "text"
+    }
+  ],
+  "alternatives": [
+    {
+      "input": "dead",
+      "expect": [
+        "text"
+      ]
+    },
+    {
+      "input": "deadbeef",
+      "expect": [
+        "text"
+      ]
+    },
+    {
+      "input": "password",
+      "expect": []
+    },
+    {
+      "input": "aGVsbG8gd29ybGQxMjM0",
+      "expect": [
+        "base64"
+      ]
+    },
+    {
+      "input": "dea",
+      "expect": []
+    }
+  ],
+  "invalid": [
+    {
+      "input": "dea",
+      "format": "hex",
+      "why": "odd digit count is half a byte"
+    },
+    {
+      "input": "zz",
+      "format": "hex",
+      "why": "not hex digits"
+    },
+    {
+      "input": "",
+      "format": "hex",
+      "why": "empty"
+    },
+    {
+      "input": "   ",
+      "format": "auto",
+      "why": "blank"
+    },
+    {
+      "input": "not!base64!",
+      "format": "base64",
+      "why": "invalid base64 charset"
+    },
+    {
+      "input": "-5",
+      "format": "u32le",
+      "why": "negative"
+    },
+    {
+      "input": "99999999999999999999",
+      "format": "u32le",
+      "why": "does not fit in 4 bytes"
+    },
+    {
+      "input": "abc",
+      "format": "u32le",
+      "why": "not a number"
+    }
+  ]
+}

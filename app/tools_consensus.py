@@ -1507,12 +1507,21 @@ def _region_class_counts(
     }
 
 
+#: The orders :func:`class_regions_from_vector` can serve.
+#:
+#: ``"offset"`` is slab order, the only one whose cursor is a slab offset; the
+#: length sorts page by RANK instead. Kept as one tuple so the producer, the
+#: request model and the CLI choices cannot drift into three vocabularies.
+REGION_SORTS = ("offset", "length_desc", "length_asc")
+
+
 def class_regions_from_vector(
     consensus: ConsensusVector,
     *,
     classes: Optional[Sequence[Any]] = None,
     min_length: int = 8,
     max_length: int = 0,
+    sort: str = "offset",
     after: int = -1,
     limit: int = DEFAULT_REGIONS_PER_PAGE,
     anchor_path: Optional[str] = None,
@@ -1553,8 +1562,15 @@ def class_regions_from_vector(
         is the non-invariant union.
     :param min_length: Shortest region to report, in bytes.
     :param max_length: Longest region to report; 0 is unbounded.
-    :param after: Exclusive slab-offset cursor — pass the previous page's
-        ``next_after``. ``-1`` starts from the beginning.
+    :param sort: ``"offset"`` (slab order, the default), ``"length_desc"``
+        (longest first) or ``"length_asc"``. See the cursor note below.
+    :param after: EXCLUSIVE cursor — pass the previous page's ``next_after``;
+        ``-1`` starts from the beginning. Its UNIT depends on ``sort``: a slab
+        offset for ``"offset"``, a rank index for the length sorts, because
+        rank order and slab order are unrelated and a slab cursor cannot page
+        a ranked list. Treat it as OPAQUE: clients hand it back untouched and
+        only ever compare it to ``-1``, which is what makes the two meanings
+        safe to share one field.
     :param limit: Rows per page, clamped to :data:`MAX_REGIONS_PER_PAGE`.
     :param anchor_path: Dump whose coordinate the jump offsets are in.
     :param anchor_view: That dump's navigable view.
@@ -1572,6 +1588,9 @@ def class_regions_from_vector(
     limit = max(1, min(int(limit), MAX_REGIONS_PER_PAGE))
     min_length = max(1, int(min_length))
     max_length = max(0, int(max_length))
+    if sort not in REGION_SORTS:
+        raise CapabilityError(
+            f"Unknown sort: {sort!r} (expected one of {', '.join(REGION_SORTS)})")
 
     anchor: Dict[str, Any] = {
         "dump_path": anchor_path,
@@ -1608,15 +1627,37 @@ def class_regions_from_vector(
     classifications = consensus.classifications
     rows: List[Dict[str, Any]] = []
     truncated = False
-    for region in consensus.iter_regions(
-        wanted, min_length=min_length, max_length=max_length, after=int(after),
-    ):
-        if len(rows) == limit:
-            # One region past the page: the ONLY honest way to know whether a
-            # next page exists without counting past the cursor again.
-            truncated = True
-            break
-        rows.append(_region_row(region, wanted, classifications, locate))
+    after = int(after)
+    if sort == "offset":
+        for region in consensus.iter_regions(
+            wanted, min_length=min_length, max_length=max_length, after=after,
+        ):
+            if len(rows) == limit:
+                # One region past the page: the ONLY honest way to know whether
+                # a next page exists without counting past the cursor again.
+                truncated = True
+                break
+            rows.append(_region_row(region, wanted, classifications, locate))
+        next_after = int(rows[-1]["slab_start"]) if truncated and rows else -1
+    else:
+        # RANK-ordered page. `after` is the rank of the last row the caller
+        # already has, so the next one starts at `after + 1` — the same
+        # exclusive-cursor contract the slab path uses, in the only unit that
+        # can page a list whose order is unrelated to slab offsets.
+        rank_offset = after + 1 if after >= 0 else 0
+        ranked = consensus.rank_regions_by_length(
+            wanted, min_length=min_length, max_length=max_length,
+            descending=(sort == "length_desc"),
+            offset=rank_offset, limit=limit,
+        )
+        # `rank_regions_by_length` returns one row past the page for exactly
+        # this test, mirroring the slab path's lookahead.
+        truncated = len(ranked) > limit
+        rows = [
+            _region_row(region, wanted, classifications, locate)
+            for region in ranked[:limit]
+        ]
+        next_after = rank_offset + len(rows) - 1 if truncated and rows else -1
 
     return {
         "consensus_id": None,
@@ -1627,8 +1668,9 @@ def class_regions_from_vector(
         "union": len(wanted) > 1,
         "min_length": min_length,
         "max_length": max_length,
-        "after": int(after),
-        "next_after": int(rows[-1]["slab_start"]) if truncated and rows else -1,
+        "sort": sort,
+        "after": after,
+        "next_after": next_after,
         "total": total,
         "returned": len(rows),
         "truncated": truncated,
@@ -1647,6 +1689,7 @@ def class_regions_result(
     classes: Optional[Sequence[Any]] = None,
     min_length: int = 8,
     max_length: int = 0,
+    sort: str = "offset",
     after: int = -1,
     limit: int = DEFAULT_REGIONS_PER_PAGE,
     anchor_path: Optional[str] = None,
@@ -1685,6 +1728,7 @@ def class_regions_result(
         classes=classes,
         min_length=min_length,
         max_length=max_length,
+        sort=sort,
         after=after,
         limit=limit,
         anchor_path=anchor_path,

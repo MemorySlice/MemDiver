@@ -28,6 +28,14 @@ logger = logging.getLogger("memdiver.core.dump_source")
 
 ViewMode = Literal["raw", "vas", "va"]
 
+#: Window size for the ``"va"`` byte search, in bytes.
+#:
+#: Module-global rather than a default argument so a test can shrink it with
+#: ``monkeypatch.setattr`` and exercise the cross-window stitching that a
+#: realistic 8 MiB window would never reach. Read INSIDE the search, never
+#: bound at import time.
+_VA_SEARCH_CHUNK = 8 * 1024 * 1024
+
 
 @runtime_checkable
 class DumpSource(Protocol):
@@ -146,10 +154,12 @@ class DumpSource(Protocol):
         ...
 
 
-def _find_all_in_bytes(data: bytes, needle: bytes) -> List[int]:
+def _find_all_in_bytes(
+    data: bytes, needle: bytes, limit: int = 0,
+) -> List[int]:
     """Overlapping-aware byte search over *data* (delegates to the shared
     :func:`core.dump_io.find_all_offsets` helper used by ``DumpReader``)."""
-    return find_all_offsets(data, needle)
+    return find_all_offsets(data, needle, limit)
 
 
 def _find_first_in_bytes(data: bytes, needle: bytes) -> Optional[int]:
@@ -177,6 +187,26 @@ def _append_merged_run(
         runs[-1] = (prev_start, prev_len + length)
     else:
         runs.append((start, length))
+
+
+def supported_views(source: Any) -> Tuple[str, ...]:
+    """Which views *source* can actually serve, tolerant of older sources.
+
+    Reads the source's ``SUPPORTED_VIEWS`` class attribute when it has one and
+    falls back to ``("raw", "vas")`` — the two views every source has always
+    served — when it does not.
+
+    This is a module-level helper for the same reason :func:`find_first_in` is:
+    the :class:`DumpSource` Protocol is ``runtime_checkable``, so adding a
+    member to it would instantly break ``isinstance(obj, DumpSource)`` for
+    every duck-typed source registered via :func:`register_dump_source`. The
+    ``getattr`` fallback keeps those sources working and still lets a caller
+    ask the question before it hands a view to a source that cannot serve it —
+    the difference between a 400 that names the problem and a bare
+    ``ValueError`` escaping as a 500.
+    """
+    declared = getattr(source, "SUPPORTED_VIEWS", None)
+    return tuple(declared) if declared else ("raw", "vas")
 
 
 def find_first_in(
@@ -208,6 +238,33 @@ def find_first_in(
         return finder(needle, **kwargs)
     hits = source.find_all(needle, **kwargs)
     return hits[0] if hits else None
+
+
+def find_all_in(
+    source: Any, needle: bytes, view: "str | None" = None, limit: int = 0,
+) -> List[int]:
+    """:meth:`DumpSource.find_all`, with an optional collection cap.
+
+    ``limit`` bounds how many offsets are collected, so a caller that only
+    needs one page cannot be made to build a list of every hit first. That
+    matters most for a SHORT needle: a one-byte pattern over a multi-gigabyte
+    dump has hundreds of millions of matches, and the page cap has always been
+    applied by slicing a list that was already fully materialised.
+
+    Tolerant for the same reason :func:`find_first_in` is: the
+    :class:`DumpSource` Protocol is ``runtime_checkable``, so ``limit`` cannot
+    be added to it without breaking ``isinstance`` for every duck-typed source
+    registered via :func:`register_dump_source`. A source that does not accept
+    the argument is called without it and returns everything — correct, just
+    not bounded.
+    """
+    kwargs: Dict[str, Any] = {} if view is None else {"view": view}
+    if limit:
+        try:
+            return source.find_all(needle, limit=limit, **kwargs)
+        except TypeError:
+            pass  # older//third-party source: no `limit` parameter
+    return source.find_all(needle, **kwargs)
 
 
 def read_range_with_validity(
@@ -250,6 +307,13 @@ def read_range_with_validity(
 
 class RawDumpSource:
     """DumpSource for raw binary .dump files."""
+
+    #: A flat dump has no region table, so all three views coincide —
+    #: ``_check_view`` already accepts ``"va"`` as an alias of ``"raw"``.
+    #: Views this source can serve. Read through
+    #: :func:`core.dump_source.supported_views`, never off the Protocol —
+    #: the Protocol is ``runtime_checkable`` and must not grow members.
+    SUPPORTED_VIEWS = ("raw", "vas", "va")
 
     def __init__(self, path: Path):
         self._path = path
@@ -321,10 +385,12 @@ class RawDumpSource:
         self._ensure_open()
         return self._reader.read_range(offset, length)
 
-    def find_all(self, needle: bytes, view: ViewMode = "raw") -> List[int]:
+    def find_all(
+        self, needle: bytes, view: ViewMode = "raw", limit: int = 0,
+    ) -> List[int]:
         self._check_view(view)
         self._ensure_open()
-        return self._reader.find_all(needle)
+        return self._reader.find_all(needle, limit)
 
     def find_first(self, needle: bytes, view: ViewMode = "raw") -> Optional[int]:
         self._check_view(view)
@@ -343,12 +409,28 @@ class RawDumpSource:
 class MslDumpSource:
     """DumpSource for Memory Slice (.msl) files.
 
-    Exposes two byte views of the same file: ``view="raw"`` reads the
+    Exposes three byte views of the same file: ``view="raw"`` reads the
     .msl container bytes directly (file/block headers, payloads, hash
-    chain), and ``view="vas"`` reads a flattened projection of captured
-    memory regions ordered by base address. Scanners default to VAS;
+    chain), ``view="vas"`` reads a flattened projection of captured
+    memory regions ordered by base address, and ``view="va"`` serves the
+    sparse full virtual-address span on demand. Scanners default to VAS;
     UI endpoints pass ``view="raw"`` to inspect the container.
+
+    SEARCHING THE ``"va"`` VIEW. That view is PADDED — gaps, FAILED and
+    UNMAPPED pages and truncated run tails are all synthesized ``0x00``
+    (see :meth:`_read_range_va`) — and its span can be terabytes wide, so
+    it is neither materialized nor scanned directly. :meth:`find_all` and
+    :meth:`find_first` confine themselves to
+    :meth:`_captured_va_segments` and match only bytes the dump really
+    captured, so a search for a run of zeroes can never come back with
+    padding offsets dressed up as findings. Offsets are VA-span-relative,
+    not absolute VAs.
     """
+
+    #: Views this source can serve. Read through
+    #: :func:`core.dump_source.supported_views`, never off the Protocol —
+    #: the Protocol is ``runtime_checkable`` and must not grow members.
+    SUPPORTED_VIEWS = ("raw", "vas", "va")
 
     def __init__(self, path: Path, *,
                  key: "bytes | None" = None,
@@ -501,13 +583,19 @@ class MslDumpSource:
     def _require_vas(view: ViewMode) -> None:
         """Defensive guard for the else-branch of view dispatch.
 
-        The public API is typed `ViewMode = Literal["raw", "vas"]`, but
-        dynamic callers can still pass a bad value at runtime. Rather
-        than silently executing the VAS branch for `view="garbage"`,
-        surface the error.
+        The public API is typed `ViewMode = Literal["raw", "vas", "va"]`,
+        and "raw"/"va" are dispatched by the callers before they reach
+        here, so anything left is a genuinely bad value from a dynamic
+        caller. Rather than silently executing the VAS branch for
+        `view="garbage"`, surface the error.
+
+        Stays a `ValueError` on purpose: this is a programming error, not
+        a capability gap. A view a source simply cannot serve is reported
+        by `app.tools_inspect._require_supported_view` as a clean 400.
         """
         if view != "vas":
-            raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
+            raise ValueError(
+                f"Unknown view: {view!r} (expected 'raw', 'vas' or 'va')")
 
     def open(self) -> None:
         from memdiver.msl.reader import MslReader
@@ -677,32 +765,158 @@ class MslDumpSource:
         """
         return self.read_range_valid(offset, length, view="va")[0]
 
-    def find_all(self, needle: bytes, view: ViewMode = "vas") -> List[int]:
+    def _captured_va_segments(self) -> List[Tuple[int, int]]:
+        """Maximal ``(va_start, length)`` runs of genuinely CAPTURED VA space.
+
+        The ``"va"`` view is sparse and synthesized: :meth:`_read_range_va`
+        zero-fills and copies only the captured runs in, so gaps, FAILED and
+        UNMAPPED pages and truncated run tails are all manufactured ``0x00``.
+        A search that scanned that projection would report hits in bytes the
+        dump never captured — a fabricated finding, and the worst answer a
+        forensics tool can give. This is the index that confines the scan.
+
+        Clamped by ``run.avail``, NOT ``run.length``, for the same reason
+        :meth:`read_range_valid` clamps there: ``avail`` is what the container
+        really holds, so a truncated run's tail is filler like any other.
+
+        Runs that ABUT or overlap are merged, because in VA space those bytes
+        genuinely are contiguous — a secret straddling two adjacent captured
+        heap pages is a real secret, and refusing to join them would lose it.
+        Runs separated by a GAP are never merged, because that joint would be
+        two unrelated byte ranges spliced together, i.e. a match that does not
+        exist in the process. That predicate is the whole distinction.
+        """
+        index = self._run_index()
+        if index is None:
+            return []
+        span_start, _span_size = self._va_span()
+        segments: List[Tuple[int, int]] = []
+        seg_start = -1
+        seg_end = -1
+        for run in index.by_va:  # ascending by va_start
+            if run.avail <= 0:
+                continue
+            run_end = run.va_start + run.avail
+            if seg_start < 0:
+                seg_start, seg_end = run.va_start, run_end
+            elif run.va_start <= seg_end:
+                # Abutting or overlapping: extend. `max` matters because
+                # duplicate/overlapping VA regions are possible and a shorter
+                # later run must not shrink the segment.
+                seg_end = max(seg_end, run_end)
+            else:
+                segments.append((seg_start - span_start, seg_end - seg_start))
+                seg_start, seg_end = run.va_start, run_end
+        if seg_start >= 0:
+            segments.append((seg_start - span_start, seg_end - seg_start))
+        return segments
+
+    def _iter_va_captured_windows(
+        self, needle_len: int,
+    ) -> Iterator[Tuple[int, bytes]]:
+        """Yield ``(va_view_offset, data)`` for every CAPTURED window.
+
+        Walks :meth:`_captured_va_segments` in bounded windows and re-reads
+        each through :meth:`read_range_valid`, yielding only the byte runs it
+        reports as captured. Going back through ``read_range_valid`` rather
+        than trusting the segment list makes "never match padding" STRUCTURAL:
+        the one function that decides which bytes are captured is the same one
+        that decides which bytes get searched, so the two cannot drift apart.
+
+        Consecutive windows overlap by ``needle_len - 1`` bytes so a needle
+        straddling a window boundary is still found, and the window is never
+        smaller than ``2 * needle_len`` so the walk always advances.
+        """
+        chunk = max(_VA_SEARCH_CHUNK, 2 * needle_len)
+        step = chunk - (needle_len - 1)
+        for seg_offset, seg_length in self._captured_va_segments():
+            pos = 0
+            while pos < seg_length:
+                take = min(chunk, seg_length - pos)
+                base = seg_offset + pos
+                data, runs = self.read_range_valid(base, take, view="va")
+                for rel, rlen in runs:
+                    if rlen >= needle_len:
+                        yield (base + rel, bytes(data[rel:rel + rlen]))
+                if take < chunk:
+                    break
+                pos += step
+
+    def _find_all_va(self, needle: bytes, limit: int = 0) -> List[int]:
+        """Every ``"va"`` view offset of *needle*, in CAPTURED bytes only.
+
+        Offsets are VA-span-relative (the ``"va"`` view's own coordinate),
+        never absolute virtual addresses: the viewer renders a hit as
+        ``va_span_start + offset``, so returning a VA here would scroll it to
+        the wrong row. The invariant is
+        ``read_range(o, len(needle), view="va") == needle`` for every ``o``.
+        """
+        if not needle or self._reader is None:
+            return []
+        out: List[int] = []
+        for window_offset, data in self._iter_va_captured_windows(len(needle)):
+            for idx in find_all_offsets(data, needle):
+                offset = window_offset + idx
+                # Windows overlap by `len(needle) - 1`, so a match cannot be
+                # produced twice — it would not have fit in the earlier one.
+                # Kept as belt and braces, and to absorb any future overlap
+                # between two captured runs reported in the same read.
+                if not out or offset > out[-1]:
+                    out.append(offset)
+                    if limit and len(out) >= limit:
+                        return out
+        return out
+
+    def _find_first_va(self, needle: bytes) -> Optional[int]:
+        """:meth:`_find_all_va` with an early exit (presence query)."""
+        if not needle or self._reader is None:
+            return None
+        for window_offset, data in self._iter_va_captured_windows(len(needle)):
+            idx = find_first_offset(data, needle)
+            if idx is not None:
+                return window_offset + idx
+        return None
+
+    def find_all(
+        self, needle: bytes, view: ViewMode = "vas", limit: int = 0,
+    ) -> List[int]:
         if view == "raw":
-            return self._ensure_raw_reader().find_all(needle)
+            return self._ensure_raw_reader().find_all(needle, limit)
+        if view == "va":
+            return self._find_all_va(needle, limit)
         self._require_vas(view)
         if self._reader is None:
             return []
-        offsets = []
+        offsets: List[int] = []
         flat_offset = 0
         for _vaddr, _length, chunk in self.iter_ranges():
             for idx in _find_all_in_bytes(chunk, needle):
                 offsets.append(flat_offset + idx)
+                if limit and len(offsets) >= limit:
+                    return offsets
             flat_offset += len(chunk)
         return offsets
 
     def find_first(self, needle: bytes, view: ViewMode = "vas") -> Optional[int]:
         """First offset of ``needle`` in *view*, or ``None`` (presence query).
 
-        Mirrors :meth:`find_all` exactly, including its per-captured-run
-        semantics: each run is searched on its own, so a needle straddling the
-        boundary between two captured runs is not reported by either method.
-        The only difference is the early exit - iteration stops at the first
-        hit, so a present secret costs one partial pass rather than a full
-        VAS projection.
+        Mirrors :meth:`find_all` exactly, view for view. The only difference
+        is the early exit - iteration stops at the first hit, so a present
+        secret costs one partial pass rather than a full projection.
+
+        The per-captured-run caveat applies to ``"vas"`` ONLY: that view
+        searches each ``iter_ranges`` chunk on its own, so a needle straddling
+        the boundary between two captured runs is reported by neither method.
+        ``"va"`` deliberately does NOT share that limitation — it joins runs
+        that are adjacent in VA (see :meth:`_captured_va_segments`), because
+        there those bytes really are contiguous. So ``"va"`` can legitimately
+        report MORE hits than ``"vas"``; the two are not a re-coordinate of
+        each other.
         """
         if view == "raw":
             return self._ensure_raw_reader().find_first(needle)
+        if view == "va":
+            return self._find_first_va(needle)
         self._require_vas(view)
         if self._reader is None:
             return None

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from memdiver.core.service_errors import (  # noqa: E402
     CapabilityError,
+    ErrorCategory,
     FileNotFoundServiceError,
     OffsetOutOfRangeError,
     UnsupportedFormatError,
@@ -411,3 +412,395 @@ def test_analyze_region_result_negative_offset_raises(session, region_dump):
     dump_path, _ = region_dump
     with pytest.raises(OffsetOutOfRangeError):
         tools_inspect.analyze_region_result(session, dump_path, -1)
+
+
+# ── view="va" capability gating ───────────────────────────────────────────
+#
+# The "va" (sparse full virtual-address) view is served by .msl only. Every
+# region-backed source raises a bare ``ValueError`` from ``size_for("va")``,
+# and ``_http_inspect`` funnels only ``CapabilityError`` — so before the
+# ``_require_supported_view`` guard that ValueError escaped as a 500 with
+# nothing naming the real problem. This is reachable without anyone typing a
+# search: the frontend persists ``viewMode`` in localStorage, so opening a
+# gcore dump after using VA on an .msl carries ``view="va"`` straight in.
+
+
+@pytest.fixture
+def gcore_dump(tmp_path):
+    """A synthetic ELF ``gcore.core`` — a region-backed source with no "va"."""
+    from tests.fixtures import synth_elf_core
+
+    return str(synth_elf_core.build(tmp_path / "run_0001") / "gcore.core")
+
+
+@pytest.fixture
+def regioned_raw_dump(tmp_path):
+    """A synthetic gdb_raw ``.bin`` + ``.maps`` pair — the OTHER family of
+    region-backed sources, which reaches the guard through a different class
+    (``_RegionedRawSource``) than gcore does."""
+    from tests.fixtures import synth_raw_regions
+
+    return str(synth_raw_regions.build(tmp_path / "regions") / "gdb_raw.bin")
+
+
+_VA_GATED_PRODUCERS = ["read_hex_result", "read_hex_raw_result", "search_bytes_result"]
+
+
+@pytest.mark.parametrize("fn_name", _VA_GATED_PRODUCERS)
+@pytest.mark.parametrize("fixture_name", ["gcore_dump", "regioned_raw_dump"])
+def test_va_view_on_a_region_backed_source_raises_unsupported_format(
+    session, request, fn_name, fixture_name,
+):
+    """Not a bare ValueError — that is the whole point.
+
+    ``pytest.raises(ValueError)`` would pass against the pre-guard behaviour
+    (``UnsupportedFormatError`` is not a ValueError, but the old code's
+    ValueError is), so the assertion has to name the capability type
+    explicitly and additionally deny ValueError, or this test cannot fail for
+    the reason it exists.
+    """
+    dump_path = request.getfixturevalue(fixture_name)
+    fn = getattr(tools_inspect, fn_name)
+    kwargs = {"pattern_hex": "ab"} if fn_name == "search_bytes_result" else {}
+    with pytest.raises(UnsupportedFormatError) as exc_info:
+        fn(session, dump_path, view="va", **kwargs)
+    err = exc_info.value
+    assert not isinstance(err, ValueError), "must be a capability error, not a ValueError"
+    assert err.details["view"] == "va"
+    assert "va" not in err.details["supported_views"]
+    # The operator is told which views DO work, not just that this one did not.
+    assert err.details["supported_views"] == ["raw", "vas"]
+    assert err.details["format"] in ("gcore", "gdb_raw")
+
+
+def test_analyze_region_result_va_view_raises_unsupported_format(session, gcore_dump):
+    """``analyze_region_result`` reads through the same ``size_for(view)`` and
+    is reachable with the same persisted ``viewMode``, so it is gated too."""
+    with pytest.raises(UnsupportedFormatError):
+        tools_inspect.analyze_region_result(session, gcore_dump, 0, view="va")
+
+
+@pytest.mark.parametrize("fn_name", _VA_GATED_PRODUCERS)
+def test_va_view_on_an_msl_is_not_gated(session, plain_msl, fn_name):
+    """The negative control: the guard must reject only what is genuinely
+    unavailable. An .msl declares "va", so the same call has to succeed —
+    otherwise a guard that refused every "va" request would pass the tests
+    above."""
+    fn = getattr(tools_inspect, fn_name)
+    kwargs = {"pattern_hex": "abab"} if fn_name == "search_bytes_result" else {}
+    result = fn(session, plain_msl, view="va", **kwargs)
+    assert result.payload["view"] == "va"
+
+
+def test_search_bytes_result_va_view_returns_real_hits(session, plain_msl):
+    """And the hits are real: ``_write_plain_msl`` fills one 4096-byte region
+    with 0xAB, so a two-byte 0xABAB needle must be found from offset 0 — a
+    producer that merely returned an empty offsets list would satisfy the
+    "not gated" test above."""
+    result = tools_inspect.search_bytes_result(
+        session, plain_msl, pattern_hex="abab", view="va",
+    )
+    offsets = result.payload["offsets"]
+    assert offsets[:3] == [0, 1, 2]
+    assert result.payload["count"] == 4096 - 1
+    assert result.status.resolution == Resolution.OK
+
+
+# ── multi-format needles (pattern_format) ─────────────────────────────────
+#
+# One search box, several spellings. These tests exist because the ONLY thing
+# that was ever hex-specific about a byte search is the parse step: the same
+# dump offset has to be reachable whether the analyst holds the needle as a
+# string, a wide string, hex digits, a base64 blob or a pointer value. A
+# producer that accepted `pattern_format` but ignored it would still pass every
+# pre-existing test in this file, so each format is proven against a byte run
+# planted at a KNOWN offset.
+
+
+_MULTIFORMAT_WORD = "SECRET"
+_MULTIFORMAT_HEX_RUN = "deadbeef"
+#: The same four bytes as ``_MULTIFORMAT_HEX_RUN``, spelled base64.
+_MULTIFORMAT_BASE64 = "3q2+7w=="
+_MULTIFORMAT_U32 = 0x11223344
+
+
+@pytest.fixture
+def multiformat_dump(tmp_path):
+    """A raw dump carrying four needles, each in exactly one spelling.
+
+    Returns ``(path, offsets)`` where ``offsets`` maps a format name to the one
+    offset that format's needle occupies. The chunks are separated by NUL
+    padding and chosen so no needle is a substring of another — an ASCII
+    ``SECRET`` does not occur inside ``S\\0E\\0C\\0R\\0E\\0T\\0`` — which is
+    what lets each assertion name an exact offset instead of "at least one hit".
+    """
+    chunks = [
+        ("pad", b"\x00" * 8),
+        ("text", _MULTIFORMAT_WORD.encode("utf-8")),
+        ("pad", b"\x00" * 8),
+        ("utf16le", _MULTIFORMAT_WORD.encode("utf-16-le")),
+        ("pad", b"\x00" * 8),
+        ("hex", bytes.fromhex(_MULTIFORMAT_HEX_RUN)),
+        ("pad", b"\x00" * 8),
+        ("u32le", _MULTIFORMAT_U32.to_bytes(4, "little")),
+        ("pad", b"\x00" * 8),
+    ]
+    blob = bytearray()
+    offsets = {}
+    for name, chunk in chunks:
+        if name != "pad":
+            offsets[name] = len(blob)
+        blob += chunk
+    dump = tmp_path / "multiformat.dump"
+    dump.write_bytes(bytes(blob))
+    return str(dump), offsets
+
+
+@pytest.mark.parametrize(
+    "fmt, pattern, offset_key",
+    [
+        ("text", _MULTIFORMAT_WORD, "text"),
+        ("utf16le", _MULTIFORMAT_WORD, "utf16le"),
+        ("hex", _MULTIFORMAT_HEX_RUN, "hex"),
+        ("base64", _MULTIFORMAT_BASE64, "hex"),
+        ("u32le", str(_MULTIFORMAT_U32), "u32le"),
+        ("u32le", hex(_MULTIFORMAT_U32), "u32le"),
+    ],
+)
+def test_search_bytes_result_finds_each_format_at_its_planted_offset(
+    session, multiformat_dump, fmt, pattern, offset_key
+):
+    """Every spelling reaches the bytes it names, and only those bytes.
+
+    The ``base64`` row is the cross-check that all six go through ONE parse
+    step: ``3q2+7w==`` and ``deadbeef`` are the same four bytes, so they must
+    land on the same offset. Both integer rows are the same value written two
+    ways (``int(text, 0)``), so a parser that forgot the ``0x`` prefix would
+    fail exactly one of them.
+    """
+    dump_path, offsets = multiformat_dump
+    result = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=pattern, pattern_format=fmt)
+    assert result.payload["offsets"] == [offsets[offset_key]]
+    assert result.payload["count"] == 1
+    assert result.payload["pattern_format"] == fmt
+
+
+def test_search_bytes_result_echoes_the_resolved_bytes_not_the_typed_text(
+    session, multiformat_dump
+):
+    """``pattern_hex`` on the way OUT is the bytes that were searched for.
+
+    For a text, base64 or integer needle this is the only place a caller can
+    see what the box actually looked for, and it is what the hex viewer
+    highlights. Echoing the typed text back instead would be indistinguishable
+    from a correct response for a hex search and wrong for every other format.
+    """
+    dump_path, _ = multiformat_dump
+    result = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex="AB", pattern_format="text")
+    assert result.payload["pattern_hex"] == "4142"
+    assert result.payload["pattern_len"] == 2
+
+
+def test_search_bytes_result_auto_echoes_both_the_request_and_the_resolution(
+    session, multiformat_dump
+):
+    """``auto`` must report what it RESOLVED to, plus what was asked.
+
+    "What did this actually search for?" is the question a multi-format box has
+    to keep answering: echoing ``auto`` back in ``pattern_format`` would tell
+    the caller only what they already typed. ``deadbeef`` is the interesting
+    input because it is valid hex AND a valid word — the two fields together
+    are what make the choice visible (and one-click reversible) instead of a
+    silent guess.
+    """
+    dump_path, offsets = multiformat_dump
+    result = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=_MULTIFORMAT_HEX_RUN,
+        pattern_format="auto")
+    assert result.payload["pattern_format"] == "hex"
+    assert result.payload["pattern_format_requested"] == "auto"
+    assert result.payload["offsets"] == [offsets["hex"]]
+
+    as_text = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=_MULTIFORMAT_WORD, pattern_format="auto")
+    assert as_text.payload["pattern_format"] == "text"
+    assert as_text.payload["pattern_format_requested"] == "auto"
+    assert as_text.payload["offsets"] == [offsets["text"]]
+
+
+def test_search_bytes_result_concrete_format_is_echoed_as_requested(
+    session, multiformat_dump
+):
+    """The negative control for the pair above: with no ``auto`` in play the
+    two fields agree, so a producer that hard-coded ``"auto"`` into either one
+    cannot pass both tests."""
+    dump_path, _ = multiformat_dump
+    result = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=_MULTIFORMAT_WORD, pattern_format="text")
+    assert result.payload["pattern_format"] == "text"
+    assert result.payload["pattern_format_requested"] == "text"
+
+
+def test_search_bytes_result_wrong_format_finds_nothing(session, tmp_path):
+    """Why UTF-16LE earns its place as a separate format.
+
+    An ASCII-only buffer does NOT contain the wide spelling of the same word,
+    and a wide buffer does not contain the narrow one. If the formats collapsed
+    into each other (say, by stripping NULs), an analyst searching a dump for a
+    wide string would get hits that are not there — and, worse, would trust a
+    "0 hits" answer that never asked the right question. Both directions are
+    asserted so a format that matched EVERYTHING would fail too.
+    """
+    dump = tmp_path / "ascii_only.dump"
+    dump.write_bytes(b"\x00" * 8 + b"SECRET" + b"\x00" * 8)
+
+    narrow = tools_inspect.search_bytes_result(
+        session, str(dump), pattern_hex="SECRET", pattern_format="text")
+    assert narrow.payload["offsets"] == [8]
+
+    wide = tools_inspect.search_bytes_result(
+        session, str(dump), pattern_hex="SECRET", pattern_format="utf16le")
+    assert wide.payload["offsets"] == []
+    assert wide.payload["count"] == 0
+    # A real answer, not an error: the search ran and found nothing.
+    assert wide.payload["pattern_format"] == "utf16le"
+    assert wide.status.resolution == Resolution.OK
+
+
+def test_search_bytes_result_count_is_exact_for_a_normal_search(
+    session, multiformat_dump
+):
+    """``count_exact`` is the promise that ``count`` is a TOTAL, not a floor.
+
+    Every sane query must carry ``True``; the flag only drops for a scan that
+    hit the OOM valve (next test). Without this control, hard-wiring it to
+    ``False`` — which would make every hit count in the UI read "1,000,000+" —
+    would go unnoticed.
+    """
+    dump_path, _ = multiformat_dump
+    result = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=_MULTIFORMAT_HEX_RUN)
+    assert result.payload["count_exact"] is True
+
+
+def test_search_bytes_result_count_is_a_lower_bound_at_the_scan_valve(
+    session, tmp_path, monkeypatch
+):
+    """A one-byte needle must not be able to OOM the process.
+
+    ``MAX_SEARCH_SCAN_HITS`` caps how many offsets are COLLECTED (the page cap
+    used to be applied by slicing a list that was already fully materialised —
+    fine for a 32-byte key, fatal for a one-byte pattern over a multi-gigabyte
+    dump). When the valve fires, ``count`` is a lower bound and the payload has
+    to say so, or the UI would report a number the search never checked.
+    The real valve is deliberately far above any real query, so it is lowered
+    here rather than fed a million-hit dump.
+    """
+    monkeypatch.setattr(tools_inspect, "MAX_SEARCH_SCAN_HITS", 4)
+    dump = tmp_path / "many.dump"
+    dump.write_bytes(b"\xaa" * 64)
+    result = tools_inspect.search_bytes_result(
+        session, str(dump), pattern_hex="aa")
+    assert result.payload["count"] == 4
+    assert result.payload["count_exact"] is False
+
+
+# ── invalid needles are capability errors, never crashes ──────────────────
+
+
+@pytest.mark.parametrize(
+    "pattern, fmt, message",
+    [
+        pytest.param("abc", "hex", "odd number of hex digits",
+                     id="odd-length-hex"),
+        pytest.param("not base64!", "base64", "Invalid base64 pattern",
+                     id="bad-base64"),
+        pytest.param("-1", "u32le", "must not be negative",
+                     id="negative-integer"),
+        pytest.param("4294967296", "u32le", "does not fit in 4 bytes",
+                     id="u32-overflow"),
+        pytest.param("18446744073709551616", "u64be", "does not fit in 8 bytes",
+                     id="u64-overflow"),
+        pytest.param("ten", "u32le", "Invalid integer pattern",
+                     id="non-numeric-integer"),
+        pytest.param("41", "rot13", "Unknown pattern format",
+                     id="unknown-format"),
+    ],
+)
+def test_search_bytes_result_invalid_needle_raises_capability_error(
+    session, multiformat_dump, pattern, fmt, message
+):
+    """Bad input is the CALLER's, and every surface already knows how to
+    present a CapabilityError: the web route turns it into a 200 error body,
+    the CLI into a non-zero exit, MCP into an ``{"error": ...}`` dict. A raw
+    ValueError or OverflowError escaping here is a 500 on the web surface and a
+    traceback on the others — so the category is asserted too, not just the
+    type: only INVALID_INPUT tells a UI to blame the search box rather than the
+    dump.
+    """
+    dump_path, _ = multiformat_dump
+    with pytest.raises(CapabilityError, match=message) as exc_info:
+        tools_inspect.search_bytes_result(
+            session, dump_path, pattern_hex=pattern, pattern_format=fmt)
+    assert exc_info.value.category is ErrorCategory.INVALID_INPUT
+
+
+def test_search_bytes_result_unknown_format_names_the_valid_ones(
+    session, multiformat_dump
+):
+    """An operator who typed ``--format=utf16`` must be told the spelling that
+    works, not merely that theirs did not."""
+    dump_path, _ = multiformat_dump
+    with pytest.raises(CapabilityError) as exc_info:
+        tools_inspect.search_bytes_result(
+            session, dump_path, pattern_hex="41", pattern_format="utf16")
+    assert "utf16le" in str(exc_info.value)
+
+
+# ── back-compat: the default is hex, and stays hex ────────────────────────
+
+
+def test_search_bytes_result_defaults_to_hex_not_auto(session, multiformat_dump):
+    """The property that keeps scripts and MCP agents predictable.
+
+    ``auto`` is offered for convenience but is deliberately NOT the default on
+    this layer: under ``auto`` an odd-length hex string — an ERROR today, and
+    almost always a typo — would quietly become a TEXT search that returns a
+    confident "0 hits" for a needle the caller never asked for. Only the web UI
+    resolves ``auto``, because only it can show the resolved bytes first.
+    """
+    dump_path, offsets = multiformat_dump
+    # A pure-hex needle still means hex, with no format argument at all.
+    hex_hit = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=_MULTIFORMAT_HEX_RUN)
+    assert hex_hit.payload["offsets"] == [offsets["hex"]]
+    assert hex_hit.payload["pattern_format"] == "hex"
+    assert hex_hit.payload["pattern_format_requested"] == "hex"
+
+    # And an odd-length one is still an error, NOT a silent text search.
+    with pytest.raises(CapabilityError, match="Invalid hex byte pattern"):
+        tools_inspect.search_bytes_result(session, dump_path, pattern_hex="abc")
+
+
+def test_search_bytes_result_legacy_hex_callers_are_byte_for_byte_unchanged(
+    session, multiformat_dump
+):
+    """A caller that passes only ``pattern_hex`` gets exactly the old payload.
+
+    ``pattern_hex`` kept its historical name when it became the raw pattern
+    TEXT, so every pinned script and every stored query keeps working — the
+    0x-prefix and whitespace spellings included. Comparing an explicit
+    ``pattern_format="hex"`` call against the bare one locks the default in
+    place: flipping it to ``auto`` would not fail the assertions above for this
+    input, but would fail this one the moment the default stopped being hex.
+    """
+    dump_path, offsets = multiformat_dump
+    bare = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex=" 0xDE AD be ef ")
+    explicit = tools_inspect.search_bytes_result(
+        session, dump_path, pattern_hex="deadbeef", pattern_format="hex")
+    assert bare.payload == explicit.payload
+    assert bare.payload["pattern_hex"] == _MULTIFORMAT_HEX_RUN
+    assert bare.payload["offsets"] == [offsets["hex"]]

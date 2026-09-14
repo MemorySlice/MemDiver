@@ -624,12 +624,23 @@ def create_server():
         dump_path: str, pattern_hex: str, view: str = "raw",
         max_results: int = 500, cursor: int = 0,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
-        kem_key_file: Optional[str] = None,
+        kem_key_file: Optional[str] = None, pattern_format: str = "hex",
     ) -> str:
-        """Search a dump for every occurrence of a hex byte pattern."""
+        """Search a dump for every occurrence of a byte pattern.
+
+        ``pattern_hex`` is the raw pattern TEXT (the name is historical) and
+        ``pattern_format`` says how to read it: ``hex`` (default), ``text``
+        (UTF-8), ``utf16le`` for wide strings, ``base64``, or ``u32le`` /
+        ``u32be`` / ``u64le`` / ``u64be`` for a numeric value or pointer.
+        ``auto`` resolves to hex for unambiguous whole-byte hex and to text
+        otherwise. The result echoes the resolved bytes as ``pattern_hex``.
+
+        ``view`` selects the MSL byte source: ``raw``, ``vas``, or ``va``
+        (the sparse full VA span, captured bytes only).
+        """
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.search_bytes_result(
             _session, dump_path, pattern_hex, view, max_results, cursor,
-            key_file, passphrase, kem_key_file,
+            key_file, passphrase, kem_key_file, pattern_format,
         )))
 
     @mcp.tool()
@@ -707,6 +718,7 @@ def create_server():
         classes: Optional[List[str]] = None,
         min_length: int = 8,
         max_length: int = 0,
+        sort: str = "offset",
         after: int = -1,
         limit: int = DEFAULT_REGIONS_PER_PAGE,
         anchor_path: Optional[str] = None,
@@ -734,8 +746,13 @@ def create_server():
         it into 3-byte shards that ``min_length`` then discards.
         ``"non_invariant"`` names the union explicitly.
 
+        ``sort`` is ``"offset"`` (address order), ``"length_desc"`` (longest
+        first) or ``"length_asc"`` — the length orders answer "show me the
+        biggest key candidates first" without walking the whole list.
+
         Page with the CURSOR, not a page number: pass the previous response's
-        ``next_after`` as ``after``. ``total`` sizes the whole result set and
+        ``next_after`` as ``after``. Its unit follows ``sort`` (aligned-space
+        offset vs rank), so treat it as opaque and never compute with it. ``total`` sizes the whole result set and
         ``counts`` is the whole-build class histogram.
 
         ``key_material_by_path`` is ``{dump_path: {key_file|passphrase|
@@ -744,7 +761,7 @@ def create_server():
         """
         return json.dumps(tools_consensus.class_regions_result(
             _session, dump_paths=dump_paths, classes=classes,
-            min_length=min_length, max_length=max_length, after=after,
+            min_length=min_length, max_length=max_length, sort=sort, after=after,
             limit=limit, anchor_path=anchor_path, anchor_view=anchor_view,
             include_anchor_offsets=include_anchor_offsets, normalize=normalize,
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),

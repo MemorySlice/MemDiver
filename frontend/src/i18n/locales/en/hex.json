@@ -34,13 +34,30 @@
     "virtualAddress": "VA",
     "offsetPlaceholder": "0x offset",
     "go": "Go",
-    "patternPlaceholder": "hex pattern e.g. deadbeef",
+    "patternPlaceholder": "search pattern",
     "find": "Find",
     "finding": "…",
     "hits": "{{count}} hits",
     "hitsTruncated": "{{count}}+ hits",
     "clearSearch": "Clear search",
-    "searchHitLabel": "search hit"
+    "searchHitLabel": "search hit",
+    "searchFormatLabel": "Pattern format",
+    "searchFormatTitle": "How to read what you typed. Auto picks hex for whole-byte hex and text otherwise.",
+    "format_auto": "Auto",
+    "format_hex": "Hex",
+    "format_text": "Text",
+    "format_utf16le": "Text (UTF-16LE)",
+    "format_base64": "Base64",
+    "format_u32le": "u32 LE",
+    "format_u32be": "u32 BE",
+    "format_u64le": "u64 LE",
+    "format_u64be": "u64 BE",
+    "previewResolved": "{{format}} · {{count}} B",
+    "previewBytes": "{{hex}}",
+    "alsoValidAs": "also valid as {{format}}",
+    "searchAsInstead": "try {{format}}",
+    "shortNeedleWarning": "⚠ short — many matches",
+    "countInexact": "{{count}}+ hits (scan capped)"
   },
   "viewer": {
     "emptyFile": "Empty file"
@@ -264,9 +281,9 @@
   },
   "regions": {
     "chipsLabel": "Browse bytes by cross-dump class",
-    "chipTitle": "Show every {{label}} region in this dump",
+    "chipTitle": "Show every {{label}} region in this dump. This count is the whole-build total and ignores the length filter — the list below counts only the regions that match it.",
     "countUnknown": "—",
-    "countBytes": "{{value}} bytes",
+    "countBytes": "{{value}} bytes, unfiltered",
     "countInView": "{{value}} in view",
     "category": {
       "changing": "Changing"
@@ -291,7 +308,24 @@
     "noJump": "These regions cannot be jumped to in the current view: the consensus is in raw file offsets while the viewer is addressing virtual addresses, or the anchor dump is still locked. Unlock the anchor, or switch the viewer's coordinate.",
     "differsWindowOnly": "Differs is computed from the bytes currently loaded, not from the whole dump — the count and the list describe the window in view.",
     "mixedClassNote": "Real key material is class-mixed: a planted 48-byte TLS secret classifies as 27 key candidate + 18 pointer + 3 structural bytes, so a single-class query shatters it into shards shorter than the minimum length and can return nothing at all. Changing queries all three non-invariant bands at once and keeps it whole.",
-    "announce": "Region {{index}} of {{total}}: {{label}}, {{bytes}} bytes at {{offset}}"
+    "announce": "Region {{index}} of {{total}}: {{label}}, {{bytes}} bytes at {{offset}}",
+    "emptySizeFiltered": "No {{label}} region matches this length filter. A length filter on a SINGLE class is the harshest query this panel can ask: a real 48-byte TLS secret classifies as about 27 key candidate + 18 pointer + 3 structural bytes, so no single-class run inside it is anywhere near 48 bytes long and the filter removes what is left. Try the Changing chip — it queries all three non-invariant bands at once and keeps the secret whole.",
+    "filter": {
+      "label": "Filter regions by length",
+      "presetsLabel": "Exact length",
+      "preset": "{{value}} B",
+      "presetTitle": "List only regions exactly {{value}} bytes long",
+      "presetAny": "Any",
+      "presetAnyTitle": "Clear the length filter",
+      "minLength": "Min length",
+      "maxLength": "Max length",
+      "maxLengthAny": "0 = no limit",
+      "sort": "Sort",
+      "sortOffset": "Offset",
+      "sortLongest": "Longest first",
+      "sortShortest": "Shortest first",
+      "lengthNote": "Filters use the aligned length — the size compared across dumps. A row marked “spans a page boundary” can list a different size."
+    }
   },
   "varianceLegend": {
     "summary": "What do these colours mean?",

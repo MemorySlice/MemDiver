@@ -22,9 +22,11 @@ from pathlib import Path
 # producer applies.
 # The region-page defaults live with the producer, so `--limit`'s help text
 # and its cap cannot drift from the page the producer actually serves.
+from memdiver.core.needle import NEEDLE_FORMATS
 from memdiver.app.tools_consensus import (
     DEFAULT_REGIONS_PER_PAGE,
     MAX_REGIONS_PER_PAGE,
+    REGION_SORTS,
 )
 from memdiver.app.tools_pipeline import (
     DEFAULT_INCLUDE_HITS,
@@ -252,9 +254,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Shortest region to report (default: 8)")
     cr.add_argument("--max-length", type=int, default=0,
                     help="Longest region to report; 0 = unbounded")
+    cr.add_argument("--sort", choices=list(REGION_SORTS), default="offset",
+                    help="Row order: offset (address order) or by region "
+                         "length (default: offset)")
     cr.add_argument("--after", type=lambda x: int(x, 0), default=-1,
-                    help="Exclusive slab-offset cursor — the previous page's "
-                         "next_after (default: -1, start from the beginning)")
+                    help="Exclusive cursor — the previous page's next_after. "
+                         "An aligned-space offset when --sort=offset, a rank "
+                         "index for the length sorts (default: -1)")
     cr.add_argument("--limit", type=int, default=DEFAULT_REGIONS_PER_PAGE,
                     help=f"Rows per page (default: {DEFAULT_REGIONS_PER_PAGE}, "
                          f"max {MAX_REGIONS_PER_PAGE})")
@@ -1003,8 +1009,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Start offset (hex or decimal, default: 0)")
     ih.add_argument("--length", type=int, default=256,
                     help="Bytes to read (default: 256)")
-    ih.add_argument("--view", choices=["raw", "vas"], default="raw",
-                    help="MSL byte source: raw container or flattened VAS")
+    ih.add_argument("--view", choices=["raw", "vas", "va"], default="raw",
+                    help="MSL byte source: raw container, flattened VAS, or the sparse full VA span (captured bytes only)")
     ih.add_argument("-o", "--output", help="Output JSON file")
     ih.add_argument("-v", "--verbose", action="store_true")
     # inspect entropy
@@ -1033,8 +1039,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="Offset to investigate (hex or decimal, default: 0)")
     ireg.add_argument("--window", type=int, default=64,
                       help="Neighbourhood window size (default: 64)")
-    ireg.add_argument("--view", choices=["raw", "vas"], default="raw",
-                      help="MSL byte source: raw container or flattened VAS")
+    ireg.add_argument("--view", choices=["raw", "vas", "va"], default="raw",
+                      help="MSL byte source: raw container, flattened VAS, or the sparse full VA span (captured bytes only)")
     ireg.add_argument("-o", "--output", help="Output JSON file")
     ireg.add_argument("-v", "--verbose", action="store_true")
     # inspect strings
@@ -1055,12 +1061,19 @@ def _build_parser() -> argparse.ArgumentParser:
     istr.add_argument("-v", "--verbose", action="store_true")
     # inspect byte-search
     ibs = insp_sub.add_parser("byte-search", parents=[dp],
-                              help="Find all occurrences of a hex byte pattern")
+                              help="Find all occurrences of a byte pattern "
+                                   "(hex, text, utf16le, base64 or integer)")
     ibs.add_argument("dump_path", help="Dump or .msl file path")
     ibs.add_argument("--pattern", required=True,
-                     help="Hex byte pattern (optional leading 0x)")
-    ibs.add_argument("--view", choices=["raw", "vas"], default="raw",
-                     help="MSL byte source: raw container or flattened VAS")
+                     help="The pattern text; --format says how to read it")
+    ibs.add_argument("--format", choices=list(NEEDLE_FORMATS), default="hex",
+                     help="How to read --pattern: hex (default, optional "
+                          "leading 0x), text (UTF-8), utf16le for wide "
+                          "strings, base64, or u32le/u32be/u64le/u64be for a "
+                          "value or pointer. auto picks hex for unambiguous "
+                          "whole-byte hex and text otherwise")
+    ibs.add_argument("--view", choices=["raw", "vas", "va"], default="raw",
+                     help="MSL byte source: raw container, flattened VAS, or the sparse full VA span (captured bytes only)")
     ibs.add_argument("--max-results", type=int, default=500,
                      help="Maximum matches to return (default: 500)")
     ibs.add_argument("-o", "--output", help="Output JSON file")

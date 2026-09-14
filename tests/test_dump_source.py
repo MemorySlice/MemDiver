@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
+from memdiver.core import dump_source as dump_source_module
 from memdiver.core.dump_io import find_all_offsets
 from memdiver.core.dump_source import (
     MslDumpSource,
@@ -13,8 +14,10 @@ from memdiver.core.dump_source import (
     _find_all_in_bytes,
     open_dump,
     read_range_with_validity,
+    supported_views,
 )
 from tests.fixtures.generate_msl_aslr_fixtures import (
+    SECRET_OFFSET_IN_PAGE,
     _build_memory_region_mixed,
     generate_aslr_msl_pair,
 )
@@ -695,3 +698,296 @@ class TestCapturedRunIndex:
                 [va for va, _len, _chunk in src.iter_ranges()]
         finally:
             reader.close()
+
+
+# ---------------------------------------------------------------------------
+# find_all / find_first over the "va" view — searching the SPARSE projection
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aslr_run2_msl_path(tmp_path):
+    """Run 2 of the ASLR pair, whose CAPTURED page is 0xFE-filled.
+
+    Run 1 cannot be used to prove "padding is never matched": its captured
+    page is pad byte 0x00, so a search for a run of zeroes there legitimately
+    hits 4050 real captured bytes and the assertion would pass whether or not
+    the padding was excluded. Run 2's pad is 0xFE, so the ONLY zeroes in its
+    "va" projection are the synthesized filler over the FAILED page — which
+    makes a zero needle a direct probe for the bug.
+    """
+    p = tmp_path / "run_2.msl"
+    _run1, run2 = generate_aslr_msl_pair()
+    p.write_bytes(run2)
+    return p
+
+
+#: Pages of untouched VA between the two regions of ``gapped_msl_path``.
+_GAP_PAGES = 3
+
+
+@pytest.fixture
+def gapped_msl_path(tmp_path):
+    """``abutting_msl_path`` with the second region pushed 3 pages away.
+
+    Same two all-CAPTURED one-page regions, same pad bytes, same seam needle —
+    the ONLY difference is that the regions no longer touch in VA. It is the
+    control for ``abutting_msl_path``: together they pin that adjacency, not
+    "two regions in one dump", is what licenses joining captured runs.
+    """
+    timestamp_ns = 1_700_000_000_000_000_000
+    blob = _build_file_header(b"\x22" * 16, timestamp_ns, pid=1234)
+    blob += _build_process_identity()[0]
+    for index, pad in ((0, 0xA1), (1 + _GAP_PAGES, 0xB2)):
+        region, _ = _build_memory_region_mixed(
+            _ABUT_BASE + index * PAGE_SIZE, 1, b"\x00", bytes([pad]) * PAGE_SIZE,
+        )
+        blob += region
+    blob += _build_end_of_capture(timestamp_ns + 1_000_000_000)[0]
+    p = tmp_path / "gapped.msl"
+    p.write_bytes(blob)
+    return p
+
+
+#: The needle that straddles the seam between the two one-page regions of
+#: ``abutting_msl_path`` / ``gapped_msl_path``: the last 4 bytes of the first
+#: region followed by the first 4 of the second.
+_SEAM_NEEDLE = bytes([0xA1]) * 4 + bytes([0xB2]) * 4
+
+
+class TestFindAllVa:
+    """Byte search over ``view="va"`` — the sparse full-VA projection.
+
+    The "va" view is synthesized: gaps, FAILED/UNMAPPED pages and truncated
+    run tails are all manufactured ``0x00`` and its span can be terabytes
+    wide, so it is neither materialized nor scanned end to end. These tests
+    pin the two properties that makes it a usable search surface at all:
+    every reported offset addresses bytes the dump really captured, and no
+    reported offset is an artefact of how the scan was windowed.
+    """
+
+    def test_hits_are_va_span_relative_offsets(self, aslr_run2_msl_path):
+        """The one invariant every consumer depends on.
+
+        The viewer renders a hit as ``va_span_start + offset``, so a hit that
+        were an absolute VA (or a VAS offset) would scroll it to the wrong
+        row — silently, because both are plausible integers. Round-tripping
+        through ``read_range(..., view="va")`` is the only check that catches
+        that, and it must hold for EVERY hit, not just the first.
+        """
+        needle = bytes([0xFE]) * 8
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            hits = src.find_all(needle, view="va")
+            assert hits, "fixture must contain the needle"
+            for offset in hits:
+                assert src.read_range(offset, len(needle), view="va") == needle
+
+    def test_the_secret_is_found_at_its_known_va_offset(self, aslr_run2_msl_path):
+        """A real needle at a known place, so the invariant test above cannot
+        pass on a vacuously empty hit list. The ASLR fixture plants the run's
+        secret at ``SECRET_OFFSET_IN_PAGE`` of the first (captured) page, and
+        that page starts the VA span."""
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            secret = src.read_range(SECRET_OFFSET_IN_PAGE, 32, view="va")
+            assert secret != bytes([0xFE]) * 32, "fixture must plant a secret"
+            assert src.find_all(secret, view="va") == [SECRET_OFFSET_IN_PAGE]
+
+    def test_synthesized_padding_is_never_matched(self, aslr_run2_msl_path):
+        """The finding this whole code path exists to prevent.
+
+        Run 2's captured page is 0xFE-filled, so the only zeroes anywhere in
+        its "va" projection are the filler the view manufactures over the
+        FAILED page. A search for them must come back empty.
+
+        The two guards below are what stop this from passing vacuously: the
+        zeroes ARE readable through ``read_range`` (the view still pads, as it
+        must, to keep VA alignment) and they ARE present in the full padded
+        projection — so a naive implementation that scanned that projection
+        would report them. Without those assertions this test would still pass
+        against an implementation that simply failed to find anything.
+        """
+        zeroes = b"\x00" * 8
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            # Guard 1: the filler is genuinely readable at the FAILED page.
+            assert src.read_range(PAGE_SIZE, 8, view="va") == zeroes
+            # Guard 2: and it genuinely occurs in the full padded projection.
+            projection = src.read_range(0, src.size_for("va"), view="va")
+            assert projection.find(zeroes) == PAGE_SIZE
+            # ...and the search still refuses to report it.
+            assert src.find_all(zeroes, view="va") == []
+            assert src.find_first(zeroes, view="va") is None
+
+    def test_run1_zeroes_are_real_captured_bytes_not_padding(self, aslr_msl_path):
+        """The counterexample that pins the fixture choice above.
+
+        Run 1's pad byte IS 0x00, so its captured page really does hold
+        thousands of zero runs and the search MUST report them. Keeping this
+        beside the run-2 test documents why "zero needle returns []" is only
+        meaningful on run 2 — and guards against someone "fixing" a future
+        failure by blanket-suppressing zero needles.
+        """
+        zeroes = b"\x00" * 8
+        with MslDumpSource(aslr_msl_path) as src:
+            hits = src.find_all(zeroes, view="va")
+            # The captured page is the oracle: every zero run inside it is a
+            # finding, and the secret planted at SECRET_OFFSET_IN_PAGE is the
+            # only thing that interrupts them.
+            captured = src.read_range(0, PAGE_SIZE, view="va")
+            assert hits == find_all_offsets(captured, zeroes)
+            assert len(hits) == PAGE_SIZE - 7 - 32 - 7
+            # Every one of them is inside the CAPTURED page, never the FAILED
+            # page that follows it.
+            assert max(hits) + len(zeroes) <= PAGE_SIZE
+
+    def test_adjacent_captured_runs_are_joined(self, abutting_msl_path):
+        """A secret straddling two abutting captured pages is a real secret.
+
+        In VA those bytes are contiguous, so refusing to join the two runs
+        would lose the finding outright. ``"vas"`` searches each captured run
+        on its own and therefore misses it — asserted here not as a bug to fix
+        but as the documented, out-of-scope limitation of that view, and as
+        proof that "va" is genuinely doing something "vas" cannot.
+        """
+        with MslDumpSource(abutting_msl_path) as src:
+            assert len(list(src.iter_ranges())) == 2, "fixture must have 2 runs"
+            assert src.find_all(_SEAM_NEEDLE, view="va") == [PAGE_SIZE - 4]
+            assert src.read_range(PAGE_SIZE - 4, 8, view="va") == _SEAM_NEEDLE
+            # Known limitation of the per-chunk "vas" scan, pinned on purpose.
+            assert src.find_all(_SEAM_NEEDLE, view="vas") == []
+
+    def test_runs_separated_by_a_gap_are_never_joined(self, gapped_msl_path):
+        """The control for the test above: same bytes, no adjacency.
+
+        Splicing two captured runs across a gap would manufacture a match that
+        does not exist anywhere in the process — a fabricated finding, which
+        is strictly worse than a missed one. Two probes: the seam needle (the
+        splice itself) and a zero needle (the gap filler).
+        """
+        with MslDumpSource(gapped_msl_path) as src:
+            assert src._captured_va_segments() == [
+                (0, PAGE_SIZE),
+                ((1 + _GAP_PAGES) * PAGE_SIZE, PAGE_SIZE),
+            ]
+            assert src.find_all(_SEAM_NEEDLE, view="va") == []
+            assert src.find_first(_SEAM_NEEDLE, view="va") is None
+            # The gap's filler is not a finding either.
+            assert src.find_all(b"\x00" * 16, view="va") == []
+            # Both regions are still searched — the gap suppresses the JOIN,
+            # not the scan.
+            assert src.find_all(bytes([0xA1]) * 8, view="va")[0] == 0
+            assert src.find_all(bytes([0xB2]) * 8, view="va")[0] == \
+                (1 + _GAP_PAGES) * PAGE_SIZE
+
+    @pytest.mark.parametrize("chunk", [100, 512, 4096])
+    def test_window_size_does_not_change_the_answer(
+        self, aslr_run2_msl_path, chunk, monkeypatch,
+    ):
+        """Windowing is an implementation detail, and must stay one.
+
+        The scan walks each captured segment in ``_VA_SEARCH_CHUNK`` windows
+        that overlap by ``len(needle) - 1``. Get that overlap wrong by one and
+        you either drop every needle straddling a window boundary or report it
+        twice; at the real 8 MiB window neither bug is reachable from any
+        fixture small enough to keep in a test suite. Shrinking the constant
+        to sizes far below the 4 KiB page puts many boundaries inside the
+        data, so both failure modes become observable.
+        """
+        needle = bytes([0xFE]) * 8
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            reference = src.find_all(needle, view="va")
+            assert len(reference) > 1
+            monkeypatch.setattr(dump_source_module, "_VA_SEARCH_CHUNK", chunk)
+            windowed = src.find_all(needle, view="va")
+            assert windowed == reference
+            assert len(set(windowed)) == len(windowed), "duplicate hits"
+            assert src.find_first(needle, view="va") == reference[0]
+
+    def test_window_smaller_than_the_needle_still_advances(
+        self, aslr_run2_msl_path, monkeypatch,
+    ):
+        """A window below the needle length would give a non-positive step and
+        loop forever. The scan floors the window at ``2 * needle_len`` for
+        exactly that reason; this pins it rather than trusting a comment."""
+        needle = bytes([0xFE]) * 8
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            reference = src.find_all(needle, view="va")
+            monkeypatch.setattr(dump_source_module, "_VA_SEARCH_CHUNK", 1)
+            assert src.find_all(needle, view="va") == reference
+
+    def test_find_first_is_find_all_head(self, aslr_run2_msl_path):
+        """The presence query and the enumeration must never disagree: a
+        corpus sweep uses ``find_first`` and the viewer uses ``find_all``, so
+        a divergence shows up as "the tool says the key is there but will not
+        show me where"."""
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            for needle in (bytes([0xFE]) * 8,
+                           src.read_range(SECRET_OFFSET_IN_PAGE, 32, view="va"),
+                           b"NO_SUCH_NEEDLE_IN_ANY_FIXTURE"):
+                hits = src.find_all(needle, view="va")
+                expected = hits[0] if hits else None
+                assert src.find_first(needle, view="va") == expected, needle[:8]
+
+    def test_empty_needle_reports_absent(self, aslr_run2_msl_path):
+        """``b""`` is a caller error, not a query with a degenerate answer.
+        Returning 0 (what ``bytes.find`` gives) would let an empty secret
+        masquerade as a hit at the start of every dump in a corpus sweep."""
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            assert src.find_all(b"", view="va") == []
+            assert src.find_first(b"", view="va") is None
+
+    def test_needle_longer_than_the_span_reports_absent(self, aslr_run2_msl_path):
+        """No window can hold it, so the walk must end empty rather than
+        reading past the segment or dividing by a negative step."""
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            oversized = bytes([0xFE]) * (10 * PAGE_SIZE)
+            assert len(oversized) > src.size_for("va")
+            assert src.find_all(oversized, view="va") == []
+            assert src.find_first(oversized, view="va") is None
+
+    def test_unopened_source_reports_absent(self, aslr_run2_msl_path):
+        """Matches the "vas" contract: no reader means no hits, never a
+        crash — the API layer opens sources lazily and a closed one must not
+        turn a search into a 500."""
+        closed = MslDumpSource(aslr_run2_msl_path)
+        assert closed.find_all(bytes([0xFE]) * 4, view="va") == []
+        assert closed.find_first(bytes([0xFE]) * 4, view="va") is None
+        assert closed._captured_va_segments() == []
+
+    def test_unknown_view_still_raises(self, aslr_run2_msl_path):
+        """Adding "va" must not have turned the typo guard into a third
+        silent alias: ``view="garbage"`` is a programming error and stays a
+        ``ValueError`` (the capability gap is a separate, 400-shaped error —
+        see ``app.tools_inspect._require_supported_view``)."""
+        with MslDumpSource(aslr_run2_msl_path) as src:
+            with pytest.raises(ValueError, match="Unknown view"):
+                src.find_all(b"x", view="garbage")
+            with pytest.raises(ValueError, match="Unknown view"):
+                src.find_first(b"x", view="garbage")
+
+
+class TestSupportedViews:
+    """``supported_views`` — the question the API layer asks BEFORE it hands
+    a view to a source (see ``app.tools_inspect._require_supported_view``)."""
+
+    def test_msl_and_raw_serve_all_three_views(self):
+        assert supported_views(MslDumpSource) == ("raw", "vas", "va")
+        assert supported_views(RawDumpSource) == ("raw", "vas", "va")
+
+    def test_region_backed_sources_do_not_serve_va(self):
+        from memdiver.core.dump_sources._regioned_base import _RegionedRawSource
+        from memdiver.core.dump_sources.gcore import GCoreDumpSource
+
+        assert supported_views(GCoreDumpSource) == ("raw", "vas")
+        assert supported_views(_RegionedRawSource) == ("raw", "vas")
+
+    def test_a_source_that_declares_nothing_keeps_its_historical_views(self):
+        """A third-party source registered via ``register_dump_source``
+        declares no ``SUPPORTED_VIEWS``. It must not be read as "serves no
+        view at all" — that would break every such source the day this helper
+        landed. The fallback is the two views every source has always served.
+        """
+        class _LegacySource:
+            format_name = "third_party"
+
+        assert supported_views(_LegacySource()) == ("raw", "vas")
+        assert supported_views(object()) == ("raw", "vas")

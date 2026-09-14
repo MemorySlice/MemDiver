@@ -131,8 +131,14 @@ export function StringsPanel({ dumpPath }: Props) {
     <div className="h-full flex flex-col text-xs">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-2 py-1.5 border-b border-[var(--md-border)] flex-wrap">
+        {/*
+          Named, like the sibling min-length field below it. An unnamed select
+          reads as just "combo box" to a screen reader, which says nothing
+          about WHICH of the several selects on this screen it is.
+        */}
         <select
           value={encoding}
+          aria-label={t("strings.encodingLabel")}
           onChange={(e) => {
             setEncoding(e.target.value as "ascii" | "utf-8");
             resetAndFetch(dumpPath);

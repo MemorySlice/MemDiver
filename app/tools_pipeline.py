@@ -41,6 +41,7 @@ from typing import (
 
 import numpy as np
 
+from memdiver.core.needle import parse_needle
 from memdiver.core.service_errors import (
     CapabilityError,
     EncryptedDumpLockedError,
@@ -2504,22 +2505,22 @@ def _resolve_key_needle(
 def _needle_from_key_hex(key_hex: str) -> bytes:
     """Normalise a pasted hex key into bytes.
 
-    The normalisation is copied VERBATIM from
-    ``app.tools_inspect.search_bytes_result`` (strip, drop a leading ``0x``,
-    join on any whitespace) so a hex string that works in the byte-search box
-    works here — an analyst pastes the same ``aa bb cc`` from the same hex
-    viewer into both.
+    Shares ``core.needle.parse_needle`` with the byte-search box rather than
+    re-implementing its normalisation, so a hex string that works in the hex
+    viewer works here — an analyst pastes the same ``aa bb cc`` into both.
+    This used to be a hand-maintained VERBATIM copy held in agreement only by
+    ``test_api_locate_key.test_hex_normalisation_matches_the_byte_search_box``;
+    that test now guards a delegation instead of a duplicate.
     """
-    cleaned = key_hex.strip()
-    if cleaned.lower().startswith("0x"):
-        cleaned = cleaned[2:]
-    cleaned = "".join(cleaned.split())
-    if not cleaned:
+    if not key_hex.strip():
         raise CapabilityError(
             "Empty hex key", category=ErrorCategory.INVALID_INPUT)
     try:
-        return bytes.fromhex(cleaned)
-    except ValueError as exc:
+        return parse_needle(key_hex, "hex")
+    except CapabilityError as exc:
+        # Re-word for this call site: the caller pasted a KEY, not a search
+        # pattern, and saying "byte pattern" here sends them looking at the
+        # wrong field.
         raise CapabilityError(
             f"Invalid hex key: {key_hex!r}",
             category=ErrorCategory.INVALID_INPUT,
