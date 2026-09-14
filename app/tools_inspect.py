@@ -29,6 +29,22 @@ logger = logging.getLogger("memdiver.app.tools_inspect")
 
 MAX_HEX_LENGTH = 4096
 MAX_ENTROPY_SAMPLES = 200
+#: Hard ceiling on sliding-window positions one entropy profile may compute.
+#:
+#: The valve that stops the entropy tab from monopolising the process. With the
+#: default window/step, a 220 MB dump asks for ~13.75 MILLION window positions
+#: in order to return `MAX_ENTROPY_SAMPLES` (200) of them -- minutes of GIL-held
+#: CPU and a multi-GB transient list, in a single-process backend, on a request
+#: no analyst explicitly made (the tab fires it on mount).
+#:
+#: The cap raises the effective STEP rather than truncating the read, so the
+#: profile still spans the whole file and `overall_entropy` still describes all
+#: of it. Only the resolution degrades, and only above ~4 MB of input (at the
+#: default window=32/step=16) -- below that the requested step is used unchanged
+#: and nothing about the existing behaviour moves. Chosen to leave the dumps an
+#: analyst actually opens at full resolution while still cutting the 220 MB case
+#: by ~52x; 262144 positions is over 1300x what the 200-point sample plots.
+MAX_ENTROPY_PROFILE_POSITIONS = 1 << 18
 MAX_STRING_RESULTS = 500
 #: Hard ceiling on offsets collected by one byte-search scan.
 #:
@@ -816,6 +832,38 @@ def blocks_result(
         return _finalize_inspect({"blocks": block_groups}, reader, view=None)
 
 
+def _bounded_entropy_step(
+    data_len: int, window: int, step: int, max_positions: int | None = None
+) -> int:
+    """The step to actually profile at, given how much data there is.
+
+    Returns *step* unchanged whenever the requested resolution already fits
+    inside :data:`MAX_ENTROPY_PROFILE_POSITIONS`, so every input below roughly
+    4 MB (at the default window/step) is profiled exactly as before. Above that
+    the step is widened just far enough to stay inside the cap.
+
+    Widening the step keeps the profile spanning the whole input, which is what
+    makes this different from reading less: the offsets still run from 0 to the
+    end, only more sparsely.
+    """
+    if step < 1:
+        step = 1
+    # A caller may ask for LESS work than the ceiling, never more: the cap is a
+    # server-side guarantee, so a client cannot raise it by asking nicely.
+    cap = MAX_ENTROPY_PROFILE_POSITIONS
+    if max_positions is not None and 1 <= max_positions < cap:
+        cap = max_positions
+    positions = data_len - window + 1
+    if positions <= 0:
+        return step
+    # Ceiling division: the number of positions an arithmetic walk by `step`
+    # actually visits.
+    visited = (positions + step - 1) // step
+    if visited <= cap:
+        return step
+    return (positions + cap - 1) // cap
+
+
 def entropy_result(
     session: ToolSession,
     dump_path: str,
@@ -824,6 +872,7 @@ def entropy_result(
     window: int = 32,
     step: int = 16,
     threshold: float = 7.5,
+    max_positions: Optional[int] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
@@ -851,7 +900,18 @@ def entropy_result(
             )
 
             overall = shannon_entropy(data)
-            profile = compute_entropy_profile(data, window=window, step=step)
+            # Widen the step so the position count stays bounded. Deliberately
+            # NOT a cap on `data`: truncating the read would silently change
+            # `overall_entropy` from "this file" to "the first N bytes of it",
+            # which is a different answer wearing the same name.
+            effective_step = _bounded_entropy_step(
+                len(data), window, step, max_positions
+            )
+            profile = compute_entropy_profile(
+                data, window=window, step=effective_step
+            )
+            # `min_width` is in BYTES, so region semantics survive a wider step;
+            # only the granularity at which a region can be detected changes.
             regions = find_high_entropy_regions(profile, threshold=threshold)
 
             # Sample profile to keep response size reasonable. Use index-based
@@ -880,6 +940,12 @@ def entropy_result(
                     "max": round(max(entropies), 4),
                     "mean": round(sum(entropies) / len(entropies), 4),
                 },
+                # What the profile was ACTUALLY computed at. Reported so a
+                # caller is never plotting at a resolution it cannot name, and
+                # so "why are my regions coarse on this dump" has an answer in
+                # the response rather than in this file.
+                "step": effective_step,
+                "window": window,
             }
             return _finalize_inspect(payload, source, view=None)
     except FileNotFoundError:

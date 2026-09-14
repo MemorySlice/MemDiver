@@ -36,6 +36,10 @@ export function isWorkspaceDirty(): boolean {
   const state = useAppStore.getState();
   if (state.appView !== "workspace") return false;
 
+  // A restore that is still landing holds nothing of the analyst's. Asked
+  // during one, the honest answer is "no" -- see `beginPristineRestore`.
+  if (pristine !== null) return false;
+
   // Inside the workspace, `null` means the wizard was completed and nothing has
   // been saved since — which is exactly the case the reported bug lost.
   if (state.lastSavedDigest === null) return true;
@@ -69,58 +73,120 @@ export async function persistRecoverySnapshot(): Promise<void> {
   await saveSession(buildSessionSnapshot(RECOVERY_SESSION_NAME));
 }
 
-/** How long after a restore late effects are still treated as part of it. */
-const BASELINE_SETTLE_MS = 5000;
-/** How often the baseline is refreshed inside that window. */
-const BASELINE_POLL_MS = 250;
+/**
+ * The restore that is still landing, if any. See `beginPristineRestore`.
+ */
+let pristine: {
+  /** The restore's own promise chain has finished. */
+  settled: boolean;
+  /** The analyst has touched the page since the restore began. */
+  touched: boolean;
+  /** Detach the interaction listeners. */
+  release: () => void;
+} | null = null;
+
+/** Take the baseline and end the window. Called at most once per window. */
+function sealBaseline(): void {
+  if (pristine === null) return;
+  pristine.release();
+  pristine = null;
+  // A reset (or another restore) can land first. Re-baselining a workspace
+  // that is no longer on screen would describe nothing.
+  if (useAppStore.getState().appView !== "workspace") return;
+  markSessionSaved(buildSessionSnapshot(""));
+}
 
 /**
- * Keep the "as saved" baseline in step with a restore that is still settling.
- *
- * Marking clean once, the moment `restoreSession` resolves, is not enough:
- * effects downstream of the restore keep mutating snapshot fields afterwards --
- * hex-store rehydrating that dump's bookmarks from localStorage, the algorithm
- * availability response adjusting the selection. None of that is the analyst's
- * work, but all of it changes the digest, so the workspace would start
- * reporting unsaved changes seconds after being opened and prompt on the very
- * first "New Session" click.
- *
- * So the baseline is refreshed for a short window -- and, crucially, only until
- * the user first touches the page. Listening for that interaction in the
- * CAPTURE phase means the very first pointerdown or keydown stops the refresh
- * before React handles it, so no real edit can ever be absorbed into the
- * baseline and silently declared "already saved".
- *
- * Returns a stop function; safe to call outside a browser.
+ * The baseline is taken at max(restore finished, analyst first touched), which
+ * is the last instant that is still provably before any edit of theirs.
  */
-export function settleSessionBaseline(windowMs = BASELINE_SETTLE_MS): () => void {
-  if (typeof window === "undefined") return () => {};
+function sealWhenBothHappened(): void {
+  if (pristine !== null && pristine.settled && pristine.touched) sealBaseline();
+}
 
-  let stopped = false;
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    clearInterval(poll);
-    clearTimeout(deadline);
-    window.removeEventListener("pointerdown", stop, true);
-    window.removeEventListener("keydown", stop, true);
-    window.removeEventListener("wheel", stop, true);
+/**
+ * Treat everything a restore does — including whatever it is still doing — as
+ * "already saved", until the analyst touches the page.
+ *
+ * Two things this replaces a wall clock with a signal for, and both are real:
+ *
+ * 1. **The restore is not finished when the workspace appears.**
+ *    `restoreSession` flips `appView` to "workspace" on its FIRST line and only
+ *    then awaits the path-info resolution pass, so the workspace paints and
+ *    becomes clickable while the caller has yet to reach `markSessionSaved`.
+ *    For that whole gap `lastSavedDigest` is still `null`, which
+ *    `isWorkspaceDirty` reads — correctly, by its own rules — as unsaved work.
+ *    On a slow backend the analyst opens a session, clicks "New Session", and
+ *    is told they have changes they never made. Starting the window BEFORE the
+ *    first await is what closes that gap; a window opened after the restore
+ *    could not, however generous it was.
+ *
+ * 2. **The restore is not finished when its promise resolves either.** Effects
+ *    downstream of it keep mutating snapshot fields afterwards -- hex-store
+ *    rehydrating that dump's bookmarks from localStorage, a scan result
+ *    arriving over the task socket. None of that is the analyst's work.
+ *
+ * Both were previously approximated by re-digesting every 250 ms for 5 s. That
+ * is a race against an unbounded, load-sensitive process, and under a loaded
+ * backend it loses: past the deadline the digest moves on its own and the
+ * workspace starts reporting changes nobody made.
+ *
+ * Listening in the CAPTURE phase is what makes the replacement safe rather than
+ * merely longer. The first pointerdown/keydown/wheel is seen before React
+ * handles it, so the baseline is taken from the state the analyst is about to
+ * act on -- never from the state their action produced. There is no longer a
+ * 250 ms window in which a real edit could be absorbed and declared saved.
+ *
+ * Returns `settle` (the restore's chain finished) and `abandon` (it failed --
+ * leave the workspace dirty rather than blessing a half-applied restore).
+ * Safe to call outside a browser.
+ */
+export function beginPristineRestore(): {
+  settle: () => void;
+  abandon: () => void;
+} {
+  // A second restore supersedes the first; the superseded one never seals,
+  // because the workspace it described is already gone.
+  abandonPristineRestore();
+
+  if (typeof window === "undefined") {
+    return { settle: () => {}, abandon: () => {} };
+  }
+
+  const onTouch = () => {
+    if (pristine === null) return;
+    pristine.touched = true;
+    sealWhenBothHappened();
   };
+  const release = () => {
+    window.removeEventListener("pointerdown", onTouch, true);
+    window.removeEventListener("keydown", onTouch, true);
+    window.removeEventListener("wheel", onTouch, true);
+  };
+  window.addEventListener("pointerdown", onTouch, true);
+  window.addEventListener("keydown", onTouch, true);
+  window.addEventListener("wheel", onTouch, true);
 
-  const poll = setInterval(() => {
-    // Left the workspace (a reset, or another restore): there is nothing whose
-    // baseline this still describes.
-    if (useAppStore.getState().appView !== "workspace") {
-      stop();
-      return;
-    }
-    markSessionSaved(buildSessionSnapshot(""));
-  }, BASELINE_POLL_MS);
+  pristine = { settled: false, touched: false, release };
 
-  const deadline = setTimeout(stop, windowMs);
-  window.addEventListener("pointerdown", stop, true);
-  window.addEventListener("keydown", stop, true);
-  window.addEventListener("wheel", stop, true);
+  return {
+    settle: () => {
+      if (pristine === null) return;
+      pristine.settled = true;
+      sealWhenBothHappened();
+    },
+    abandon: abandonPristineRestore,
+  };
+}
 
-  return stop;
+/** End the window WITHOUT taking a baseline. */
+export function abandonPristineRestore(): void {
+  if (pristine === null) return;
+  pristine.release();
+  pristine = null;
+}
+
+/** Test seam: is a restore currently being treated as pristine? */
+export function isRestorePristine(): boolean {
+  return pristine !== null;
 }

@@ -16,9 +16,21 @@ test.describe("Entropy bottom tab mounts", { tag: "@requires-dataset" }, () => {
     });
     await enterWorkspaceWithMsl(page);
     await switchToExplorationMode(page);
+
+    // Wait for the REQUEST, not for 800ms. `GET /api/inspect/entropy` is a sync
+    // FastAPI handler, so Starlette cannot cancel it when the context closes at
+    // the end of this test -- it runs to completion in the threadpool, holding
+    // the GIL, and whatever spec runs next pays for it. A fixed sleep that is
+    // shorter than the compute abandons exactly that.
+    const entropy = page.waitForResponse(
+      (res) => res.url().includes("/api/inspect/entropy"),
+      { timeout: 120_000 },
+    );
     await page.locator(tab("entropy")).first().click();
     await expect(page.locator(tab("entropy")).first()).toBeVisible();
-    await page.waitForTimeout(800);
+    const res = await entropy;
+    expect(res.status(), "GET /api/inspect/entropy").toBe(200);
+
     expect(errors).toEqual([]);
   });
 });

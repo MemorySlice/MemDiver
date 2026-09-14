@@ -5,7 +5,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { applyHitsToStores } from "@/utils/apply-hits";
 import { buildSessionSnapshot } from "@/utils/buildSessionSnapshot";
-import { markSessionSaved, settleSessionBaseline } from "@/utils/session-persistence";
+import { beginPristineRestore, markSessionSaved } from "@/utils/session-persistence";
 import { isRecoverySession } from "@/utils/session-names";
 
 interface LoadOptions {
@@ -43,6 +43,15 @@ export function useSessionLoader() {
 
   const loadAndRestore = useCallback(
     async (name: string, opts?: LoadOptions) => {
+      // Opened BEFORE the first await, and that is the whole point. The restore
+      // flips `appView` to "workspace" on its first line, so the workspace is on
+      // screen and clickable long before this function reaches `markSessionSaved`
+      // below. Without a window that is already open by then, everything in that
+      // gap reads as unsaved work -- see `beginPristineRestore`.
+      //
+      // The recovery copy is the deliberate exception: it is a safety net the
+      // user never asked for, so it stays dirty to nudge a real save.
+      const restore = isRecoverySession(name) ? null : beginPristineRestore();
       try {
         const snap = await loadSession(name);
         await useAppStore.getState().restoreSession(snap);
@@ -71,13 +80,17 @@ export function useSessionLoader() {
         // a name they chose.
         if (!isRecoverySession(name)) {
           markSessionSaved(buildSessionSnapshot(""));
-          // The restore is not finished settling when its promise resolves;
-          // see `settleSessionBaseline`. Without this the workspace turns
-          // "dirty" on its own a moment after opening.
-          settleSessionBaseline();
+          // The restore's own chain is done. The window stays open until the
+          // analyst touches the page, because effects downstream of the restore
+          // are still landing; see `beginPristineRestore`.
+          restore?.settle();
         }
         opts?.onSuccess?.(name);
       } catch (e) {
+        // Never bless a half-applied restore as "saved": whatever did land is
+        // not what the file says, and the analyst should be warned before it is
+        // thrown away.
+        restore?.abandon();
         opts?.onError?.(e instanceof Error ? e.message : "Failed to load session");
       }
     },

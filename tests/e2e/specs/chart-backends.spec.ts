@@ -35,8 +35,14 @@ import {
 
 test.describe("Chart backend dispatch", { tag: "@requires-dataset" }, () => {
   test.skip(!datasetAvailable, "Dataset MSL fixture not present.");
-  // Entropy compute can be 60-120s cold; pipeline fixtures need the
-  // backend's hex viewer + workspace mount flow. Budget generously.
+  // Pipeline fixtures need the backend's hex viewer + workspace mount flow.
+  // Budget generously.
+  //
+  // The entropy waits below deliberately do NOT swallow their timeout any more.
+  // `GET /api/inspect/entropy` is a sync handler and therefore uncancellable, so
+  // a swallowed timeout means this spec closes its context while the backend is
+  // still computing -- and the next spec in the file order pays the bill. If one
+  // of these waits ever times out, that is a regression to see, not to absorb.
   test.setTimeout(360_000);
 
   test.describe("EntropyChart", () => {
@@ -61,8 +67,7 @@ test.describe("Chart backend dispatch", { tag: "@requires-dataset" }, () => {
           },
           undefined,
           { timeout: 240_000 },
-        )
-        .catch(() => {});
+        );
       await expect(page.locator(".js-plotly-plot").first()).toBeVisible({
         timeout: 15_000,
       });
@@ -87,8 +92,7 @@ test.describe("Chart backend dispatch", { tag: "@requires-dataset" }, () => {
             !(document.body.textContent ?? "").includes("Loading entropy data"),
           undefined,
           { timeout: 240_000 },
-        )
-        .catch(() => {});
+        );
       // SVG marker must be present.
       await expect(
         page.locator('[data-chart-backend="svg"]').first(),

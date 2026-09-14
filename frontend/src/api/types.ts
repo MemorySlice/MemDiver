@@ -138,6 +138,13 @@ export interface EntropyData {
   high_entropy_regions: { start: number; end: number; mean_entropy: number }[];
   profile_sample: { offset: number; entropy: number }[];
   stats: { min: number; max: number; mean: number };
+  /**
+   * The window/step the profile was ACTUALLY computed at. The server widens
+   * `step` on large inputs to bound the work, so these are not necessarily what
+   * was requested — they are what the numbers above describe.
+   */
+  step?: number;
+  window?: number;
 }
 
 export interface SessionInfo {

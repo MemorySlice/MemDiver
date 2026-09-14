@@ -181,8 +181,10 @@ test.describe("README screenshots", { tag: "@requires-dataset" }, () => {
         },
         undefined,
         { timeout: 240_000 },
-      )
-      .catch(() => {});
+      );
+    // `networkidle` already waited out the entropy request, so swallowing the
+    // timeout above was harmless here -- but it also hid a real stall behind a
+    // screenshot of a half-rendered tab. Let it fail instead.
     await page.waitForLoadState("networkidle");
     await page.waitForTimeout(1_000);
     // E2E tightening (Phase 10). The chartBackend defaults to "plotly"

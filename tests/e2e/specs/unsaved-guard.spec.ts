@@ -288,6 +288,57 @@ test.describe("unsaved work guard", () => {
     await expect(page.locator(tab("entropy"))).toBeVisible();
   });
 
+  /**
+   * The regression that only the FULL suite used to catch, made deterministic.
+   *
+   * `restoreSession` flips `appView` to "workspace" on its first line and only
+   * then awaits the path-info resolution pass, so the workspace is painted and
+   * clickable before `useSessionLoader` reaches `markSessionSaved`. For that gap
+   * `lastSavedDigest` is null, which the guard reads as unsaved work -- and the
+   * analyst who opens a session on a slow backend and clicks "New Session" is
+   * told they have changes they never made.
+   *
+   * Delaying `/api/path/info` reproduces in 4 s what a GIL-starved backend did
+   * under full-suite load. Before the fix this failed on exactly the assertion
+   * the suite-only failure hit; gating it on real load instead would make it
+   * pass on a quiet machine and prove nothing.
+   */
+  test("a restore that is still landing is not mistaken for unsaved work", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+
+    const name = uniqueName("slow-restore");
+    await enterDirtyWorkspace(page);
+    await page.locator(newSession.button).click();
+    await page.locator(newSession.name).fill(name);
+    created.add(name);
+    await page.locator(newSession.save).click();
+    await expect(sessionList(page)).toBeVisible();
+
+    // Everything the workspace needs to PAINT has already been answered by the
+    // time this bites; only the baseline is still outstanding behind it.
+    await page.route("**/api/path/info**", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      await route.continue();
+    });
+
+    const row = page.locator(".md-panel").filter({ hasText: name }).first();
+    await row.getByRole("button", { name: "Load", exact: true }).click();
+
+    await expect(page.locator(tab("bookmarks"))).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(tab("entropy"))).toBeVisible();
+
+    // Clicked while the restore is demonstrably still in flight.
+    await page.locator(newSession.button).click();
+    await expect(sessionList(page)).toBeVisible();
+    await expect(page.locator(newSession.dialog)).toHaveCount(0);
+
+    await page.unroute("**/api/path/info**");
+    expect(await listSessionNames(request)).toContain(name);
+  });
+
   test("a dirty workspace prompts the browser before it is closed", async ({
     page,
   }) => {

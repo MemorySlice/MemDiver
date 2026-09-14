@@ -1,9 +1,10 @@
 """Reusable Shannon entropy computation for TLS memory dump analysis.
 
 Provides sliding-window entropy profiling used by change_point detection
-and entropy visualization. The scalar helpers (``entropy_from_freq``,
-``shannon_entropy``) remain pure-Python (math only); the sliding-window
-profile is vectorized with numpy for a large speedup on big dumps.
+and entropy visualization. ``entropy_from_freq`` stays pure-Python (it is
+handed a 256-bin list and never sees the data); ``shannon_entropy`` and the
+sliding-window profile are vectorized with numpy, because both are handed
+whole dumps.
 
 Used by change_point detection and entropy visualization.
 """
@@ -63,10 +64,16 @@ def shannon_entropy(data: bytes) -> float:
     length = len(data)
     if length == 0:
         return 0.0
-    freq = [0] * 256
-    for byte in data:
-        freq[byte] += 1
-    return entropy_from_freq(freq, length)
+    # `for byte in data: freq[byte] += 1` is the obvious way to write this and
+    # was what stood here, but it is one Python-level iteration PER BYTE holding
+    # the GIL throughout. On the 220 MB corpus dump reached by
+    # `GET /api/inspect/entropy?length=0` that is 220 million iterations, which
+    # stalled every other request in the single-process backend for minutes.
+    # `bincount` is the same frequency table from a C loop.
+    counts = np.bincount(np.frombuffer(data, dtype=np.uint8), minlength=256)
+    nonzero = counts[counts > 0].astype(np.float64)
+    probabilities = nonzero / length
+    return float(-(probabilities * np.log2(probabilities)).sum())
 
 
 def compute_entropy_profile(

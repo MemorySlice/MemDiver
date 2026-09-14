@@ -108,6 +108,9 @@ def get_entropy(
     window: int = 32,
     step: int = 16,
     threshold: float = 7.5,
+    # A client saying how much resolution it will actually use. It can only ask
+    # for less than the server's own ceiling, never more.
+    max_positions: int | None = None,
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
@@ -117,6 +120,7 @@ def get_entropy(
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         return _http_inspect(lambda: tools_inspect.entropy_result(
             session, dump_path, offset, length, window, step, threshold,
+            max_positions,
         ))
 
 

@@ -74,7 +74,12 @@ export default defineConfig({
   reporter: process.env.CI ? "list" : [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: `http://127.0.0.1:${FRONTEND_PORT}`,
-    trace: "on-first-retry",
+    // NOT "on-first-retry": `retries` above is 0, so that setting captures a
+    // trace on exactly never. A load-dependent failure that reproduces only in
+    // the full suite is the case a trace is *for*, and its absence is what made
+    // the unsaved-guard failure take three rounds of inference to diagnose.
+    // "retain-on-failure" costs nothing on a green run.
+    trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   projects: [

@@ -164,16 +164,30 @@ export const readHex = (
   return request<HexData>(`/api/inspect/hex?${qs.toString()}`);
 };
 
+/**
+ * How many sliding-window positions the entropy profile may be computed at.
+ *
+ * `length = 0` means "the whole file", and on the 220 MB corpus dump that is
+ * ~13.75 million window positions computed in order to plot 200 of them — which
+ * the entropy tab used to ask for on mount, with no user action, stalling the
+ * single-process backend for the duration. The server enforces its own ceiling;
+ * sending one anyway keeps the cost of this call stated where the call is made,
+ * so it cannot quietly become unbounded again if that default ever moves.
+ */
+export const ENTROPY_MAX_PROFILE_POSITIONS = 1 << 18;
+
 export const getEntropy = (
   dumpPath: string,
   offset = 0,
   length = 0,
   key?: KeyMaterial,
+  maxPositions = ENTROPY_MAX_PROFILE_POSITIONS,
 ) => {
   const qs = new URLSearchParams({
     dump_path: dumpPath,
     offset: String(offset),
     length: String(length),
+    max_positions: String(maxPositions),
   });
   appendKey(qs, key);
   return request<EntropyData>(`/api/inspect/entropy?${qs.toString()}`);
