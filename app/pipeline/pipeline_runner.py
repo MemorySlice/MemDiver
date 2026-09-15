@@ -386,6 +386,7 @@ def _run_brute_force(
     oracle_path: Optional[Path],
     bf_kwargs: Dict[str, Any],
     *,
+    oracle_config: Optional[Dict[str, Any]] = None,
     pcap_path: Optional[str] = None,
     tls_client_random: Optional[str] = None,
     pcap_max_records: Optional[int] = None,
@@ -406,6 +407,10 @@ def _run_brute_force(
     ``hits.json`` (``BruteForceResult.to_dict()``). This wrapper wires the
     ``state_path`` (so the Welford ``neighborhood_variance`` slice is attached to
     each hit), registers the artifact, and translates cancellation.
+
+    ``oracle_config`` is the armed BYO oracle's already-parsed configuration; it
+    is threaded as a dict (no temporary TOML) and the producer prefers it over
+    ``oracle_config_path``. ``None`` for a pcap run or an oracle needing none.
     """
     from memdiver.app import tools_pipeline
 
@@ -417,6 +422,7 @@ def _run_brute_force(
         # Exactly one oracle source — the producer routes ``pcap_path`` through
         # the first-party trusted pcap oracle and raises if both/neither given.
         oracle_path=str(oracle_path) if oracle_path is not None else None,
+        oracle_config=oracle_config,
         pcap_path=pcap_path,
         tls_client_random=tls_client_random,
         pcap_max_records=pcap_max_records,
@@ -443,6 +449,7 @@ def _run_nsweep(
     oracle_path: Optional[Path],
     nsweep_params: Dict[str, Any],
     *,
+    oracle_config: Optional[Dict[str, Any]] = None,
     pcap_path: Optional[str] = None,
     tls_client_random: Optional[str] = None,
     pcap_max_records: Optional[int] = None,
@@ -482,6 +489,9 @@ def _run_nsweep(
         # Exactly one oracle source — mirrors _run_brute_force's forwarding so
         # both stages of a pcap run verify against the same capture.
         oracle_path=str(oracle_path) if oracle_path is not None else None,
+        # Same armed-oracle config the brute_force stage ran with, so the two
+        # stages of one run can never be configured differently.
+        oracle_config=oracle_config,
         pcap_path=pcap_path,
         tls_client_random=tls_client_random,
         pcap_max_records=pcap_max_records,
@@ -707,6 +717,12 @@ class PipelineState:
     bf_kwargs: Dict[str, Any]
     nsweep_params: Optional[Dict[str, Any]]
     emit_params: Optional[Dict[str, Any]]
+    # The armed BYO oracle's configuration, already parsed. Held once on the
+    # state rather than per stage because it belongs to the ORACLE, and
+    # brute_force / nsweep / escalate all load that same oracle file — three
+    # copies could drift apart within one run. ``None`` for a pcap run (which
+    # builds its own config) or for an oracle that needs no configuration.
+    oracle_config: Optional[Dict[str, Any]] = None
     # Pcap-oracle source (mutually exclusive with ``oracle_path``).
     pcap_path: Optional[str] = None
     tls_client_random: Optional[str] = None
@@ -838,6 +854,7 @@ def _stage_brute_force(state: "PipelineState") -> None:
         Path(consensus["reference_path"]),
         state.oracle_path,
         state.bf_kwargs,
+        oracle_config=state.oracle_config,
         pcap_path=state.pcap_path,
         tls_client_random=state.tls_client_random,
         pcap_max_records=state.pcap_max_records,
@@ -856,6 +873,7 @@ def _stage_nsweep(state: "PipelineState") -> None:
         state.source_paths,
         state.oracle_path,
         state.nsweep_params,
+        oracle_config=state.oracle_config,
         pcap_path=state.pcap_path,
         tls_client_random=state.tls_client_random,
         pcap_max_records=state.pcap_max_records,
@@ -921,6 +939,10 @@ def _stage_escalate(state: "PipelineState") -> None:
         variance_path=consensus["variance_path"],
         reference_path=consensus["reference_path"],
         oracle_path=str(state.oracle_path),
+        # The escalate stage re-loads the SAME armed oracle the brute-force
+        # stage used, so it needs the same configuration; without it a Shape-2
+        # oracle would build fine in brute_force and then fail here.
+        oracle_config=state.oracle_config,
         output_dir=str(out_dir),
         num_dumps=int(consensus["num_dumps"]),
         reduce_kwargs=dict(state.reduce_kwargs),
@@ -1078,6 +1100,13 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
       :func:`engine.candidate_pipeline.reduce_search_space`.
     * ``oracle_path`` (str, optional): absolute path to the armed oracle
       file. ``None`` when ``pcap_path`` is supplied instead.
+    * ``oracle_config`` (dict, optional): the armed oracle's already-parsed
+      configuration, threaded as a dict (never a temporary TOML file). It sits
+      at the top level, not inside ``brute_force``/``nsweep``, because it
+      belongs to the oracle and all three oracle-loading stages (brute_force,
+      nsweep, escalate) must run it with the SAME config. ``None`` for a pcap
+      run or for an oracle that needs no configuration. A copy found under
+      ``brute_force`` is lifted here for backward compatibility.
     * ``pcap_path`` (str, optional): pcap/pcapng of the same TLS session;
       routes the brute_force stage through the first-party trusted pcap
       oracle. Mutually exclusive with ``oracle_path``. ``tls_client_random``
@@ -1088,10 +1117,12 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
       work caps (records per direction / total challenges). ``None`` keeps the
       defaults; both are silent truncations of coverage when set.
     * ``brute_force`` (dict): ``key_sizes``, ``stride``, ``jobs``,
-      ``exhaustive``, ``top_k``, ``oracle_config_path``.
+      ``exhaustive``, ``top_k``. Splatted straight into the producer, so any
+      other ``tools_pipeline.brute_force`` keyword is accepted here too.
     * ``nsweep`` (dict, optional): if present, runs the N-sweep harness
       with ``n_values``, ``reduce_kwargs``, ``key_sizes``, ``stride``,
-      ``exhaustive``, ``oracle_config``.
+      ``exhaustive``. The oracle config is NOT read from here — see the
+      top-level ``oracle_config`` above.
     * ``emit`` (dict, optional): ``name``, ``description``, ``hit_index``,
       ``min_static_ratio``.
 
@@ -1132,6 +1163,15 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     # brute_force stage_end preview, so drop any stray copy here to avoid a
     # duplicate-keyword clash on the explicit pass.
     bf_kwargs.pop("variance_threshold", None)
+    # The armed oracle's parsed configuration rides ONCE at the top level, not
+    # inside a per-stage sub-dict: brute_force, nsweep and escalate all load the
+    # same oracle file. A stray copy under ``brute_force`` (older callers) is
+    # lifted rather than rejected, which also keeps the ``**bf_kwargs`` splat in
+    # :func:`_run_brute_force` from colliding with the explicit pass.
+    _bf_oracle_config = bf_kwargs.pop("oracle_config", None)
+    oracle_config: Optional[Dict[str, Any]] = (
+        params.get("oracle_config") or _bf_oracle_config
+    )
     nsweep_params = params.get("nsweep")
     emit_params = params.get("emit")
     # Surface the emit stage's variance_threshold override (if any) so the
@@ -1152,6 +1192,7 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         source_paths=source_paths,
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,
+        oracle_config=oracle_config,
         pcap_path=pcap_path,
         tls_client_random=tls_client_random,
         pcap_max_records=pcap_max_records,

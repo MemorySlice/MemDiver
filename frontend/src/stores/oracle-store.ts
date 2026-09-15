@@ -12,11 +12,15 @@
 
 import { create } from "zustand";
 
+import { readableFailure } from "@/api/client";
 import {
   armOracle as armOracleApi,
   deleteOracle as deleteOracleApi,
   dryRunOracle as dryRunOracleApi,
+  enableOracles as enableOraclesApi,
+  getOracleStatus,
   listOracleExamples,
+  loadOracleExample as loadOracleExampleApi,
   listOracles,
   uploadOracle as uploadOracleApi,
 } from "@/api/oracles";
@@ -24,19 +28,43 @@ import type {
   DryRunResult,
   OracleEntry,
   OracleExample,
+  OracleStatus,
 } from "@/api/oracles";
 
 interface OracleState {
   examples: OracleExample[];
   uploaded: OracleEntry[];
+  /**
+   * Whether the server will accept oracle uploads at all, and from where the
+   * directory was configured. ``null`` until the first ``refresh`` answers —
+   * the UI must not decide between the consent panel and the dropzone on a
+   * guess, so consumers treat ``null`` as "not known yet".
+   */
+  status: OracleStatus | null;
   selectedOracleId: string | null;
   dryRun: DryRunResult | null;
   loading: boolean;
   error: string | null;
 
   refresh: () => Promise<void>;
+  enable: (path?: string) => Promise<boolean>;
   upload: (file: File, description?: string) => Promise<OracleEntry | null>;
-  arm: (oracleId: string, sha256: string) => Promise<boolean>;
+  /**
+   * Register a bundled example server-side so it becomes a runnable oracle.
+   *
+   * Returns the new entry (already selected) or ``null`` when the request
+   * failed, in which case ``error`` carries the decoded reason.
+   */
+  loadExample: (
+    filename: string,
+    config?: Record<string, unknown>,
+    description?: string,
+  ) => Promise<OracleEntry | null>;
+  arm: (
+    oracleId: string,
+    sha256: string,
+    config?: Record<string, unknown>,
+  ) => Promise<boolean>;
   runDry: (oracleId: string, samplesB64: string[]) => Promise<DryRunResult | null>;
   remove: (oracleId: string) => Promise<boolean>;
   selectOracle: (oracleId: string | null) => void;
@@ -53,8 +81,11 @@ async function guarded<T>(
     set({ loading: false });
     return result;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    set({ loading: false, error: msg });
+    // The oracle endpoints reject with an ApiError carrying the RAW response
+    // body, so surfacing `err.message` verbatim paints
+    // `{"detail":"oracle execution disabled; ..."}` into the panel. One shared
+    // decoder keeps upload, arm, dry-run, delete and the Examples tab honest.
+    set({ loading: false, error: readableFailure(err) });
     return null;
   }
 }
@@ -62,6 +93,7 @@ async function guarded<T>(
 export const useOracleStore = create<OracleState>((set) => ({
   examples: [],
   uploaded: [],
+  status: null,
   selectedOracleId: null,
   dryRun: null,
   loading: false,
@@ -69,15 +101,40 @@ export const useOracleStore = create<OracleState>((set) => ({
 
   refresh: async () => {
     const result = await guarded(set, async () => {
-      const [examples, oracles] = await Promise.all([
+      const [examples, oracles, status] = await Promise.all([
         listOracleExamples(),
         listOracles(),
+        getOracleStatus(),
       ]);
-      return { examples: examples.examples, oracles: oracles.oracles };
+      return {
+        examples: examples.examples,
+        oracles: oracles.oracles,
+        status,
+      };
     });
     if (result !== null) {
-      set({ examples: result.examples, uploaded: result.oracles });
+      set({
+        examples: result.examples,
+        uploaded: result.oracles,
+        status: result.status,
+      });
     }
+  },
+
+  /**
+   * Record the user's consent to store and execute oracle code.
+   *
+   * The server re-points the live registry as part of the same call and
+   * answers with the fresh status, so storing that response is enough to
+   * reveal the dropzone — no refetch and no page reload.
+   */
+  enable: async (path) => {
+    const status = await guarded(set, () => enableOraclesApi(path));
+    if (status !== null) {
+      set({ status });
+      return true;
+    }
+    return false;
   },
 
   upload: async (file, description) => {
@@ -91,8 +148,30 @@ export const useOracleStore = create<OracleState>((set) => ({
     return entry;
   },
 
-  arm: async (oracleId, sha256) => {
-    const entry = await guarded(set, () => armOracleApi(oracleId, sha256));
+  /**
+   * Same bookkeeping as ``upload``: the entry joins ``uploaded`` and becomes the
+   * selection, so the Upload tab lists it and the wizard can arm or drop it
+   * exactly like a file the user dropped themselves.
+   */
+  loadExample: async (filename, config, description) => {
+    const entry = await guarded(set, () =>
+      loadOracleExampleApi(filename, config, description),
+    );
+    if (entry !== null) {
+      set((prev) => ({
+        // A second load of the same example answers with a fresh id; replacing
+        // by id keeps the list free of duplicates if it ever does not.
+        uploaded: [...prev.uploaded.filter((o) => o.id !== entry.id), entry],
+        selectedOracleId: entry.id,
+      }));
+    }
+    return entry;
+  },
+
+  arm: async (oracleId, sha256, config) => {
+    const entry = await guarded(set, () =>
+      armOracleApi(oracleId, sha256, config),
+    );
     if (entry !== null) {
       set((prev) => ({
         uploaded: prev.uploaded.map((o) =>

@@ -68,6 +68,24 @@ class OracleLoadError(RuntimeError):
     """Raised when a user oracle file cannot be loaded or validated."""
 
 
+class OracleBuildError(OracleLoadError):
+    """The oracle imported/built and raised a NORMAL, reproducible exception.
+
+    The benign half of a sandbox rejection, split out so a caller can tell
+    "this oracle disagrees with the config it was handed" (a user error the
+    user can fix, e.g. a Shape-2 oracle probed before it has been configured)
+    apart from "this oracle hung or was killed by a resource limit" (a hostile
+    outcome that must never reach an in-process import).
+
+    A subclass, not a replacement: every existing ``except OracleLoadError``
+    still catches it and :func:`validate_oracle_sandboxed` keeps its published
+    behaviour and message. Only callers that explicitly want the distinction —
+    and they must opt in by naming this class — see any difference. Anything
+    that raises a bare :class:`OracleLoadError` therefore still reads as
+    "not known to be benign", which is the safe default for a security gate.
+    """
+
+
 def load_oracle_config(path: Path | None) -> dict[str, Any]:
     """Load an optional TOML config file into a plain dict."""
     if path is None:
@@ -338,6 +356,12 @@ def validate_oracle_sandboxed(
     by a resource limit / OOM (RLIMIT_CPU/RLIMIT_AS → SIGKILL/SIGXCPU), or
     raises a normal exception during import/build.
 
+    The normal-exception case raises the :class:`OracleBuildError` subclass, so
+    a caller that wants the lenient policy can catch just that one and let the
+    hostile outcomes through (:func:`assert_oracle_not_hostile` is that policy
+    pre-packaged). Every existing caller, which catches
+    :class:`OracleLoadError`, is unaffected.
+
     Spawn context is used for cross-platform + macOS safety; the target is a
     module-level function so it pickles cleanly.
     """
@@ -345,9 +369,57 @@ def validate_oracle_sandboxed(
     if kind == "ok":
         return
     if kind == "err":
-        raise OracleLoadError(f"oracle failed to load: {detail}")
+        raise OracleBuildError(f"oracle failed to load: {detail}")
     # hang / crash carry a fully-formed diagnostic already.
     raise OracleLoadError(str(detail))
+
+
+def assert_oracle_not_hostile(
+    path: Path | str,
+    config: dict[str, Any] | None = None,
+    *,
+    timeout_s: float = _SANDBOX_TIMEOUT_S,
+    cpu_s: int = _SANDBOX_CPU_S,
+    mem_bytes: int = _SANDBOX_MEM_BYTES,
+) -> None:
+    """Probe an oracle's load path and block only a hang or a crash (lenient).
+
+    The *containment* half of :func:`validate_oracle_sandboxed`, exposed as a
+    public policy so callers outside this module (notably the API's oracle
+    registry) never have to reach into the private :func:`_sandbox_probe`.
+    Same spawned, resource-capped child, same "never calls ``verify()``"
+    guarantee — only the verdict differs:
+
+    * ``hang`` / ``crash``  -> :class:`OracleLoadError`. These are the outcomes
+      that would damage the *host*: an infinite loop at import or inside
+      ``build_oracle``, or a RLIMIT_AS/RLIMIT_CPU kill. They must never reach an
+      in-process import.
+    * ``err``               -> allowed through. A reproducible exception means
+      the oracle merely disagrees with the config it was handed, which is a
+      *user* problem, not a hostile one — and it is re-checked, strictly and
+      with the real config, at the point of user intent.
+
+    This is exactly the policy :func:`load_oracle`'s own guard has always
+    applied (see its docstring); naming it makes the upload-time / arm-time
+    split in :mod:`memdiver.api.services.oracle_registry` legible, and keeps
+    the strict policy of :func:`validate_oracle_sandboxed` untouched for its
+    existing callers (``engine.brute_force`` runs the strict one before any
+    worker loads the oracle).
+
+    Implemented by *narrowing* the strict validator rather than by classifying
+    the probe result a second time, so the two policies are one policy by
+    construction and cannot drift apart.
+    """
+    try:
+        validate_oracle_sandboxed(
+            path,
+            config,
+            timeout_s=timeout_s,
+            cpu_s=cpu_s,
+            mem_bytes=mem_bytes,
+        )
+    except OracleBuildError:
+        return
 
 
 def load_oracle(
@@ -380,11 +452,10 @@ def load_oracle(
     _assert_safe_path(oracle_path)
     _log_module_fingerprint(oracle_path)
     if sandbox:
-        kind, detail = _sandbox_probe(
-            oracle_path, config, _SANDBOX_TIMEOUT_S, _SANDBOX_CPU_S, _SANDBOX_MEM_BYTES
-        )
-        if kind in ("hang", "crash"):
-            raise OracleLoadError(str(detail))
+        # Same probe, same verdict as before — now expressed through the named
+        # policy so this guard and the registry's upload-time check cannot
+        # drift apart.
+        assert_oracle_not_hostile(oracle_path, config)
     module = _import_user_module(oracle_path)
 
     builder = getattr(module, "build_oracle", None)

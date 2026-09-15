@@ -40,8 +40,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from memdiver.engine.oracle import (
+    OracleBuildError,
     OracleLoadError,
     load_oracle,
+    load_oracle_config,
     validate_oracle_sandboxed,
 )
 
@@ -70,6 +72,15 @@ class OracleDisabled(OracleRegistryError):
     """The registry is not configured (no ``MEMDIVER_ORACLE_DIR`` set)."""
 
 
+class OracleConfigInvalid(OracleRegistryError):
+    """``arm()`` replayed the load with the real config and it failed.
+
+    Distinct from the upload-time failures because the fault is the *config*,
+    not the file: the same oracle arms fine once the user fixes a value. Maps
+    to 400 through the router's generic ``OracleRegistryError`` branch.
+    """
+
+
 @dataclass
 class OracleEntry:
     """Metadata about a registered oracle file."""
@@ -84,6 +95,12 @@ class OracleEntry:
     uploaded_at: float = field(default_factory=time.time)
     armed: bool = False
     description: Optional[str] = None
+    # The oracle's own parameters (Shape 2 only). Supplied at upload/load or
+    # filled in afterwards from the UI form, and confirmed at arm() — which is
+    # where it is first replayed against the real oracle. A config naming a
+    # filesystem path is security-relevant, so it belongs behind the same
+    # user-intent gate that already guards execution.
+    config: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -96,6 +113,7 @@ class OracleEntry:
             "uploaded_at": self.uploaded_at,
             "armed": self.armed,
             "description": self.description,
+            "config": dict(self.config),
         }
 
 
@@ -152,6 +170,32 @@ def _detect_shape(path: Path) -> int:
     )
 
 
+def _example_config_template(path: Path) -> Optional[Dict[str, Any]]:
+    """Parse the sibling ``<stem>.toml`` of a bundled example, if it ships one.
+
+    A Shape-2 example is useless without its parameters, and the bundled
+    ``.toml`` is the authoritative statement of which keys it wants — so it is
+    surfaced as a *template* the UI can render as a prefilled form instead of
+    making the user read the example's docstring.
+
+    Values are passed through verbatim. ``gocryptfs.toml`` deliberately ships a
+    literal ``${MEMDIVER_FIXTURE_ROOT}`` placeholder; expanding it here would
+    silently hand the user a path that exists on nobody's machine, whereas an
+    unexpanded placeholder reads as "fill this in", which is what it is.
+    Parsed with :func:`engine.oracle.load_oracle_config`, the same loader the
+    CLI's ``--oracle-config`` uses, so the two can never disagree on syntax.
+    """
+    toml_path = path.with_suffix(".toml")
+    if not toml_path.is_file():
+        return None
+    try:
+        return load_oracle_config(toml_path)
+    except (OracleLoadError, ValueError) as exc:
+        # A malformed bundled template must not blank the whole Examples tab.
+        logger.warning("example config %s failed to parse: %s", toml_path.name, exc)
+        return None
+
+
 def _read_head(path: Path, max_lines: int = _HEAD_LINES_MAX) -> List[str]:
     """Return the first ``max_lines`` lines of ``path`` as strings."""
     out: List[str] = []
@@ -201,11 +245,45 @@ class OracleRegistry:
 
     def require_enabled(self) -> Path:
         if self._oracle_dir is None:
+            # Name the one-click route FIRST. The env var still works, but it
+            # requires a server restart, and pointing users at it was the whole
+            # reason the upload dropzone looked broken out of the box.
             raise OracleDisabled(
-                "oracle execution disabled; set MEMDIVER_ORACLE_DIR to "
-                "a trusted, non-shared, user-writable-only directory"
+                "oracle execution is disabled; enable it from the pipeline's "
+                "Oracle stage or POST /api/oracles/enable. It can also be "
+                "pinned before startup with MEMDIVER_ORACLE_DIR, which must "
+                "name a trusted, non-shared, user-writable-only directory"
             )
         return self._oracle_dir
+
+    def enable(self, oracle_dir: Path) -> Path:
+        """Point this live registry at *oracle_dir*, creating it at ``0o700``.
+
+        Exists so the oracle dir can be turned on at runtime (see
+        ``POST /api/oracles/enable``) instead of only at startup from
+        ``MEMDIVER_ORACLE_DIR``.
+
+        Deliberately NOT implemented as :func:`init_oracle_registry`: that
+        constructs a *new* :class:`OracleRegistry` and rebinds the module
+        singleton, which would silently drop ``_entries`` — every oracle
+        already uploaded in this process would vanish from the catalog while
+        its file stayed on disk. Mutating in place keeps them.
+
+        The ``0o700`` is the same guarantee the constructor makes: oracles are
+        executed from this directory, and
+        ``engine.oracle._assert_safe_path`` refuses to load anything whose
+        parent dir is group/world-writable.
+        """
+        path = Path(oracle_dir).expanduser()
+        with self._lock:
+            path.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path, 0o700)
+            except OSError:
+                pass
+            self._oracle_dir = path
+        logger.info("oracle registry enabled at %s", path)
+        return path
 
     # ------------------------------------------------------------------
     # examples
@@ -238,6 +316,7 @@ class OracleRegistry:
                 "shape": shape,
                 "summary": summary,
                 "head_lines": head_lines,
+                "config_template": _example_config_template(entry),
             })
         return out
 
@@ -251,7 +330,30 @@ class OracleRegistry:
         filename: str,
         content: bytes,
         description: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> OracleEntry:
+        """Store an oracle file and register it; validation is LENIENT here.
+
+        Upload is the first of three gates, and the only one that has not yet
+        seen the user's configuration:
+
+        * upload / load example — LENIENT (hang/crash only), config ``{}``
+        * :meth:`arm`             — STRICT, with the real config
+        * run (``engine.brute_force``) — STRICT, with the real config
+
+        Being strict here made the bundled ``gocryptfs.py`` example
+        un-uploadable: it is a Shape-2 oracle whose ``build_oracle(config)``
+        does ``config["sample_ciphertext"]``, so replaying it with ``{}``
+        raised ``KeyError`` and the upload 400'd with the file already
+        unlinked — through the very endpoint the UI steers users to. A
+        reproducible exception at this point means "not configured yet", which
+        is the normal state of a freshly-uploaded oracle, not a reason to
+        refuse the file.
+
+        What is NOT relaxed: a hanging or resource-killed oracle is still
+        rejected, still in a capped subprocess, still BEFORE ``_detect_shape``
+        imports the module in-process.
+        """
         oracle_dir = self.require_enabled()
         # Accept the user's original filename for display but store
         # under a uuid so a malicious basename cannot escape oracle_dir.
@@ -268,10 +370,29 @@ class OracleRegistry:
             raise OracleRegistryError("stored oracle is world-writable; aborting")
         _purge_pycache(on_disk)
         sha = _sha256_file(on_disk)
-        # Reject a hanging/OOMing oracle here, in a resource-capped subprocess,
-        # BEFORE _detect_shape() imports the untrusted module in-process.
+        # Probe the untrusted module in a resource-capped subprocess BEFORE
+        # _detect_shape() imports it in-process. That ORDER is the load-bearing
+        # part and does not change; only the verdict is lenient now (see this
+        # method's docstring). Probed with ``{}`` and not with *config*: the
+        # real config is first exercised at arm(), where the user has confirmed
+        # intent.
+        #
+        # Spelled out longhand rather than as assert_oracle_not_hostile()
+        # because the tolerated branch still carries a diagnostic worth
+        # logging — "stored, but does not build with an empty config" is
+        # precisely the state a Shape-2 oracle awaiting its form is in, and an
+        # operator reading the log should be able to see that, not silence.
+        # Note the fail-closed shape: only the explicitly benign
+        # OracleBuildError is tolerated; any other load failure rejects.
         try:
             validate_oracle_sandboxed(on_disk, {})
+        except OracleBuildError as exc:
+            logger.info(
+                "oracle %s stored but does not build with an empty config "
+                "(expected for a Shape-2 oracle awaiting configuration): %s",
+                safe_filename,
+                exc,
+            )
         except OracleLoadError as exc:
             on_disk.unlink(missing_ok=True)
             raise OracleRegistryError(f"oracle failed to load: {exc}") from exc
@@ -291,10 +412,53 @@ class OracleRegistry:
             shape=shape,
             head_lines=_read_head(on_disk),
             description=description,
+            config=dict(config or {}),
         )
         with self._lock:
             self._entries[oracle_id] = entry
         return entry
+
+    def load_example(
+        self,
+        filename: str,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+    ) -> OracleEntry:
+        """Copy a bundled example into the oracle dir and register it.
+
+        Bundled is NOT trusted: the bytes go through :meth:`upload` unchanged,
+        so the example gets the identical treatment a user upload does —
+        ``0o600``, ``__pycache__`` purge, the capped sandbox probe before any
+        in-process import, and shape detection.
+
+        *filename* is resolved against the ENUMERATED :meth:`list_examples`
+        result rather than joined onto ``self._examples_dir``. Joining would
+        make ``../../etc/passwd`` (or any absolute path) a readable file the
+        server then stores and executes; matching against the enumeration
+        makes the set of loadable files exactly the set the catalog already
+        advertises.
+        """
+        wanted = Path(filename).name
+        match = next(
+            (e for e in self.list_examples() if e["filename"] == wanted),
+            None,
+        )
+        if match is None or wanted != filename:
+            raise OracleNotFound(f"unknown example oracle: {filename!r}")
+        source = Path(match["path"])
+        try:
+            content = source.read_bytes()
+        except OSError as exc:  # pragma: no cover - enumerated a moment ago
+            raise OracleRegistryError(
+                f"example oracle {wanted} could not be read: {exc}"
+            ) from exc
+        return self.upload(
+            filename=wanted,
+            content=content,
+            description=description if description is not None else match["summary"],
+            config=config,
+        )
 
     def get(self, oracle_id: str) -> OracleEntry:
         _assert_safe_id(oracle_id)
@@ -308,7 +472,46 @@ class OracleRegistry:
         with self._lock:
             return list(self._entries.values())
 
-    def arm(self, oracle_id: str, client_sha: str) -> OracleEntry:
+    def set_config(
+        self, oracle_id: str, config: Optional[Dict[str, Any]]
+    ) -> OracleEntry:
+        """Replace an entry's config; returns the entry.
+
+        Separate from :meth:`upload` because the UI's order of operations is
+        "drop the file, *then* fill in the form": the file has to land before
+        there is anything to configure. Stores a copy so a later mutation of
+        the caller's dict cannot retroactively change what arm() validated.
+        Deliberately does NOT re-validate — :meth:`arm` is the gate.
+        """
+        entry = self.get(oracle_id)
+        with self._lock:
+            entry.config = dict(config or {})
+        return entry
+
+    def arm(
+        self,
+        oracle_id: str,
+        client_sha: str,
+        *,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> OracleEntry:
+        """Confirm intent to run this oracle, with its real configuration.
+
+        Three checks, in order: the file has not changed under us, the client
+        is looking at the same file we are, and the oracle actually loads with
+        the config it will be run with. The last one is the gate that upload
+        deliberately no longer performs (see :meth:`upload`) — arming is
+        already the user-intent confirmation, so it is the right place to spend
+        a full strict sandbox replay, and it is where a config naming a
+        filesystem path first gets used.
+
+        Passing *config* replaces the stored one first, so the UI can fill in
+        the form and arm in a single round trip. A load failure leaves the
+        entry UNARMED and is reported as :class:`OracleConfigInvalid` carrying
+        the sandbox's own diagnostic, so the user sees
+        ``KeyError('sample_ciphertext')`` attributed to their configuration
+        rather than a bare traceback or a 500.
+        """
         entry = self.get(oracle_id)
         _purge_pycache(entry.path)
         current_sha = _sha256_file(entry.path)
@@ -322,6 +525,29 @@ class OracleRegistry:
                 f"client sha256 mismatch ({client_sha[:12]}… vs "
                 f"{entry.sha256[:12]}…); display is stale"
             )
+        if config is not None:
+            self.set_config(oracle_id, config)
+        # STRICT, with the real config: unlike upload's lenient probe, a
+        # reproducible exception here is fatal, because there is nothing left
+        # downstream to fix it — the next thing that touches this oracle is the
+        # run. Still a capped subprocess, still never calls verify().
+        try:
+            validate_oracle_sandboxed(entry.path, entry.config)
+        except OracleLoadError as exc:
+            # Name the keys we handed over. The sandbox reports the child's
+            # exception via repr(), and repr(OSError) drops the filename — so
+            # an unreadable sample_ciphertext arrives as a bare
+            # "No such file or directory" with nothing to act on unless the
+            # field names come from this side. Keys only, not values: enough
+            # for the UI to highlight the offending field, without echoing a
+            # user's filesystem layout into every log line.
+            supplied = ", ".join(sorted(entry.config)) or "no values supplied"
+            raise OracleConfigInvalid(
+                f"oracle {entry.filename} could not be loaded with the supplied "
+                f"configuration ({supplied}): {exc}. Check the oracle's config "
+                f"values (a missing key is reported as a KeyError naming that "
+                f"key)."
+            ) from exc
         entry.armed = True
         return entry
 
@@ -354,7 +580,26 @@ class OracleRegistry:
         """
         entry = self.get(oracle_id)
         _purge_pycache(entry.path)
-        verify = load_oracle(entry.path, config={})
+        # The entry's own config, not {}: a Shape-2 oracle with a required key
+        # cannot be built without it, so hardcoding {} made the smoke test
+        # explode for exactly the oracles it is most useful on.
+        #
+        # Translated to a registry error because a smoke test run before the
+        # oracle has been configured is an ordinary user mistake, and anything
+        # raised here reaches the router unmapped — i.e. a 500 for what is
+        # really "fill in the form first". Broad on purpose: load_oracle wraps
+        # the *import* in OracleLoadError but calls ``build_oracle(config)``
+        # unwrapped, so the user oracle's own KeyError/ValueError arrives
+        # bare. repr() keeps the exception type visible, matching what the
+        # sandbox reports for the same failure at arm().
+        try:
+            verify = load_oracle(entry.path, config=entry.config)
+        except Exception as exc:  # noqa: BLE001 - any user-code load failure
+            supplied = ", ".join(sorted(entry.config)) or "no values supplied"
+            raise OracleConfigInvalid(
+                f"oracle {entry.filename} could not be loaded with the supplied "
+                f"configuration ({supplied}): {exc!r}"
+            ) from exc
         results: List[Dict[str, Any]] = []
         passes = 0
         fails = 0

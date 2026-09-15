@@ -335,3 +335,98 @@ def test_load_oracle_sandbox_false_skips_validation(tmp_path, monkeypatch):
     verify = load_oracle(src, sandbox=False)
     assert verify(b"ok") is True
     assert verify(b"no") is False
+
+
+# ---------------------------------------------------------------------------
+# assert_oracle_not_hostile — the lenient half of the sandbox policy
+#
+# Containment (hang / resource-kill) is non-negotiable; a reproducible
+# exception is not a containment failure, it is an unconfigured oracle. These
+# pin both halves, because a lenient probe that quietly stopped blocking would
+# look identical to a working one on every happy-path test.
+# ---------------------------------------------------------------------------
+
+
+def test_assert_not_hostile_allows_a_reproducible_build_error(tmp_path):
+    """A Shape-2 oracle probed before it has been configured must pass.
+
+    This is the bundled gocryptfs example's exact shape: a bare ``cfg[...]``
+    lookup that raises KeyError under an empty config. The strict validator
+    rejects it (see below); the lenient one must not.
+    """
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    return O(cfg['sample_ciphertext'])\n"
+        "class O:\n"
+        "    def __init__(self, p): self.p = p\n"
+        "    def verify(self, c): return True\n",
+    )
+    assert oracle_mod.assert_oracle_not_hostile(src, {}) is None
+    # ...and the strict policy still refuses it, unchanged.
+    with pytest.raises(OracleLoadError, match="sample_ciphertext"):
+        validate_oracle_sandboxed(src, {})
+
+
+def test_assert_not_hostile_allows_an_import_error(tmp_path):
+    src = _write(tmp_path / "o.py", "raise RuntimeError('nope')\n")
+    assert oracle_mod.assert_oracle_not_hostile(src, {}, timeout_s=5.0) is None
+
+
+def test_assert_not_hostile_still_rejects_hang_at_import(tmp_path):
+    """Same oracle body as ``test_sandbox_rejects_hang_at_import``."""
+    src = _write(
+        tmp_path / "o.py",
+        "while True:\n    pass\n\ndef verify(c): return True\n",
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OracleLoadError, match="wall-clock"):
+        oracle_mod.assert_oracle_not_hostile(src, {}, timeout_s=0.5, cpu_s=30)
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_assert_not_hostile_still_rejects_hang_in_build_oracle(tmp_path):
+    """The case the relaxation actually touches, so the one that proves it.
+
+    ``build_oracle`` is exactly where a tolerated exception now falls through;
+    a hang in the same function must still be blocked, or the lenient probe
+    would be a no-op dressed as a guard. Body reused from
+    ``test_sandbox_rejects_hang_in_build_oracle``.
+    """
+    src = _write(
+        tmp_path / "o.py",
+        "def build_oracle(cfg):\n"
+        "    while True:\n"
+        "        pass\n",
+    )
+    t0 = time.monotonic()
+    with pytest.raises(OracleLoadError, match="wall-clock"):
+        oracle_mod.assert_oracle_not_hostile(src, {}, timeout_s=0.5, cpu_s=30)
+    assert time.monotonic() - t0 < 5.0
+
+
+def test_assert_not_hostile_accepts_a_good_oracle(tmp_path):
+    src = _write(tmp_path / "o.py", "def verify(c): return True\n")
+    assert oracle_mod.assert_oracle_not_hostile(src) is None
+
+
+def test_build_error_is_an_oracle_load_error_subclass(tmp_path):
+    """Additive by construction: existing ``except OracleLoadError`` still wins.
+
+    The split only exists so a caller can opt into the distinction by naming
+    OracleBuildError; anything that raises a bare OracleLoadError must keep
+    reading as "not known to be benign".
+    """
+    src = _write(tmp_path / "o.py", "def build_oracle(cfg):\n    raise ValueError('x')\n")
+    with pytest.raises(oracle_mod.OracleBuildError) as excinfo:
+        validate_oracle_sandboxed(src, {}, timeout_s=5.0)
+    assert isinstance(excinfo.value, OracleLoadError)
+    assert str(excinfo.value).startswith("oracle failed to load:")
+
+
+def test_hang_does_not_raise_the_benign_subclass(tmp_path):
+    """A containment failure must never be mistaken for a mere build error."""
+    src = _write(tmp_path / "o.py", "while True:\n    pass\n")
+    with pytest.raises(OracleLoadError) as excinfo:
+        validate_oracle_sandboxed(src, {}, timeout_s=0.5, cpu_s=30)
+    assert not isinstance(excinfo.value, oracle_mod.OracleBuildError)

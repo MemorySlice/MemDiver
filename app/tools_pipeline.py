@@ -1248,6 +1248,7 @@ def brute_force(
     output_dir: str,
     oracle_path: Optional[str] = None,
     oracle_config_path: Optional[str] = None,
+    oracle_config: Optional[Dict[str, Any]] = None,
     pcap_path: Optional[str] = None,
     tls_client_random: Optional[str] = None,
     pcap_max_records: Optional[int] = None,
@@ -1274,6 +1275,13 @@ def brute_force(
     Two oracle sources are supported, mutually exclusive:
       * ``oracle_path`` — a user-supplied BYO decryption oracle script (sandboxed).
         Hits it confirms are labelled ``confirmed_by="oracle"``.
+        Its configuration arrives either as ``oracle_config_path`` (a TOML file,
+        what the CLI's ``--oracle-config`` and the MCP tool pass) or, when the
+        caller already holds the parsed mapping, as ``oracle_config`` — the web
+        surface threads the armed registry entry's config through directly
+        rather than writing a temporary TOML. The dict wins when both are given.
+        Supplying a config does NOT confer trust: the BYO oracle keeps the
+        strict sandboxed validation in ``engine.brute_force``.
       * ``pcap_path`` — a pcap/pcapng of the same TLS session; MemDiver's
         first-party pcap oracle proves a recovered key decrypts the real captured
         records (TLS 1.3, TLS 1.2 GCM, and older CBC suites). ``tls_client_random``
@@ -1351,6 +1359,15 @@ def brute_force(
         bf_oracle_kwargs["oracle_config_path"] = (
             Path(oracle_config_path) if oracle_config_path else None
         )
+        # An already-parsed config wins over the TOML path: ``run_brute_force``
+        # only falls back to ``load_oracle_config(oracle_config_path)`` when
+        # ``oracle_config`` is None, so passing both is safe and the file stays
+        # the CLI/MCP route. Deliberately NOT accompanied by ``oracle_trusted``
+        # — that exemption belongs to first-party resource oracles only (see
+        # :func:`_pcap_oracle_trusted`); a configured BYO oracle is still
+        # untrusted code and keeps ``validate_oracle_sandboxed``.
+        if oracle_config is not None:
+            bf_oracle_kwargs["oracle_config"] = dict(oracle_config)
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
@@ -1504,6 +1521,7 @@ def n_sweep(
     stride: int = 1,
     exhaustive: bool = True,
     oracle_config_path: Optional[str] = None,
+    oracle_config: Optional[Dict[str, Any]] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
@@ -1517,7 +1535,10 @@ def n_sweep(
 
     The same two mutually-exclusive oracle sources :func:`brute_force` accepts:
       * ``oracle_path`` — a user-supplied BYO decryption oracle script
-        (sandboxed), optionally configured by ``oracle_config_path``.
+        (sandboxed), optionally configured by ``oracle_config_path`` (a TOML
+        file) or by ``oracle_config`` (the already-parsed mapping, which the web
+        surface takes straight off the armed registry entry). The dict wins when
+        both are given; the oracle stays sandboxed either way.
       * ``pcap_path`` — a pcap/pcapng of the same TLS session, verified through
         MemDiver's first-party pcap oracle. ``tls_client_random`` (hex)
         optionally restricts matching to one session, and ``pcap_max_records`` /
@@ -1590,8 +1611,16 @@ def n_sweep(
             oracle = load_oracle(Path(BUILTIN_ORACLE_PATH), config=pcap_config,
                                  sandbox=not _pcap_oracle_trusted(pcap_config))
         else:
-            config = load_oracle_config(
-                Path(oracle_config_path) if oracle_config_path else None
+            # An already-parsed config wins over the TOML path, mirroring
+            # ``brute_force`` exactly so a sweep and a brute force can never be
+            # configured differently. ``load_oracle`` keeps its default sandbox:
+            # a configured BYO oracle is still untrusted code.
+            config = (
+                dict(oracle_config)
+                if oracle_config is not None
+                else load_oracle_config(
+                    Path(oracle_config_path) if oracle_config_path else None
+                )
             )
             oracle = load_oracle(Path(oracle_path), config=config)
         _emit(on_progress, "stage_start", stage="nsweep", pct=0.0,
@@ -1996,6 +2025,7 @@ def auto_floor(
     output_dir: str,
     num_dumps: int,
     oracle_config_path: Optional[str] = None,
+    oracle_config: Optional[Dict[str, Any]] = None,
     key_sizes: Sequence[int] = (32,),
     stride: int = 1,
     reduce_kwargs: Optional[Dict[str, Any]] = None,
@@ -2027,6 +2057,11 @@ def auto_floor(
     ``num_dumps``. Writes ``verdict.json`` + ``report.md`` into ``output_dir``
     and returns the verdict dict.
 
+    The oracle's configuration arrives as ``oracle_config_path`` (a TOML file,
+    the CLI route) or as the already-parsed ``oracle_config`` mapping (the web
+    pipeline's escalate stage, which reads it off the armed registry entry).
+    The dict wins when both are given.
+
     Encrypted ``.msl`` references are decrypted when key material is supplied.
 
     ``neighborhood_pad`` (default 64 bytes per side) sets the context width
@@ -2055,9 +2090,17 @@ def auto_floor(
                     on_source(source)
                 _raise_if_locked(source)
                 reference_data = source.read_all()[: len(variance)]
+            # Same config contract as ``brute_force`` / ``n_sweep``: an
+            # already-parsed ``oracle_config`` wins over the TOML path, so the
+            # pipeline's escalate stage can hand over the armed registry
+            # entry's config without materialising a temporary file.
             oracle = load_oracle(
                 Path(oracle_path),
-                load_oracle_config(Path(oracle_config_path) if oracle_config_path else None),
+                dict(oracle_config)
+                if oracle_config is not None
+                else load_oracle_config(
+                    Path(oracle_config_path) if oracle_config_path else None
+                ),
             )
         except FileNotFoundError as exc:
             raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc

@@ -587,3 +587,137 @@ def test_register_artifact_missing_relpath_yields_none_sha(artifact_dir):
     assert spec["sha256"] is None
     assert spec["size"] == 0
 
+
+
+# ------------------------------------------------------------------
+# oracle_config — the armed oracle's parsed configuration
+#
+# It rides as ONE top-level ``params`` key rather than a copy inside
+# ``brute_force`` and another inside ``nsweep``, because all three
+# oracle-loading stages (brute_force, nsweep, escalate) open the SAME
+# oracle file and must open it with the same configuration.
+# ------------------------------------------------------------------
+
+_SHAPE2_REQUIRED_CONFIG = (
+    "class _KeyOracle:\n"
+    "    def __init__(self, key):\n"
+    "        self._key = key\n"
+    "\n"
+    "    def verify(self, candidate):\n"
+    "        return candidate == self._key\n"
+    "\n"
+    "\n"
+    "def build_oracle(config):\n"
+    "    # No .get() default on purpose: an unconfigured build must fail, which\n"
+    "    # is what makes this fixture prove the config actually arrived.\n"
+    "    return _KeyOracle(bytes.fromhex(config['key_hex']))\n"
+)
+
+
+@pytest.fixture
+def config_oracle_path(tmp_path: Path) -> Path:
+    """A Shape-2 oracle that cannot be built without its config."""
+    path = tmp_path / "needs_config.py"
+    path.write_text(_SHAPE2_REQUIRED_CONFIG)
+    os.chmod(path, 0o600)
+    return path
+
+
+def _config_pipeline_params(dumps_dir, oracle_path, artifact_dir) -> Dict[str, Any]:
+    reduce_kwargs = {
+        "min_variance": 100.0,
+        "entropy_window": 16,
+        "entropy_threshold": 3.5,
+        "min_region": 8,
+        "alignment": 8,
+        "block_size": 16,
+    }
+    return {
+        "artifact_dir": str(artifact_dir),
+        "source_paths": dumps_dir,
+        "reduce_kwargs": reduce_kwargs,
+        "oracle_path": str(oracle_path),
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1,
+                        "exhaustive": True},
+        "nsweep": {
+            "n_values": [3, 4],
+            "reduce_kwargs": reduce_kwargs,
+            "key_sizes": [32],
+            "stride": 8,
+            "exhaustive": True,
+        },
+    }
+
+
+def test_run_pipeline_threads_oracle_config_to_brute_force_and_nsweep(
+    dumps_dir, config_oracle_path, artifact_dir
+):
+    """Both oracle-loading stages build the Shape-2 oracle from the config.
+
+    Without the top-level ``oracle_config`` key each stage would replay
+    ``build_oracle({})`` and raise ``KeyError('key_hex')``, so a green run
+    here IS the arrival proof.
+    """
+    params = _config_pipeline_params(dumps_dir, config_oracle_path, artifact_dir)
+    params["oracle_config"] = {"key_hex": KEY_BYTES.hex()}
+
+    result = run_pipeline(params, _FakeCtx())
+
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] >= 1, hits
+    assert result["summary"]["nsweep"]["total_dumps"] == len(dumps_dir)
+
+
+def test_run_pipeline_lifts_a_stray_oracle_config_out_of_brute_force(
+    dumps_dir, config_oracle_path, artifact_dir
+):
+    """A copy under ``brute_force`` is accepted, not a duplicate-keyword crash.
+
+    ``bf_kwargs`` is splatted into the producer, so an unlifted copy would
+    collide with the explicit pass. Lifting it also means such a caller still
+    reaches the nsweep stage with a config.
+    """
+    params = _config_pipeline_params(dumps_dir, config_oracle_path, artifact_dir)
+    params["brute_force"]["oracle_config"] = {"key_hex": KEY_BYTES.hex()}
+
+    result = run_pipeline(params, _FakeCtx())
+
+    hits = json.loads((artifact_dir / "brute_force" / "hits.json").read_text())
+    assert hits["verified_count"] >= 1, hits
+    assert result["summary"]["nsweep"]["total_dumps"] == len(dumps_dir)
+
+
+def test_escalate_stage_forwards_the_oracle_config(tmp_path):
+    """The escalation re-loads the same oracle, so it needs the same config."""
+    from unittest.mock import patch
+
+    from memdiver.app.pipeline import pipeline_runner
+
+    captured: Dict[str, Any] = {}
+
+    def _fake_run_producer(_producer, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    state = pipeline_runner.PipelineState(
+        ctx=_FakeCtx(),
+        artifact_dir=tmp_path,
+        reduce_kwargs={},
+        oracle_path=tmp_path / "oracle.py",
+        bf_kwargs={"key_sizes": [32], "stride": 8},
+        nsweep_params=None,
+        emit_params=None,
+        oracle_config={"key_hex": KEY_BYTES.hex()},
+    )
+    state.consensus = {
+        "variance_path": str(tmp_path / "variance.npy"),
+        "reference_path": str(tmp_path / "reference.bin"),
+        "num_dumps": 4,
+    }
+
+    with patch.object(pipeline_runner, "_run_producer", _fake_run_producer), \
+            patch.object(pipeline_runner, "register_artifact"), \
+            patch.object(pipeline_runner, "_producer_sink", return_value=None):
+        pipeline_runner._stage_escalate(state)
+
+    assert captured["oracle_config"] == {"key_hex": KEY_BYTES.hex()}

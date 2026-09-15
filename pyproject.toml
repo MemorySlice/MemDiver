@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.8.5"
+version = "0.8.6"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -432,6 +432,10 @@ files = [
     # security boundary (path validation + a privileged move), so a silent
     # Optional/str-vs-Path slip there is exactly what types are for.
     "api/upload_dir.py",
+    # Same boundary, same reasoning: oracle_dir.py vets the directory the
+    # server will load user-supplied Python out of, and it reuses upload_dir's
+    # validator, so the two must stay type-compatible.
+    "api/oracle_dir.py",
     # Wave 7 -- B1 key-location compute. New and fully typed from the start;
     # the verdict invariants are the whole point, so keep them type-checked.
     "engine/key_location.py",
@@ -580,5 +584,13 @@ memdiver = [
     # runtime, so a `pip install memdiver` that omitted them would serve the
     # panel's 404-with-published-URL fallback instead of the real page.
     "docs/**/*.md",
+    # The BYO-oracle Examples tab (GET /api/oracles/examples) reads the bundled
+    # templates straight off disk from docs/oracle/examples/, which holds no
+    # .md at all -- so without these two globs the whole directory is absent
+    # from the wheel, the registry's is_dir() check fails, and the tab renders
+    # empty with a 200 for every non-repo user. The .toml matters on its own:
+    # gocryptfs.toml is the config template its example oracle needs.
+    "docs/**/*.py",
+    "docs/**/*.toml",
     "frontend/dist/**/*",
 ]

@@ -10,6 +10,15 @@ import { FileBrowserEntryList, ENTRY_ROW_ATTR } from "./FileBrowserEntryList";
 interface FileBrowserProps {
   onSelect: (path: string) => void;
   onClose: () => void;
+  /**
+   * Show every file, not only the dump extensions the endpoint filters to.
+   *
+   * Off by default so the dump pickers keep the filtered listing they rely on.
+   * The oracle config editor turns it on: the sample files a Shape 2 oracle is
+   * configured with (a gocryptfs ciphertext, say) carry no extension and are
+   * otherwise invisible in this dialog.
+   */
+  allFiles?: boolean;
 }
 
 function deriveFilter(editPath: string | null, currentPath: string): string {
@@ -23,7 +32,7 @@ function deriveFilter(editPath: string | null, currentPath: string): string {
   return remainder.toLowerCase();
 }
 
-export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
+export function FileBrowser({ onSelect, onClose, allFiles = false }: FileBrowserProps) {
   const { t } = useTranslation("wizard");
   const [currentPath, setCurrentPath] = useState<string>("");
   const [editPath, setEditPath] = useState<string | null>(null);
@@ -46,7 +55,11 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
     setLoading(true);
     setError(null);
     try {
-      const result = await browsePath(path);
+      // Only asked for when the caller wants it: the default browse keeps its
+      // single-argument call, so nothing downstream changes behaviour.
+      const result = allFiles
+        ? await browsePath(path, true)
+        : await browsePath(path);
       if (result.error) {
         setError(result.error);
         setEntries([]);
@@ -63,7 +76,7 @@ export function FileBrowser({ onSelect, onClose }: FileBrowserProps) {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [t, allFiles]);
 
   useEffect(() => {
     void loadFavourites();

@@ -269,6 +269,35 @@ export interface BrowseResult {
   error?: string;
 }
 
+/** One dump file found by ``GET /api/path/discover-dumps``. */
+export interface DiscoveredDump {
+  path: string;
+  /** ``RunDiscovery``'s own classification, e.g. ``msl`` / ``gcore`` / ``raw``. */
+  kind: string;
+  size: number;
+  /** Name of the containing directory, which for a corpus is the run. */
+  run: string;
+}
+
+/**
+ * Result of a recursive dump sweep under one directory.
+ *
+ * ``counts_by_kind`` is deliberately counted over EVERYTHING discovered,
+ * before the ``kinds`` filter is applied, so the kind checkboxes can show a
+ * real count for the kinds that are currently switched off.
+ *
+ * ``error`` follows ``BrowseResult``: the server answers 200 with the four
+ * keys always present and merely adds this one, so a caller renders the
+ * result unconditionally instead of branching on a null response.
+ */
+export interface DiscoverDumpsResult {
+  dumps: DiscoveredDump[];
+  total: number;
+  truncated: boolean;
+  counts_by_kind: Record<string, number>;
+  error?: string;
+}
+
 // Structure overlay types
 export interface StructureField {
   name: string;

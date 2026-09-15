@@ -10,28 +10,117 @@
  *     An armed oracle is the only kind the pipeline's ``/run``
  *     endpoint will accept.
  *
- * Security posture: the server refuses uploads when
- * ``MEMDIVER_ORACLE_DIR`` is unset and enforces a 1 MB cap, 0o600
- * permissions, and pycache purge. The client does nothing security-
- * sensitive — we only show the data the server returned.
+ * Security posture: the server refuses uploads until an oracle directory
+ * is configured, and enforces a 1 MB cap, 0o600 permissions, and pycache
+ * purge. The client does nothing security-sensitive — we only show the data
+ * the server returned.
+ *
+ * Because that directory is off by default, the dropzone alone used to be a
+ * guaranteed 503: nothing in the UI said the feature was disabled, let alone
+ * how to turn it on. So when the status says ``enabled: false`` the dropzone
+ * is replaced by a consent panel that states plainly what is being allowed
+ * (MemDiver executing Python the user supplies) and where the files land.
+ * Enabling re-points the live registry server-side and answers with the fresh
+ * status, so the dropzone appears without a reload.
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { OracleEntry } from "@/api/oracles";
+import type { OracleEntry, OracleStatus } from "@/api/oracles";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useOracleStore } from "@/stores/oracle-store";
 
 const MAX_UPLOAD_BYTES = 1_000_000;
 
+/**
+ * The variable that pins the oracle directory outside the UI's control.
+ *
+ * Mirrors ``ENV_VAR`` in api/routers/oracles.py. It is a machine identifier,
+ * not prose, so it is interpolated into the translated sentence rather than
+ * being part of it.
+ */
+const ORACLE_DIR_ENV_VAR = "MEMDIVER_ORACLE_DIR";
+
 function shortSha(sha: string): string {
   return sha.length >= 12 ? sha.slice(0, 12) + "…" : sha;
+}
+
+/**
+ * Shown in place of the dropzone while oracle storage is disabled.
+ *
+ * When the directory is pinned by the environment variable the button is
+ * omitted on purpose: ``POST /api/oracles/enable`` answers 409 in that case,
+ * so offering it would only ever produce a failure the user cannot act on
+ * from here.
+ */
+function OracleConsentPanel({
+  status,
+}: {
+  status: OracleStatus;
+}) {
+  const { t } = useTranslation("pipeline");
+  const enable = useOracleStore((s) => s.enable);
+  const [enabling, setEnabling] = useState(false);
+
+  async function handleEnable(): Promise<void> {
+    setEnabling(true);
+    try {
+      await enable();
+    } finally {
+      setEnabling(false);
+    }
+  }
+
+  if (status.env_pinned) {
+    return (
+      <div className="md-panel p-4 space-y-2" data-testid="oracle-consent-panel">
+        <div className="md-text-accent font-semibold text-xs">
+          {t("oracle.upload.consentPinnedHeading")}
+        </div>
+        <div className="text-xs md-text-muted">
+          {t("oracle.upload.consentPinnedBody", { envVar: ORACLE_DIR_ENV_VAR })}
+        </div>
+        <div className="text-xs md-text-muted font-mono break-all">
+          {t("oracle.upload.consentPinnedPath", {
+            path: status.path ?? status.default_path,
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="md-panel p-4 space-y-2" data-testid="oracle-consent-panel">
+      <div className="md-text-accent font-semibold text-xs">
+        {t("oracle.upload.consentHeading")}
+      </div>
+      <div className="text-xs md-text-muted">
+        {t("oracle.upload.consentBody")}
+      </div>
+      <div className="text-xs md-text-muted break-all">
+        {t("oracle.upload.consentStorage", { path: status.default_path })}
+      </div>
+      <button
+        type="button"
+        data-testid="oracle-enable-btn"
+        aria-busy={enabling}
+        disabled={enabling}
+        onClick={() => void handleEnable()}
+        className="text-xs px-3 py-1 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50 hover:opacity-90"
+      >
+        {enabling
+          ? t("oracle.upload.consentEnabling")
+          : t("oracle.upload.consentEnable")}
+      </button>
+    </div>
+  );
 }
 
 export function OracleUpload() {
   const { t } = useTranslation("pipeline");
   const uploaded = useOracleStore((s) => s.uploaded);
+  const status = useOracleStore((s) => s.status);
   const selectedOracleId = useOracleStore((s) => s.selectedOracleId);
   const loading = useOracleStore((s) => s.loading);
   const error = useOracleStore((s) => s.error);
@@ -40,7 +129,18 @@ export function OracleUpload() {
   const remove = useOracleStore((s) => s.remove);
   const selectOracle = useOracleStore((s) => s.selectOracle);
   const clearError = useOracleStore((s) => s.clearError);
+  const refresh = useOracleStore((s) => s.refresh);
   const updateForm = usePipelineStore((s) => s.updateForm);
+
+  // Fetch the status this component BRANCHES on, rather than relying on a
+  // sibling to have done it. ``refresh`` used to be called only by
+  // OracleExamplePicker, which mounts on the *Examples* tab -- but Upload is
+  // the default tab, so on the path a first-time user actually walks, `status`
+  // stayed null and the consent panel never rendered: they got the dropzone
+  // and a 503, which is the whole defect this panel exists to prevent.
+  useEffect(() => {
+    if (status === null) void refresh();
+  }, [status, refresh]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [description, setDescription] = useState("");
@@ -79,60 +179,70 @@ export function OracleUpload() {
 
   return (
     <div className="space-y-3">
-      <div
-        role="button"
-        tabIndex={0}
-        aria-label={t("oracle.upload.dropTitle")}
-        className="md-panel p-4 text-xs text-center cursor-pointer hover:bg-[var(--md-bg-hover)] transition-colors"
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            inputRef.current?.click();
-          }
-        }}
-        onDragOver={(e) => {
-          e.preventDefault();
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          const f = e.dataTransfer.files[0];
-          if (f) void handleFile(f);
-        }}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".py,text/x-python"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void handleFile(f);
-            if (inputRef.current) inputRef.current.value = "";
+      {/* The consent panel replaces the dropzone while oracle storage is
+          off; `status === null` means the first refresh has not answered
+          yet, and we keep today's optimistic dropzone for that moment
+          rather than flashing a panel that may be wrong. */}
+      {status !== null && !status.enabled ? (
+        <OracleConsentPanel status={status} />
+      ) : (
+        <>
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={t("oracle.upload.dropTitle")}
+          className="md-panel p-4 text-xs text-center cursor-pointer hover:bg-[var(--md-bg-hover)] transition-colors"
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              inputRef.current?.click();
+            }
           }}
-        />
-        <div className="md-text-accent font-semibold mb-1">
-          {t("oracle.upload.dropTitle")}
+          onDragOver={(e) => {
+            e.preventDefault();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            const f = e.dataTransfer.files[0];
+            if (f) void handleFile(f);
+          }}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".py,text/x-python"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleFile(f);
+              if (inputRef.current) inputRef.current.value = "";
+            }}
+          />
+          <div className="md-text-accent font-semibold mb-1">
+            {t("oracle.upload.dropTitle")}
+          </div>
+          <div className="md-text-muted">
+            {t("oracle.upload.dropBodyPrefix")} <code>verify</code>
+            {t("oracle.upload.dropBodyMid")} <code>build_oracle</code>
+            {t("oracle.upload.dropBodyTail")}
+          </div>
         </div>
-        <div className="md-text-muted">
-          {t("oracle.upload.dropBodyPrefix")} <code>verify</code>
-          {t("oracle.upload.dropBodyMid")} <code>build_oracle</code>
-          {t("oracle.upload.dropBodyTail")}
-        </div>
-      </div>
 
-      <div>
-        <label className="block text-xs md-text-muted mb-1">
-          {t("oracle.upload.descriptionLabel")}
-        </label>
-        <input
-          type="text"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder={t("oracle.upload.descriptionPlaceholder")}
-          className="w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded"
-        />
-      </div>
+        <div>
+          <label className="block text-xs md-text-muted mb-1">
+            {t("oracle.upload.descriptionLabel")}
+          </label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={t("oracle.upload.descriptionPlaceholder")}
+            className="w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded"
+          />
+        </div>
+        </>
+      )}
 
       {(localError || error) && (
         <div className="text-xs md-text-error">

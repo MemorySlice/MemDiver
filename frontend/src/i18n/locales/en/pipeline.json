@@ -42,7 +42,23 @@
       "removePath": "remove {{path}}",
       "empty": "No dumps yet. Paste at least one path above to continue.",
       "back": "← Back",
-      "next": "Next: Oracle →"
+      "next": "Next: Oracle →",
+      "placeholder": "/Users/me/dataset/run_0001/gdb_raw.bin\n/Users/me/dataset/run_0002/gdb_raw.bin\n…",
+      "browseFolder": "Browse folder…",
+      "browseHint": "Or point MemDiver at a directory and let it find the dumps inside it.",
+      "discovering": "Scanning directory…",
+      "discoveredIn": "Dumps found in {{path}}",
+      "discoverKinds": "File kinds",
+      "discoverKindOption": "{{kind}} ({{count}})",
+      "discoverEmpty": "No dumps of the selected kinds were found in this directory.",
+      "discoverError": "Could not scan that directory: {{message}}",
+      "discoverTruncated": "Only the first {{count}} matches are listed — this is not the complete set. Pick a narrower folder or fewer kinds to see the rest.",
+      "discoverSelectAll": "Select all",
+      "discoverSelectNone": "Select none",
+      "discoverSelectDump": "select {{path}}",
+      "discoverAdd_one": "Add {{count}} selected",
+      "discoverAdd_other": "Add {{count}} selected",
+      "discoverDismiss": "Dismiss discovered dumps"
     },
     "oracle": {
       "title": "Pick or upload your oracle",
@@ -57,6 +73,7 @@
       "exampleHintPrefix": "Copy",
       "exampleHintMid": "from",
       "exampleHintTail": ", tweak it for your dataset, then drop the edited file below to upload + arm it.",
+      "exampleHintGoUpload": "Go to the Upload tab",
       "pcap": {
         "hint": "Or skip the BYO oracle: point at a pcap/pcapng of the same TLS session and MemDiver's first-party trusted oracle will confirm a recovered key decrypts the real captured records.",
         "pathLabel": "pcap path",
@@ -174,7 +191,25 @@
       "introTail": "tab to actually run a pipeline.",
       "shape": "Shape {{shape}}",
       "noSummary": "(no summary)",
-      "shaMeta": "sha256: {{sha}}… · {{size}} bytes"
+      "shaMeta": "sha256: {{sha}}… · {{size}} bytes",
+      "useIntro": "Or use one as it ships: “Use this example” registers the bundled file on the server so it becomes a runnable oracle — a Shape 2 example asks for its config first.",
+      "use": "Use this example",
+      "working": "Working…",
+      "configHint": "This oracle is built from a config. The values below come from the example's own template — they are placeholders, not paths on this machine, so replace each one before arming.",
+      "configEmptyHint": "This example ships no config template. Add the keys its build_oracle(cfg) expects, or load it unarmed and arm it from the Upload tab.",
+      "fieldKeyLabel": "Config key",
+      "fieldValueLabel": "Value for {{key}}",
+      "addField": "+ Add field",
+      "browse": "Browse…",
+      "browseFor": "Browse for the {{key}} file",
+      "loadAndArm": "Load + arm",
+      "loadUnarmed": "Load without arming",
+      "cancelConfig": "Cancel",
+      "loaded": "Loaded {{filename}} — arm it from the Upload tab to run it.",
+      "loadedUnarmed": "Loaded {{filename}} unarmed — arm it from the Upload tab to run it.",
+      "armed": "Loaded and armed {{filename}} — you can continue.",
+      "useError": "Could not use this example: {{error}}",
+      "unknownError": "the server refused the request without giving a reason"
     },
     "shape": {
       "newToOracles": "New to BYO oracles?",
@@ -210,7 +245,15 @@
       "unarmed": "Unarmed",
       "arm": "Arm oracle",
       "armTitle": "Confirm sha256 and mark this oracle safe to execute",
-      "shaMeta": "sha256: {{sha}} · {{size}} bytes"
+      "shaMeta": "sha256: {{sha}} · {{size}} bytes",
+      "consentHeading": "Oracle uploads are turned off",
+      "consentBody": "An oracle is Python you supply, and MemDiver runs it in this server's process to test every surviving key candidate. Enable this only for code you wrote or have read.",
+      "consentStorage": "Uploads will be stored in {{path}}. The directory is created for your user only (mode 0700) and each oracle file is written read-write to you alone (0600).",
+      "consentEnable": "Enable oracle uploads",
+      "consentEnabling": "Enabling…",
+      "consentPinnedHeading": "Oracle directory is pinned by the environment",
+      "consentPinnedBody": "{{envVar}} is set in this server's environment, so the oracle directory cannot be changed from here. Unset it and restart the server to choose a directory in the UI.",
+      "consentPinnedPath": "Current value: {{path}}"
     }
   },
   "run": {

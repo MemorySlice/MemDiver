@@ -263,8 +263,17 @@ def _build_worker_params(
     request: PipelineRunRequest,
     oracle_path: Optional[Path],
     task_root: Path,
+    oracle_config: Optional[Dict[str, Any]] = None,
 ) -> dict:
-    """Translate the Pydantic request into the plain-dict the worker expects."""
+    """Translate the Pydantic request into the plain-dict the worker expects.
+
+    ``oracle_config`` is the armed registry entry's configuration, supplied by
+    the caller rather than read off ``request``: it is deliberately NOT a field
+    on ``PipelineRunRequest``. The config is what ``arm()`` strictly validated in
+    a sandbox, so letting a client post one here would hand the worker a config
+    no arm step ever checked. Taking it only from the armed entry keeps the
+    arm-time validation on the path of every run.
+    """
     reduce_kwargs = request.reduce.model_dump()
     bf_kwargs = request.brute_force.model_dump()
     worker: dict = {
@@ -273,6 +282,12 @@ def _build_worker_params(
         # ``oracle_path`` is ``None`` for a pcap-oracle run; the worker routes
         # the brute-force stage through the first-party trusted pcap oracle.
         "oracle_path": str(oracle_path) if oracle_path is not None else None,
+        # One top-level key, not a copy inside ``brute_force`` and another
+        # inside ``nsweep``: the config belongs to the oracle, and the
+        # brute_force / nsweep / escalate stages all load that same oracle file.
+        # ``None`` (a pcap run, or an oracle needing no config) leaves every
+        # producer on its existing ``oracle_config_path`` behaviour.
+        "oracle_config": dict(oracle_config) if oracle_config else None,
         "pcap_path": request.pcap_path,
         "tls_client_random": request.tls_client_random,
         "pcap_max_records": request.pcap_max_records,
@@ -311,6 +326,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
 
     oracle_path: Optional[Path] = None
     oracle_sha256: Optional[str] = None
+    oracle_config: Optional[Dict[str, Any]] = None
     if request.pcap_path:
         # Existence check only, deliberately. This is a READ of a capture the
         # operator chose, which is the accepted, documented risk class for this
@@ -337,6 +353,11 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         oracle_path = entry.path
         oracle_sha256 = entry.sha256
+        # The configuration the user confirmed at arm time — and that arm()
+        # already replayed through the strict sandbox — travels with the run.
+        # Without it a Shape-2 oracle (``build_oracle(config)`` reading a
+        # required key) arms cleanly and then dies in the worker on ``{}``.
+        oracle_config = entry.config
 
     for p in request.source_paths:
         if not Path(p).is_file():
@@ -366,6 +387,7 @@ def run_pipeline_endpoint(request: PipelineRunRequest):
         request,
         oracle_path=oracle_path,
         task_root=manager.artifact_store.root,
+        oracle_config=oracle_config,
     )
     record = manager.submit(
         kind="pipeline",
@@ -441,6 +463,10 @@ def run_auto_floor_endpoint(request: AutoFloorRunRequest):
             reference_path=request.reference_dump,
             num_dumps=request.num_dumps,
             oracle_path=str(entry.path),
+            # Same gap the /run path had: ``run_auto_floor_stage`` already
+            # accepts the parsed config, it was simply never handed the one the
+            # arm step validated, so a Shape-2 oracle built with ``{}`` here.
+            oracle_config=entry.config,
             reduce_kwargs=reduce_kwargs,
             key_sizes=request.key_sizes,
             stride=request.stride,

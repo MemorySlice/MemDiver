@@ -998,3 +998,136 @@ def test_auto_floor_rejects_negative_neighborhood_pad(tmp_path):
         )
     assert exc.value.category == ErrorCategory.INVALID_INPUT
     assert "neighborhood_pad" in str(exc.value)
+
+
+# ----------------------------------------------------------------------
+# oracle_config — the armed web entry's configuration, threaded as a DICT
+#
+# The web surface holds the config as a parsed mapping on the armed
+# ``OracleEntry``; writing it back out to a temporary TOML just so the
+# producers could read it again would be a round-trip with nothing to gain
+# and a temp file to leak. These pin that the dict wins over
+# ``oracle_config_path``, that the path keeps working for the CLI/MCP
+# surfaces that do pass a file, and — the security-relevant half — that
+# supplying a config never quietly grants the oracle trust.
+# ----------------------------------------------------------------------
+
+
+def test_brute_force_prefers_the_config_dict_and_grants_no_trust(
+    tmp_path, oracle_path, monkeypatch
+):
+    captured: Dict[str, Any] = {}
+
+    def _capture(*_args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop once the oracle kwargs are built")
+
+    monkeypatch.setattr("memdiver.engine.brute_force.run_brute_force", _capture)
+    monkeypatch.setattr(tp, "_read_reference_bytes", lambda *a, **k: b"")
+
+    config = {"sample_ciphertext": str(tmp_path / "vault" / "ct")}
+    with pytest.raises(RuntimeError):
+        tp.brute_force(
+            candidates_path=str(tmp_path / "candidates.json"),
+            reference_path=str(tmp_path / "reference.bin"),
+            output_dir=str(tmp_path / "out"),
+            oracle_path=str(oracle_path),
+            oracle_config_path=str(tmp_path / "oracle.toml"),
+            oracle_config=config,
+        )
+
+    assert captured["oracle_config"] == config
+    # A copy, so a later mutation of the registry entry's dict cannot reach
+    # into a sweep that is already running.
+    assert captured["oracle_config"] is not config
+    # The TOML path is still forwarded; the engine simply prefers the dict.
+    assert captured["oracle_config_path"] == Path(tmp_path / "oracle.toml")
+    # The third validation layer must stay armed: ``run_brute_force`` skips
+    # ``validate_oracle_sandboxed`` only when ``oracle_trusted`` is set, and a
+    # configured BYO oracle is still untrusted user code.
+    assert "oracle_trusted" not in captured
+
+
+def test_brute_force_without_a_config_dict_is_unchanged(
+    tmp_path, oracle_path, monkeypatch
+):
+    """The CLI/MCP shape (a TOML path, no dict) reaches the engine as before."""
+    captured: Dict[str, Any] = {}
+
+    def _capture(*_args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop once the oracle kwargs are built")
+
+    monkeypatch.setattr("memdiver.engine.brute_force.run_brute_force", _capture)
+    monkeypatch.setattr(tp, "_read_reference_bytes", lambda *a, **k: b"")
+
+    with pytest.raises(RuntimeError):
+        tp.brute_force(
+            candidates_path=str(tmp_path / "candidates.json"),
+            reference_path=str(tmp_path / "reference.bin"),
+            output_dir=str(tmp_path / "out"),
+            oracle_path=str(oracle_path),
+            oracle_config_path=str(tmp_path / "oracle.toml"),
+        )
+
+    assert "oracle_config" not in captured
+    assert captured["oracle_config_path"] == Path(tmp_path / "oracle.toml")
+
+
+def test_n_sweep_prefers_the_config_dict_over_the_toml_path(
+    tmp_path, source_paths, oracle_path, monkeypatch
+):
+    captured: Dict[str, Any] = {}
+
+    def _capture_load(_path, config=None, **_kw):
+        captured["config"] = config
+        raise RuntimeError("stop once the oracle is loaded")
+
+    def _must_not_load(*_a, **_k):
+        raise AssertionError("load_oracle_config consulted despite a config dict")
+
+    monkeypatch.setattr("memdiver.engine.oracle.load_oracle", _capture_load)
+    monkeypatch.setattr("memdiver.engine.oracle.load_oracle_config", _must_not_load)
+
+    config = {"sample_ciphertext": str(tmp_path / "vault" / "ct")}
+    with pytest.raises(RuntimeError):
+        tp.n_sweep(
+            source_paths=source_paths,
+            oracle_path=str(oracle_path),
+            output_dir=str(tmp_path / "nsweep"),
+            n_values=[2],
+            oracle_config_path=str(tmp_path / "oracle.toml"),
+            oracle_config=config,
+        )
+
+    assert captured["config"] == config
+
+
+def test_auto_floor_prefers_the_config_dict_over_the_toml_path(
+    tmp_path, consensus_artifacts, oracle_path, monkeypatch
+):
+    captured: Dict[str, Any] = {}
+
+    def _capture_load(_path, config=None, **_kw):
+        captured["config"] = config
+        raise RuntimeError("stop once the oracle is loaded")
+
+    def _must_not_load(*_a, **_k):
+        raise AssertionError("load_oracle_config consulted despite a config dict")
+
+    monkeypatch.setattr("memdiver.engine.oracle.load_oracle", _capture_load)
+    monkeypatch.setattr("memdiver.engine.oracle.load_oracle_config", _must_not_load)
+
+    config = {"sample_ciphertext": str(tmp_path / "vault" / "ct")}
+    with pytest.raises(RuntimeError):
+        tp.auto_floor(
+            variance_path=str(consensus_artifacts["variance"]),
+            reference_path=str(consensus_artifacts["reference"]),
+            oracle_path=str(oracle_path),
+            output_dir=str(tmp_path / "af"),
+            num_dumps=4,
+            oracle_config_path=str(tmp_path / "oracle.toml"),
+            oracle_config=config,
+        )
+
+    assert captured["config"] == config

@@ -5,8 +5,10 @@
  *  - **Upload** — drop a .py, arm it by sha256. This is the path that
  *    produces an armed oracle the pipeline actually runs.
  *  - **Examples** — browse bundled templates under
- *    ``docs/oracle_examples/``. These are read-only; clicking one
- *    jumps the user back to Upload with a hint to copy the template.
+ *    ``docs/oracle/examples/``. "Use this example" registers one
+ *    server-side (with its config, for Shape 2) so it becomes an armed
+ *    oracle without leaving the page; the hint to copy the template and
+ *    upload an edited copy stays available beside it.
  *  - **Help** — collapsible Shape 1 vs Shape 2 explainer.
  *
  * An oracle "dry-run" smoke test sits below the active tab so the
@@ -17,7 +19,11 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { OracleExample } from "@/api/oracles";
+import {
+  ORACLE_EXAMPLES_DIR,
+  type OracleEntry,
+  type OracleExample,
+} from "@/api/oracles";
 import { OracleDryRunBar } from "@/components/pipeline/oracle/OracleDryRunBar";
 import { OracleExamplePicker } from "@/components/pipeline/oracle/OracleExamplePicker";
 import { OracleShapeExplainer } from "@/components/pipeline/oracle/OracleShapeExplainer";
@@ -52,6 +58,7 @@ export function StageOracle({ onAdvance }: Props) {
   const tlsClientRandom = usePipelineStore((s) => s.form.tlsClientRandom);
   const updateForm = usePipelineStore((s) => s.updateForm);
   const uploaded = useOracleStore((s) => s.uploaded);
+  const selectOracle = useOracleStore((s) => s.selectOracle);
   // Same validate/arm flow the dropzone uses, driven here from a typed path.
   const { arm, isArming, error: armError } = usePcapArm();
   const [tab, setTab] = useState<OracleTab>("upload");
@@ -65,9 +72,33 @@ export function StageOracle({ onAdvance }: Props) {
   // is set (a pcap takes precedence when both happen to be filled).
   const canAdvance = hasArmedOracle || hasPcap;
 
+  /**
+   * A card was picked. This no longer switches tabs on its own.
+   *
+   * It used to, and that was the whole of the interaction: the user asked for
+   * an example and got directions to a file on disk. The hint below still
+   * offers that route -- someone who wants to EDIT the template first needs
+   * it -- but the picker now also registers the example server-side, so the
+   * tab must stay put for its config editor to be usable.
+   */
   const handleExample = (ex: OracleExample): void => {
     setExampleHint(ex.filename);
-    setTab("upload");
+  };
+
+  /**
+   * An example is now a real oracle server-side.
+   *
+   * The wizard form is what gates ``Next``: ``canAdvance`` reads
+   * ``hasArmedOracle``, which needs BOTH ids. An unarmed entry deliberately
+   * clears the sha -- the run endpoint only accepts an armed oracle, so
+   * advertising one that is not armed would just fail later.
+   */
+  const handleExampleLoaded = (entry: OracleEntry): void => {
+    selectOracle(entry.id);
+    updateForm({
+      oracleId: entry.id,
+      oracleSha256: entry.armed ? entry.sha256 : null,
+    });
   };
 
   return (
@@ -108,13 +139,28 @@ export function StageOracle({ onAdvance }: Props) {
         ))}
       </div>
 
-      {exampleHint && tab === "upload" && (
+      {/*
+        Shown on BOTH tabs now. On Examples it is the alternative to "Use this
+        example" -- copy the template and edit it -- so it carries the jump to
+        Upload that the click itself no longer performs.
+      */}
+      {exampleHint && (
         <div className="md-panel p-2 text-xs md-text-muted">
           {t("stages.oracle.exampleHintPrefix")}{" "}
           <code className="md-text-accent">{exampleHint}</code>{" "}
           {t("stages.oracle.exampleHintMid")}{" "}
-          <code>docs/oracle_examples/</code>
+          <code>{ORACLE_EXAMPLES_DIR}</code>
           {t("stages.oracle.exampleHintTail")}
+          {tab === "examples" && (
+            <button
+              type="button"
+              data-testid="oracle-example-goto-upload"
+              onClick={() => setTab("upload")}
+              className="ml-2 text-xs px-2 py-0.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
+            >
+              {t("stages.oracle.exampleHintGoUpload")}
+            </button>
+          )}
         </div>
       )}
 
@@ -124,6 +170,7 @@ export function StageOracle({ onAdvance }: Props) {
           <OracleExamplePicker
             selected={exampleHint}
             onSelect={handleExample}
+            onLoaded={handleExampleLoaded}
           />
         )}
       </div>

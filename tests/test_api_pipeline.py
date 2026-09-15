@@ -585,3 +585,157 @@ def test_refine_and_neighborhood_end_to_end(client, synthetic_dumps):
     )
     assert r.status_code == 200, r.text
     assert r.json()["num_dumps"] >= len(synthetic_dumps)
+
+
+# ------------------------------------------------------------------
+# the armed oracle's config reaching the worker
+#
+# A Shape-2 oracle whose ``build_oracle(config)`` does a BARE lookup is the
+# case that exposes the gap: it arms fine (arm() replays it with the real
+# config) and then dies in the worker if the config did not travel with the
+# run. ``ORACLE_SHAPE2`` fixtures that use ``cfg.get(..., default)`` cannot
+# catch this — every key has a fallback, so ``{}`` builds happily.
+# ------------------------------------------------------------------
+
+ORACLE_SHAPE2_REQUIRED_CONFIG = (
+    "class _KeyOracle:\n"
+    "    def __init__(self, key):\n"
+    "        self._key = key\n"
+    "\n"
+    "    def verify(self, candidate):\n"
+    "        return candidate == self._key\n"
+    "\n"
+    "\n"
+    "def build_oracle(config):\n"
+    "    # No .get() default on purpose: an unconfigured build must fail.\n"
+    "    return _KeyOracle(bytes.fromhex(config['key_hex']))\n"
+)
+
+
+def _upload_and_arm_shape2(client: TestClient, config: dict) -> str:
+    r = client.post(
+        "/api/oracles/upload",
+        files={
+            "file": (
+                "needs_config.py",
+                ORACLE_SHAPE2_REQUIRED_CONFIG.encode(),
+                "text/x-python",
+            )
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    r = client.post(
+        f"/api/oracles/{body['id']}/arm",
+        json={"sha256": body["sha256"], "config": config},
+    )
+    assert r.status_code == 200, r.text
+    return body["id"]
+
+
+def test_run_puts_the_armed_config_in_the_worker_payload(client, synthetic_dumps):
+    """``POST /run`` reads ``entry.config`` and ships it as one top-level key.
+
+    Top-level rather than inside ``brute_force``/``nsweep``: the config belongs
+    to the ORACLE, and the brute_force / nsweep / escalate stages all load that
+    same oracle file, so three copies could drift apart within one run.
+    """
+    from types import SimpleNamespace
+
+    from memdiver.api.services.task_manager import TaskManager
+
+    config = {"key_hex": bytes(range(32)).hex()}
+    oracle_id = _upload_and_arm_shape2(client, config)
+
+    captured: dict = {}
+
+    def _fake_submit(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_id="captured", status=SimpleNamespace(value="queued")
+        )
+
+    original = TaskManager.submit
+    TaskManager.submit = _fake_submit
+    try:
+        r = client.post("/api/pipeline/run", json={
+            "source_paths": synthetic_dumps,
+            "oracle_id": oracle_id,
+            "nsweep": {"n_values": [2, 3]},
+        })
+    finally:
+        TaskManager.submit = original
+
+    assert r.status_code == 200, r.text
+    params = captured["params"]
+    assert params["oracle_config"] == config
+    # Not duplicated into the per-stage sub-dicts.
+    assert "oracle_config" not in params["brute_force"]
+    assert "oracle_config" not in params["nsweep"]
+
+
+def test_run_with_a_pcap_oracle_carries_no_oracle_config(client, synthetic_dumps, tmp_path):
+    """A pcap run builds its own config; the BYO key stays ``None``."""
+    from types import SimpleNamespace
+
+    from memdiver.api.services.task_manager import TaskManager
+
+    pcap = tmp_path / "session.pcap"
+    pcap.write_bytes(b"\xd4\xc3\xb2\xa1" + b"\x00" * 20)
+
+    captured: dict = {}
+
+    def _fake_submit(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_id="captured", status=SimpleNamespace(value="queued")
+        )
+
+    original = TaskManager.submit
+    TaskManager.submit = _fake_submit
+    try:
+        r = client.post("/api/pipeline/run", json={
+            "source_paths": synthetic_dumps,
+            "pcap_path": str(pcap),
+        })
+    finally:
+        TaskManager.submit = original
+
+    assert r.status_code == 200, r.text
+    assert captured["params"]["oracle_config"] is None
+
+
+def test_pipeline_runs_an_oracle_that_requires_its_config(client, synthetic_dumps):
+    """End-to-end proof the config ARRIVES: the run only succeeds with it.
+
+    Drop the threading and the worker replays ``build_oracle({})``, which
+    raises ``KeyError('key_hex')`` inside ``validate_oracle_sandboxed`` and
+    fails the task — so this test fails if the plumbing is removed.
+    """
+    key = bytes(range(32))
+    oracle_id = _upload_and_arm_shape2(client, {"key_hex": key.hex()})
+
+    r = client.post("/api/pipeline/run", json={
+        "source_paths": synthetic_dumps,
+        "oracle_id": oracle_id,
+        "reduce": {
+            "min_variance": 100.0,
+            "entropy_window": 16,
+            "entropy_threshold": 3.5,
+            "min_region": 8,
+            "alignment": 8,
+            "block_size": 16,
+        },
+        "brute_force": {"key_sizes": [32], "stride": 8, "jobs": 1},
+    })
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task_id"]
+
+    record = _wait_terminal(client, task_id)
+    assert record["status"] == "succeeded", record
+
+    r = client.get(f"/api/pipeline/runs/{task_id}/artifacts/hits")
+    assert r.status_code == 200, r.text
+    hits = json.loads(r.content)
+    assert hits["verified_count"] >= 1, hits
+    assert any(h["key_hex"] == key.hex() for h in hits["hits"]), hits

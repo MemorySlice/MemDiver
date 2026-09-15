@@ -111,11 +111,20 @@ def write_user_upload_dir(path: Path) -> None:
 # Validation
 # ---------------------------------------------------------------------------
 
+#: Default noun for refusal messages. Overridable so a sibling setting can
+#: reuse these rules without misnaming what the user chose.
+_DEFAULT_LABEL = "upload directory"
 
-def _reject_system_locations(resolved: Path) -> None:
-    """Raise ``ValueError`` if *resolved* is, contains, or sits in a system dir."""
+
+def _reject_system_locations(resolved: Path, label: str = _DEFAULT_LABEL) -> None:
+    """Raise ``ValueError`` if *resolved* is, contains, or sits in a system dir.
+
+    ``label`` names the thing being chosen, so a caller validating something
+    other than an upload directory (see :mod:`memdiver.api.oracle_dir`) gets a
+    refusal that describes what the user was actually picking.
+    """
     if resolved == Path(resolved.anchor):
-        raise ValueError("the filesystem root is not a valid upload directory")
+        raise ValueError(f"the filesystem root is not a valid {label}")
     for raw in _SYSTEM_DIRS:
         for d in {Path(raw), Path(raw).resolve()}:
             if resolved == d or d in resolved.parents:
@@ -130,8 +139,13 @@ def _reject_system_locations(resolved: Path) -> None:
                 )
 
 
-def validate_candidate(raw: str) -> Path:
+def validate_candidate(raw: str, label: str = _DEFAULT_LABEL) -> Path:
     """Return *raw* as a vetted, ready-to-use upload directory.
+
+    ``label`` only changes the wording of the refusals, never which paths are
+    refused; it exists so a sibling setting can reuse these rules verbatim
+    without telling the user their oracle directory is a bad "upload
+    directory".
 
     Raises ``ValueError`` with a specific reason for each rejected class. The
     candidate is ``expanduser()``-ed then ``resolve()``-d before every check, so
@@ -146,7 +160,7 @@ def validate_candidate(raw: str) -> Path:
 
     resolved = Path(raw).expanduser().resolve()
 
-    _reject_system_locations(resolved)
+    _reject_system_locations(resolved, label)
 
     for root in _temp_roots():
         if resolved == root or root in resolved.parents:
@@ -166,7 +180,7 @@ def validate_candidate(raw: str) -> Path:
     home = Path.home().resolve()
     if resolved == home:
         raise ValueError(
-            "your home directory itself is not a valid upload directory — "
+            f"your home directory itself is not a valid {label} — "
             "choose a subdirectory of it"
         )
 

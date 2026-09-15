@@ -442,6 +442,7 @@ def create_server():
         candidates_path: str, reference_path: str,
         output_dir: str, oracle_path: Optional[str] = None,
         oracle_config_path: Optional[str] = None,
+        oracle_config: Optional[Dict[str, Any]] = None,
         pcap_path: Optional[str] = None,
         tls_client_random: Optional[str] = None,
         pcap_max_records: Optional[int] = None,
@@ -474,6 +475,12 @@ def create_server():
         capture names the choices, and ``inspect_pcap(detect_protocols=True)``
         lists them before you run.
 
+        A BYO oracle's configuration comes either from ``oracle_config_path``
+        (a TOML file) or inline as ``oracle_config`` (the already-parsed
+        mapping), which saves writing a file for a one-shot run. The inline
+        mapping wins when both are given; neither confers trust — a BYO oracle
+        stays sandboxed.
+
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` to brute-force
         against an *encrypted* ``.msl`` reference; ``variance_threshold`` sets
         the static-byte cutoff surfaced in the stage's preview.
@@ -488,6 +495,7 @@ def create_server():
             oracle_path=oracle_path,
             output_dir=output_dir,
             oracle_config_path=oracle_config_path,
+            oracle_config=oracle_config,
             pcap_path=pcap_path,
             tls_client_random=tls_client_random,
             pcap_max_records=pcap_max_records,
@@ -522,6 +530,7 @@ def create_server():
         key_sizes: Optional[List[int]] = None,
         stride: int = 1, exhaustive: bool = True,
         oracle_config_path: Optional[str] = None,
+        oracle_config: Optional[Dict[str, Any]] = None,
         escalate: bool = False,
         escalate_oracle_budget: Optional[int] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -538,6 +547,10 @@ def create_server():
         ``pcap_max_challenges`` size the pcap oracle's verification work.
         ``resource_type`` picks the registered verification resource (default
         ``"tls-pcap"``), the same knob ``brute_force`` takes.
+
+        A BYO oracle's configuration comes from ``oracle_config_path`` (a TOML
+        file) or inline as ``oracle_config``, exactly as for ``brute_force``;
+        the inline mapping wins when both are given.
 
         Set ``escalate`` to run a floor-free sweep at the terminal N when no
         checkpoint found a hit; its verdict surfaces under ``escalation``.
@@ -559,6 +572,7 @@ def create_server():
             stride=stride,
             exhaustive=exhaustive,
             oracle_config_path=oracle_config_path,
+            oracle_config=oracle_config,
             escalate=escalate,
             escalate_oracle_budget=escalate_oracle_budget,
             key_file=key_file,
@@ -773,6 +787,7 @@ def create_server():
         variance_path: str, reference_path: str, oracle_path: str,
         output_dir: str, num_dumps: int,
         oracle_config_path: Optional[str] = None,
+        oracle_config: Optional[Dict[str, Any]] = None,
         key_sizes: Optional[List[int]] = None, stride: int = 1,
         reduce_kwargs: Optional[dict] = None,
         coverage: Optional[float] = None, correspondence: Optional[float] = None,
@@ -788,6 +803,10 @@ def create_server():
     ) -> str:
         """Automated oracle-arbitrated variance-floor selection → verdict.
 
+        The oracle's configuration comes from ``oracle_config_path`` (a TOML
+        file) or inline as ``oracle_config``; the inline mapping wins when both
+        are given.
+
         ``neighborhood_pad`` (default 64 bytes per side) is the context width
         attached to a recovered hit; it reaches every emitted artifact.
         """
@@ -795,6 +814,7 @@ def create_server():
             variance_path=variance_path, reference_path=reference_path,
             oracle_path=oracle_path, output_dir=output_dir, num_dumps=num_dumps,
             oracle_config_path=oracle_config_path,
+            oracle_config=oracle_config,
             key_sizes=tuple(key_sizes or [32]), stride=stride,
             reduce_kwargs=reduce_kwargs, coverage=coverage,
             correspondence=correspondence, filter_recall=filter_recall,

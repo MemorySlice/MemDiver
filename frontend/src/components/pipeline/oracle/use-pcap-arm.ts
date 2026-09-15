@@ -21,7 +21,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { ApiError } from "@/api/client";
+import { readableFailure } from "@/api/client";
 import { validatePcap } from "@/api/pipeline";
 import { usePipelineStore } from "@/stores/pipeline-store";
 
@@ -40,8 +40,11 @@ export function isDpktMissing(message: string): boolean {
  * half in ``PcapUpload`` classifies its own failures identically.
  */
 export function pcapErrorMessage(error: unknown, dpktMissingMessage: string): string {
-  const message =
-    error instanceof ApiError || error instanceof Error ? error.message : String(error);
+  // `readableFailure` unwraps the JSON envelope an ApiError carries verbatim,
+  // so a rejected validate reads as a sentence instead of `{"detail":"..."}`.
+  // It runs BEFORE the dpkt check on purpose: the capability message is inside
+  // that envelope, so classifying the raw body would miss it.
+  const message = readableFailure(error);
   return isDpktMissing(message) ? dpktMissingMessage : message;
 }
 

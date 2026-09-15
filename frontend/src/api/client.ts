@@ -12,6 +12,7 @@ import type {
   TaskRecord,
   PathInfo,
   BrowseResult,
+  DiscoverDumpsResult,
   StructureMatchResult,
   StructureApplyResult,
   StringsResponse,
@@ -250,10 +251,44 @@ export const getPathInfo = (path: string) =>
   );
 
 // File browser
-export const browsePath = (path?: string) =>
-  request<BrowseResult>(
-    path ? `/api/path/browse?path=${encodeURIComponent(path)}` : "/api/path/browse",
+/**
+ * List one directory.
+ *
+ * `allFiles` lifts the endpoint's default extension filter (`.dump` / `.msl`).
+ * It stays off by default because the dump pickers WANT that filter; the oracle
+ * config editor does not — a gocryptfs ciphertext sample has no extension at
+ * all, so with the filter on the file the user must pick is invisible.
+ */
+export const browsePath = (path?: string, allFiles = false) => {
+  const qs = new URLSearchParams();
+  if (path) qs.set("path", path);
+  if (allFiles) qs.set("all_files", "true");
+  const query = qs.toString();
+  return request<BrowseResult>(
+    query ? `/api/path/browse?${query}` : "/api/path/browse",
   );
+};
+
+/**
+ * Every dump under `path`, recursively, grouped by kind.
+ *
+ * `kinds` is sent as one repeated parameter per kind (the endpoint also
+ * accepts the comma-separated form; repetition is what `URLSearchParams`
+ * produces naturally). Omitting it lets the server apply its `msl` default.
+ * The returned `dumps` are already sorted by path and MUST stay in that
+ * order -- the N-dump consensus alignment downstream pairs dumps positionally.
+ */
+export const discoverDumps = (
+  path: string,
+  kinds?: string[],
+  recursive = true,
+  limit?: number,
+) => {
+  const qs = new URLSearchParams({ path, recursive: String(recursive) });
+  for (const kind of kinds ?? []) qs.append("kinds", kind);
+  if (limit !== undefined) qs.set("limit", String(limit));
+  return request<DiscoverDumpsResult>(`/api/path/discover-dumps?${qs.toString()}`);
+};
 
 // MSL inspection
 export const listBlocks = (mslPath: string) =>

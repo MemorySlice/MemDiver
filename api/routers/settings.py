@@ -17,12 +17,11 @@ The handlers stay thin: every rule lives in the module that owns the setting.
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from memdiver.api.config import env_pinned as _var_env_pinned
 from memdiver.api.config import get_settings
 from memdiver.api.favourites import (
     add_favourite,
@@ -72,21 +71,12 @@ class LastDirRequest(BaseModel):
 def _env_pinned() -> bool:
     """Return True if the upload dir is pinned outside the UI's control.
 
-    Checks the process environment *and* the ``.env`` file, because
-    pydantic-settings applies both ahead of the user config file — persisting a
-    value that would then be silently shadowed forever is worse than refusing.
+    The rule itself moved to :func:`memdiver.api.config.env_pinned` when the
+    oracle router needed the identical check for ``MEMDIVER_ORACLE_DIR``;
+    behaviour here is unchanged. Kept as a named local so this module still
+    reads as "the upload-dir question" at every call site.
     """
-    if os.environ.get(ENV_VAR, "").strip():
-        return True
-    env_file = Path(get_settings().model_config.get("env_file") or ".env")
-    try:
-        for line in env_file.read_text().splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() == ENV_VAR and value.strip().strip("'\""):
-                return True
-    except OSError:
-        pass
-    return False
+    return _var_env_pinned(ENV_VAR)
 
 
 def _status() -> dict:

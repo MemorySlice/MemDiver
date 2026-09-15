@@ -7,6 +7,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,6 +37,12 @@ def _upload_dir_from_user_config() -> Path | None:
     """Return the upload dir the user chose previously, or ``None`` if unset."""
     from memdiver.api.upload_dir import read_user_upload_dir
     return read_user_upload_dir()
+
+
+def _oracle_dir_from_user_config() -> Path | None:
+    """Return the oracle dir the user consented to previously, else ``None``."""
+    from memdiver.api.oracle_dir import read_user_oracle_dir
+    return read_user_oracle_dir()
 
 
 class Settings(BaseSettings):
@@ -132,6 +139,22 @@ class Settings(BaseSettings):
             self.upload_dir = None
         if self.upload_dir is None:
             self.upload_dir = _upload_dir_from_user_config()
+        # oracle_dir resolves by exactly the same precedence, and for the same
+        # reasons: MEMDIVER_ORACLE_DIR / .env wins > the user-local config file
+        # > unconfigured (None, meaning oracle execution stays disabled).
+        # Unlike upload_dir there is no legacy value to migrate — the setting
+        # simply had no runtime affordance before, only the env var.
+        if self.oracle_dir is not None and self.oracle_dir == Path("."):
+            # MEMDIVER_ORACLE_DIR="" parses to Path(".") -- the server CWD --
+            # because env_ignore_empty is False. Treating that as *enabled*
+            # would drop executable oracles into whatever directory the server
+            # happened to start in, so treat it as unset, loudly.
+            logger.warning(
+                "MEMDIVER_ORACLE_DIR is empty; treating oracle_dir as unconfigured"
+            )
+            self.oracle_dir = None
+        if self.oracle_dir is None:
+            self.oracle_dir = _oracle_dir_from_user_config()
         return self
 
 
@@ -139,3 +162,31 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return cached singleton Settings instance."""
     return Settings()
+
+
+def env_pinned(var_name: str) -> bool:
+    """Return True if *var_name* pins a setting outside the UI's control.
+
+    Checks the process environment *and* the ``.env`` file, because
+    pydantic-settings applies both ahead of the user config file — persisting a
+    value that would then be silently shadowed forever is worse than refusing.
+
+    Lives here rather than in a router because it now has two callers with the
+    same question about two different variables: the upload-dir settings router
+    (``MEMDIVER_UPLOAD_DIR``) and the oracle router (``MEMDIVER_ORACLE_DIR``).
+    """
+    if os.environ.get(var_name, "").strip():
+        return True
+    # pydantic-settings types ``env_file`` as a path OR a sequence of them;
+    # Settings pins it to the single string ".env", so one path is what comes
+    # back. The cast documents that rather than widening the runtime handling.
+    configured = get_settings().model_config.get("env_file") or ".env"
+    env_file = Path(cast("str | os.PathLike[str]", configured))
+    try:
+        for line in env_file.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == var_name and value.strip().strip("'\""):
+                return True
+    except OSError:
+        pass
+    return False

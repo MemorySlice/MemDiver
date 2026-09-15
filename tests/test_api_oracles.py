@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from memdiver.api.services.oracle_registry import (
+    OracleConfigInvalid,
     OracleDisabled,
     OracleNotFound,
     OracleRegistry,
@@ -333,5 +334,642 @@ def test_router_full_round_trip(tmp_path):
 
         r = client.get("/api/oracles")
         assert not any(o["id"] == oracle_id for o in r.json()["oracles"])
+    finally:
+        reset_oracle_registry()
+
+
+# ---------- oracle-dir status / enable (Work item 1) ----------
+#
+# Before these endpoints existed, the only way to turn oracle storage on was
+# MEMDIVER_ORACLE_DIR, read once at startup — so the Upload dropzone the UI
+# renders could only ever answer 503. These tests pin the runtime opt-in, and
+# in particular the three things that are easy to get subtly wrong: the 409
+# when the env var pins the value, the in-place Settings mutation (the cached
+# instance is held by middleware, so rebuilding it would strand them), and the
+# route ordering against the existing ``/{oracle_id}`` paths.
+
+
+@pytest.fixture
+def oracle_api(tmp_path, monkeypatch):
+    """A TestClient over the oracle router with the registry DISABLED.
+
+    ``XDG_DATA_HOME`` is redirected so the prefs file this feature writes lands
+    in ``tmp_path`` and the developer's real ``~/.memdiver/config.json`` is
+    never touched; ``upload_dir._temp_roots`` is emptied because pytest's
+    ``tmp_path`` is itself inside ``tempfile.gettempdir()``, which validation
+    rejects.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api import upload_dir as upload_dir_mod
+    from memdiver.api.config import get_settings
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    monkeypatch.delenv("MEMDIVER_ORACLE_DIR", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(upload_dir_mod, "_temp_roots", lambda: ())
+    get_settings.cache_clear()
+
+    examples = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    registry = init_oracle_registry(oracle_dir=None, examples_dir=examples)
+    app = FastAPI()
+    app.include_router(router, prefix="/api/oracles")
+    try:
+        yield TestClient(app), registry, tmp_path
+    finally:
+        reset_oracle_registry()
+        get_settings.cache_clear()
+
+
+def test_status_is_200_and_disabled_before_opt_in(oracle_api):
+    """Disabled is a state the UI renders, not an error — so never a 503 here."""
+    client, _registry, _tmp = oracle_api
+    r = client.get("/api/oracles/status")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enabled"] is False
+    assert body["path"] is None
+    assert body["source"] is None
+    assert body["env_pinned"] is False
+    assert body["default_path"].endswith("/oracles")
+
+
+def test_status_and_enable_are_not_captured_by_the_oracle_id_route(oracle_api):
+    """Route ordering: ``/{oracle_id}`` must not swallow these literal paths.
+
+    Verified by hitting them for real rather than by inspecting the route
+    table — a 422 (``ArmRequest`` body validation) or a 404 (unknown oracle id)
+    would be the symptom of the ordering bug.
+    """
+    client, _registry, _tmp = oracle_api
+    assert set(client.get("/api/oracles/status").json()) == {
+        "enabled", "path", "source", "env_pinned", "default_path",
+    }
+    body = client.post("/api/oracles/enable").json()
+    assert set(body) == {"enabled", "path", "source", "env_pinned", "default_path"}
+
+
+def test_enable_without_a_body_uses_the_default_dir(oracle_api):
+    from memdiver.api.oracle_dir import default_oracle_dir
+
+    client, registry, _tmp = oracle_api
+    r = client.post("/api/oracles/enable")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enabled"] is True
+    assert body["path"] == str(default_oracle_dir())
+    assert body["source"] == "user_config"
+    assert registry.enabled is True
+
+
+def test_enable_with_an_explicit_path_makes_upload_work(oracle_api):
+    """The whole point: the 503 goes away with no restart."""
+    client, _registry, tmp_path = oracle_api
+    chosen = tmp_path / "chosen_oracles"
+
+    blocked = client.post(
+        "/api/oracles/upload",
+        files={"file": ("x.py", ORACLE_SHAPE1.encode(), "text/x-python")},
+    )
+    assert blocked.status_code == 503
+
+    r = client.post("/api/oracles/enable", json={"path": str(chosen)})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == str(chosen.resolve())
+
+    allowed = client.post(
+        "/api/oracles/upload",
+        files={"file": ("x.py", ORACLE_SHAPE1.encode(), "text/x-python")},
+    )
+    assert allowed.status_code == 200, allowed.text
+    # Stored under a uuid, not the client-supplied basename (see upload()).
+    assert (chosen / f"{allowed.json()['id']}.py").is_file()
+
+
+def test_enable_pins_the_directory_to_0700(oracle_api):
+    """engine.oracle._assert_safe_path refuses a group/world-writable parent."""
+    import os
+    import stat as stat_mod
+
+    client, _registry, tmp_path = oracle_api
+    chosen = tmp_path / "loose"
+    chosen.mkdir(mode=0o777)
+    os.chmod(chosen, 0o777)
+
+    r = client.post("/api/oracles/enable", json={"path": str(chosen)})
+    assert r.status_code == 200, r.text
+    assert stat_mod.S_IMODE(chosen.stat().st_mode) == 0o700
+
+
+def test_enable_persists_to_the_prefs_file(oracle_api):
+    import json
+
+    from memdiver.api.user_prefs import user_config_path
+
+    client, _registry, tmp_path = oracle_api
+    chosen = tmp_path / "persisted"
+    client.post("/api/oracles/enable", json={"path": str(chosen)})
+    stored = json.loads(user_config_path().read_text())
+    assert stored["oracle_dir"] == str(chosen.resolve())
+
+
+def test_enable_mutates_the_cached_settings_in_place(oracle_api):
+    """Never cache_clear(): middleware holds a reference to this exact object."""
+    from memdiver.api.config import get_settings
+
+    client, _registry, tmp_path = oracle_api
+    before = get_settings()
+    assert before.oracle_dir is None
+
+    chosen = tmp_path / "inplace"
+    client.post("/api/oracles/enable", json={"path": str(chosen)})
+
+    assert get_settings() is before
+    assert before.oracle_dir == chosen.resolve()
+
+
+def test_enable_is_409_when_the_env_var_pins_the_value(oracle_api, monkeypatch):
+    """Persisting a value pydantic-settings would shadow forever is worse."""
+    client, _registry, tmp_path = oracle_api
+    monkeypatch.setenv("MEMDIVER_ORACLE_DIR", str(tmp_path / "pinned"))
+
+    status = client.get("/api/oracles/status").json()
+    assert status["env_pinned"] is True
+
+    r = client.post("/api/oracles/enable", json={"path": str(tmp_path / "other")})
+    assert r.status_code == 409
+    assert "MEMDIVER_ORACLE_DIR" in r.json()["detail"]
+
+
+def test_enable_rejects_an_unsafe_path_without_persisting(oracle_api):
+    """Validate BEFORE persisting: a refusal must leave disk and memory alone."""
+    from memdiver.api.config import get_settings
+    from memdiver.api.user_prefs import user_config_path
+
+    client, registry, _tmp = oracle_api
+    r = client.post("/api/oracles/enable", json={"path": "/usr/lib/oracles"})
+    assert r.status_code == 400
+    assert "system directory" in r.json()["detail"]
+    assert get_settings().oracle_dir is None
+    assert registry.enabled is False
+    assert not user_config_path().is_file()
+
+
+def test_enable_rejects_a_relative_path(oracle_api):
+    client, _registry, _tmp = oracle_api
+    r = client.post("/api/oracles/enable", json={"path": "oracles"})
+    assert r.status_code == 400
+
+
+def test_registry_enable_keeps_already_registered_entries(registry, tmp_path):
+    """Why enable() is a method and not a call to init_oracle_registry().
+
+    Rebuilding the singleton would construct a fresh OracleRegistry and drop
+    ``_entries`` — uploaded oracles would vanish from the catalog while their
+    files stayed on disk.
+    """
+    entry = registry.upload(filename="keepme.py", content=ORACLE_SHAPE1.encode())
+    moved = tmp_path / "elsewhere"
+
+    returned = registry.enable(moved)
+
+    assert returned == moved
+    assert registry.enabled is True
+    assert registry.require_enabled() == moved
+    assert registry.get(entry.oracle_id).oracle_id == entry.oracle_id
+    assert len(registry.list_entries()) == 1
+
+
+def test_registry_enable_creates_the_dir_at_0700(registry, tmp_path):
+    import stat as stat_mod
+
+    target = tmp_path / "deep" / "nested" / "oracles"
+    registry.enable(target)
+    assert target.is_dir()
+    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o700
+
+
+# ---------- three-layer validation: lenient upload, strict arm (Work item 2) --
+#
+# Uploading used to replay build_oracle({}) under the STRICT validator, so the
+# bundled gocryptfs example — a Shape-2 oracle with a *required* config key —
+# could not be uploaded through the endpoint the UI steers users to at all:
+# KeyError('sample_ciphertext') -> 400, file already unlinked. The fix moves the
+# config-aware check to arm(), which is where user intent is confirmed anyway.
+#
+# Note why the pre-existing ORACLE_SHAPE2 fixture never caught this: every key
+# it reads has a ``cfg.get(..., default)`` fallback, so build_oracle({})
+# succeeds. The fixture below deliberately does a bare ``cfg[...]`` lookup.
+
+
+# A Shape-2 oracle with a REQUIRED config key — the gocryptfs shape.
+ORACLE_SHAPE2_REQUIRED_KEY = """\
+class NeedyOracle:
+    def __init__(self, cfg):
+        self.tag = cfg["required_tag"].encode()
+    def verify(self, candidate):
+        return candidate == self.tag
+
+def build_oracle(cfg):
+    return NeedyOracle(cfg)
+"""
+
+
+# Minimum a gocryptfs ciphertext sample must be for GocryptfsOracle to build:
+# version(2) + file_id(16) + nonce(16) + gcm_tag(16). Verification correctness
+# is not what these tests exercise — only that the oracle constructs.
+def _fake_gocryptfs_sample(path: Path) -> Path:
+    path.write_bytes(bytes(range(64)))
+    return path
+
+
+@pytest.fixture
+def gocryptfs_source(examples_dir):
+    return (examples_dir / "gocryptfs.py").read_bytes()
+
+
+def test_upload_shape2_with_required_key_no_longer_rejected(registry):
+    """The regression in miniature: a required key must not block the upload."""
+    entry = registry.upload(
+        filename="needy.py", content=ORACLE_SHAPE2_REQUIRED_KEY.encode()
+    )
+    assert entry.shape == 2
+    assert entry.armed is False
+    assert entry.config == {}
+    assert entry.path.is_file()
+
+
+def test_upload_bundled_gocryptfs_example_succeeds_with_no_config(
+    registry, gocryptfs_source
+):
+    """THE headline case: the bundled example must upload with no config.
+
+    Previously: OracleRegistryError("oracle failed to load: ...
+    KeyError('sample_ciphertext')") and the stored file unlinked.
+    """
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    assert entry.shape == 2
+    assert entry.path.is_file()
+    assert entry.config == {}
+
+
+def test_arm_gocryptfs_without_a_sample_ciphertext_fails_readably(
+    registry, gocryptfs_source
+):
+    """The strict gate moved to arm — and must speak to a human when it fires."""
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    with pytest.raises(OracleConfigInvalid) as excinfo:
+        registry.arm(entry.oracle_id, entry.sha256)
+    message = str(excinfo.value)
+    assert "gocryptfs.py" in message
+    assert "sample_ciphertext" in message
+    assert "configuration" in message
+    # Not a raw traceback, and not a bare KeyError repr as the whole message.
+    assert "Traceback" not in message
+    assert message != "'sample_ciphertext'"
+    # A failed arm leaves the oracle unarmed.
+    assert registry.get(entry.oracle_id).armed is False
+
+
+def test_arm_gocryptfs_with_a_missing_file_fails_readably(
+    registry, gocryptfs_source, tmp_path
+):
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    with pytest.raises(OracleConfigInvalid, match="could not be loaded"):
+        registry.arm(
+            entry.oracle_id,
+            entry.sha256,
+            config={"sample_ciphertext": str(tmp_path / "nope")},
+        )
+    assert registry.get(entry.oracle_id).armed is False
+
+
+def test_arm_gocryptfs_end_to_end_with_a_real_sample(
+    registry, gocryptfs_source, tmp_path
+):
+    """The whole point of the feature: a real config makes the real oracle arm."""
+    pytest.importorskip("cryptography")
+    sample = _fake_gocryptfs_sample(tmp_path / "jxSMOg-V7hYDb5UsGpxWxg")
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    armed = registry.arm(
+        entry.oracle_id,
+        entry.sha256,
+        config={"sample_ciphertext": str(sample)},
+    )
+    assert armed.armed is True
+    assert armed.config == {"sample_ciphertext": str(sample)}
+    assert registry.require_armed(entry.oracle_id).config["sample_ciphertext"]
+
+
+def test_arm_rejects_a_sample_that_is_too_short(registry, gocryptfs_source, tmp_path):
+    """The oracle's own ValueError reaches the user, still as a readable error."""
+    pytest.importorskip("cryptography")
+    short = tmp_path / "too_short"
+    short.write_bytes(b"\x00" * 8)
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    with pytest.raises(OracleConfigInvalid, match="too short"):
+        registry.arm(
+            entry.oracle_id, entry.sha256, config={"sample_ciphertext": str(short)}
+        )
+
+
+def test_upload_still_rejects_a_hang_in_build_oracle(registry, monkeypatch):
+    """The lenient probe is not a no-op: the case it touches is still blocked.
+
+    ``build_oracle`` is exactly where a tolerated exception now falls through,
+    so a *hang* in the same function is the sharpest proof the containment half
+    survived. Body reused from
+    ``tests/test_oracle.py::test_sandbox_rejects_hang_in_build_oracle``. The
+    real sandbox runs; only its wall-clock budget is shortened, so the test
+    does not sit out the 10s default.
+    """
+    import memdiver.api.services.oracle_registry as reg_mod
+
+    real = reg_mod.validate_oracle_sandboxed
+
+    def _fast(path, config=None, **kw):
+        return real(path, config, timeout_s=0.5, cpu_s=30)
+
+    monkeypatch.setattr(reg_mod, "validate_oracle_sandboxed", _fast)
+    hanging = "def build_oracle(cfg):\n    while True:\n        pass\n"
+    with pytest.raises(OracleRegistryError, match="wall-clock"):
+        registry.upload(filename="hang.py", content=hanging.encode())
+    # ...and the rejected file is not left behind in the oracle dir.
+    assert list((registry.require_enabled()).glob("*.py")) == []
+
+
+def test_upload_still_rejects_a_hang_at_import(registry, monkeypatch):
+    """Body reused from ``tests/test_oracle.py::test_sandbox_rejects_hang_at_import``."""
+    import memdiver.api.services.oracle_registry as reg_mod
+
+    real = reg_mod.validate_oracle_sandboxed
+
+    def _fast(path, config=None, **kw):
+        return real(path, config, timeout_s=0.5, cpu_s=30)
+
+    monkeypatch.setattr(reg_mod, "validate_oracle_sandboxed", _fast)
+    hanging = "while True:\n    pass\n\ndef verify(c): return True\n"
+    with pytest.raises(OracleRegistryError, match="wall-clock"):
+        registry.upload(filename="hang.py", content=hanging.encode())
+
+
+def test_upload_accepts_a_config_and_reports_it(registry):
+    entry = registry.upload(
+        filename="needy.py",
+        content=ORACLE_SHAPE2_REQUIRED_KEY.encode(),
+        config={"required_tag": "magic!"},
+    )
+    assert entry.config == {"required_tag": "magic!"}
+    assert entry.to_dict()["config"] == {"required_tag": "magic!"}
+    # Supplying it at upload is enough to arm in one step.
+    assert registry.arm(entry.oracle_id, entry.sha256).armed is True
+
+
+def test_set_config_stores_a_copy(registry):
+    entry = registry.upload(
+        filename="needy.py", content=ORACLE_SHAPE2_REQUIRED_KEY.encode()
+    )
+    supplied = {"required_tag": "magic!"}
+    registry.set_config(entry.oracle_id, supplied)
+    supplied["required_tag"] = "tampered"
+    assert registry.get(entry.oracle_id).config == {"required_tag": "magic!"}
+    registry.arm(entry.oracle_id, entry.sha256)
+
+
+def test_set_config_on_an_unknown_oracle_raises(registry):
+    with pytest.raises(OracleNotFound):
+        registry.set_config("deadbeef", {"a": 1})
+
+
+def test_dry_run_uses_the_entrys_config(registry):
+    """dry_run hardcoded {} and therefore exploded on exactly these oracles."""
+    entry = registry.upload(
+        filename="needy.py",
+        content=ORACLE_SHAPE2_REQUIRED_KEY.encode(),
+        config={"required_tag": "magic!"},
+    )
+    report = registry.dry_run(entry.oracle_id, samples=[b"magic!", b"bogus!"])
+    assert report["passes"] == 1
+    assert report["fails"] == 1
+
+
+# ---------- bundled examples: config template + server-side load -------------
+
+
+def test_examples_expose_the_sibling_toml_as_a_config_template(registry):
+    """Shape-2 examples are useless without their parameters, so ship them."""
+    examples = {e["filename"]: e for e in registry.list_examples()}
+    template = examples["gocryptfs.py"]["config_template"]
+    assert template is not None
+    # Passed through verbatim: the placeholder is the UI's "fill this in" cue,
+    # so it must NOT be env-expanded on the way out.
+    assert "${MEMDIVER_FIXTURE_ROOT}" in template["sample_ciphertext"]
+    # An example with no sibling .toml reports None rather than {}.
+    assert examples["generic_aes_gcm.py"]["config_template"] is None
+
+
+def test_load_example_registers_through_the_upload_path(registry):
+    entry = registry.load_example("gocryptfs.py")
+    assert entry.filename == "gocryptfs.py"
+    assert entry.shape == 2
+    # Stored under a uuid inside the oracle dir, at 0o600, exactly like upload.
+    assert entry.path.parent == registry.require_enabled()
+    assert entry.path.name == f"{entry.oracle_id}.py"
+    assert (entry.path.stat().st_mode & 0o777) == 0o600
+    assert entry.armed is False
+
+
+def test_load_example_accepts_a_config(registry, tmp_path):
+    pytest.importorskip("cryptography")
+    sample = _fake_gocryptfs_sample(tmp_path / "cipher_blob")
+    entry = registry.load_example(
+        "gocryptfs.py", config={"sample_ciphertext": str(sample)}
+    )
+    assert registry.arm(entry.oracle_id, entry.sha256).armed is True
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../conftest.py",
+        "../../pyproject.toml",
+        "/etc/passwd",
+        "_private.py",
+        "nope.py",
+        "",
+    ],
+)
+def test_load_example_refuses_anything_not_in_the_enumeration(registry, bad):
+    """Path traversal: the loadable set is exactly the advertised set."""
+    with pytest.raises(OracleNotFound):
+        registry.load_example(bad)
+
+
+def test_load_example_requires_the_registry_to_be_enabled(disabled_registry):
+    with pytest.raises(OracleDisabled):
+        disabled_registry.load_example("gocryptfs.py")
+
+
+# ---------- HTTP surface for the above ---------------------------------------
+
+
+def test_router_load_example_arm_and_run(tmp_path):
+    """Load the bundled example over HTTP, then arm it with a real config."""
+    pytest.importorskip("cryptography")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=tmp_path / "oracles", examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        client = TestClient(app)
+
+        listed = client.get("/api/oracles/examples").json()["examples"]
+        gocryptfs = next(e for e in listed if e["filename"] == "gocryptfs.py")
+        assert "${MEMDIVER_FIXTURE_ROOT}" in (
+            gocryptfs["config_template"]["sample_ciphertext"]
+        )
+
+        loaded = client.post("/api/oracles/examples/gocryptfs.py/load")
+        assert loaded.status_code == 200, loaded.text
+        body = loaded.json()
+        assert body["shape"] == 2
+        assert body["armed"] is False
+        assert body["config"] == {}
+
+        # Arming with the template's unexpanded placeholder is a readable 400.
+        bad = client.post(
+            f"/api/oracles/{body['id']}/arm",
+            json={
+                "sha256": body["sha256"],
+                "config": gocryptfs["config_template"],
+            },
+        )
+        assert bad.status_code == 400, bad.text
+        assert "sample_ciphertext" in bad.json()["detail"]
+
+        sample = _fake_gocryptfs_sample(tmp_path / "cipher_blob")
+        good = client.post(
+            f"/api/oracles/{body['id']}/arm",
+            json={
+                "sha256": body["sha256"],
+                "config": {"sample_ciphertext": str(sample)},
+            },
+        )
+        assert good.status_code == 200, good.text
+        assert good.json()["armed"] is True
+        assert good.json()["config"]["sample_ciphertext"] == str(sample)
+    finally:
+        reset_oracle_registry()
+
+
+def test_router_load_example_rejects_traversal_with_404(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=tmp_path / "oracles", examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        client = TestClient(app)
+        r = client.post("/api/oracles/examples/..%2F..%2Fpyproject.toml/load")
+        assert r.status_code == 404
+        r = client.post("/api/oracles/examples/nope.py/load")
+        assert r.status_code == 404
+        assert not list((tmp_path / "oracles").glob("*.py"))
+    finally:
+        reset_oracle_registry()
+
+
+def test_router_load_example_is_503_when_disabled(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=None, examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        client = TestClient(app)
+        r = client.post("/api/oracles/examples/gocryptfs.py/load")
+        assert r.status_code == 503
+    finally:
+        reset_oracle_registry()
+
+
+def test_router_arm_without_a_config_key_still_works(tmp_path):
+    """``config`` is optional on /arm — the Shape-1 flow is untouched."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=tmp_path / "oracles", examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        client = TestClient(app)
+        up = client.post(
+            "/api/oracles/upload",
+            files={"file": ("my.py", ORACLE_SHAPE1.encode(), "text/x-python")},
+        ).json()
+        r = client.post(f"/api/oracles/{up['id']}/arm", json={"sha256": up["sha256"]})
+        assert r.status_code == 200, r.text
+        assert r.json()["armed"] is True
+    finally:
+        reset_oracle_registry()
+
+
+def test_dry_run_on_an_unconfigured_oracle_is_a_readable_4xx_not_a_500(tmp_path):
+    """Smoke-testing before filling in the form is a user mistake, not a crash.
+
+    ``load_oracle`` raises ``OracleLoadError``, which the router does not map —
+    so it used to escape as a 500. Now that a Shape-2 oracle with a required
+    key can actually be uploaded, this path is reachable from the UI.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=tmp_path / "oracles", examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        client = TestClient(app)
+        up = client.post(
+            "/api/oracles/upload",
+            files={
+                "file": (
+                    "needy.py",
+                    ORACLE_SHAPE2_REQUIRED_KEY.encode(),
+                    "text/x-python",
+                )
+            },
+        ).json()
+        r = client.post(
+            f"/api/oracles/{up['id']}/dry-run",
+            json={"samples_b64": [base64.b64encode(b"magic!").decode()]},
+        )
+        assert r.status_code == 400, r.text
+        assert "required_tag" in r.json()["detail"]
     finally:
         reset_oracle_registry()
