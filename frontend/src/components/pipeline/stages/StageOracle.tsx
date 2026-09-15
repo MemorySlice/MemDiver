@@ -56,9 +56,17 @@ export function StageOracle({ onAdvance }: Props) {
   const oracleSha256 = usePipelineStore((s) => s.form.oracleSha256);
   const pcapPath = usePipelineStore((s) => s.form.pcapPath);
   const tlsClientRandom = usePipelineStore((s) => s.form.tlsClientRandom);
+  /*
+    Read here, not inside the picker: the picker stays a dumb component that is
+    told which dumps are in play. It hands them to the server, which derives a
+    Shape 2 example's config from a sibling of the dump the user already picked
+    -- so the config editor is not a form of questions nobody can answer.
+  */
+  const sourcePaths = usePipelineStore((s) => s.form.sourcePaths);
   const updateForm = usePipelineStore((s) => s.updateForm);
   const uploaded = useOracleStore((s) => s.uploaded);
   const selectOracle = useOracleStore((s) => s.selectOracle);
+  const clearOracleError = useOracleStore((s) => s.clearError);
   // Same validate/arm flow the dropzone uses, driven here from a typed path.
   const { arm, isArming, error: armError } = usePcapArm();
   const [tab, setTab] = useState<OracleTab>("upload");
@@ -83,6 +91,19 @@ export function StageOracle({ onAdvance }: Props) {
    */
   const handleExample = (ex: OracleExample): void => {
     setExampleHint(ex.filename);
+  };
+
+  /**
+   * Switch tabs, dropping whatever failure the departing tab left behind.
+   *
+   * ``useOracleStore.error`` is one field shared by upload, arm, load-example,
+   * dry-run and delete, and both tabs render it. Without this, a refused
+   * "Use this example" is still on screen after switching to Upload, where it
+   * reads as a failed upload the user never attempted.
+   */
+  const handleTabChange = (next: OracleTab): void => {
+    clearOracleError();
+    setTab(next);
   };
 
   /**
@@ -127,7 +148,7 @@ export function StageOracle({ onAdvance }: Props) {
             type="button"
             role="tab"
             aria-selected={tab === tabKey}
-            onClick={() => setTab(tabKey)}
+            onClick={() => handleTabChange(tabKey)}
             className={`text-xs px-3 py-1.5 transition-colors ${
               tab === tabKey
                 ? "font-semibold border-b-2 border-[var(--md-accent-blue)] md-text-accent"
@@ -155,7 +176,7 @@ export function StageOracle({ onAdvance }: Props) {
             <button
               type="button"
               data-testid="oracle-example-goto-upload"
-              onClick={() => setTab("upload")}
+              onClick={() => handleTabChange("upload")}
               className="ml-2 text-xs px-2 py-0.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
             >
               {t("stages.oracle.exampleHintGoUpload")}
@@ -171,6 +192,7 @@ export function StageOracle({ onAdvance }: Props) {
             selected={exampleHint}
             onSelect={handleExample}
             onLoaded={handleExampleLoaded}
+            sourcePaths={sourcePaths}
           />
         )}
       </div>

@@ -5,10 +5,15 @@ Contract (see the plan's B5 task):
 * ``GET  /api/oracles/examples`` — list bundled example oracles from
   ``docs/oracle/examples/*.py``, including sha256 + detected shape, plus the
   parsed sibling ``.toml`` (if any) as a ``config_template`` the UI prefills
-  its form from.
+  its form from, plus ``config_placeholders`` naming the template keys that
+  are questions rather than answers.
 * ``POST /api/oracles/examples/{filename}/load`` — copy a bundled example into
   the oracle dir and register it through the *same* path an upload takes.
   Bundled is not trusted.
+* ``POST /api/oracles/examples/{filename}/suggest-config`` — derive that
+  template's values from the dumps already selected, so the analyst does not
+  retype a path their own dataset declares. Underivable is a 200 with an empty
+  config, never an error.
 * ``GET  /api/oracles``            — list uploaded oracles.
 * ``POST /api/oracles/upload``     — multipart upload; only when
   ``MEMDIVER_ORACLE_DIR`` is configured. Writes the file at
@@ -34,6 +39,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +60,7 @@ from memdiver.api.services.oracle_registry import (
     OracleRegistryError,
     OracleShaMismatch,
 )
+from memdiver.app.oracle_autoconfig import suggest_example_config
 
 logger = logging.getLogger("memdiver.api.routers.oracles")
 
@@ -97,6 +104,18 @@ class LoadExampleRequest(BaseModel):
 
     config: Optional[Dict[str, Any]] = None
     description: Optional[str] = None
+
+
+class SuggestConfigRequest(BaseModel):
+    """Body for ``POST /api/oracles/examples/{filename}/suggest-config``.
+
+    The dumps the analyst has already chosen in the wizard, in the order the
+    wizard will fold them. Only the first is ever verified against (see
+    :mod:`memdiver.app.oracle_autoconfig`), so the order is part of the
+    question, not incidental.
+    """
+
+    source_paths: List[str] = Field(default_factory=list)
 
 
 class DryRunRequest(BaseModel):
@@ -191,6 +210,35 @@ def load_example_oracle(filename: str, request: Optional[LoadExampleRequest] = N
     except OracleRegistryError as exc:
         raise _map_registry_error(exc)
     return entry.to_dict()
+
+
+@router.post("/examples/{filename}/suggest-config")
+def suggest_example_config_endpoint(
+    filename: str, request: Optional[SuggestConfigRequest] = None
+):
+    """Derive an example's config from the dumps the analyst already picked.
+
+    The gocryptfs example asks for "a file encrypted by the same gocryptfs
+    instance whose master key we're recovering" — which, for a corpus dump, is
+    a sibling of the dump already selected and is declared in that run's
+    ``meta.json``. Asking the analyst to retype it is asking them to restate
+    something the dataset already knows.
+
+    Never an error when there is nothing to say: a dump outside any corpus
+    answers ``{"config": {}}`` with 200, because "I could not derive this, fill
+    it in yourself" is the field's ordinary state, not a failure. The only 404
+    is an unknown example filename, resolved the same way ``/load`` resolves it.
+    """
+    registry = _registry()
+    try:
+        example = registry.find_example(filename)
+    except OracleRegistryError as exc:
+        raise _map_registry_error(exc)
+    suggestion = suggest_example_config(
+        Path(example["path"]),
+        request.source_paths if request is not None else [],
+    )
+    return asdict(suggestion)
 
 
 @router.get("")

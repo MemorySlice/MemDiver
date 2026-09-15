@@ -244,9 +244,16 @@ export function OracleUpload() {
         </>
       )}
 
+      {/*
+        Prefixed, never bare. The store's ``error`` is shared by every oracle
+        action, so a sentence dropped here unattributed ("oracle execution
+        disabled; ...") reads as though the upload just above it failed, even
+        when it came from a dry-run or the Examples tab. Saying which operation
+        failed costs one clause and keeps the server's own words intact.
+      */}
       {(localError || error) && (
         <div className="text-xs md-text-error">
-          {localError || error}
+          {t("oracle.upload.errorPrefix", { error: localError || error })}
         </div>
       )}
       {loading && (

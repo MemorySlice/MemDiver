@@ -11,6 +11,15 @@
  * — the whole pipeline exists because random candidates almost never
  * decrypt. A red bar is the normal pre-run state; the legend makes
  * that explicit so first-time users don't misinterpret it as a bug.
+ *
+ * A *failed* run is a different thing from an all-red run, and the dots
+ * alone cannot express that: if the request is refused (misconfigured
+ * oracle, execution disabled, oracle id gone) the server never grades a
+ * single sample, so there is nothing for the dots to say. That silence
+ * was the reported bug — an HTTP 400 with a perfectly readable message
+ * left all 16 dots grey and the message only appeared on a sibling tab.
+ * Hence the scoped failure line below: the bar states its own outcome
+ * rather than relying on some other panel to state it.
  */
 
 import { useState } from "react";
@@ -45,12 +54,40 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
   const dryRun = useOracleStore((s) => s.dryRun);
   const runDry = useOracleStore((s) => s.runDry);
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * Why THIS bar's last run failed — deliberately local, not a selector.
+   *
+   * ``useOracleStore.error`` is shared by every oracle action, and
+   * StageOracle mounts OracleUpload / OracleExamplePicker alongside this
+   * bar. A reactive selector would therefore paint a failed *upload*
+   * under the dry-run dots. Reading the store imperatively at the moment
+   * the run resolves keeps the message attributable to the run it came
+   * from; OracleExamplePicker.storeFailure() uses the same idiom.
+   */
+  const [failure, setFailure] = useState<string | null>(null);
 
   async function handleRun(): Promise<void> {
     if (!oracleId || samplesB64.length === 0) return;
+    setFailure(null);
     setSubmitting(true);
     try {
-      await runDry(oracleId, samplesB64);
+      const result = await runDry(oracleId, samplesB64);
+      if (result === null) {
+        // ``guarded`` already ran the body through ``readableFailure``, so this
+        // is the server's own sentence and not a {"detail":…} envelope.
+        //
+        // NOTE (not a bug to fix here): on failure the store keeps the previous
+        // ``dryRun``, so stale dots can sit above a fresh error. That is
+        // acceptable — the error text is unambiguous about what happened — and
+        // clearing a shared store field on behalf of one consumer would be the
+        // worse trade.
+        //
+        // The empty string is treated as "no reason" alongside null: a
+        // rejection with a blank message would otherwise set a falsy failure
+        // and render nothing, which is the very silence this bar exists to end.
+        const reason = useOracleStore.getState().error;
+        setFailure(reason?.trim() ? reason : t("oracle.dryRun.unknownError"));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -103,6 +140,12 @@ export function OracleDryRunBar({ oracleId, samplesB64 }: Props) {
           />
         ))}
       </div>
+
+      {failure && (
+        <p data-testid="oracle-dry-run-error" className="text-xs md-text-error">
+          {t("oracle.dryRun.failedPrefix", { error: failure })}
+        </p>
+      )}
 
       <div className="flex items-center justify-between text-[10px] md-text-muted">
         <div className="flex items-center gap-2">

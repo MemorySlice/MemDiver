@@ -30,14 +30,28 @@ export interface OracleExample {
   head_lines: string[];
   /**
    * The example's sibling ``.toml``, parsed — or ``null`` when it ships without
-   * one.
+   * one. The reserved ``memdiver`` table is stripped server-side, so every key
+   * here is a key ``build_oracle(cfg)`` actually reads.
    *
    * Values are hints, NOT defaults to submit blind: the bundled gocryptfs
-   * template carries ``${MEMDIVER_FIXTURE_ROOT}/...``, a placeholder the server
-   * passes through verbatim and which names no real file. The UI seeds its
-   * config form with these and makes the user confirm each one.
+   * template carries a path that names no real file. The UI seeds its config
+   * form from these and makes the user answer the ones listed in
+   * ``config_placeholders``.
    */
   config_template: Record<string, unknown> | null;
+  /**
+   * Which ``config_template`` keys are questions rather than answers.
+   *
+   * The server decides this — the union of keys whose value is a ``${VAR}``
+   * and keys the example declares under its reserved ``[memdiver.autofill]``
+   * table — because the shape of the value cannot be trusted to give it away:
+   * ``/absolute/path/to/your/vault/cipher/<any-encrypted-file>`` is every bit
+   * as fake as ``${MEMDIVER_FIXTURE_ROOT}/...`` and looks like a real path.
+   *
+   * Optional only so a response from an older server cannot break the picker;
+   * the current API always sends it (``[]`` when nothing is a placeholder).
+   */
+  config_placeholders?: string[];
 }
 
 /** Uploaded oracle tracked in the in-memory OracleRegistry. */
@@ -160,6 +174,53 @@ export const loadOracleExample = (
         ...(description === undefined ? {} : { description }),
       }),
     },
+  );
+
+/**
+ * What the server can work out about a Shape 2 example's config on its own.
+ *
+ * Mirrors ``ConfigSuggestion`` in app/oracle_autoconfig.py. The config an
+ * example such as ``gocryptfs.py`` needs is a *sibling of the dump the user
+ * already picked* on the dumps step, so the server derives it from
+ * ``source_paths`` rather than asking the analyst to go find it: the bundled
+ * template can only name a placeholder, and a placeholder is not an answer.
+ *
+ * Every field is advisory except ``blocked_reason``:
+ *
+ *  - ``config`` — values to prefill, keyed exactly as the template's keys.
+ *    ``{}`` means nothing was derivable, which is a normal 200, not an error.
+ *  - ``provenance`` — one sentence saying where the values came from, so a
+ *    value that appeared by itself is never mysterious.
+ *  - ``blocked_reason`` — the oracle cannot verify this run at all (a cipher
+ *    mismatch, say). Arming anyway would sweep every candidate to ``False``
+ *    and read as "the key is not in the dump", so the UI refuses to load.
+ *  - ``reference_run`` / ``reference_dump`` — which run ``source_paths[0]``
+ *    belongs to. Only that dump is ever verified by the sweep and every run
+ *    has its own master key, so a config derived against another run yields
+ *    silent zero hits; the UI compares these before arming.
+ */
+export interface ConfigSuggestion {
+  config: Record<string, unknown>;
+  provenance: string | null;
+  blocked_reason: string | null;
+  warnings: string[];
+  reference_run: string | null;
+  reference_dump: string | null;
+}
+
+/**
+ * Ask the server to derive a bundled example's config from the picked dumps.
+ *
+ * Answers 200 with an empty ``config`` when nothing could be derived — an
+ * example without an autofill rule, a dump with no run metadata beside it, a
+ * vault directory that is not there any more — because "I could not work this
+ * out" is an answer, not a failure. 404 is the same rule as ``.../load``: no
+ * such bundled example.
+ */
+export const suggestExampleConfig = (filename: string, sourcePaths: string[]) =>
+  request<ConfigSuggestion>(
+    `/api/oracles/examples/${encodeURIComponent(filename)}/suggest-config`,
+    { method: "POST", body: JSON.stringify({ source_paths: sourcePaths }) },
   );
 
 /**

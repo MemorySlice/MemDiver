@@ -22,9 +22,11 @@ import {
   listOracleExamples,
   loadOracleExample as loadOracleExampleApi,
   listOracles,
+  suggestExampleConfig as suggestExampleConfigApi,
   uploadOracle as uploadOracleApi,
 } from "@/api/oracles";
 import type {
+  ConfigSuggestion,
   DryRunResult,
   OracleEntry,
   OracleExample,
@@ -60,6 +62,18 @@ interface OracleState {
     config?: Record<string, unknown>,
     description?: string,
   ) => Promise<OracleEntry | null>;
+  /**
+   * Ask the server what a bundled example's config should be for these dumps.
+   *
+   * Advisory only: ``null`` means the request itself failed, and the caller is
+   * expected to carry on with an unfilled form rather than block on it. An
+   * example the server simply could not derive anything for answers with an
+   * empty ``config``, which is a result, not a failure.
+   */
+  suggest: (
+    filename: string,
+    sourcePaths: string[],
+  ) => Promise<ConfigSuggestion | null>;
   arm: (
     oracleId: string,
     sha256: string,
@@ -167,6 +181,14 @@ export const useOracleStore = create<OracleState>((set) => ({
     }
     return entry;
   },
+
+  /**
+   * No store state of its own: the suggestion belongs to the one config editor
+   * that asked for it, and a second editor opened later must derive its own
+   * rather than inherit values from a run it was never compared against.
+   */
+  suggest: async (filename, sourcePaths) =>
+    guarded(set, () => suggestExampleConfigApi(filename, sourcePaths)),
 
   arm: async (oracleId, sha256, config) => {
     const entry = await guarded(set, () =>

@@ -1,17 +1,34 @@
-# Gocryptfs oracle config for n-sweep over the reference
-# `dataset_gocryptfs` fixture. The sample ciphertext must be a file
-# encrypted by the same gocryptfs instance whose master key we're
-# recovering from memory — any encrypted content file under the vault's
-# cipher/ dir works. Each candidate 32-byte key derives a content key
-# via HKDF-SHA256 and is verified by AES-GCM decrypting block 0.
+# Config for the bundled gocryptfs oracle (gocryptfs.py).
 #
-# Dataset-relative path: run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg
-# (a single 183-byte encrypted file produced by the dataset builder).
+# `sample_ciphertext` must name a file encrypted by the SAME gocryptfs
+# instance whose master key you are recovering from memory — any encrypted
+# content file under that vault's cipher/ dir will do. Each 32-byte key
+# candidate derives a content key via HKDF-SHA256 and is verified by
+# AES-GCM-decrypting block 0 of this file, so a ciphertext from a different
+# vault (a different password, hence a different master key) fails for every
+# candidate: zero hits, no error, and no hint as to why.
 #
-# This file is consumed by `scripts/precompute_pipeline_fixtures.py`
-# to pre-render README shots 09 and 10 with authentic n-sweep output.
+# You usually do not have to fill this in. When the dumps you selected belong
+# to a dataset whose meta.json declares `vault_cipher_dir`, MemDiver derives
+# the path from the first selected dump's run and prefills it for you; the
+# value below is only the shape of the answer, not a path that exists.
 #
-# Replace ${MEMDIVER_FIXTURE_ROOT} with the absolute path to your local
-# dataset root before using this config. The placeholder lets us ship a
-# portable example without hardcoding any author's machine layout.
-sample_ciphertext = "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/dataset_gocryptfs/run_0001/cipher/jxSMOg-V7hYDb5UsGpxWxg"
+# gocryptfs.conf and gocryptfs.diriv are vault metadata, not content, so they
+# are excluded from that search.
+#
+# Cipher note: this oracle hardcodes AES-256-GCM. An `xchacha` run cannot be
+# verified by it at all — every candidate raises InvalidTag, which is
+# indistinguishable from "the key is not in this dump". MemDiver refuses to
+# prefill for such a run rather than hand you a config that is guaranteed to
+# lie; use an aes run, or an oracle that speaks xchacha.
+sample_ciphertext = "/absolute/path/to/your/gocryptfs/vault/cipher/<any-encrypted-file>"
+
+# Everything under [memdiver] is MemDiver's own automation metadata, not the
+# oracle's config: it is stripped before the template reaches build_oracle(),
+# so an oracle can never see — or collide with — these keys.
+[memdiver]
+requires_cipher = "aes"
+
+[memdiver.autofill.sample_ciphertext]
+strategy = "vault_content_file"
+exclude = ["gocryptfs.conf", "gocryptfs.diriv"]

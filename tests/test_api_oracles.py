@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,8 @@ from memdiver.api.services.oracle_registry import (
     OracleRegistry,
     OracleRegistryError,
     OracleShaMismatch,
+    _describe_config_keys,
+    _find_unexpanded_placeholder,
     reset_oracle_registry,
 )
 
@@ -646,6 +650,114 @@ def test_arm_gocryptfs_with_a_missing_file_fails_readably(
     assert registry.get(entry.oracle_id).armed is False
 
 
+# ---------- unexpanded ${VAR} placeholders ----------------------------------
+#
+# Nothing in this repo expands ${VAR} in an oracle config (by design), so a
+# template that ships one reaches the filesystem verbatim and used to surface
+# as FileNotFoundError(2, 'No such file or directory') — true, but it never
+# said the value was still a placeholder. The bundled gocryptfs.toml no longer
+# spells its hole this way (it declares it in config_placeholders instead),
+# but any third-party example still may.
+#
+# The template string is built INLINE here, never read from the shipped .toml:
+# these tests pin the *check*, and must not turn red the day the example's
+# path changes.
+
+PLACEHOLDER_CONFIG = {
+    "sample_ciphertext": (
+        "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/vault/jxSMOg-V7hYDb5UsGpxWxg"
+    )
+}
+
+
+def test_arm_with_an_unexpanded_placeholder_names_the_key_and_the_placeholder(
+    registry, gocryptfs_source
+):
+    """No `cryptography` importorskip on purpose.
+
+    The check fires before any sandbox replay, which is the whole point: a
+    placeholder is diagnosable from the string alone, so the diagnosis is fast
+    and deterministic on any machine.
+    """
+    entry = registry.upload(filename="gocryptfs.py", content=gocryptfs_source)
+    with pytest.raises(OracleConfigInvalid) as excinfo:
+        registry.arm(entry.oracle_id, entry.sha256, config=PLACEHOLDER_CONFIG)
+    message = str(excinfo.value)
+    assert "sample_ciphertext" in message
+    assert "${MEMDIVER_FIXTURE_ROOT}" in message
+    assert "gocryptfs.py" in message
+    assert "Traceback" not in message
+    assert registry.get(entry.oracle_id).armed is False
+
+
+def test_dry_run_on_the_bundled_template_names_the_placeholder(registry):
+    """THE reported bug, end to end: load the example with its own template,
+    smoke-test it, and get told which key is still a placeholder."""
+    entry = registry.load_example("gocryptfs.py", config=PLACEHOLDER_CONFIG)
+    with pytest.raises(OracleConfigInvalid) as excinfo:
+        registry.dry_run(entry.oracle_id, samples=[b"whatever"])
+    message = str(excinfo.value)
+    assert "sample_ciphertext" in message
+    assert "${MEMDIVER_FIXTURE_ROOT}" in message
+    assert "No such file or directory" not in message
+
+
+def test_load_example_still_accepts_a_placeholder_config_verbatim(registry):
+    """Pins the decision NOT to check at upload/load time.
+
+    "Load without arming" is a deliberate park-a-draft escape hatch: the UI
+    prefills the form from the template, so refusing the template at load
+    would make the Examples tab un-loadable. Arm and dry-run are the only two
+    places the value is actually dereferenced.
+    """
+    entry = registry.load_example("gocryptfs.py", config=PLACEHOLDER_CONFIG)
+    assert entry.armed is False
+    assert entry.config == PLACEHOLDER_CONFIG
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        17,
+        True,
+        None,
+        "/abs/path/to/blob",
+        "a$b",              # a bare $ is legal in a POSIX filename
+        "$MEMDIVER_ROOT/x",  # unbraced: not the form our templates use
+        "",
+    ],
+)
+def test_find_unexpanded_placeholder_ignores_ordinary_values(value):
+    assert _find_unexpanded_placeholder({"sample_ciphertext": value}) is None
+
+
+def test_find_unexpanded_placeholder_on_an_empty_config():
+    assert _find_unexpanded_placeholder({}) is None
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("${A}", "${A}"),
+        ("x${A_1}y", "${A_1}"),
+        ("${MEMDIVER_FIXTURE_ROOT}/gocryptfs/blob", "${MEMDIVER_FIXTURE_ROOT}"),
+    ],
+)
+def test_find_unexpanded_placeholder_finds_the_braced_form(value, expected):
+    assert _find_unexpanded_placeholder({"k": value}) == ("k", expected)
+
+
+def test_find_unexpanded_placeholder_is_deterministic_across_two_hits():
+    """sorted() so the same config always accuses the same key."""
+    config = {"zeta": "${Z}", "alpha": "${A}"}
+    assert _find_unexpanded_placeholder(config) == ("alpha", "${A}")
+
+
+def test_describe_config_keys_wording():
+    assert _describe_config_keys({}) == "no config values supplied"
+    assert _describe_config_keys({"b": 1, "a": 2}) == "config keys: a, b"
+
+
 def test_arm_gocryptfs_end_to_end_with_a_real_sample(
     registry, gocryptfs_source, tmp_path
 ):
@@ -763,11 +875,21 @@ def test_examples_expose_the_sibling_toml_as_a_config_template(registry):
     examples = {e["filename"]: e for e in registry.list_examples()}
     template = examples["gocryptfs.py"]["config_template"]
     assert template is not None
-    # Passed through verbatim: the placeholder is the UI's "fill this in" cue,
-    # so it must NOT be env-expanded on the way out.
-    assert "${MEMDIVER_FIXTURE_ROOT}" in template["sample_ciphertext"]
+    # The shipped value is the SHAPE of an answer, not an answer: a path on
+    # nobody's machine. It is passed through verbatim (rewriting it would hide
+    # what the example is asking for)...
+    assert template["sample_ciphertext"].startswith("/absolute/path/to/your/")
+    # ...and the server names it as a hole, because that value no longer looks
+    # like a placeholder to a regex — which is exactly how it came to be
+    # submitted as a real path.
+    assert "sample_ciphertext" in examples["gocryptfs.py"]["config_placeholders"]
+    # The reserved [memdiver] table is memdiver's own automation metadata. Left
+    # in the template the UI renders it as a config row and submits it to
+    # build_oracle(), which never asked for it.
+    assert "memdiver" not in template
     # An example with no sibling .toml reports None rather than {}.
     assert examples["generic_aes_gcm.py"]["config_template"] is None
+    assert examples["generic_aes_gcm.py"]["config_placeholders"] == []
 
 
 def test_load_example_registers_through_the_upload_path(registry):
@@ -833,9 +955,11 @@ def test_router_load_example_arm_and_run(tmp_path):
 
         listed = client.get("/api/oracles/examples").json()["examples"]
         gocryptfs = next(e for e in listed if e["filename"] == "gocryptfs.py")
-        assert "${MEMDIVER_FIXTURE_ROOT}" in (
-            gocryptfs["config_template"]["sample_ciphertext"]
+        assert gocryptfs["config_template"]["sample_ciphertext"].startswith(
+            "/absolute/path/to/your/"
         )
+        assert "sample_ciphertext" in gocryptfs["config_placeholders"]
+        assert "memdiver" not in gocryptfs["config_template"]
 
         loaded = client.post("/api/oracles/examples/gocryptfs.py/load")
         assert loaded.status_code == 200, loaded.text
@@ -844,16 +968,49 @@ def test_router_load_example_arm_and_run(tmp_path):
         assert body["armed"] is False
         assert body["config"] == {}
 
-        # Arming with the template's unexpanded placeholder is a readable 400.
+        # Arming with an unexpanded ${VAR} placeholder is a readable 400.
+        # Spelled inline rather than taken from the shipped template: the
+        # bundled example states its hole in config_placeholders now, but a
+        # third-party example may still ship a ${VAR}, and that is the case
+        # this guard exists for.
         bad = client.post(
             f"/api/oracles/{body['id']}/arm",
             json={
                 "sha256": body["sha256"],
-                "config": gocryptfs["config_template"],
+                "config": {
+                    "sample_ciphertext": (
+                        "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/jxSMOg-V7hYDb5UsGpxWxg"
+                    )
+                },
             },
         )
         assert bad.status_code == 400, bad.text
+        # Names the key AND the placeholder: "(sample_ciphertext)" alone used
+        # to read as "this key is wrong" rather than "this key is unfilled".
         assert "sample_ciphertext" in bad.json()["detail"]
+        assert "${MEMDIVER_FIXTURE_ROOT}" in bad.json()["detail"]
+
+        # Dry-run is the surface users reach first, so it must say the same
+        # thing. Loaded WITH the placeholder config (the reported bug) and
+        # built inline, so this leg does not depend on the shipped .toml.
+        drafted = client.post(
+            "/api/oracles/examples/gocryptfs.py/load",
+            json={
+                "config": {
+                    "sample_ciphertext": (
+                        "${MEMDIVER_FIXTURE_ROOT}/gocryptfs/jxSMOg-V7hYDb5UsGpxWxg"
+                    )
+                }
+            },
+        )
+        assert drafted.status_code == 200, drafted.text
+        dry = client.post(
+            f"/api/oracles/{drafted.json()['id']}/dry-run",
+            json={"samples_b64": [base64.b64encode(b"candidate").decode()]},
+        )
+        assert dry.status_code == 400, dry.text
+        assert "sample_ciphertext" in dry.json()["detail"]
+        assert "${MEMDIVER_FIXTURE_ROOT}" in dry.json()["detail"]
 
         sample = _fake_gocryptfs_sample(tmp_path / "cipher_blob")
         good = client.post(
@@ -868,6 +1025,167 @@ def test_router_load_example_arm_and_run(tmp_path):
         assert good.json()["config"]["sample_ciphertext"] == str(sample)
     finally:
         reset_oracle_registry()
+
+
+# ---------- suggest-config: the dataset already knows the ciphertext ---------
+
+
+@contextmanager
+def _oracle_client(tmp_path: Path):
+    """A TestClient over the oracles router, with the singleton always reset.
+
+    ``init_oracle_registry`` installs a PROCESS-wide registry; leaking one
+    leaves the next test reading a ``tmp_path`` pytest has already deleted, so
+    the teardown is the reason this helper exists at all.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from memdiver.api.routers.oracles import router
+    from memdiver.api.services.oracle_registry import init_oracle_registry
+
+    examples_dir = Path(__file__).parent.parent / "docs" / "oracle" / "examples"
+    init_oracle_registry(oracle_dir=tmp_path / "oracles", examples_dir=examples_dir)
+    try:
+        app = FastAPI()
+        app.include_router(router, prefix="/api/oracles")
+        yield TestClient(app)
+    finally:
+        reset_oracle_registry()
+
+
+def _make_corpus_run(
+    dataset_root: Path,
+    run_id: str = "run_0001",
+    *,
+    cipher: str = "aes",
+    content_names: tuple = ("jxSMOg-V7hYDb5UsGpxWxg",),
+    vault_declaration: str = "run_0001/cipher",
+) -> Path:
+    """Build one synthetic corpus run; returns the dump path inside it.
+
+    Synthesised here rather than pointed at the author's private dataset so
+    the HTTP contract is provable on a machine that has never seen it. The
+    declared vault defaults to the DATASET-ROOT-RELATIVE ``run_0001/cipher``
+    spelling the shipped corpus actually writes (the bare ``cipher`` form
+    resolves too, but is not what the HTTP layer meets in the field).
+    """
+    run_dir = dataset_root / run_id
+    vault = run_dir / "cipher"
+    vault.mkdir(parents=True)
+    # Vault metadata, not content: the .toml excludes both by name, and a
+    # suggestion that offered one of them would decrypt to nothing.
+    (vault / "gocryptfs.conf").write_text("{}")
+    (vault / "gocryptfs.diriv").write_bytes(b"\x00" * 16)
+    for name in content_names:
+        (vault / name).write_bytes(b"ciphertext")
+
+    dump = run_dir / "memslicer.msl"
+    dump.write_bytes(b"\x00" * 64)
+    payload = {
+        "run_id": run_id,
+        "cipher": cipher,
+        "vault_cipher_dir": vault_declaration,
+    }
+    (run_dir / "meta.json").write_text(json.dumps(payload))
+    return dump
+
+
+def test_router_suggest_config_404s_on_an_unknown_example(tmp_path):
+    """Same resolution rule as /load, so traversal is a 404 rather than a read."""
+    with _oracle_client(tmp_path) as client:
+        unknown = client.post(
+            "/api/oracles/examples/nope.py/suggest-config",
+            json={"source_paths": []},
+        )
+        assert unknown.status_code == 404, unknown.text
+        traversal = client.post(
+            "/api/oracles/examples/..%2F..%2Fpyproject.toml/suggest-config",
+            json={"source_paths": []},
+        )
+        assert traversal.status_code == 404, traversal.text
+
+
+def test_router_suggest_config_is_200_when_nothing_is_derivable(tmp_path):
+    """Underivable is the field's ORDINARY state, so it must not be an error.
+
+    A 4xx here would make the wizard render a failure banner for a dump that
+    simply lives outside any corpus — which is most dumps.
+    """
+    with _oracle_client(tmp_path) as client:
+        nothing_selected = client.post(
+            "/api/oracles/examples/gocryptfs.py/suggest-config",
+            json={"source_paths": []},
+        )
+        assert nothing_selected.status_code == 200, nothing_selected.text
+        assert nothing_selected.json()["config"] == {}
+        assert nothing_selected.json()["blocked_reason"] is None
+
+        lonely = tmp_path / "lonely.msl"
+        lonely.write_bytes(b"\x00" * 64)
+        no_meta = client.post(
+            "/api/oracles/examples/gocryptfs.py/suggest-config",
+            json={"source_paths": [str(lonely)]},
+        )
+        assert no_meta.status_code == 200, no_meta.text
+        body = no_meta.json()
+        assert body["config"] == {}
+        assert body["blocked_reason"] is None
+        # The dump is still echoed: the UI says which selection it answered.
+        assert body["reference_dump"] == str(lonely)
+        assert body["reference_run"] is None
+
+
+@pytest.mark.parametrize("vault_declaration", ["run_0001/cipher", "cipher"])
+def test_router_suggest_config_derives_the_ciphertext_from_the_run(
+    tmp_path, vault_declaration
+):
+    """The happy path: the value the user was being asked to retype.
+
+    Both declaration spellings are exercised because the shipped corpus writes
+    the dataset-root-relative one (``run_0001/cipher``) while the bare
+    ``cipher`` form resolves against the run dir — the HTTP layer must not
+    care which a dataset chose.
+    """
+    dump = _make_corpus_run(tmp_path / "corpus", vault_declaration=vault_declaration)
+    with _oracle_client(tmp_path) as client:
+        r = client.post(
+            "/api/oracles/examples/gocryptfs.py/suggest-config",
+            json={"source_paths": [str(dump)]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["config"] == {
+            "sample_ciphertext": str(
+                tmp_path / "corpus" / "run_0001" / "cipher" / "jxSMOg-V7hYDb5UsGpxWxg"
+            )
+        }
+        assert body["reference_run"] == "run_0001"
+        assert body["reference_dump"] == str(dump)
+        # Provenance is the answer to "where did this come from?", which the
+        # analyst has to be able to check without leaving the wizard.
+        assert "run_0001" in body["provenance"]
+        assert "memslicer.msl" in body["provenance"]
+        assert body["blocked_reason"] is None
+        assert body["warnings"] == []
+
+
+def test_router_suggest_config_blocks_a_cipher_the_oracle_cannot_verify(tmp_path):
+    """An xchacha run fails every candidate, which reads as "key not present"."""
+    dump = _make_corpus_run(tmp_path / "corpus", cipher="xchacha")
+    with _oracle_client(tmp_path) as client:
+        r = client.post(
+            "/api/oracles/examples/gocryptfs.py/suggest-config",
+            json={"source_paths": [str(dump)]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Blocked, not filled: a prefilled config here would manufacture a run
+        # that is guaranteed to report nothing, and say nothing about why.
+        assert body["config"] == {}
+        assert body["blocked_reason"] is not None
+        assert "xchacha" in body["blocked_reason"]
+        assert body["reference_run"] == "run_0001"
 
 
 def test_router_load_example_rejects_traversal_with_404(tmp_path):

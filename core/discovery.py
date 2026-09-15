@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Union
 
-from .dataset_metadata import DatasetMeta, load_run_meta
+from .dataset_metadata import DatasetMeta, load_run_meta, resolve_declared_subpath
 from .models import DumpFile, RunDirectory
 from .keylog import KeylogParser
 from .phase_normalizer import PhaseNormalizer
@@ -337,19 +337,41 @@ class RunDiscovery:
         Used by ``app.tools_pipeline.locate_field_across_pairs`` to give each
         dump of an N-dump search a needle from ITS OWN capture.
         """
-        run_path = Path(path)
-        if not run_path.is_dir():
-            run_path = run_path.parent
+        # Both calls normalise the SAME input, so they agree on the run dir by
+        # construction -- passing the already-normalised ``run_path`` instead
+        # would re-walk a path whose parent is a different directory.
+        run_path = RunDiscovery._run_dir_of(path)
+        meta = RunDiscovery.meta_for_dump(path)
+        return RunDiscovery._find_capture(run_path, meta)
+
+    @staticmethod
+    def meta_for_dump(path: Union[str, Path]) -> Optional[DatasetMeta]:
+        """Load the ``meta.json`` of the run that owns ONE dump (or run dir).
+
+        The normalisation callers holding a *dump* path would otherwise each
+        reinvent: a file becomes its parent directory, a directory is used
+        as-is. :meth:`find_capture_for` is one such caller, so the walk exists
+        once rather than once per question asked about a dump's run.
+
+        Returns ``None`` for a run with no ``meta.json`` -- and for one whose
+        ``meta.json`` cannot be read, the same downgrade
+        :meth:`load_run_directory` applies: a mode-000 run dir must not abort
+        the sweep that reached it.
+        """
+        run_path = RunDiscovery._run_dir_of(path)
         try:
-            meta = load_run_meta(run_path)
+            return load_run_meta(run_path)
         except OSError as exc:
-            # Same downgrade ``load_run_directory`` applies: a mode-000 run dir
-            # must not stop the capture probe, which may still succeed.
             logger.warning(
                 "Failed to read meta.json for %s: %s", run_path, exc
             )
-            meta = None
-        return RunDiscovery._find_capture(run_path, meta)
+            return None
+
+    @staticmethod
+    def _run_dir_of(path: Union[str, Path]) -> Path:
+        """The run directory owning ``path``: itself when a directory, else its parent."""
+        run_path = Path(path)
+        return run_path if run_path.is_dir() else run_path.parent
 
     @staticmethod
     def _declared_capture_path(
@@ -357,21 +379,13 @@ class RunDiscovery:
     ) -> Optional[Path]:
         """Resolve ``meta.capture`` against the run dir, or ``None``.
 
-        The declaration is corpus-authored data, so an absolute path or one
-        escaping the run directory is rejected (logged, then ignored) instead of
-        letting a meta.json point the scanner at an arbitrary file.
+        The traversal guard itself is
+        :func:`core.dataset_metadata.resolve_declared_subpath`, shared with
+        ``DatasetMeta.vault_dir`` so the two cannot drift apart.
         """
-        if meta is None or not meta.capture:
+        if meta is None:
             return None
-        relative = Path(meta.capture)
-        if relative.is_absolute() or ".." in relative.parts:
-            logger.warning(
-                "Ignoring non-relative capture %r declared by %s",
-                meta.capture,
-                run_path / "meta.json",
-            )
-            return None
-        return run_path / relative
+        return resolve_declared_subpath(run_path, meta.capture, kind="capture")
 
     @staticmethod
     def _classify_capture(candidate: Path) -> Optional[str]:

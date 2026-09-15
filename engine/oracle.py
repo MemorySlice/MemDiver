@@ -28,11 +28,12 @@ import importlib.util
 import logging
 import multiprocessing
 import os
+import shutil
 import stat
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 from memdiver.core.artifact_util import sha256_streamed
 
@@ -86,6 +87,34 @@ class OracleBuildError(OracleLoadError):
     """
 
 
+#: MemDiver's own automation table inside an oracle's TOML config.
+#:
+#: A bundled example declares its autofill rules and cipher requirement under
+#: ``[memdiver]`` in the same file as the oracle's config, so the two can never
+#: be shipped out of sync. It is OUR metadata, not the oracle's, and is dropped
+#: in :func:`_oracle_visible_config` before any user code sees it -- an oracle
+#: that validates its config strictly would otherwise reject a key it never
+#: declared, and only on the surfaces that read the file.
+RESERVED_CONFIG_TABLE = "memdiver"
+
+
+def _oracle_visible_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The caller's config as ``build_oracle`` should see it.
+
+    Applied at the two places a config crosses into user code -- the sandbox
+    replay and the real load -- rather than in :func:`load_oracle_config`,
+    which must keep returning the whole file for the autofill loader that reads
+    the reserved table. Stripping here also covers a caller that passes a dict
+    directly (the web pipeline does), so every surface hands the oracle the
+    same keys.
+    """
+    return {
+        key: value
+        for key, value in dict(config or {}).items()
+        if key != RESERVED_CONFIG_TABLE
+    }
+
+
 def load_oracle_config(path: Path | None) -> dict[str, Any]:
     """Load an optional TOML config file into a plain dict."""
     if path is None:
@@ -130,16 +159,50 @@ def _log_module_fingerprint(path: Path) -> str:
     return digest
 
 
+def _purge_pycache(path: Path) -> None:
+    """Delete the ``__pycache__/`` directory next to ``path``.
+
+    Importing from a fresh .py file can still pick up a stale .pyc the
+    attacker dropped alongside it; purging proactively avoids that
+    hole. Missing or empty dirs are fine.
+    """
+    cache_dir = path.parent / "__pycache__"
+    if cache_dir.is_dir():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 def _import_user_module(path: Path):
-    """Import the oracle file as an isolated module named ``memdiver_user_oracle``."""
+    """Import the oracle file as an isolated module named ``memdiver_user_oracle``.
+
+    Bytecode writing is suppressed for the duration of the import, and any
+    ``__pycache__`` the import still managed to leave is purged.
+
+    Here rather than only in the web registry or the sandbox child, because
+    THIS is the one function every surface reaches user code through. The
+    registry sets ``sys.dont_write_bytecode`` for the web server's process and
+    the sandbox child sets it for its own, but a CLI ``--oracle mine.py`` run
+    and any library caller of :func:`load_oracle` used to drop a ``.pyc`` next
+    to the analyst's own source -- in whatever directory that happened to be,
+    at whatever permissions it happened to have. A stale ``.pyc`` can then
+    shadow an edited ``.py``, so what runs stops being what was hashed and
+    armed; that is the whole reason :func:`_purge_pycache` exists.
+
+    The flag is restored rather than left set: it is process-global, and
+    MemDiver is importable as a library inside someone else's application.
+    """
     spec = importlib.util.spec_from_file_location("memdiver_user_oracle", path)
     if spec is None or spec.loader is None:
         raise OracleLoadError(f"cannot create import spec for {path}")
     module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
     try:
         spec.loader.exec_module(module)
     except Exception as exc:
         raise OracleLoadError(f"failed to import oracle {path}: {exc}") from exc
+    finally:
+        sys.dont_write_bytecode = previous
+        _purge_pycache(path)
     return module
 
 
@@ -172,6 +235,16 @@ def _sandbox_validate_target(
     ``("err", repr(exc))``. A hang / OOM-kill / CPU-kill instead manifests as
     the process dying without sending, which the parent detects.
     """
+    # FIRST statement, before any import of user code: this is a *spawned*
+    # child — a fresh interpreter that never constructs an ``OracleRegistry``,
+    # so the ``sys.dont_write_bytecode = True`` the registry sets in the parent
+    # does not exist here. Without this line, importing the oracle below writes
+    # ``__pycache__/*.pyc`` next to it — a world-readable 0755 directory inside
+    # the 0700 oracle dir, and a stale-bytecode shadowing hole where what
+    # executes is not what was hashed and armed. The parent additionally exports
+    # PYTHONDONTWRITEBYTECODE for the child's own stdlib/dependency imports,
+    # which happen before this function is ever reached.
+    sys.dont_write_bytecode = True
     try:
         # Resource caps are Unix-only; on Windows the wall-clock join is the
         # sole (and reliable) floor. Each setrlimit is best-effort: macOS may
@@ -200,7 +273,7 @@ def _sandbox_validate_target(
         spec.loader.exec_module(module)
         builder = getattr(module, "build_oracle", None)
         if callable(builder):
-            builder(dict(config))
+            builder(_oracle_visible_config(config))
         conn.send(("ok", None))
     except Exception as exc:  # noqa: BLE001 - report any user-code failure
         try:
@@ -304,7 +377,24 @@ def _sandbox_probe_spawn(
         target=_sandbox_validate_target,
         args=(path_str, dict(config or {}), cpu_s, mem_bytes, child_conn),
     )
-    proc.start()
+    # Belt and braces for the child's bytecode writes. ``spawn`` execs a brand
+    # new interpreter that inherits this process's environment, and
+    # PYTHONDONTWRITEBYTECODE is read at interpreter START — early enough to
+    # cover the child's own imports of multiprocessing/stdlib/deps, which run
+    # before ``_sandbox_validate_target`` (and its in-function
+    # ``sys.dont_write_bytecode``) is reached. The variable is only exported
+    # across ``start()``, which is where the child's environment is captured,
+    # and any pre-existing value is restored so we never mutate the operator's
+    # environment beyond that window.
+    _prev_dontwrite = os.environ.get("PYTHONDONTWRITEBYTECODE")
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        proc.start()
+    finally:
+        if _prev_dontwrite is None:
+            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+        else:
+            os.environ["PYTHONDONTWRITEBYTECODE"] = _prev_dontwrite
     child_conn.close()  # parent holds only the read end
     proc.join(timeout_s)
 
@@ -315,6 +405,9 @@ def _sandbox_probe_spawn(
             proc.kill()
             proc.join(1.0)
         parent_conn.close()
+        # Third layer: a child from an older/odd interpreter, or one that
+        # imported before we could stop it, may still have left a cache behind.
+        _purge_pycache(Path(path_str))
         return (
             "hang",
             f"oracle load exceeded {timeout_s}s wall-clock (possible hang)",
@@ -328,6 +421,10 @@ def _sandbox_probe_spawn(
         result = None
     finally:
         parent_conn.close()
+
+    # Same third layer on the non-hang paths: the probe must leave the oracle
+    # directory exactly as it found it.
+    _purge_pycache(Path(path_str))
 
     if result is None:
         return (
@@ -460,7 +557,7 @@ def load_oracle(
 
     builder = getattr(module, "build_oracle", None)
     if callable(builder):
-        oracle_obj = builder(dict(config or {}))
+        oracle_obj = builder(_oracle_visible_config(config))
         return _wrap_stateful(oracle_obj, oracle_path)
 
     verify = getattr(module, "verify", None)

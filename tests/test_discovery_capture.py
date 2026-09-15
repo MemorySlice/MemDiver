@@ -511,3 +511,76 @@ def test_scan_dataset_tool_surfaces_capture_counters(tmp_path):
     assert payload["total_runs"] == 3
     assert payload["runs_with_capture"] == 2
     assert payload["captures"] == {"13/scenario_a/openssl": 2}
+
+
+# -- meta_for_dump: the normalisation, extracted --------------------------------
+#
+# ``find_capture_for`` used to own the "dump path -> run dir -> load_run_meta"
+# walk privately and then discard the meta. It is now ``meta_for_dump``, so a
+# caller that wants the run's OWN metadata (its vault, its library version)
+# asks the same question the capture probe does, the same way.
+
+
+def test_meta_for_dump_given_a_dump_file(tmp_path):
+    """A dump path normalises to its parent, where the meta.json lives."""
+    run_dir = _make_run(tmp_path)
+    _write_meta(run_dir)
+
+    meta = RunDiscovery.meta_for_dump(run_dir / "20240101_120000_000001_pre_handshake.dump")
+    assert meta is not None
+    assert meta.run_id == run_dir.name
+
+
+def test_meta_for_dump_given_the_run_directory(tmp_path):
+    """A directory is used as-is, so both call shapes agree on one answer."""
+    run_dir = _make_run(tmp_path)
+    _write_meta(run_dir)
+
+    assert RunDiscovery.meta_for_dump(run_dir) == RunDiscovery.meta_for_dump(
+        run_dir / "20240101_120000_000001_pre_handshake.dump"
+    )
+
+
+def test_meta_for_dump_accepts_a_string_path(tmp_path):
+    """The ``Union[str, Path]`` signature its siblings use, honoured."""
+    run_dir = _make_run(tmp_path)
+    _write_meta(run_dir)
+
+    meta = RunDiscovery.meta_for_dump(str(run_dir))
+    assert meta is not None
+
+
+def test_meta_for_dump_without_meta_json_is_none(tmp_path):
+    """A legacy-style run has no meta.json; that is None, not an exception."""
+    run_dir = _make_run(tmp_path)
+    assert RunDiscovery.meta_for_dump(run_dir / "20240101_120000_000001_pre_handshake.dump") is None
+
+
+def test_meta_for_dump_never_raises_on_a_missing_directory(tmp_path):
+    """Same tolerance ``find_capture_for`` has: no run there is simply None."""
+    assert RunDiscovery.meta_for_dump("/nonexistent/deep/a.dump") is None
+
+
+def test_meta_for_dump_carries_the_vault_declaration(tmp_path):
+    """The reason the meta stopped being thrown away: callers want its fields."""
+    import json
+
+    run_dir = _make_run(tmp_path)
+    (run_dir / "cipher").mkdir()
+    payload = {"run_id": run_dir.name, "dumps": {}, "vault_cipher_dir": "cipher"}
+    (run_dir / "meta.json").write_text(json.dumps(payload))
+
+    meta = RunDiscovery.meta_for_dump(run_dir / "20240101_120000_000001_pre_handshake.dump")
+    assert meta is not None
+    assert meta.vault_dir() == run_dir / "cipher"
+
+
+def test_find_capture_for_still_honours_a_declared_capture(tmp_path):
+    """The refactor kept ``find_capture_for`` reading the meta it now shares."""
+    run_dir = _make_run(tmp_path)
+    (run_dir / "declared.pcap").write_bytes(b"\xd4\xc3\xb2\xa1")
+    _write_meta(run_dir, capture="declared.pcap")
+
+    assert RunDiscovery.find_capture_for(
+        run_dir / "20240101_120000_000001_pre_handshake.dump"
+    ) == (run_dir / "declared.pcap", "present")

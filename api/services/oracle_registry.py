@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import shutil
+import re
 import stat
 import sys
 import threading
@@ -37,11 +37,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from memdiver.app.oracle_autoconfig import split_reserved
 from memdiver.engine.oracle import (
     OracleBuildError,
     OracleLoadError,
+    _purge_pycache,
     load_oracle,
     load_oracle_config,
     validate_oracle_sandboxed,
@@ -117,18 +119,6 @@ class OracleEntry:
         }
 
 
-def _purge_pycache(path: Path) -> None:
-    """Delete the ``__pycache__/`` directory next to ``path``.
-
-    Importing from a fresh .py file can still pick up a stale .pyc the
-    attacker dropped alongside it; purging proactively avoids that
-    hole. Missing or empty dirs are fine.
-    """
-    cache_dir = path.parent / "__pycache__"
-    if cache_dir.is_dir():
-        shutil.rmtree(cache_dir, ignore_errors=True)
-
-
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -170,30 +160,64 @@ def _detect_shape(path: Path) -> int:
     )
 
 
-def _example_config_template(path: Path) -> Optional[Dict[str, Any]]:
-    """Parse the sibling ``<stem>.toml`` of a bundled example, if it ships one.
+def _example_config_template(
+    path: Path,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Parse the sibling ``<stem>.toml``: its config, and which keys are holes.
 
     A Shape-2 example is useless without its parameters, and the bundled
     ``.toml`` is the authoritative statement of which keys it wants — so it is
     surfaced as a *template* the UI can render as a prefilled form instead of
     making the user read the example's docstring.
 
-    Values are passed through verbatim. ``gocryptfs.toml`` deliberately ships a
-    literal ``${MEMDIVER_FIXTURE_ROOT}`` placeholder; expanding it here would
-    silently hand the user a path that exists on nobody's machine, whereas an
-    unexpanded placeholder reads as "fill this in", which is what it is.
+    Two things the raw file says are NOT config, and both are separated out
+    here rather than left for the UI to re-derive:
+
+    * The reserved ``[memdiver]`` table is memdiver's own automation metadata
+      (see :mod:`memdiver.app.oracle_autoconfig`). Left in, the form would
+      render it as a config row and submit it to ``build_oracle``, which never
+      asked for it.
+    * A template *value* may be a hint rather than an answer —
+      ``gocryptfs.toml``'s ``/absolute/path/to/your/...`` is a shape, not a
+      path. Nothing here rewrites it (expanding or blanking it would hide what
+      the example is asking for), so the second half of the return value names
+      those keys outright; guessing from the value alone is what made the old
+      ``${MEMDIVER_FIXTURE_ROOT}`` spelling load-bearing.
+
     Parsed with :func:`engine.oracle.load_oracle_config`, the same loader the
     CLI's ``--oracle-config`` uses, so the two can never disagree on syntax.
     """
     toml_path = path.with_suffix(".toml")
     if not toml_path.is_file():
-        return None
+        return None, []
     try:
-        return load_oracle_config(toml_path)
+        template = load_oracle_config(toml_path)
     except (OracleLoadError, ValueError) as exc:
         # A malformed bundled template must not blank the whole Examples tab.
         logger.warning("example config %s failed to parse: %s", toml_path.name, exc)
-        return None
+        return None, []
+    config, reserved = split_reserved(template)
+    return config, _placeholder_keys(config, reserved)
+
+
+def _placeholder_keys(
+    config: Dict[str, Any], reserved: Dict[str, Any]
+) -> List[str]:
+    """Name every template key that is a question rather than an answer.
+
+    The union of two independent signals, because neither alone is enough: a
+    third-party example may ship a ``${VAR}`` and no reserved table, while a
+    bundled one may declare an autofill rule for a value that looks like an
+    ordinary path. Sorted so the payload is stable between identical calls.
+    """
+    autofill = reserved.get("autofill")
+    keys = set(autofill) if isinstance(autofill, dict) else set()
+    keys.update(
+        key
+        for key, value in config.items()
+        if isinstance(value, str) and _PLACEHOLDER_RE.search(value)
+    )
+    return sorted(keys)
 
 
 def _read_head(path: Path, max_lines: int = _HEAD_LINES_MAX) -> List[str]:
@@ -214,6 +238,76 @@ def _assert_safe_id(oracle_id: str) -> None:
         raise OracleRegistryError(f"unsafe oracle_id: {oracle_id!r}")
     if oracle_id.startswith(".") or oracle_id in (".", ".."):
         raise OracleRegistryError(f"unsafe oracle_id: {oracle_id!r}")
+
+
+# Deliberately narrow: only the exact ``${NAME}`` form. A bare ``$`` is a legal
+# character in a POSIX path (``/tmp/a$b`` is a real filename, not a template),
+# and the shell's ``${VAR:-default}`` / ``$VAR`` spellings appear nowhere in
+# this repo's templates — so widening the pattern would only buy false
+# positives on paths users legitimately own.
+_PLACEHOLDER_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def _find_unexpanded_placeholder(
+    config: Dict[str, Any],
+) -> Optional[Tuple[str, str]]:
+    """Return ``(key, placeholder_text)`` for the first unexpanded value.
+
+    Top-level string values ONLY. Oracle configs are flat ``key = value`` TOML
+    tables (see ``docs/oracle/examples/*.toml``), so a recursive walker would
+    be machinery with no input to chew on — and it would have to invent an
+    answer for what "the key" means inside a nested list, which is exactly the
+    part of the message that has to stay actionable.
+
+    Iterates ``sorted(config.items())`` so a config with two placeholders
+    always names the same one; a message that changes between identical runs
+    is a message users stop trusting.
+    """
+    for key, value in sorted(config.items()):
+        if not isinstance(value, str):
+            continue
+        match = _PLACEHOLDER_RE.search(value)
+        if match is not None:
+            return key, match.group(0)
+    return None
+
+
+def _reject_unexpanded_placeholders(
+    config: Dict[str, Any], *, filename: str
+) -> None:
+    """Raise if *config* still carries a template placeholder.
+
+    Nothing in this repo expands ``${VAR}`` in an oracle config, so a template
+    that still carries one reaches the filesystem verbatim and used to surface
+    as ``FileNotFoundError(2, 'No such file or directory')``: true, but it
+    never said the value was still a placeholder, so the user had no way to
+    tell "I typed the path wrong" from "I never typed a path at all". Third-
+    party examples are the live case — the bundled ``gocryptfs.toml`` now
+    spells its hole as prose and declares it in ``config_placeholders``
+    instead (see :func:`_example_config_template`).
+    """
+    found = _find_unexpanded_placeholder(config)
+    if found is None:
+        return
+    key, placeholder = found
+    raise OracleConfigInvalid(
+        f"oracle {filename}: config value for {key!r} still contains the "
+        f"placeholder {placeholder}; replace it with a real absolute path on "
+        f"this machine (nothing expands environment variables here)."
+    )
+
+
+def _describe_config_keys(config: Dict[str, Any]) -> str:
+    """Describe which keys were supplied, for an error message's parenthetical.
+
+    Spelled as ``config keys: a, b`` rather than a bare ``a, b`` because the
+    bare form read as an accusation — a user seeing ``(sample_ciphertext)``
+    took it to mean *that key* was the fault, when it only ever meant "these
+    are the keys you sent".
+    """
+    if not config:
+        return "no config values supplied"
+    return "config keys: " + ", ".join(sorted(config))
 
 
 class OracleRegistry:
@@ -308,6 +402,7 @@ class OracleRegistry:
                 (ln.strip('"" \t#') for ln in head_lines if ln.strip()),
                 "",
             )
+            config_template, config_placeholders = _example_config_template(entry)
             out.append({
                 "filename": entry.name,
                 "path": str(entry),
@@ -316,7 +411,8 @@ class OracleRegistry:
                 "shape": shape,
                 "summary": summary,
                 "head_lines": head_lines,
-                "config_template": _example_config_template(entry),
+                "config_template": config_template,
+                "config_placeholders": config_placeholders,
             })
         return out
 
@@ -418,6 +514,25 @@ class OracleRegistry:
             self._entries[oracle_id] = entry
         return entry
 
+    def find_example(self, filename: str) -> Dict[str, Any]:
+        """Resolve *filename* to its entry in the ENUMERATED example catalog.
+
+        Deliberately not ``self._examples_dir / filename``: joining would make
+        ``../../etc/passwd`` (or any absolute path) a readable file the server
+        then stores and executes, whereas matching against the enumeration
+        makes the set of reachable files exactly the set the catalog already
+        advertises. Traversal is therefore an :class:`OracleNotFound`, not a
+        read — the same answer a simple typo gets, which is the point.
+        """
+        wanted = Path(filename).name
+        match = next(
+            (e for e in self.list_examples() if e["filename"] == wanted),
+            None,
+        )
+        if match is None or wanted != filename:
+            raise OracleNotFound(f"unknown example oracle: {filename!r}")
+        return match
+
     def load_example(
         self,
         filename: str,
@@ -432,20 +547,11 @@ class OracleRegistry:
         ``0o600``, ``__pycache__`` purge, the capped sandbox probe before any
         in-process import, and shape detection.
 
-        *filename* is resolved against the ENUMERATED :meth:`list_examples`
-        result rather than joined onto ``self._examples_dir``. Joining would
-        make ``../../etc/passwd`` (or any absolute path) a readable file the
-        server then stores and executes; matching against the enumeration
-        makes the set of loadable files exactly the set the catalog already
-        advertises.
+        *filename* is resolved by :meth:`find_example`, so an unknown or
+        traversing name never reaches the filesystem.
         """
-        wanted = Path(filename).name
-        match = next(
-            (e for e in self.list_examples() if e["filename"] == wanted),
-            None,
-        )
-        if match is None or wanted != filename:
-            raise OracleNotFound(f"unknown example oracle: {filename!r}")
+        match = self.find_example(filename)
+        wanted = match["filename"]
         source = Path(match["path"])
         try:
             content = source.read_bytes()
@@ -511,6 +617,10 @@ class OracleRegistry:
         the sandbox's own diagnostic, so the user sees
         ``KeyError('sample_ciphertext')`` attributed to their configuration
         rather than a bare traceback or a 500.
+
+        Pre-checked for unexpanded ``${VAR}`` placeholders before the sandbox
+        runs, so a template submitted verbatim is named as such instead of
+        surfacing as a bare "No such file or directory".
         """
         entry = self.get(oracle_id)
         _purge_pycache(entry.path)
@@ -527,6 +637,13 @@ class OracleRegistry:
             )
         if config is not None:
             self.set_config(oracle_id, config)
+        # AFTER set_config, so it judges the config this arm will actually
+        # replay — a stored placeholder left over from a previous
+        # load_example() is just as broken as one passed in here. Before the
+        # sandbox, because a placeholder needs no subprocess to diagnose and
+        # the sandbox's own verdict for it is the useless
+        # FileNotFoundError this check exists to replace.
+        _reject_unexpanded_placeholders(entry.config, filename=entry.filename)
         # STRICT, with the real config: unlike upload's lenient probe, a
         # reproducible exception here is fatal, because there is nothing left
         # downstream to fix it — the next thing that touches this oracle is the
@@ -540,8 +657,11 @@ class OracleRegistry:
             # "No such file or directory" with nothing to act on unless the
             # field names come from this side. Keys only, not values: enough
             # for the UI to highlight the offending field, without echoing a
-            # user's filesystem layout into every log line.
-            supplied = ", ".join(sorted(entry.config)) or "no values supplied"
+            # user's filesystem layout into every log line. Phrased as
+            # "config keys: …" by _describe_config_keys, because the bare list
+            # read as "this key is the problem" when it only lists what was
+            # sent.
+            supplied = _describe_config_keys(entry.config)
             raise OracleConfigInvalid(
                 f"oracle {entry.filename} could not be loaded with the supplied "
                 f"configuration ({supplied}): {exc}. Check the oracle's config "
@@ -577,9 +697,17 @@ class OracleRegistry:
 
         Does NOT require the oracle to be armed: the whole point is to
         let a user smoke-test before committing to arming + running.
+
+        Pre-checked for unexpanded ``${VAR}`` placeholders, so smoke-testing a
+        bundled template straight off the Examples tab says which key still
+        holds a placeholder instead of failing on an unopenable path.
         """
         entry = self.get(oracle_id)
         _purge_pycache(entry.path)
+        # Before load_oracle, for the same reason arm() checks before its
+        # sandbox: dereferencing a placeholder produces a true-but-useless
+        # FileNotFoundError, and dry_run is the surface users reach FIRST.
+        _reject_unexpanded_placeholders(entry.config, filename=entry.filename)
         # The entry's own config, not {}: a Shape-2 oracle with a required key
         # cannot be built without it, so hardcoding {} made the smoke test
         # explode for exactly the oracles it is most useful on.
@@ -595,7 +723,7 @@ class OracleRegistry:
         try:
             verify = load_oracle(entry.path, config=entry.config)
         except Exception as exc:  # noqa: BLE001 - any user-code load failure
-            supplied = ", ".join(sorted(entry.config)) or "no values supplied"
+            supplied = _describe_config_keys(entry.config)
             raise OracleConfigInvalid(
                 f"oracle {entry.filename} could not be loaded with the supplied "
                 f"configuration ({supplied}): {exc!r}"

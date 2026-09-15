@@ -430,3 +430,110 @@ def test_hang_does_not_raise_the_benign_subclass(tmp_path):
     with pytest.raises(OracleLoadError) as excinfo:
         validate_oracle_sandboxed(src, {}, timeout_s=0.5, cpu_s=30)
     assert not isinstance(excinfo.value, oracle_mod.OracleBuildError)
+
+
+def test_sandbox_probe_writes_no_bytecode_next_to_the_oracle(tmp_path):
+    """The spawned probe must not leave a ``__pycache__`` beside the oracle.
+
+    The sandbox child is a *fresh* interpreter: it never constructs an
+    ``OracleRegistry``, so the ``sys.dont_write_bytecode = True`` that the
+    registry sets in the parent does not apply there. Before the fix, probing
+    an oracle in the 0700 ``~/.memdiver/oracles/`` dir dropped a 0755
+    ``__pycache__/`` holding a .pyc of the user's oracle — defeating the
+    registry's own purge and re-opening the stale-bytecode shadowing hole
+    (a .pyc can shadow an edited .py, so what executes is not what was
+    hashed and armed).
+    """
+    oracle_dir = tmp_path / "oracles"
+    oracle_dir.mkdir()
+    src = _write(
+        oracle_dir / "no_bytecode_probe.py",
+        "MARKER = 'sandbox-bytecode-probe'\n\ndef verify(c): return c == b'yes'\n",
+    )
+
+    kind, detail = oracle_mod._sandbox_probe(src, {}, 10.0, 10, 2 * 1024**3)
+
+    # Guard against a vacuous pass: the probe must actually have run and
+    # imported the module, otherwise "no .pyc" proves nothing.
+    assert (kind, detail) == ("ok", None)
+
+    assert not (oracle_dir / "__pycache__").exists(), (
+        "sandbox probe created a __pycache__ next to the oracle"
+    )
+    assert list(oracle_dir.rglob("*.pyc")) == []
+
+
+def test_reserved_table_never_reaches_build_oracle(tmp_path: Path) -> None:
+    """``[memdiver]`` is our automation metadata, not the oracle's config.
+
+    Surface-parity guard. The web surface strips the reserved table when it
+    builds a config_template, but the CLI's ``--oracle-config`` hands
+    ``load_oracle_config``'s raw dict straight to ``build_oracle`` -- so an
+    oracle that validates its config strictly used to work in the browser and
+    raise on the command line, for the same ``.toml``. Stripping happens at the
+    boundary into user code, so every surface passes the same keys.
+    """
+    oracle_path = tmp_path / "strict.py"
+    oracle_path.write_text(
+        "class _O:\n"
+        "    def __init__(self, cfg):\n"
+        "        unknown = set(cfg) - {'sample'}\n"
+        "        if unknown:\n"
+        "            raise KeyError(f'unexpected config keys: {sorted(unknown)}')\n"
+        "        self.sample = cfg['sample']\n"
+        "    def verify(self, candidate):\n"
+        "        return candidate == self.sample.encode()\n"
+        "\n"
+        "def build_oracle(config):\n"
+        "    return _O(config)\n"
+    )
+    oracle_path.chmod(0o600)
+
+    config = {
+        "sample": "hit",
+        "memdiver": {"requires_cipher": "aes"},
+    }
+    verify = load_oracle(oracle_path, config=config, sandbox=False)
+
+    assert verify(b"hit") is True
+    assert verify(b"miss") is False
+    # The caller's dict is never mutated -- it belongs to them.
+    assert "memdiver" in config
+
+
+def test_load_oracle_writes_no_bytecode_beside_user_source(tmp_path: Path) -> None:
+    """A sandbox-less load must not drop a ``.pyc`` next to the analyst's oracle.
+
+    Found by accident: a verification script called ``load_oracle(...,
+    sandbox=False)`` and left a ``__pycache__`` in the oracle directory, which
+    the sandbox-child fix did not cover. The registry sets
+    ``sys.dont_write_bytecode`` for the WEB server's process and the spawn child
+    sets it for its own, so a CLI ``--oracle mine.py`` run and every library
+    caller still wrote bytecode beside the user's source -- where a stale
+    ``.pyc`` can shadow an edited ``.py``, making what runs differ from what was
+    hashed and armed.
+    """
+    oracle_path = tmp_path / "plain.py"
+    oracle_path.write_text("def verify(candidate):\n    return candidate == b'k'\n")
+    oracle_path.chmod(0o600)
+
+    verify = load_oracle(oracle_path, config={}, sandbox=False)
+
+    assert verify(b"k") is True
+    assert not (tmp_path / "__pycache__").exists()
+    assert list(tmp_path.rglob("*.pyc")) == []
+
+
+def test_load_oracle_restores_the_bytecode_flag(tmp_path: Path) -> None:
+    """``sys.dont_write_bytecode`` is process-global; MemDiver is a library too.
+
+    Leaving it set would silently disable bytecode caching for whatever
+    application imported MemDiver, long after the oracle finished loading.
+    """
+    oracle_path = tmp_path / "plain.py"
+    oracle_path.write_text("def verify(candidate):\n    return True\n")
+    oracle_path.chmod(0o600)
+
+    before = sys.dont_write_bytecode
+    load_oracle(oracle_path, config={}, sandbox=False)
+    assert sys.dont_write_bytecode is before

@@ -174,9 +174,13 @@ describe("OracleUpload consent gate", () => {
 
     fireEvent.click(screen.getByTestId("oracle-enable-btn"));
 
-    // readableFailure unwraps the envelope -- no raw JSON blob in the panel.
+    // readableFailure unwraps the envelope -- no raw JSON blob in the panel --
+    // and the sentence is attributed, because `error` is a field shared by
+    // every oracle action (dry-run and the Examples tab write to it too).
     await waitFor(() => {
-      expect(screen.getByText("refused: /etc")).toBeInTheDocument();
+      expect(
+        screen.getByText("Could not upload this oracle: refused: /etc"),
+      ).toBeInTheDocument();
     });
     expect(screen.getByTestId("oracle-consent-panel")).toBeInTheDocument();
   });

@@ -58,6 +58,11 @@ class DatasetMeta:
     # run directory. Forward-compatibility only: no corpus emits it yet, so an
     # absent key stays ``None`` rather than raising.
     capture: Optional[str] = None
+    # Optional ``vault_cipher_dir`` key naming the gocryptfs vault whose master
+    # key lives in this run's dumps, relative to the run directory. Only the
+    # gocryptfs corpus emits it, so an absent key stays ``None`` rather than
+    # raising; :meth:`vault_dir` turns the declaration into a real path.
+    vault_cipher_dir: Optional[str] = None
     # Optional ``library_version`` naming the BUILD of the library under test
     # (e.g. "3.0.13"). Forward-compatibility only: today's corpus holds each
     # library at a single build, so no run emits it and every axes record
@@ -72,6 +77,41 @@ class DatasetMeta:
     def dump(self, kind: str) -> Optional[DumpRef]:
         """Convenience lookup by canonical kind (``gcore``/``gdb_raw``/...)."""
         return self.dumps.get(kind)
+
+    def vault_dir(self) -> Optional[Path]:
+        """Resolve ``vault_cipher_dir`` to a directory that exists, or ``None``.
+
+        ``source_path`` is the ``meta.json`` itself, so the run directory is
+        ``source_path.parent`` and the dataset root one level above it.
+
+        Tried **root-first, run-dir second**, exactly like
+        :func:`_resolve_dump_path`: the corpus writes this key the same way it
+        writes its ``dumps`` entries -- ``run_0001/cipher``, relative to the
+        DATASET ROOT -- so resolving it against the run directory alone looks
+        for ``run_0001/run_0001/cipher``, finds nothing, and hands every caller
+        a silent ``None`` on real data. The bare ``cipher`` spelling stays
+        supported as the fallback so a corpus that writes it run-relative keeps
+        working.
+
+        Callers want "the vault, or nothing": a run that declares no vault and
+        a run whose declaration points at a directory that was never shipped
+        are the same situation to them, so both collapse to ``None`` rather
+        than handing back a path that cannot be opened.
+        """
+        run_dir = self.source_path.parent
+        rooted = resolve_declared_subpath(
+            _infer_dataset_root(run_dir),
+            self.vault_cipher_dir,
+            kind="vault_cipher_dir",
+        )
+        # Absent, absolute or escaping: already logged by the shared guard, and
+        # re-resolving against the run dir would only log the same rejection twice.
+        if rooted is None:
+            return None
+        if rooted.is_dir():
+            return rooted
+        nested = run_dir / Path(self.vault_cipher_dir or "")
+        return nested if nested.is_dir() else None
 
 
 def load_run_meta(run_dir: Path) -> Optional[DatasetMeta]:
@@ -100,6 +140,39 @@ def load_run_meta(run_dir: Path) -> Optional[DatasetMeta]:
         return None
 
 
+def resolve_declared_subpath(
+    base_dir: Path, declaration: Optional[str], *, kind: str
+) -> Optional[Path]:
+    """Resolve a ``meta.json`` declaration against the run dir, or ``None``.
+
+    The declaration is corpus-authored data, so an absolute path or one
+    escaping the run directory is rejected (logged, then ignored) instead of
+    letting a meta.json point the scanner at an arbitrary location. ``kind``
+    names the offending key so the warning says which one was ignored.
+
+    Lives here rather than beside its first caller
+    (:meth:`core.discovery.RunDiscovery._declared_capture_path`) so every key
+    that carries a path -- ``capture``, ``vault_cipher_dir`` -- shares ONE
+    guard and cannot drift apart from it.
+
+    Existence is deliberately not checked: ``capture`` needs a missing file to
+    reach its three-state classifier, so only the caller knows what absence
+    means.
+    """
+    if not declaration:
+        return None
+    relative = Path(declaration)
+    if relative.is_absolute() or ".." in relative.parts:
+        logger.warning(
+            "Ignoring non-relative %s %r declared by %s",
+            kind,
+            declaration,
+            base_dir / META_FILENAME,
+        )
+        return None
+    return base_dir / relative
+
+
 # -- Internals ----------------------------------------------------------------
 
 
@@ -119,6 +192,8 @@ def _build_meta(
     dumps = _parse_dumps(payload.get("dumps", {}), run_dir)
     capture = payload.get("capture")
     capture = str(capture) if capture else None
+    vault_cipher_dir = payload.get("vault_cipher_dir")
+    vault_cipher_dir = str(vault_cipher_dir) if vault_cipher_dir else None
     library_version = payload.get("library_version")
     library_version = str(library_version) if library_version else None
 
@@ -132,6 +207,7 @@ def _build_meta(
         pid=pid,
         dumps=dumps,
         capture=capture,
+        vault_cipher_dir=vault_cipher_dir,
         library_version=library_version,
         source_path=source_path,
     )
