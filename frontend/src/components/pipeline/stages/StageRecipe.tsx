@@ -6,9 +6,14 @@
  *  - **Blank**: empty form, user fills in everything. The default for
  *    power users who already know what they're pointing at.
  *  - **Replicate gocryptfs IMF**: pre-populated with the thresholds
- *    from the paper's section 4.2 so a peer reviewer can reproduce
- *    the published numbers in one click. Dump paths remain empty —
- *    they need to come from disk.
+ *    from the paper's section 4.2 *and* the N-sweep grid the published
+ *    run used, so a peer reviewer can reproduce the published numbers
+ *    in one click. The sweep has to be spelled out here because
+ *    `NSweepParams` carries its own `key_sizes` / `stride` /
+ *    `exhaustive` and inherits none of them from the brute-force
+ *    stage — only `reduce_kwargs` is inherited (api/routers/
+ *    pipeline.py). Dump paths remain empty — they need to come from
+ *    disk.
  *
  * Recipe *save/load* (localStorage + JSON import/export) is deferred
  * to a later sub-phase when `recipe-store.ts` lands. This stage is the
@@ -40,8 +45,33 @@ const GOCRYPTFS_RECIPE = {
     // result was produced by a single-threaded sweep, so this recipe stays
     // serial rather than following the product default of 0 (auto-parallel).
     jobs: 1,
+    // Deliberately the OPPOSITE of `nsweep.exhaustive` below, and not a typo:
+    // the single-N brute force reproduces §4.2, where every hit is reported,
+    // while the sweep reproduces §7, which the published CLI run drove with
+    // --first-hit. The two stages share no settings (see the file header), so
+    // the card copy names the stage each value belongs to — a reader who sees
+    // "first verified key" on this card and "Exhaustive ✓" on the thresholds
+    // screen would otherwise read the recipe as self-contradictory.
     exhaustive: true,
     top_k: 10,
+  },
+  // The sweep is part of the published result, not an extra: without it the
+  // recipe produces no survivor curve and no report artifacts at all. Every
+  // value below is pinned to the run that produced the committed reference
+  // artifact tests/e2e/fixtures/pipeline/summary.json.
+  nsweep: {
+    n_values: [1, 3, 5, 10, 15, 20],
+    // The sweep re-derives its own candidate grid and inherits only
+    // `reduce_kwargs` from the form, so key_sizes/stride/exhaustive must be
+    // repeated here or the sweep silently falls back to the Pydantic defaults
+    // (stride 1, exhaustive true) and measures a different grid than the paper.
+    key_sizes: [32],
+    // Same reason as bruteForce.stride above: the published run was stride 8.
+    stride: 8,
+    // The published CLI run passed --first-hit, which the CLI forwards as
+    // `exhaustive=not args.first_hit` (cli/pipeline.py), so the sweep stops at
+    // the first verified key exactly as the reference artifact recorded it.
+    exhaustive: false,
   },
 };
 
@@ -61,6 +91,7 @@ export function StageRecipe({ onAdvance }: Props) {
     updateForm({
       reduce: GOCRYPTFS_RECIPE.reduce,
       bruteForce: GOCRYPTFS_RECIPE.bruteForce,
+      nsweep: GOCRYPTFS_RECIPE.nsweep,
     });
     onAdvance("dumps");
   }

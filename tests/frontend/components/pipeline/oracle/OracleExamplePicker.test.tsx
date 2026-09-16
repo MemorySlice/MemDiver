@@ -235,9 +235,13 @@ describe("OracleExamplePicker — use this example", () => {
     expect(onLoaded).toHaveBeenLastCalledWith(
       expect.objectContaining({ id: "orc-1", armed: true }),
     );
-    expect(screen.getByTestId("oracle-example-notice")).toHaveTextContent(
-      "Loaded and armed gocryptfs.py",
-    );
+    const notice = screen.getByTestId("oracle-example-notice");
+    expect(notice).toHaveTextContent("Loaded and armed gocryptfs.py");
+    // "Armed" is the state this whole stage exists to reach and this notice is
+    // the only signal of it, so it is weighted like a result: the success token
+    // rather than the 10px muted grey it used to share with the fine print.
+    expect(notice).toHaveClass("md-text-success");
+    expect(notice.className).not.toContain("md-text-muted");
   });
 
   it("surfaces a refused config as the server's own sentence, not a JSON blob", async () => {
@@ -302,6 +306,23 @@ describe("OracleExamplePicker — use this example", () => {
       expect(loadOracleExample).toHaveBeenCalledWith("custom.py", {}, undefined),
     );
     expect(armOracle).not.toHaveBeenCalled();
+  });
+
+  it("does not dress an unarmed load as success", async () => {
+    // Three outcomes share one notice element and only ARMED lets the wizard
+    // advance: loading unarmed leaves oracleSha256 null, so "Next" stays
+    // disabled. Green-on-green there would promise a button the analyst cannot
+    // press, which is the exact confusion this stage already cost us once.
+    const entry = makeEntry({ filename: "custom.py" });
+    loadOracleExample.mockResolvedValue(entry);
+    mount([makeExample({ filename: "custom.py", config_template: null })]);
+
+    fireEvent.click(screen.getByTestId("oracle-example-use-custom.py"));
+    fireEvent.click(screen.getByTestId("oracle-example-load-custom.py"));
+
+    const notice = await screen.findByTestId("oracle-example-notice");
+    expect(notice).toHaveTextContent("unarmed");
+    expect(notice).not.toHaveClass("md-text-success");
   });
 
   it("browses for a sample file with the extension filter lifted", async () => {

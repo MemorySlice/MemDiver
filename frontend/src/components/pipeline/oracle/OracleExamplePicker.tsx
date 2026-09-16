@@ -248,6 +248,15 @@ export function OracleExamplePicker({
   const [busy, setBusy] = useState(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Whether {@link notice} reports the armed state, or only a load.
+   *
+   * Three outcomes share one notice element, and only ONE of them lets the
+   * wizard move on: loading without arming leaves ``oracleSha256`` null, so
+   * "Next" stays disabled. Painting that in the success token would tell the
+   * analyst they are done standing in front of a button they cannot press.
+   */
+  const [noticeIsArmed, setNoticeIsArmed] = useState(false);
   /** Index of the row the file browser is filling in, if it is open. */
   const [browseRow, setBrowseRow] = useState<number | null>(null);
   /**
@@ -349,6 +358,7 @@ export function OracleExamplePicker({
     setFeedbackFor(filename);
     setInlineError(null);
     setNotice(null);
+    setNoticeIsArmed(false);
   }
 
   /** Register the example; returns the new entry, or null once it has failed. */
@@ -419,6 +429,7 @@ export function OracleExamplePicker({
       return;
     }
     onLoaded?.({ ...entry, armed: true });
+    setNoticeIsArmed(true);
     setNotice(t("oracle.examples.armed", { filename: example.filename }));
   }
 
@@ -743,8 +754,22 @@ export function OracleExamplePicker({
                 </div>
               )}
 
+              {/*
+                Weighted like a result, not like a footnote: "armed" is the
+                one state this whole stage exists to reach, and it was the
+                only signal of it — at 10px muted grey it read as fine print
+                next to the buttons it was reporting on. The success token
+                carries the meaning; the size makes it survive a glance.
+              */}
               {feedbackFor === ex.filename && notice && (
-                <p data-testid="oracle-example-notice" className="text-[10px] md-text-muted">
+                <p
+                  data-testid="oracle-example-notice"
+                  className={
+                    noticeIsArmed
+                      ? "text-xs font-semibold md-text-success px-2 py-1 rounded border md-border-success md-bg-success-subtle"
+                      : "text-xs md-text-secondary"
+                  }
+                >
                   {notice}
                 </p>
               )}

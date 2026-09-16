@@ -60,6 +60,42 @@ function discovery(
   };
 }
 
+/**
+ * The endpoint answers 200-with-an-`error` for a path that is not a directory,
+ * which is exactly how the paste route tells a dump apart from a typo.
+ */
+function notADirectory(): DiscoverDumpsResult {
+  return {
+    dumps: [],
+    total: 0,
+    truncated: false,
+    counts_by_kind: {},
+    error: "Path is not a directory",
+  };
+}
+
+function missingPath(): DiscoverDumpsResult {
+  return { ...notADirectory(), error: "Path does not exist" };
+}
+
+/** Classify `dirs` as scannable directories and every other path as a file. */
+function serverSees(dirs: Record<string, DiscoverDumpsResult>): void {
+  client.discoverDumps.mockImplementation((path: string) =>
+    Promise.resolve(dirs[path] ?? notADirectory()),
+  );
+}
+
+/** Type into the textarea and press Add paths. */
+function paste(lines: string[]): void {
+  fireEvent.change(screen.getByPlaceholderText(/run_0001/), {
+    target: { value: lines.join("\n") },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add paths" }));
+}
+
+const selectedPaths = (): string[] =>
+  usePipelineStore.getState().form.sourcePaths;
+
 /** Render the stage and walk the browse -> discover flow to the preview. */
 async function browseToPreview(): Promise<void> {
   render(<StageDumps onAdvance={vi.fn()} />);
@@ -145,6 +181,27 @@ describe("StageDumps directory discovery", () => {
     expect(usePipelineStore.getState().form.sourcePaths).toEqual([MSL_B]);
   });
 
+  // Confirming ends the scan. While the panel stayed up after the merge, the
+  // same corpus rendered twice on one screen -- 95 live tick-rows above 95
+  // selected rows -- and the analyst had to re-read both to tell them apart.
+  it("closes the discovery panel once the ticked dumps are merged", async () => {
+    await browseToPreview();
+    await screen.findByText(MSL_A);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add 2 selected" }));
+
+    expect(screen.queryByText(/Dumps found in/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(`select ${MSL_A}`)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Add \d+ selected/ }),
+    ).not.toBeInTheDocument();
+    // The merge itself still happened -- closing is a display decision only.
+    expect(usePipelineStore.getState().form.sourcePaths).toEqual([
+      MSL_A,
+      MSL_B,
+    ]);
+  });
+
   it("merges into the paths already typed by hand, without duplicating them", async () => {
     const TYPED = "/typed/by/hand.msl";
     usePipelineStore.setState({
@@ -192,12 +249,184 @@ describe("StageDumps directory discovery", () => {
   });
 
   it("keeps the manual textarea working alongside the browse route", async () => {
+    serverSees({});
     render(<StageDumps onAdvance={vi.fn()} />);
 
-    const box = screen.getByPlaceholderText(/run_0001/);
-    fireEvent.change(box, { target: { value: `${MSL_A}\n${MSL_B}` } });
-    fireEvent.click(screen.getByRole("button", { name: "Add paths" }));
+    paste([MSL_A, MSL_B]);
 
-    expect(usePipelineStore.getState().form.sourcePaths).toEqual([MSL_A, MSL_B]);
+    await waitFor(() => expect(selectedPaths()).toEqual([MSL_A, MSL_B]));
+  });
+});
+
+/**
+ * Pasted lines are classified before they can become "dumps".
+ *
+ * The bug this covers: a user pasted their dataset DIRECTORY, and the UI
+ * reported "1 dump selected" whose one entry was the directory. A typo behaved
+ * the same way — it became a phantom dump that only failed inside the run. So
+ * a folder must land in the scan panel (where the kind filter and the
+ * pre-filter counts are visible) and a bad path must be refused out loud,
+ * while a plain file path keeps working exactly as before.
+ */
+describe("StageDumps paste classification", () => {
+  it("routes a pasted directory into the scan panel instead of adding it", async () => {
+    serverSees({
+      [CORPUS]: discovery([
+        { path: MSL_A, kind: "msl" },
+        { path: MSL_B, kind: "msl" },
+      ]),
+    });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([CORPUS]);
+
+    expect(await screen.findByText(`Dumps found in ${CORPUS}`)).toBeInTheDocument();
+    expect(checkedDumpPaths()).toEqual([MSL_A, MSL_B]);
+    // The directory itself never becomes a dump.
+    expect(selectedPaths()).toEqual([]);
+  });
+
+  it("still lands in the panel when the ticked kinds match nothing, so the other counts are visible", async () => {
+    serverSees({
+      [CORPUS]: discovery([], { counts_by_kind: { msl: 0, gcore: 95 } }),
+    });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([CORPUS]);
+
+    expect(await screen.findByText(`Dumps found in ${CORPUS}`)).toBeInTheDocument();
+    // gcore is unticked but its real count is on screen to be ticked.
+    expect(screen.getByLabelText(/gcore \(95\)/)).not.toBeChecked();
+    expect(selectedPaths()).toEqual([]);
+  });
+
+  it("adds a pasted file verbatim", async () => {
+    serverSees({});
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([MSL_A]);
+
+    await waitFor(() => expect(selectedPaths()).toEqual([MSL_A]));
+  });
+
+  it("refuses a path that does not exist and says why", async () => {
+    client.discoverDumps.mockResolvedValue(missingPath());
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste(["/typo/nope.msl"]);
+
+    expect(
+      await screen.findByText(/Not added — \/typo\/nope\.msl: Path does not exist\./),
+    ).toBeInTheDocument();
+    expect(selectedPaths()).toEqual([]);
+    // Left in the box: that is the repair path.
+    expect(screen.getByPlaceholderText(/run_0001/)).toHaveValue("/typo/nope.msl");
+  });
+
+  it("handles a mixed paste: files added, first directory scanned", async () => {
+    serverSees({ [CORPUS]: discovery([{ path: MSL_B, kind: "msl" }]) });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([MSL_A, CORPUS]);
+
+    await waitFor(() => expect(selectedPaths()).toEqual([MSL_A]));
+    expect(await screen.findByText(`Dumps found in ${CORPUS}`)).toBeInTheDocument();
+  });
+
+  it("scans one folder at a time and says so, keeping the rest in the box", async () => {
+    const OTHER = "/data/other-corpus";
+    serverSees({
+      [CORPUS]: discovery([{ path: MSL_A, kind: "msl" }]),
+      [OTHER]: discovery([{ path: MSL_B, kind: "msl" }]),
+    });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([CORPUS, OTHER]);
+
+    expect(await screen.findByText(new RegExp(`${OTHER} is a folder too`))).toBeInTheDocument();
+    expect(screen.getByText(`Dumps found in ${CORPUS}`)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/run_0001/)).toHaveValue(OTHER);
+  });
+
+  it("appends in the pasted order and does not duplicate what is already there", async () => {
+    usePipelineStore.setState({
+      form: { ...usePipelineStore.getState().form, sourcePaths: [MSL_B] },
+    });
+    serverSees({});
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([MSL_A, MSL_B, GCORE]);
+
+    // MSL_B keeps its original position -- the consensus alignment downstream
+    // pairs dumps positionally, so the order must not shuffle.
+    await waitFor(() => expect(selectedPaths()).toEqual([MSL_B, MSL_A, GCORE]));
+  });
+
+  it("shows a busy state and cannot double-fire while classifying", async () => {
+    let release: (value: DiscoverDumpsResult) => void = () => {};
+    client.discoverDumps.mockReturnValue(
+      new Promise<DiscoverDumpsResult>((resolve) => {
+        release = resolve;
+      }),
+    );
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    paste([MSL_A]);
+
+    const busy = await screen.findByRole("button", { name: "Checking paths…" });
+    expect(busy).toBeDisabled();
+    fireEvent.click(busy);
+    expect(client.discoverDumps).toHaveBeenCalledTimes(1);
+
+    release(notADirectory());
+    await waitFor(() => expect(selectedPaths()).toEqual([MSL_A]));
+  });
+});
+
+/**
+ * The first dump is the reference, and that is mechanical, not cosmetic: the
+ * sweep binds its reference bytes from `sources[0]` once and verifies only
+ * those, so a first dump from the wrong run returns zero hits silently.
+ */
+describe("StageDumps reference dump", () => {
+  it("marks only the first selected dump as the reference", () => {
+    usePipelineStore.setState({
+      form: {
+        ...usePipelineStore.getState().form,
+        sourcePaths: [MSL_A, MSL_B, GCORE],
+      },
+    });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    expect(screen.getAllByText("reference")).toHaveLength(1);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("reference");
+    expect(rows[1]).not.toHaveTextContent("reference");
+    expect(
+      screen.getByText(/only its bytes are verified against the oracle/i),
+    ).toBeInTheDocument();
+  });
+
+  // Placement, not presence: the badge is on row 1 and the list scrolls, so a
+  // note rendered after the list is ~N rows away from the thing it explains.
+  it("puts the reference note above the list, not after it", () => {
+    usePipelineStore.setState({
+      form: {
+        ...usePipelineStore.getState().form,
+        sourcePaths: [MSL_A, MSL_B, GCORE],
+      },
+    });
+    render(<StageDumps onAdvance={vi.fn()} />);
+
+    const note = screen.getByText(
+      /only its bytes are verified against the oracle/i,
+    );
+    const list = screen.getAllByRole("list")[0];
+    expect(list).toBeDefined();
+    expect(list).not.toContainElement(note);
+    expect(
+      note.compareDocumentPosition(list as Node) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

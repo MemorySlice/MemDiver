@@ -76,3 +76,7 @@ docs/dev/
 # The e2e backend's own MemDiver home (XDG_DATA_HOME in tests/e2e/playwright.config.ts):
 # project.duckdb, the session store and the preferences file the suite resets.
 /tests/e2e/.memdiver-home/
+
+# Playwright MCP browser sessions drop screenshots and snapshot .yml here.
+# Tooling output from an interactive browser check, never part of the repo.
+.playwright-mcp/

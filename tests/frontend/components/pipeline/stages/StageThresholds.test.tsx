@@ -167,6 +167,68 @@ describe("StageThresholds request body", () => {
     expect(body.nsweep?.n_values).toEqual([2]);
   });
 
+  it("round-trips the sweep stride into nsweep.stride", async () => {
+    await renderStage();
+    fireEvent.click(screen.getByTestId("nsweep-enable"));
+    fireEvent.change(screen.getByTestId("nsweep-stride"), {
+      target: { value: "8" },
+    });
+    const body = await submit();
+
+    // The sweep carries its OWN stride and inherits nothing from the
+    // brute-force panel, so this must reach the wire on its own.
+    expect(body.nsweep?.stride).toBe(8);
+    expect(body.brute_force?.stride).toBe(1);
+  });
+
+  it("maps the first-hit checkbox to the INVERSE of exhaustive", async () => {
+    await renderStage();
+    fireEvent.click(screen.getByTestId("nsweep-enable"));
+    const firstHit = screen.getByTestId("nsweep-first-hit");
+
+    // Unchecked is the backend default: sweep every candidate.
+    expect(firstHit).not.toBeChecked();
+
+    fireEvent.click(firstHit);
+    expect(firstHit).toBeChecked();
+    expect(usePipelineStore.getState().form.nsweep?.exhaustive).toBe(false);
+
+    fireEvent.click(firstHit);
+    expect(firstHit).not.toBeChecked();
+    expect(usePipelineStore.getState().form.nsweep?.exhaustive).toBe(true);
+  });
+
+  it("posts the checked first-hit box as exhaustive: false", async () => {
+    await renderStage();
+    fireEvent.click(screen.getByTestId("nsweep-enable"));
+    fireEvent.click(screen.getByTestId("nsweep-first-hit"));
+    const body = await submit();
+
+    expect(body.nsweep?.exhaustive).toBe(false);
+  });
+
+  it("preserves stride and exhaustive across an off/on toggle", async () => {
+    await renderStage();
+    const box = screen.getByTestId("nsweep-enable");
+    fireEvent.click(box);
+    fireEvent.change(screen.getByTestId("nsweep-stride"), {
+      target: { value: "8" },
+    });
+    fireEvent.click(screen.getByTestId("nsweep-first-hit"));
+
+    // Regression guard: toggling the sweep off and on used to rebuild a bare
+    // `{ n_values }`, silently discarding the recipe's candidate grid.
+    fireEvent.click(box);
+    fireEvent.click(box);
+
+    expect(screen.getByTestId("nsweep-stride")).toHaveValue(8);
+    expect(screen.getByTestId("nsweep-first-hit")).toBeChecked();
+
+    const body = await submit();
+    expect(body.nsweep?.stride).toBe(8);
+    expect(body.nsweep?.exhaustive).toBe(false);
+  });
+
   it("sends both keys when both boxes are checked", async () => {
     await renderStage();
     fireEvent.click(screen.getByTestId("emit-enable"));

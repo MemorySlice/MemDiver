@@ -21,7 +21,7 @@
  * over via the WebSocket subscription in PipelinePanel.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { EmitParams, NSweepParams, PipelineRunRequest } from "@/api/pipeline";
@@ -167,6 +167,9 @@ export function StageThresholds({ onAdvance }: Props) {
     updateForm({ emit: on ? { ...DEFAULT_EMIT, ...form.emit } : null });
   };
 
+  /** The grid the sweep last carried, kept across an off/on flick of the box. */
+  const lastNSweep = useRef<NSweepParams | null>(form.nsweep);
+
   const resolvedNValues = (): number[] => {
     const parsed = parseNValues(nValuesText);
     return parsed.length > 0 ? parsed : defaultNValues(form.sourcePaths.length);
@@ -175,7 +178,24 @@ export function StageThresholds({ onAdvance }: Props) {
     updateForm({ nsweep: { n_values: resolvedNValues(), ...form.nsweep, ...patch } });
   };
   const toggleNSweep = (on: boolean): void => {
-    updateForm({ nsweep: on ? { n_values: resolvedNValues() } : null });
+    // Re-checking the box must restore whatever the recipe (or the user) last
+    // put in stride / exhaustive / key_sizes: rebuilding a bare `{ n_values }`
+    // here silently dropped them, so an off/on flick quietly re-configured the
+    // sweep's candidate grid. Same spread shape as `toggleEmit` above, over the
+    // remembered grid instead of a constant -- the sweep has no equivalent of
+    // DEFAULT_EMIT because `null` (not an empty object) is what "off" means on
+    // the wire, so the previous values have to be held here.
+    if (!on) lastNSweep.current = form.nsweep;
+    updateForm({
+      nsweep: on ? { n_values: resolvedNValues(), ...lastNSweep.current } : null,
+    });
+  };
+  /**
+   * `--first-hit` in CLI terms, and the inverse of the wire field: the user
+   * asks to STOP at the first verified key, which is `exhaustive: false`.
+   */
+  const setStopAtFirstHit = (stopAtFirstHit: boolean): void => {
+    patchNSweep({ exhaustive: !stopAtFirstHit });
   };
 
   async function submit(): Promise<void> {
@@ -400,19 +420,50 @@ export function StageThresholds({ onAdvance }: Props) {
             : t("stages.thresholds.nsweepHint")}
         </p>
         {nsweepOn && (
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <TextField
-              label={t("stages.thresholds.fields.nValues")}
-              help={t("stages.thresholds.fields.nValuesHelp")}
-              value={nValuesText}
-              testId="nsweep-n-values"
-              onChange={(raw) => {
-                setNValuesText(raw);
-                const parsed = parseNValues(raw);
-                if (parsed.length > 0) patchNSweep({ n_values: parsed });
-              }}
-            />
-          </div>
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <TextField
+                label={t("stages.thresholds.fields.nValues")}
+                help={t("stages.thresholds.fields.nValuesHelp")}
+                value={nValuesText}
+                testId="nsweep-n-values"
+                onChange={(raw) => {
+                  setNValuesText(raw);
+                  const parsed = parseNValues(raw);
+                  if (parsed.length > 0) patchNSweep({ n_values: parsed });
+                }}
+              />
+              {/* The sweep's own stride: `NSweepParams` carries it separately and
+                  inherits nothing from the brute-force panel above, so leaving it
+                  uncontrolled let the sweep run a different grid than the form
+                  displayed. `key_sizes` stays deliberately uncontrolled — it is
+                  [32] on both the recipe and the backend default, so a third
+                  field would be noise. */}
+              <NumericField
+                label={t("stages.thresholds.fields.nsweepStride")}
+                help={t("stages.thresholds.fields.nsweepStrideHelp")}
+                value={form.nsweep?.stride ?? 1}
+                step={1}
+                min={1}
+                testId="nsweep-stride"
+                onChange={(v) => patchNSweep({ stride: v })}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid="nsweep-first-hit"
+                checked={!(form.nsweep?.exhaustive ?? true)}
+                onChange={(e) => setStopAtFirstHit(e.target.checked)}
+              />
+              <span className="md-text-secondary">
+                {t("stages.thresholds.nsweepFirstHitLabel")}
+              </span>
+            </label>
+            <p className="text-[10px] md-text-muted">
+              {t("stages.thresholds.nsweepGridHint")}
+            </p>
+          </>
         )}
       </div>
 
