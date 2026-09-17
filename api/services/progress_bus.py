@@ -66,7 +66,9 @@ class _TaskChannel:
     """Per-task state inside the bus."""
 
     ring: Deque[Event] = field(default_factory=lambda: deque(maxlen=DEFAULT_RING_SIZE))
-    subscribers: List["asyncio.Queue[Event]"] = field(default_factory=list)
+    # ``None`` is the close sentinel pushed by ``_close_channel``; see there
+    # for why a parked subscriber needs one instead of just a ``closed`` flag.
+    subscribers: List["asyncio.Queue[Optional[Event]]"] = field(default_factory=list)
     next_seq: int = 1
     first_seq: int = 1  # smallest seq still in ring
     closed: bool = False
@@ -109,17 +111,41 @@ class ProgressBus:
             channel.first_seq = event.seq
         channel.ring.append(event)
 
-        # Fan out to live subscribers. A subscriber whose queue is full
-        # loses this event; they should reconcile via replay on reconnect.
+        self._fanout(event.task_id, channel, event, f"event seq={event.seq}")
+        return event
+
+    def _fanout(
+        self,
+        task_id: str,
+        channel: _TaskChannel,
+        item: Optional[Event],
+        what: str,
+    ) -> None:
+        """Push *item* onto every live subscriber queue of *channel*.
+
+        One place owns the fan-out policy for both the live events published
+        by :meth:`publish` and the ``None`` close sentinel pushed by
+        :meth:`_close_channel`, so the two can never drift apart:
+
+        * the ``list(...)`` snapshot — a subscriber removes its own queue in
+          the ``finally`` of :meth:`subscribe`, so the live list can be
+          mutated while we walk it;
+        * the ``QueueFull`` policy — a subscriber that cannot keep up simply
+          loses *item* and reconciles via replay on reconnect, because
+          blocking here would stall the publisher for every other subscriber.
+
+        ``what`` is a short description of the dropped item, used only to keep
+        the warning specific (``event seq=7`` vs ``close sentinel``).
+        """
+
         for q in list(channel.subscribers):
             try:
-                q.put_nowait(event)
+                q.put_nowait(item)
             except asyncio.QueueFull:
                 logger.warning(
-                    "progress bus subscriber queue full on task %s; dropping event seq=%d",
-                    event.task_id, event.seq,
+                    "progress bus subscriber queue full on task %s; dropping %s",
+                    task_id, what,
                 )
-        return event
 
     # ----- subscriber side -------------------------------------------------
 
@@ -159,13 +185,23 @@ class ProgressBus:
             )
             self._channels[task_id] = channel
 
-        q: "asyncio.Queue[Event]" = asyncio.Queue(maxsize=1024)
+        q: "asyncio.Queue[Optional[Event]]" = asyncio.Queue(maxsize=1024)
         channel.subscribers.append(q)
         try:
             while True:
+                # Fast path for a channel that was already closed before we
+                # attached (or that we have now fully drained): nothing more
+                # will ever arrive, so don't park on ``get`` at all.
                 if channel.closed and q.empty():
                     return
                 event = await q.get()
+                # ``None`` is the close sentinel from ``_close_channel``. It
+                # means the channel closed with nothing more coming, so the
+                # pre-check above can no longer save us — we are already past
+                # it, parked in ``get``. Ending here is what lets the
+                # WebSocket handler fall out of its ``async for``.
+                if event is None:
+                    return
                 yield event
                 if event.type in ("done", "error"):
                     return
@@ -181,7 +217,47 @@ class ProgressBus:
         channel = self._channels.get(task_id)
         if channel is None:
             return
+        self._close_channel(task_id, channel)
+
+    def close_all(self) -> None:
+        """Close *every* channel — for application shutdown.
+
+        ``close_task`` only fires when a single task reaches a terminal
+        event, so a subscriber attached to a task that is still running would
+        never be released. At shutdown there is nothing left to wait for, so
+        wake all of them at once and let every ``subscribe`` iterator finish.
+        """
+
+        for task_id, channel in list(self._channels.items()):
+            self._close_channel(task_id, channel)
+
+    def _close_channel(self, task_id: str, channel: _TaskChannel) -> None:
+        """Mark one channel closed and wake everyone parked on its queue.
+
+        Setting ``closed`` alone is not enough. A subscriber already
+        suspended in ``await q.get()`` never re-evaluates the flag, so it
+        parks forever; ``api/ws/progress.py`` is sitting inside that
+        ``async for``, which means it also never reaches ``receive()`` and so
+        never notices the client going away either. The frontend ships a
+        *reconnecting* WebSocket client, so a parked subscriber is the normal
+        case rather than an exotic one.
+
+        The wake-up is a ``None`` sentinel pushed through :meth:`_fanout`, the
+        same helper :meth:`publish` uses, so it inherits that method's
+        event-loop-thread contract and adds no new threading assumption.
+
+        Scope note: this releases subscribers on the per-task terminal path and
+        on client disconnect. It does *not* rescue the shutdown case, because
+        ``close_all`` runs from the FastAPI lifespan and uvicorn's
+        ``Server.shutdown()`` drains open connections *before* it gets there —
+        that window is bounded by ``timeout_graceful_shutdown`` instead (see
+        ``Settings.web_graceful_timeout_s``). The real fix belongs in
+        ``api/ws/progress.py``, which must await ``websocket.receive()``
+        concurrently with this subscribe loop so it notices the close frame.
+        """
+
         channel.closed = True
+        self._fanout(task_id, channel, None, "close sentinel")
 
     def drop_task(self, task_id: str) -> None:
         """Remove a task's ring buffer entirely (call once nothing will read it)."""

@@ -92,6 +92,132 @@ export interface OracleStatus {
   default_path: string;
 }
 
+/**
+ * One graded sample from either the legacy dry-run or the smoke test.
+ *
+ * ``error`` is the oracle's own exception rendered as a string. It is a
+ * *separate* outcome from ``ok: false`` — a candidate the oracle rejected and
+ * an oracle that crashed look identical in the counts but mean opposite things,
+ * so the UI must be able to say which happened for each sample.
+ */
+export interface OracleSampleResult {
+  index: number;
+  ok: boolean;
+  duration_us?: number;
+  error?: string;
+}
+
+/**
+ * The positive control: the one sample that is supposed to PASS.
+ *
+ * Composed server-side from the dataset's recorded answer key (meta.json), so
+ * it proves the oracle recognises the right key — it is a self-test of the
+ * oracle, never a pipeline finding. The UI is required to say so.
+ *
+ * ``ok`` is TRI-STATE and the distinction is load-bearing:
+ *  - ``true``  — the oracle accepted the known-good key.
+ *  - ``false`` — the oracle rejected it. The oracle is wrong (or misconfigured).
+ *  - ``null``  — no control was run at all, because there was no ground truth
+ *    to run one with. This is NOT a failure and must never render as one;
+ *    ``reason`` carries the server's sentence explaining the absence.
+ */
+export interface SmokeTestPositive {
+  present: boolean;
+  index: number | null;
+  ok: boolean | null;
+  error: string | null;
+  /** Absolute path of the dump/keyfile the control key came from. */
+  source: string | null;
+  /** Human sentence naming where the key came from, e.g. "run meta.json". */
+  provenance_label: string | null;
+  /** Why no control was run. Only meaningful when ``present`` is false. */
+  reason: string | null;
+}
+
+/** The decoy half of the test: real dump bytes that are NOT the key. */
+export interface SmokeTestNegatives {
+  count: number;
+  accepted: number;
+  rejected: number;
+  errors: number;
+  key_size: number;
+  /**
+   * How many negatives were drawn from low-entropy regions. Disclosed because
+   * a run of zero bytes is a much easier "no" than real key-shaped noise, so a
+   * bar made mostly of them overstates how discriminating the oracle is.
+   */
+  low_entropy_included: number;
+  /** Byte offsets the negatives were read from, in the dump below. */
+  offsets: number[];
+}
+
+/** Which dump the negatives were actually read out of, and how. */
+export interface SmokeTestDump {
+  path: string;
+  format: string;
+  /** ``raw`` / ``vas`` / ``va`` — the coordinate space the offsets are in. */
+  view: string;
+  size: number;
+}
+
+/**
+ * The server's one-word reading of the bar. This is the whole point of the
+ * endpoint: the old client-composed dry-run scored 0/16 for a CORRECT oracle
+ * and 0/16 for a broken one, so the dots had no diagnostic power at all.
+ *
+ *  - ``discriminates``       — control passed, negatives rejected. Usable.
+ *  - ``never_accepts``       — control failed: the oracle says no to the known
+ *                              key, so a real sweep would find nothing.
+ *  - ``accepts_noise``       — negatives were accepted: the oracle says yes to
+ *                              arbitrary dump bytes, so a sweep would drown in
+ *                              false positives.
+ *  - ``no_positive_control`` — negatives behaved, but with no ground truth the
+ *                              "it accepts the key" half was never tested.
+ *  - ``inconclusive``        — errors or too little signal to say either way.
+ */
+export type SmokeTestVerdict =
+  | "discriminates"
+  | "never_accepts"
+  | "accepts_noise"
+  | "no_positive_control"
+  | "inconclusive";
+
+/**
+ * Result of ``POST /api/oracles/{id}/smoke-test``.
+ *
+ * Mirrors the legacy ``DryRunResult`` counters so the shared summary line keeps
+ * working, and adds the parts that make the bar mean something: a positive
+ * control, negatives drawn from a real dump, and a verdict.
+ *
+ * When ``positive.present`` is true the control is ``results[0]`` — the rest of
+ * ``results`` are the negatives, in ``negatives.offsets`` order.
+ */
+export interface SmokeTestResult {
+  oracle_id: string;
+  samples: number;
+  passes: number;
+  fails: number;
+  errors: number;
+  per_call_us_avg: number;
+  results: OracleSampleResult[];
+  positive: SmokeTestPositive;
+  negatives: SmokeTestNegatives;
+  /** ``null`` when no dump could be opened, in which case there are no negatives. */
+  dump: SmokeTestDump | null;
+  verdict: SmokeTestVerdict;
+  /** Everything that qualifies the verdict, already phrased for display. */
+  caveats: string[];
+}
+
+/** Request body for ``smokeTestOracle``; every field but ``source_paths`` is optional. */
+export interface SmokeTestRequest {
+  source_paths: string[];
+  key_size?: number;
+  negatives?: number;
+  include_positive_control?: boolean;
+  seed?: number | null;
+}
+
 export interface DryRunResult {
   oracle_id: string;
   samples: number;
@@ -255,6 +381,26 @@ export const dryRunOracle = (oracleId: string, samplesB64: string[]) =>
   request<DryRunResult>(
     `/api/oracles/${encodeURIComponent(oracleId)}/dry-run`,
     { method: "POST", body: JSON.stringify({ samples_b64: samplesB64 }) },
+  );
+
+/**
+ * Compose the samples SERVER-side and grade the oracle against them.
+ *
+ * The difference from ``dryRunOracle`` is where the bytes come from. The
+ * dry-run takes whatever the caller hands it, and the caller had no key
+ * material to hand it — the wizard synthesised an arithmetic ramp, which a
+ * correct oracle rejects exactly as hard as a broken one does. Here the server
+ * reads real bytes out of ``source_paths[0]`` for the negatives and, when the
+ * dataset records an answer key, prepends the known-good key as a positive
+ * control. Only that pairing can tell "works" from "always says no".
+ *
+ * ``dryRunOracle`` is deliberately left in place: the dry-run endpoint still
+ * exists and still serves callers who genuinely have their own samples.
+ */
+export const smokeTestOracle = (oracleId: string, body: SmokeTestRequest) =>
+  request<SmokeTestResult>(
+    `/api/oracles/${encodeURIComponent(oracleId)}/smoke-test`,
+    { method: "POST", body: JSON.stringify(body) },
   );
 
 export const deleteOracle = (oracleId: string) =>

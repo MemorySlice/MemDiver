@@ -13,7 +13,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger("memdiver.core.artifact_util")
 
@@ -98,7 +98,13 @@ def register_artifact(
     return spec
 
 
-def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    mode: Optional[int] = None,
+) -> None:
     """Write ``text`` to ``path`` atomically: unique tmp file + ``os.replace``.
 
     Exists so every surface shares one battle-tested atomic-write primitive.
@@ -125,6 +131,12 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
 
     The parent directory must already exist — callers own directory creation.
 
+    ``mode``, when given, is applied to the **tmp file before the replace**, so
+    the final path never exists with laxer permissions than requested -- not
+    even for the instant between ``os.replace`` and a would-be chmod after it.
+    Callers writing a file whose *contents* are sensitive (rather than merely
+    its existence) should pass it.
+
     .. warning::
        Do **not** use this for large append-only files. It rewrites the whole
        file every call, so appending to a growing ``results.jsonl`` would be
@@ -135,6 +147,8 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(text, encoding=encoding)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)

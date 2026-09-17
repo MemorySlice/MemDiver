@@ -154,3 +154,65 @@ def test_atomic_write_text_interleaved_writers_do_not_collide(
 
     assert target.read_text(encoding="utf-8") == "outer"
     assert _stray_tmps(tmp_path) == []
+
+
+def test_atomic_write_text_applies_requested_mode(tmp_path: Path) -> None:
+    """``mode`` locks the final file down, leaving no tmp behind.
+
+    Used by the oracle registry's ``<uuid>.json`` sidecar, which carries the
+    oracle's ``config`` -- filesystem paths and, for a third-party oracle, a
+    passphrase -- so it must land at ``0o600`` like the ``.py`` beside it.
+    """
+    target = tmp_path / "sidecar.json"
+
+    atomic_write_text(target, '{"config": {}}', mode=0o600)
+
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text(encoding="utf-8") == '{"config": {}}'
+    assert _stray_tmps(tmp_path) == []
+
+
+def test_atomic_write_text_chmods_before_the_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mode is applied to the TMP file, not to the final path afterwards.
+
+    A chmod after ``os.replace`` would leave the destination readable by
+    anyone for the instant between the two calls -- a window another process
+    can open the file in. This pins the ordering, which is the whole reason
+    the kwarg lives inside this function instead of at its call sites.
+    """
+    target = tmp_path / "sidecar.json"
+    real_replace = os.replace
+    modes_at_replace: list[int] = []
+
+    def record_then_replace(src: object, dst: object) -> None:
+        modes_at_replace.append(os.stat(str(src)).st_mode & 0o777)
+        real_replace(src, dst)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "replace", record_then_replace)
+
+    atomic_write_text(target, "secret", mode=0o600)
+
+    assert modes_at_replace == [0o600]
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_atomic_write_text_without_mode_leaves_permissions_alone(
+    tmp_path: Path,
+) -> None:
+    """Omitting ``mode`` must not silently tighten every existing caller.
+
+    ``record.json`` and the sweep ledger's ``manifest.json`` were written with
+    the process umask long before the kwarg existed; the default path has to
+    stay byte-for-byte what it was.
+    """
+    default_target = tmp_path / "reference.txt"
+    default_target.write_text("x", encoding="utf-8")
+    expected = default_target.stat().st_mode & 0o777
+
+    target = tmp_path / "manifest.json"
+    atomic_write_text(target, "{}")
+
+    assert target.stat().st_mode & 0o777 == expected
+    assert _stray_tmps(tmp_path) == []

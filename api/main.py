@@ -100,7 +100,12 @@ async def _lifespan(app: FastAPI):
 
     logger.info("MemDiver API shutting down")
     try:
-        task_manager.shutdown()
+        # ``aclose`` rather than ``shutdown``: the async twin awaits the
+        # cooperative-cancel window and the drain task ON this loop, so an
+        # in-flight run still publishes a real terminal event, and it releases
+        # WebSocket subscribers parked on the progress bus. ``shutdown`` stays
+        # the sync entry point for ``reset_task_manager`` and the test fixtures.
+        await task_manager.aclose()
     except Exception:  # pragma: no cover
         logger.exception("TaskManager shutdown raised")
     reset_task_manager()

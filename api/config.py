@@ -87,6 +87,17 @@ class Settings(BaseSettings):
     task_quota_bytes: int = 5 * 2**30  # 5 GiB
     pipeline_max_workers: int = 2
 
+    # How long uvicorn may spend draining open connections before it force-closes
+    # them (``timeout_graceful_shutdown``). Without an explicit bound uvicorn
+    # waits *indefinitely* for every open connection, and the web UI holds
+    # long-lived progress WebSockets, so a single parked client would turn Ctrl-C
+    # into an apparent freeze. Ten seconds is long enough for a normal request to
+    # finish and short enough that an operator does not reach for a second Ctrl-C
+    # (which sets ``force_exit`` and skips the lifespan shutdown entirely — see
+    # ``cli/dataset.py:_teardown_task_manager``). Override with
+    # ``MEMDIVER_WEB_GRACEFUL_TIMEOUT_S``.
+    web_graceful_timeout_s: int = 10
+
     # Aggregate cap for the persisted pcap upload dir (upload_dir/pcaps). Unlike
     # task artifacts, captures are never GC'd by the task store, so without a cap
     # the dir is an unbounded disk-exhaustion vector. 5 GiB mirrors

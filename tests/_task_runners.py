@@ -34,6 +34,19 @@ def cancellable_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     return {"cancelled": False}
 
 
+def stubborn_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
+    """Sleep a long time, deliberately NEVER consulting ``is_cancelled``.
+
+    Models the worst case teardown has to survive: a worker that will not stop
+    when asked. Used to prove the shutdown path is bounded (it force-reaps the
+    process) and that the loop's default executor can still be shut down while
+    such a task is mid-flight -- the exact condition that used to make Ctrl-C
+    hang forever and leave ``kill -9`` as the only exit.
+    """
+    time.sleep(float(params.get("seconds", 30.0)))
+    return {"slept": True}
+
+
 def artifact_registering_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     """Register two artifacts as the runner's very LAST act before returning.
 

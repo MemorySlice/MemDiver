@@ -60,10 +60,46 @@ def _cmd_web(args: argparse.Namespace) -> int:
         print(f"\n{warning}", file=sys.stderr, flush=True)
     try:
         app = create_app()
-        uvicorn.run(app, host=settings.host, port=port, log_level="info")
+        # The graceful-shutdown bound is load-bearing, not cosmetic: uvicorn
+        # otherwise waits forever for the long-lived progress WebSockets. See
+        # ``Settings.web_graceful_timeout_s`` for why the default is what it is.
+        uvicorn.run(app, host=settings.host, port=port, log_level="info",
+                    timeout_graceful_shutdown=settings.web_graceful_timeout_s)
     except KeyboardInterrupt:
+        # Load-bearing, do not remove: ``Server.capture_signals`` re-raises the
+        # captured signal once a graceful exit is done, with the *original*
+        # handler already restored — so a plain Ctrl-C really does surface as a
+        # KeyboardInterrupt right here, and swallowing it is what keeps the
+        # exit code at 0 instead of a traceback.
+        #
+        # Deliberately NOT paired with an explicit SIGTERM handler: uvicorn
+        # already installs one for the whole serve window (its HANDLED_SIGNALS
+        # are SIGINT and SIGTERM) and restores the previous handlers afterwards.
+        # Ours would double-handle and fight that re-raise.
         pass
+    finally:
+        _teardown_task_manager()
     return 0
+
+
+def _teardown_task_manager() -> None:
+    """Backstop for the paths where uvicorn never ran the lifespan shutdown.
+
+    ``Server.shutdown`` skips ``lifespan.shutdown()`` entirely when ``force_exit``
+    is set — i.e. exactly the second-Ctrl-C case — which would otherwise leave the
+    app-lifetime ProcessPoolExecutor (5 POSIX semaphores) and the multiprocessing
+    Manager child process alive.
+    """
+
+    try:
+        # Lazy import for the same reason ``_cmd_web`` imports lazily: the
+        # ``api`` extra may be absent, and teardown must not be the thing that
+        # turns a missing optional dependency into a crash.
+        from memdiver.api.services.task_manager import reset_task_manager
+
+        reset_task_manager()
+    except Exception:  # pragma: no cover - teardown must never mask the exit code
+        logger.debug("task manager teardown failed", exc_info=True)
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:

@@ -12,57 +12,67 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 from memdiver.api.services.artifact_store import ArtifactStore
 from memdiver.api.services.progress_bus import ProgressBus
 from memdiver.api.services.task_manager import (
+    SHUTDOWN_GRACE_S,
+    WORKER_TERM_TIMEOUT_S,
     StageRecord,
     TaskManager,
     TaskRecord,
     TaskStatus,
     reset_task_manager,
 )
+from tests._pymp import assert_no_new_pymp_dirs, pymp_dirs
+
+TERMINAL_STATUSES = (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
 
 @pytest.fixture
 def task_manager(tmp_path: Path):
-    """Fresh TaskManager per test, started and torn down properly."""
-    store = ArtifactStore(tmp_path / "artifacts")
-    bus = ProgressBus()
-    mgr = TaskManager(
-        task_root=tmp_path / "tasks",
-        artifact_store=store,
-        progress_bus=bus,
-        max_workers=2,
-    )
+    """Fresh TaskManager per test, started and torn down properly.
 
-    async def start():
-        await mgr.startup(asyncio.get_running_loop())
+    Delegates to :func:`_standalone_manager` so there is exactly one piece of
+    start/stop scaffolding in this module; the contextmanager stays separate
+    because several tests must drive and TIME the teardown themselves.
+    """
+    with _standalone_manager(tmp_path) as pair:
+        yield pair
 
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(start())
-        yield mgr, loop
-    finally:
-        mgr.shutdown()
-        loop.run_until_complete(asyncio.sleep(0.01))
-        loop.close()
-        reset_task_manager()
+
+def _wait_for_status(
+    mgr: TaskManager,
+    task_id: str,
+    loop,
+    predicate: Callable[[TaskRecord], bool],
+    timeout: float = 15.0,
+    what: str = "the expected state",
+) -> TaskRecord:
+    """Pump ``loop`` until ``task_id``'s record satisfies ``predicate``.
+
+    The loop has to run: nothing advances a task's status except the drain
+    coroutine, so a bare ``time.sleep`` here would wait forever.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        loop.run_until_complete(asyncio.sleep(0.05))
+        record = mgr.get(task_id)
+        if record is not None and predicate(record):
+            return record
+    raise AssertionError(f"task {task_id} never reached {what}")
 
 
 def _wait_for_terminal(mgr: TaskManager, task_id: str, loop, timeout: float = 15.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        loop.run_until_complete(asyncio.sleep(0.05))
-        record = mgr.get(task_id)
-        if record is not None and record.status in (
-            TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED
-        ):
-            return record
-    raise AssertionError(f"task {task_id} never reached terminal state")
+    return _wait_for_status(
+        mgr, task_id, loop, lambda r: r.status in TERMINAL_STATUSES,
+        timeout=timeout, what="terminal state",
+    )
 
 
 # ----- basic record lifecycle ---------------------------------------------
@@ -120,11 +130,7 @@ def test_cancel_stops_spin_runner(task_manager):
         runner_dotted="tests._task_runners.cancellable_runner",
     )
     # Give the worker time to start and observe a few iterations.
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        loop.run_until_complete(asyncio.sleep(0.05))
-        if mgr.get(record.task_id).status == TaskStatus.RUNNING:
-            break
+    _wait_for_running(mgr, record.task_id, loop)
     assert mgr.cancel(record.task_id)
     final = _wait_for_terminal(mgr, record.task_id, loop)
     assert final.status == TaskStatus.CANCELLED
@@ -308,3 +314,208 @@ def test_update_stage_progress_updates_pct_and_msg_without_status_change(
     assert bf.pct == 0.33
     assert bf.msg == "1/3"
     assert bf.status == TaskStatus.RUNNING
+
+
+# ----- shutdown: the hang that used to force `kill -9` ----------------------
+#
+# Killing the server printed "resource_tracker: There appear to be 5 leaked
+# semaphore objects" -- the fingerprint of exactly one un-finalized
+# ProcessPoolExecutor (_call_queue contributes 3 semaphores, _result_queue 2).
+# The semaphores were a symptom: SIGKILL skips every atexit handler, and SIGKILL
+# was only needed because graceful shutdown could not finish. These tests pin
+# each reason it could not.
+
+
+@contextmanager
+def _standalone_manager(
+    tmp_path: Path,
+    max_workers: int = 2,
+    teardown_grace_s: float = SHUTDOWN_GRACE_S,
+):
+    """A started TaskManager whose teardown the TEST drives and times.
+
+    The module-level ``task_manager`` fixture delegates here; the tests below
+    enter it directly because they need to drive and time the teardown
+    themselves, which a fixture does after the test body has ended.
+
+    ``teardown_grace_s`` shortens the cooperative window for the tests that
+    park a ``stubborn_runner``: that runner exists to ignore cancellation, so
+    every one of the real 5 seconds is spent reaching a foregone conclusion.
+    """
+    mgr = TaskManager(
+        task_root=tmp_path / "tasks",
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        progress_bus=ProgressBus(),
+        max_workers=max_workers,
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(mgr.startup(loop))
+        yield mgr, loop
+    finally:
+        mgr.shutdown(grace_s=teardown_grace_s)  # idempotent: already-shut-down is fine
+        # Unwind stragglers the way ``asyncio.run`` would, so closing the loop
+        # does not print "Task was destroyed but it is pending". ``shutdown``
+        # has already set ``_closing``, so a ``_gated_submit`` that only gets
+        # scheduled here bails out at the gate instead of starting real work.
+        stragglers = asyncio.all_tasks(loop)
+        for task in stragglers:
+            task.cancel()
+        if stragglers:
+            loop.run_until_complete(
+                asyncio.gather(*stragglers, return_exceptions=True)
+            )
+        loop.close()
+        reset_task_manager()
+
+
+def _wait_for_running(mgr: TaskManager, task_id: str, loop, timeout: float = 15.0):
+    return _wait_for_status(
+        mgr, task_id, loop, lambda r: r.status == TaskStatus.RUNNING,
+        timeout=timeout, what="RUNNING",
+    )
+
+
+def _submit_stubborn(mgr: TaskManager, loop):
+    """Start a worker that will NOT stop when asked, and wait until it runs."""
+    record = mgr.submit(
+        kind="pipeline",
+        params={"seconds": 30.0},
+        runner_dotted="tests._task_runners.stubborn_runner",
+        stage_names=["spin"],
+    )
+    _wait_for_running(mgr, record.task_id, loop)
+    return record
+
+
+# Short enough to be free, long enough that a cooperative worker would still
+# make it out through the normal path rather than the SIGTERM escalation.
+FAST_GRACE_S = 0.2
+
+
+@pytest.mark.timeout(90)
+def test_default_executor_shuts_down_with_task_running(tmp_path: Path):
+    """THE reported bug, reduced to one call.
+
+    uvicorn serves under ``asyncio.Runner``, whose ``close()`` calls
+    ``loop.shutdown_default_executor()``. On Python 3.11 that joins its threads
+    with NO timeout -- the ``timeout`` parameter only arrived in 3.12. The old
+    ``await loop.run_in_executor(None, future.result)`` parked one of those
+    threads for a task's whole duration, and the old unbounded
+    ``run_in_executor(None, q.get)`` parked a second one permanently. So this
+    call used to block until the pipeline finished, which is why Ctrl-C did
+    nothing and ``kill -9`` was the only way out.
+
+    The ``timeout`` marker matters: a regression makes this HANG (the cancelled
+    ``shutdown_default_executor`` still joins its helper thread in a ``finally``),
+    so without it a broken build would stall rather than fail.
+
+    The grace window is shortened because it is the CONTEXTMANAGER's teardown
+    that pays it here; the assertion under test is only that
+    ``shutdown_default_executor()`` returns at all.
+    """
+    with _standalone_manager(tmp_path, teardown_grace_s=FAST_GRACE_S) as (mgr, loop):
+        _submit_stubborn(mgr, loop)
+        loop.run_until_complete(
+            asyncio.wait_for(loop.shutdown_default_executor(), 20.0)
+        )
+
+
+@pytest.mark.timeout(90)
+def test_shutdown_returns_while_stubborn_task_runs(tmp_path: Path):
+    """Teardown is bounded even against a worker that ignores cancellation.
+
+    ``pool.shutdown(wait=False)`` does not stop a running worker, and
+    ``concurrent.futures.process._python_exit`` later joins it with no timeout
+    of its own -- so a worker left alive here is a hang merely relocated to
+    interpreter exit.
+
+    The BOUND is the point of this test, so it is computed from the grace
+    actually in force rather than slept through at full price. ``_reap_workers``
+    applies each escalation to ALL workers before waiting on any of them, so the
+    worst case is ``grace + 2 * WORKER_TERM_TIMEOUT_S`` regardless of how many
+    workers there are.
+    """
+    # The window is injected rather than slept through, so pin the production
+    # default here -- it is what the server actually ships with.
+    assert SHUTDOWN_GRACE_S == 5.0
+
+    with _standalone_manager(tmp_path, teardown_grace_s=FAST_GRACE_S) as (mgr, loop):
+        _submit_stubborn(mgr, loop)
+        workers = list(mgr._pool._processes.values())
+        assert workers, "expected at least one spawned worker"
+
+        started = time.monotonic()
+        mgr.shutdown(grace_s=FAST_GRACE_S)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < FAST_GRACE_S + 2 * WORKER_TERM_TIMEOUT_S + 10.0
+        for proc in workers:
+            assert not proc.is_alive(), f"worker {proc.pid} outlived shutdown"
+        assert mgr._pool is None and mgr._mp_manager is None
+
+
+def test_signal_cancel_all_sets_live_events(tmp_path: Path):
+    """Cancel events are set while the Manager that serves them is still up.
+
+    They are proxies, and ``WorkerContext.is_cancelled`` swallows proxy errors,
+    so setting them after the Manager died would silently reach no worker. That
+    ordering is why ``shutdown`` calls this before ``_stop_manager``.
+    """
+    with _standalone_manager(tmp_path) as (mgr, loop):
+        record = mgr.submit(
+            kind="spin",
+            params={"iterations": 100000},
+            runner_dotted="tests._task_runners.cancellable_runner",
+        )
+        event = mgr._cancel_events[record.task_id]
+        assert not event.is_set()
+
+        mgr._signal_cancel_all()
+        assert event.is_set()
+
+
+def test_gated_submit_bails_out_when_closing(tmp_path: Path):
+    """A submit queued on the gate must not dispatch across a shutdown.
+
+    The ``assert`` at the top of ``_gated_submit`` runs BEFORE the semaphore is
+    acquired, so without the in-lock re-read a coroutine that waited there
+    across a teardown reached ``None.submit`` on a dying loop.
+    """
+    with _standalone_manager(tmp_path) as (mgr, loop):
+        task_id = "queued-across-shutdown"
+        mgr._records[task_id] = TaskRecord(task_id=task_id, kind="pipeline")
+        mgr._closing = True
+
+        loop.run_until_complete(
+            mgr._gated_submit(
+                task_id, "tests._task_runners.echo_runner", {}, None
+            )
+        )
+
+        assert task_id not in mgr._futures
+        assert mgr._records[task_id].status == TaskStatus.PENDING
+
+
+@pytest.mark.timeout(90)
+def test_aclose_tears_down_pool_manager_and_drain(tmp_path: Path):
+    """The async twin the FastAPI lifespan uses leaves nothing behind."""
+    with _standalone_manager(tmp_path) as (mgr, loop):
+        loop.run_until_complete(mgr.aclose())
+        assert mgr._closing is True
+        assert mgr._pool is None
+        assert mgr._mp_manager is None
+        assert mgr._drain_task is None
+
+
+@pytest.mark.timeout(90)
+def test_startup_shutdown_leaves_no_pymp_dir(tmp_path: Path):
+    """A full startup/shutdown cycle strands no Manager temp dir.
+
+    See ``tests/_pymp.py`` for why leakage is a set difference and why the
+    assertion polls.
+    """
+    before = pymp_dirs()
+    with _standalone_manager(tmp_path):
+        pass
+    assert_no_new_pymp_dirs(before)

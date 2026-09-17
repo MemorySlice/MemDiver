@@ -214,7 +214,29 @@ def _provenance(meta: DatasetMeta, reference_dump: str) -> str:
 
 
 def _cipher_mismatch(required: Optional[str], meta: DatasetMeta) -> Optional[str]:
-    """Explain why this oracle cannot verify this run, or ``None`` if it can."""
+    """Explain why this oracle cannot verify this run, or ``None`` if it can.
+
+    Kept as the in-module spelling every call site here already uses; the
+    sentence itself lives in :func:`cipher_mismatch_reason` so a second caller
+    cannot drift a word away from it.
+    """
+    return cipher_mismatch_reason(required, meta)
+
+
+def cipher_mismatch_reason(required: Optional[str], meta: DatasetMeta) -> Optional[str]:
+    """Explain why an oracle requiring *required* cannot verify *meta*'s run.
+
+    ``None`` means "no objection": either the oracle declares no cipher
+    requirement, or the run does not declare its cipher (nothing to contradict),
+    or the two agree.
+
+    Public because the same judgement is needed wherever a run meets an oracle
+    that only speaks one cipher — :mod:`app.oracle_smoke_test` raises it as a
+    caveat on its positive control, because a key the oracle is structurally
+    unable to accept turns "the oracle rejected the real key" from a failing
+    grade into an expected outcome, and the analyst must be told which of the
+    two they are looking at.
+    """
     if not required or not meta.cipher:
         return None
     if meta.cipher.strip().casefold() == required.strip().casefold():

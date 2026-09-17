@@ -5,6 +5,126 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **The web server could not be shut down, so `kill -9` was the only way out —
+  and that leaked semaphores and orphaned processes permanently.** Killing
+  `memdiver` printed `resource_tracker: There appear to be 5 leaked semaphore
+  objects`. The five are the fingerprint of exactly one un-finalized
+  `ProcessPoolExecutor` (`_call_queue` contributes `_rlock`/`_wlock`/`_sem`,
+  `_result_queue` two more) — the app-lifetime pool in `TaskManager`. They
+  leaked because SIGKILL skips every `atexit` handler, and SIGKILL was only ever
+  needed because a graceful shutdown could not finish. Four independent reasons,
+  all now fixed:
+  - `_gated_submit` awaited the pool future via
+    `loop.run_in_executor(None, future.result)`, parking a thread of asyncio's
+    **default** executor for a task's whole duration, and the progress drain
+    parked a second one permanently in an unbounded `q.get()`. uvicorn serves
+    under `asyncio.Runner`, whose `close()` calls
+    `loop.shutdown_default_executor()` — and on Python 3.11 that joins its
+    threads with **no timeout** (the `timeout` parameter only arrived in 3.12).
+    One live task was enough to hang Ctrl-C forever. Now `asyncio.wrap_future`
+    bridges the future with no thread at all, and the drain read is bounded by
+    `DRAIN_POLL_S`.
+  - `shutdown()` called `pool.shutdown(wait=False)`, which does not stop a
+    worker that is already running — and `concurrent.futures.process._python_exit`
+    joins it at interpreter exit with no timeout of its own, merely relocating
+    the hang. Teardown is now ordered and bounded at every step: cancel events
+    first (they are Manager proxies, so they must be set while the Manager still
+    lives), then the drain, then the pool with its workers force-reaped, then the
+    Manager in a `finally`. A new `aclose()` is the async twin the FastAPI
+    lifespan uses; `shutdown()` stays synchronous for `reset_task_manager` and
+    the test fixtures.
+  - `ProgressBus.close_task` set `channel.closed = True` but pushed nothing, and
+    `subscribe` only re-checks that flag *before* `await q.get()` — so a
+    subscriber already parked there never woke: its iterator leaked for the life
+    of the process, and the WebSocket handler, still suspended inside the
+    `async for`, never called `receive()` and so never saw the disconnect.
+    `close_task` now posts a `None` sentinel, so a task reaching a terminal
+    event releases its subscribers, and `close_all()` does the same for every
+    channel. Known follow-up: this does **not** by itself unblock a WebSocket
+    parked at shutdown. `close_all()` runs from `TaskManager.aclose()`, i.e.
+    from the lifespan shutdown, and uvicorn's `Server.shutdown()` drains open
+    connections *before* it runs that — so the sentinel necessarily arrives
+    after the moment it would have to act. What bounds that wait today is
+    `timeout_graceful_shutdown` (see below); the real fix is for the WebSocket
+    handler (`api/ws/progress.py`) to await `websocket.receive()` concurrently
+    with the subscribe loop so it notices the close frame itself.
+  - `memdiver web` ran uvicorn with no `timeout_graceful_shutdown` (it defaults
+    to waiting forever) and no `finally`. It now bounds that window — from the
+    new `Settings.web_graceful_timeout_s` (10s, `MEMDIVER_WEB_GRACEFUL_TIMEOUT_S`),
+    so every launch path and deployment sees the same knob — and tears the task
+    manager down on the force-exit path, where uvicorn skips
+    `lifespan.shutdown()` entirely.
+- **A hard kill orphaned the `multiprocessing.Manager` process forever.**
+  CPython's `BaseManager` does not start its server as a daemon and
+  `Server.serve_forever()` has no parent-death check, so every `kill -9` left a
+  Manager running with its unix socket and `pymp-*` temp dir — 8 such orphans (up
+  to 18 days old) and 147 stale directories had accumulated. New
+  `core/process_guard.py` arms a parent-death watchdog inside the Manager server
+  and every pool worker via the documented `start(initializer=...)` /
+  `ProcessPoolExecutor(initializer=...)` hooks: a daemon thread notices the
+  process has been reparented and exits, running multiprocessing's finalizers
+  first so the temp dir goes with it. Nothing based on `atexit` can cover
+  SIGKILL; the child has to notice on its own.
+- **The oracle smoke test could never go green, so it proved nothing.** The web
+  UI built its 16 samples client-side as a hard-coded arithmetic ramp
+  (`bytes[j] = (i * 31 + j) & 0xff`) and posted them to `/dry-run`. They were
+  never key material and never touched a dump, so a correct oracle scored
+  0 pass / 16 fail — and so did an oracle whose `verify()` was wired to
+  `return False`. The bar could not distinguish the two, which is the one
+  thing a smoke test exists to do. It also looked identical armed and unarmed,
+  because the input and the code path were byte-identical (`dry_run` ignores
+  `armed` by design, so a user can triage before committing to arming).
+  - New `POST /api/oracles/{id}/smoke-test` composes the samples **server-side**:
+    one positive control — the master key the run's `meta.json` records, found
+    via the same `RunDiscovery.meta_for_dump` the config autofill already uses —
+    plus N candidates read at random offsets from the dump itself.
+  - The result is a **verdict**, not a pass count: `discriminates`,
+    `accepts_noise` (the oracle accepts arbitrary memory — a non-detector that
+    would flood a real sweep), `never_accepts`, `no_positive_control` (no ground
+    truth was available; reported as its own state, never as a failure — the
+    `positive.ok` field is tri-state and stays `null`) and `inconclusive`
+    (the key was accepted but nothing was rejected, so only half the claim
+    holds).
+  - Negatives are read in the **`vas` view**. Raw offsets into an `.msl` address
+    the container — file and block headers, the hash chain — not process memory,
+    and `va` pads unmapped pages with synthesized `0x00`; either would have fed
+    the oracle bytes the dump never captured.
+  - A drawn sample equal to the positive control is resampled. The real key
+    genuinely occurs in these dumps, so an unguarded draw yields a bogus
+    "accepts noise" verdict.
+  - The response **never contains sample bytes**: the positive control *is* the
+    run's master key.
+  - `dry_run` keeps its exact contract; the grading and loading halves were
+    extracted into shared helpers rather than duplicated.
+- **Per-sample oracle errors were computed and then thrown away.** The backend
+  already returned `{"index": i, "ok": false, "error": repr(exc)}`, but the UI
+  used `error` only as a boolean to pick a grey dot colour. The message now has
+  a rendering site.
+- **The Oracle stage's Next button was invisible**, sitting below the entire
+  pcap block, and the stepper deliberately disables forward jumps — so the way
+  forward could not be found at all. The advance controls are now pinned, the
+  pcap alternative is collapsed by default, and a disabled Next says why.
+- **The oracle registry was memory-only.** `config` and `armed` lived solely in
+  `_entries`, so a restart dropped every config, orphaned the `.py` files and
+  made the pipeline's stored `oracleId` 404 mid-run — with the wizard's Next
+  button silently going dead because its entry had vanished. Entries now
+  persist to a `<uuid>.json` sidecar (`0o600`, written via `atomic_write_text`,
+  which gained a `mode=` kwarg applied to the tmp file *before* the replace) and
+  rehydrate at startup.
+  - The `.py` is **re-hashed on rehydrate** and a mismatch is refused: the
+    stored sha exists to give `arm()`'s display-vs-disk check something
+    truthful to compare against.
+  - `shape` is read from the sidecar, never re-derived — `_detect_shape`
+    imports the user module, which would execute every stored oracle at boot.
+  - `armed` always rehydrates as `False`. Arming is an authorization act bound
+    to a sha the user saw and to a strict sandbox replay of a filesystem state
+    that may have changed while the server was down; restoring the entry is
+    what fixes the 404, and re-arming costs one click. `previously_armed`
+    reports the earlier consent so the UI can say so.
+  - Orphaned files are logged, never auto-deleted; `GET /api/oracles/status`
+    lists them and `DELETE /api/oracles/orphans` removes them on request.
+
 ### Security
 - **The upload directory is no longer a hardcoded, world-writable `/tmp` path.**
   `api/config.py` defaulted `upload_dir` to `/tmp/memdiver_uploads` and

@@ -29,18 +29,51 @@ tail of the stream is published after the bus channel closes and no live
 client ever sees it. :func:`_worker_entry` posts a flush sentinel as its last
 act and :meth:`TaskManager._drain_barrier` waits for it — see those two for
 the full story.
+
+Shutdown
+--------
+Four facts make teardown harder than it looks. They are stated here once;
+everything below points back at this section rather than restating them.
+
+1. **Python 3.11 joins the default executor with no timeout.** uvicorn serves
+   under :class:`asyncio.Runner`, whose ``close()`` calls
+   ``loop.shutdown_default_executor()``; on 3.11 that method has no ``timeout``
+   parameter (it arrived in 3.12) and ends in an unconditional ``thread.join()``.
+   So a single thread of asyncio's *default* executor parked in an unbounded
+   blocking call hangs the whole process, with no traceback. This module
+   therefore owns its own drain executor and never borrows the default one.
+2. **A running pool worker is joined at interpreter exit.**
+   ``pool.shutdown(wait=False)`` does not stop work already in flight, and
+   ``concurrent.futures.process._python_exit`` later joins the executor-manager
+   thread, which joins every worker — again with no timeout. A worker left alive
+   at the end of teardown is not untidy, it is the same hang relocated.
+3. **Cancel events are Manager proxies.** They are served by the Manager child,
+   and :meth:`WorkerContext.is_cancelled` swallows proxy errors, so an event set
+   after the Manager died reaches nobody. Cancel must be signalled *before* the
+   Manager is stopped.
+4. **uvicorn drains connections before it runs the lifespan shutdown**, and on
+   ``force_exit`` it skips the lifespan shutdown entirely. So this class cannot
+   assume it will be given a chance to run at all; ``cli/dataset.py`` keeps a
+   ``finally`` backstop for that case.
+
+Failing any of these produced the defect this design exists to prevent: a server
+that could not be shut down, leaving ``kill -9`` as the only exit — which skips
+every ``atexit`` handler and leaks the pool's 5 POSIX semaphores.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 import logging
 import multiprocessing as mp
+import queue
 import threading
 import time
 import uuid
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +82,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
 from memdiver.api.services.progress_bus import Event, ProgressBus
 from memdiver.core.artifact_util import atomic_write_text
+from memdiver.core.process_guard import (
+    guard_child_process,
+    start_guarded_sync_manager,
+)
 
 logger = logging.getLogger("memdiver.api.services.task_manager")
 
@@ -64,6 +101,22 @@ DRAIN_FLUSH_KEY = "__memdiver_drain_flush__"
 # wait; this only covers drain-task scheduling), but bounded: a task must never
 # hang because a sentinel went missing.
 DRAIN_FLUSH_TIMEOUT_S = 10.0
+
+# Ceiling on one blocking read of the cross-process progress queue. Something
+# waits on this: it bounds how long the drain thread stays inside a single
+# ``get`` and therefore how quickly teardown can join it (fact 1 above). Keep it
+# short — the cost is one ~100-byte proxy round trip per second, and the manager
+# blocks server-side for the interval rather than spinning.
+DRAIN_POLL_S = 1.0
+
+# How long teardown lets workers stop cooperatively before it signals them.
+# Every production runner polls ``WorkerContext.is_cancelled``, so this window
+# normally ends with the worker unwinding on its own and posting its sentinel.
+SHUTDOWN_GRACE_S = 5.0
+
+# Escalation window applied to ALL workers at once: SIGTERM, wait, SIGKILL,
+# wait. Bounded because of fact 2 above.
+WORKER_TERM_TIMEOUT_S = 2.0
 
 
 class TaskStatus(str, Enum):
@@ -244,6 +297,37 @@ class WorkerContext:
             return False
 
 
+def _await_exit(workers: List[Any], timeout_s: float) -> None:
+    """Block until every worker has exited, or ``timeout_s`` elapses."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and any(p.is_alive() for p in workers):
+        time.sleep(0.05)
+
+
+def _reap_workers(workers: List[Any], grace_s: float) -> None:
+    """Wait ``grace_s`` for workers to exit, then SIGTERM, then SIGKILL.
+
+    Each escalation is applied to ALL workers before waiting on any of them, so
+    the worst case is ``grace_s + 2 * WORKER_TERM_TIMEOUT_S`` no matter how many
+    workers there are. Signalling and then joining one at a time would serialise
+    every worker's timeout behind the previous one's.
+
+    Leaving a worker alive would relocate the hang rather than fix it (fact 2 in
+    the module docstring). Racing the executor-manager thread's own ``join`` is
+    safe: ``popen_fork._send_signal`` guards on ``returncode`` and swallows
+    ``ProcessLookupError``.
+    """
+    _await_exit(workers, grace_s)
+    for proc in (p for p in workers if p.is_alive()):
+        logger.warning("force-terminating pipeline worker pid=%s", proc.pid)
+        proc.terminate()
+    _await_exit(workers, WORKER_TERM_TIMEOUT_S)
+    for proc in (p for p in workers if p.is_alive()):
+        logger.warning("SIGKILLing unresponsive pipeline worker pid=%s", proc.pid)
+        proc.kill()
+    _await_exit(workers, WORKER_TERM_TIMEOUT_S)
+
+
 class TaskManager:
     """Real, minimal task manager. See module docstring for design."""
 
@@ -266,8 +350,12 @@ class TaskManager:
         self._cancel_events: Dict[str, Any] = {}
         self._lock = threading.RLock()
 
+        # Set by shutdown/aclose so a submit already queued on ``_run_lock``
+        # does not dispatch into a pool that is going away underneath it.
+        self._closing = False
         self._pool: Optional[ProcessPoolExecutor] = None
         self._mp_manager: Optional[Any] = None
+        self._drain_executor: Optional[ThreadPoolExecutor] = None
         self._drain_task: Optional[asyncio.Task] = None
         self._drain_queue: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -284,30 +372,158 @@ class TaskManager:
     async def startup(self, loop: asyncio.AbstractEventLoop) -> None:
         """Allocate the ProcessPool, Manager, and progress-drain task."""
         self._loop = loop
+        self._closing = False
         self._run_lock = asyncio.Semaphore(1)
         ctx = mp.get_context("spawn")
+        # Both children arm a parent-death watchdog. Nothing running in THIS
+        # process survives a SIGKILL, so the children have to notice on their
+        # own: without it a hard kill orphans the Manager server forever (it is
+        # not a daemon process and ``Server.serve_forever`` has no parent
+        # check), stranding its unix socket and ``pymp-*`` temp dir. See
+        # core/process_guard.py.
         self._pool = ProcessPoolExecutor(
             max_workers=self._max_workers,
             mp_context=ctx,
+            initializer=guard_child_process,
         )
-        self._mp_manager = ctx.Manager()
+        self._mp_manager = start_guarded_sync_manager(ctx)
         self._drain_queue = self._mp_manager.Queue()
+        # A drain thread we OWN. Borrowing asyncio's default executor is what
+        # made shutdown unjoinable (fact 1 in the module docstring); owning one
+        # makes ``loop.shutdown_default_executor()`` a no-op for us by
+        # construction rather than by timing.
+        self._drain_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="memdiver-drain",
+        )
         self._drain_task = loop.create_task(self._drain_progress())
         self.load_from_disk()
 
-    def shutdown(self) -> None:
-        """Best-effort graceful shutdown of pool, manager, and drain."""
+    def shutdown(self, *, grace_s: float = SHUTDOWN_GRACE_S) -> None:
+        """Bounded, ordered teardown of cancel events, drain, pool, manager.
+
+        The ORDER is load-bearing and every step has a ceiling:
+
+        1. Cancel events FIRST -- fact 3 in the module docstring.
+        2. Drain task next, so nothing new is published mid-teardown.
+        3. Bus subscribers released, so nothing is left parked on a channel.
+        4. Pool, with the worker handles captured before ``shutdown()`` nulls
+           them, then force-reaped -- fact 2.
+        5. Manager and drain executor last, in a ``finally`` so a raising pool
+           step cannot strand either one.
+
+        Stays SYNCHRONOUS: ``reset_task_manager`` and the test fixtures call it
+        from sync context. :meth:`aclose` is the async twin, and delegates here
+        so this sequence exists in exactly one place.
+        """
+        self._closing = True
+        self._signal_cancel_all()
         if self._drain_task is not None:
             self._drain_task.cancel()
-        if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-            self._pool = None
-        if self._mp_manager is not None:
+            self._drain_task = None
+        self._bus.close_all()
+        try:
+            self._stop_pool(grace_s=grace_s)
+        finally:
+            self._stop_manager()
+            self._stop_drain_executor()
+
+    async def aclose(self) -> None:
+        """Async twin of :meth:`shutdown`, for the FastAPI lifespan.
+
+        Spends the cooperative window ON the loop -- so an in-flight task can
+        still run its drain barrier and publish a real terminal event instead of
+        being resurrected as "backend restarted" on the next boot -- then defers
+        to :meth:`shutdown` for the ordered teardown itself. The drain task is
+        awaited rather than fire-and-forget.
+        """
+        self._closing = True
+        # Signalled here as well as inside ``shutdown`` -- the runners have to
+        # see it BEFORE the cooperative window, not after. ``set`` is idempotent
+        # and costs one proxy round trip per live task.
+        self._signal_cancel_all()
+        await self._await_workers_idle(SHUTDOWN_GRACE_S)
+        await self._cancel_drain()
+        self.shutdown(grace_s=0.0)  # grace already spent, cooperatively
+
+    def _signal_cancel_all(self) -> None:
+        """Ask every non-terminal task's worker to stop cooperatively.
+
+        Must run while the Manager is still alive -- fact 3 in the module
+        docstring. Sets are issued outside the lock: each one is a blocking
+        round trip to the Manager.
+        """
+        with self._lock:
+            events = [
+                self._cancel_events[tid]
+                for tid, rec in self._records.items()
+                if rec.status not in TERMINAL_STATUSES and tid in self._cancel_events
+            ]
+        for event in events:
             try:
-                self._mp_manager.shutdown()
-            except Exception:  # pragma: no cover
-                pass
-            self._mp_manager = None
+                event.set()
+            except Exception:  # pragma: no cover - manager already gone
+                logger.debug("cancel event set failed", exc_info=True)
+
+    async def _await_workers_idle(self, grace_s: float) -> None:
+        """Let cooperative runners finish, without blocking the event loop.
+
+        Waits on DISPATCHED work only. ``running_ids()`` also counts PENDING,
+        and because ``_run_lock`` admits one task at a time a queued task can
+        sit PENDING with no worker running at all -- waiting on that would spend
+        the entire window on nothing.
+        """
+        deadline = time.monotonic() + grace_s
+        while time.monotonic() < deadline and self._has_live_futures():
+            await asyncio.sleep(0.05)
+
+    def _has_live_futures(self) -> bool:
+        """True while any submitted worker future is still outstanding."""
+        with self._lock:
+            return any(not f.done() for f in self._futures.values())
+
+    async def _cancel_drain(self) -> None:
+        """Cancel the drain task and actually wait for it to unwind."""
+        task, self._drain_task = self._drain_task, None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    def _stop_pool(self, grace_s: float) -> None:
+        """Shut the pool down, then guarantee no worker outlives us.
+
+        ``ProcessPoolExecutor.shutdown()`` sets ``_processes`` to None, so the
+        handles are captured first. That attribute is private, hence the
+        ``getattr``: a CPython rename degrades to "no force-reap" rather than an
+        exception raised in the middle of teardown.
+        """
+        pool, self._pool = self._pool, None
+        if pool is None:
+            return
+        workers = list((getattr(pool, "_processes", None) or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        _reap_workers(workers, grace_s)
+
+    def _stop_drain_executor(self) -> None:
+        """Release the private drain thread.
+
+        ``wait=False``: the thread is at worst inside one ``DRAIN_POLL_S`` read,
+        and stopping the Manager just above breaks that read immediately.
+        """
+        executor, self._drain_executor = self._drain_executor, None
+        if executor is not None:
+            executor.shutdown(wait=False)
+
+    def _stop_manager(self) -> None:
+        """Stop the Manager server that mints the queues and cancel events."""
+        manager, self._mp_manager = self._mp_manager, None
+        if manager is None:
+            return
+        try:
+            manager.shutdown()
+        except Exception:  # pragma: no cover
+            logger.debug("manager shutdown failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # submission
@@ -361,6 +577,16 @@ class TaskManager:
     ) -> None:
         assert self._run_lock is not None and self._pool is not None
         async with self._run_lock:
+            # Re-read the pool INSIDE the lock. The assert above runs before we
+            # queue on the gate, so a submit that waited there across a shutdown
+            # would otherwise reach ``None.submit`` on a tearing-down loop. A
+            # task dropped here stays PENDING and ``load_from_disk`` re-marks it
+            # "backend restarted" on the next boot -- the documented behaviour.
+            # ``pool is None`` is not redundant with ``_closing``: it is
+            # also what narrows the type for ``pool.submit`` below.
+            pool = self._pool
+            if pool is None or self._closing:
+                return
             with self._lock:
                 record = self._records.get(task_id)
                 if record is None or record.status == TaskStatus.CANCELLED:
@@ -375,7 +601,7 @@ class TaskManager:
             # otherwise a very fast task could flush before we are listening.
             self._flush_barriers[task_id] = asyncio.Event()
 
-            future = self._pool.submit(
+            future = pool.submit(
                 _worker_entry,
                 runner_dotted,
                 params,
@@ -389,7 +615,17 @@ class TaskManager:
             loop = asyncio.get_running_loop()
             try:
                 try:
-                    result = await loop.run_in_executor(None, future.result)
+                    # ``wrap_future`` bridges the pool future onto the loop
+                    # with NO thread at all, raising the same exceptions in the
+                    # same places. It replaced ``run_in_executor(None,
+                    # future.result)``, which parked a default-executor thread
+                    # for the whole run -- fact 1 in the module docstring.
+                    #
+                    # It does NOT kill the worker: ``_chain_future`` installs a
+                    # cancel callback, but ``Future.cancel()`` returns False for
+                    # one already running. Freeing the loop instantly is the
+                    # point; ``_stop_pool`` is what ends the process.
+                    result = await asyncio.wrap_future(future, loop=loop)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -591,16 +827,26 @@ class TaskManager:
     async def _drain_progress(self) -> None:
         """Pump worker progress events into the bus.
 
-        Runs on the event loop. Uses ``run_in_executor`` to call the
-        blocking ``queue.get`` so the loop stays responsive.
+        Runs on the event loop, calling the blocking ``queue.get`` on this
+        manager's OWN drain executor so the loop stays responsive. The read is
+        bounded at ``DRAIN_POLL_S``, so the thread is never parked indefinitely
+        and teardown can always join it (fact 1 in the module docstring).
         """
         assert self._drain_queue is not None
         loop = asyncio.get_running_loop()
-        q = self._drain_queue
+        # ``queue.Empty`` propagates through a ``SyncManager`` proxy because
+        # ``BaseProxy._callmethod`` re-raises the remote exception.
+        poll = functools.partial(self._drain_queue.get, timeout=DRAIN_POLL_S)
         while True:
             try:
-                payload = await loop.run_in_executor(None, q.get)
+                payload = await loop.run_in_executor(self._drain_executor, poll)
             except asyncio.CancelledError:
+                return
+            except queue.Empty:
+                continue  # bounded read expired; loop round and re-check cancel
+            except RuntimeError:
+                # Our drain executor is already gone: teardown raced us. Exit
+                # quietly rather than raising into a task nobody is awaiting.
                 return
             if payload is None:
                 continue

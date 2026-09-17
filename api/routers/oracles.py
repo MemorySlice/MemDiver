@@ -22,7 +22,14 @@ Contract (see the plan's B5 task):
 * ``POST /api/oracles/{id}/arm``   — body echoes the sha256 the client
   saw; server re-hashes on disk and refuses on mismatch.
 * ``POST /api/oracles/{id}/dry-run`` — run the oracle against a list
-  of base64-encoded sample candidates and report pass/fail counts.
+  of base64-encoded sample candidates and report pass/fail counts. The
+  *caller* chooses the samples, so the result only means as much as they do.
+* ``POST /api/oracles/{id}/smoke-test`` — the server chooses the samples: one
+  positive control (the run's recorded master key) plus N candidates read at
+  random offsets from the dump, reported as a *verdict* rather than a raw
+  pass count. This exists because the web UI drove ``dry-run`` with sixteen
+  hard-coded synthetic strings, which no correct oracle could ever accept —
+  so a working oracle and a broken one scored identically.
 * ``DELETE /api/oracles/{id}``     — remove the file and the registry
   entry. The oracle's ``__pycache__/`` is purged too.
 * ``GET  /api/oracles/status``     — is the oracle dir enabled, where, and
@@ -41,7 +48,7 @@ import base64
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -122,6 +129,87 @@ class DryRunRequest(BaseModel):
     samples_b64: List[str] = Field(..., max_length=64)
 
 
+class SmokeTestRequest(BaseModel):
+    """Body for ``POST /api/oracles/{id}/smoke-test``.
+
+    ``source_paths`` is REQUIRED with at least one entry. There is deliberately
+    no synthetic fallback: grading an oracle against made-up bytes is the very
+    defect this endpoint replaces, and silently degrading to it would hide the
+    fact that the test proved nothing.
+
+    ``negatives`` is capped so ``negatives + 1`` (the positive control) stays
+    within the 64-sample ceiling ``DryRunRequest`` already imposes.
+    """
+
+    source_paths: List[str] = Field(..., min_length=1, max_length=64)
+    key_size: int = Field(32, ge=1, le=512)
+    negatives: int = Field(15, ge=1, le=63)
+    include_positive_control: bool = True
+    # Fixes the random offsets, so a test can assert on them. The UI omits it.
+    seed: Optional[int] = None
+
+
+class PositiveControlModel(BaseModel):
+    """The known-good candidate, and whether the oracle accepted it.
+
+    ``ok`` is tri-state. ``None`` means no ground truth was available to test
+    with -- distinct from ``False`` ("the oracle rejected its own key"), and a
+    client must not render the two the same way.
+    """
+
+    present: bool
+    index: Optional[int] = None
+    ok: Optional[bool] = None
+    error: Optional[str] = None
+    source: Optional[str] = None
+    provenance_label: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class NegativeSummary(BaseModel):
+    count: int
+    accepted: int
+    rejected: int
+    errors: int
+    key_size: int
+    low_entropy_included: int
+    offsets: List[int]
+
+
+class DumpSummary(BaseModel):
+    path: str
+    format: str
+    view: str
+    size: int
+
+
+class SmokeTestResponse(BaseModel):
+    """Everything ``dry-run`` reports, plus what makes the result readable.
+
+    No sample bytes are ever included: the positive control IS the run's
+    master key, so echoing the samples back would hand it to any HTTP client.
+    """
+
+    oracle_id: str
+    samples: int
+    passes: int
+    fails: int
+    errors: int
+    per_call_us_avg: float
+    results: List[Dict[str, Any]]
+    positive: PositiveControlModel
+    negatives: NegativeSummary
+    dump: Optional[DumpSummary]
+    verdict: Literal[
+        "discriminates",
+        "never_accepts",
+        "accepts_noise",
+        "no_positive_control",
+        "inconclusive",
+    ]
+    caveats: List[str]
+
+
 class EnableRequest(BaseModel):
     """Body for ``POST /api/oracles/enable``; the whole body is optional."""
 
@@ -164,12 +252,20 @@ def _status() -> dict:
         source = "env"
     else:
         source = "user_config"
+    # Orphans are reported, never cleaned up on the way past: a stray file is
+    # the user's, and nothing that merely *reads* status should delete it.
+    # DELETE /api/oracles/orphans is the user-initiated counterpart.
+    try:
+        orphans = _registry().orphan_files()
+    except HTTPException:
+        orphans = []
     return {
         "enabled": path is not None,
         "path": str(path) if path is not None else None,
         "source": source,
         "env_pinned": pinned,
         "default_path": str(default_oracle_dir()),
+        "orphans": orphans,
     }
 
 
@@ -250,6 +346,24 @@ def list_oracles():
 # Both routes below are declared ahead of every ``/{oracle_id}`` path on
 # purpose: FastAPI matches in declaration order, so a later literal segment
 # would otherwise be swallowed as an oracle id.
+
+
+@router.delete("/orphans")
+def prune_orphan_oracles():
+    """Delete oracle files left behind with no metadata.
+
+    Declared BEFORE ``/{oracle_id}`` so the literal segment wins the route
+    match rather than being read as an oracle id.
+
+    These accumulate from before the registry persisted anything: the ``.py``
+    stayed on disk while the entry it belonged to lived only in a process that
+    has since exited. Boot-time code deliberately only logs them -- removing a
+    user's file because a schema check failed is not a decision a startup path
+    gets to make -- so this endpoint exists to do it on request.
+    """
+    registry = _registry()
+    registry.require_enabled()
+    return {"removed": registry.prune_orphans()}
 
 
 @router.get("/status")
@@ -348,6 +462,33 @@ def dry_run_oracle(oracle_id: str, request: DryRunRequest):
                             detail=f"invalid base64 sample: {exc}")
     try:
         return registry.dry_run(oracle_id, samples=samples)
+    except OracleRegistryError as exc:
+        raise _map_registry_error(exc)
+
+
+@router.post("/{oracle_id}/smoke-test", response_model=SmokeTestResponse)
+def smoke_test_oracle(oracle_id: str, request: SmokeTestRequest):
+    """Grade the oracle against a positive control plus real dump bytes.
+
+    The counterpart to ``/dry-run``: that endpoint grades whatever the client
+    sends, which let the web UI smoke-test against 16 hard-coded synthetic
+    strings no real oracle could ever accept. Here the server composes the
+    samples, so the result actually distinguishes a working oracle from a
+    broken one.
+
+    Like ``/dry-run``, this does NOT require the oracle to be armed -- the
+    point is triage before committing to arming.
+    """
+    registry = _registry()
+    try:
+        return registry.smoke_test(
+            oracle_id,
+            source_paths=request.source_paths,
+            key_size=request.key_size,
+            negatives=request.negatives,
+            include_positive_control=request.include_positive_control,
+            seed=request.seed,
+        )
     except OracleRegistryError as exc:
         raise _map_registry_error(exc)
 

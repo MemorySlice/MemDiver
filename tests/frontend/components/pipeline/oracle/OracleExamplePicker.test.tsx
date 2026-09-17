@@ -33,6 +33,7 @@ const uploadOracle = vi.fn();
 const loadOracleExample = vi.fn();
 const armOracle = vi.fn();
 const dryRunOracle = vi.fn();
+const smokeTestOracle = vi.fn();
 const deleteOracle = vi.fn();
 const suggestExampleConfig = vi.fn();
 vi.mock("@/api/oracles", () => ({
@@ -44,6 +45,7 @@ vi.mock("@/api/oracles", () => ({
   loadOracleExample: (...a: unknown[]) => loadOracleExample(...a),
   armOracle: (...a: unknown[]) => armOracle(...a),
   dryRunOracle: (...a: unknown[]) => dryRunOracle(...a),
+  smokeTestOracle: (...a: unknown[]) => smokeTestOracle(...a),
   deleteOracle: (...a: unknown[]) => deleteOracle(...a),
   suggestExampleConfig: (...a: unknown[]) => suggestExampleConfig(...a),
   ORACLE_EXAMPLES_DIR: "docs/oracle/examples/",

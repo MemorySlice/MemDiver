@@ -27,6 +27,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from memdiver.core.process_guard import install_parent_death_watchdog
 from memdiver.engine.candidate_grid import count_region_grid, iter_region_grid
 from memdiver.engine.oracle import (
     OracleFn,
@@ -363,6 +364,12 @@ _WORKER_ORACLE: Optional[OracleFn] = None
 
 def _worker_init(oracle_path: str, oracle_config: dict) -> None:
     global _WORKER_ORACLE
+    # First, before any work: this pool can be nested two deep (a pipeline
+    # worker runs the sweep, and these are its children). A SIGKILL of the
+    # server leaves those grandchildren orphaned on a candidate sweep, holding
+    # every core they were given, so they need the same watchdog the
+    # TaskManager arms on its own pool and Manager.
+    install_parent_death_watchdog()
     # sandbox=False: run_brute_force() validates the oracle exactly once in the
     # parent (validate_oracle_sandboxed, before the serial/parallel split), so
     # this invariant is genuinely established for BOTH branches. The W pool

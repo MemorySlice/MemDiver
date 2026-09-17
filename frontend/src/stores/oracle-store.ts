@@ -22,6 +22,7 @@ import {
   listOracleExamples,
   loadOracleExample as loadOracleExampleApi,
   listOracles,
+  smokeTestOracle as smokeTestOracleApi,
   suggestExampleConfig as suggestExampleConfigApi,
   uploadOracle as uploadOracleApi,
 } from "@/api/oracles";
@@ -31,6 +32,8 @@ import type {
   OracleEntry,
   OracleExample,
   OracleStatus,
+  SmokeTestRequest,
+  SmokeTestResult,
 } from "@/api/oracles";
 
 interface OracleState {
@@ -45,6 +48,15 @@ interface OracleState {
   status: OracleStatus | null;
   selectedOracleId: string | null;
   dryRun: DryRunResult | null;
+  /**
+   * Result of the most recent server-composed smoke test.
+   *
+   * Kept beside ``dryRun`` rather than replacing it: the two endpoints grade
+   * different bytes and the dry-run one still exists. ``null`` means "no smoke
+   * test has succeeded for the oracle currently on screen" -- the FTUE tour
+   * reads exactly that to know the user has run one.
+   */
+  smokeTest: SmokeTestResult | null;
   loading: boolean;
   error: string | null;
 
@@ -80,6 +92,19 @@ interface OracleState {
     config?: Record<string, unknown>,
   ) => Promise<boolean>;
   runDry: (oracleId: string, samplesB64: string[]) => Promise<DryRunResult | null>;
+  /**
+   * Smoke-test an oracle against samples the SERVER composes from the dumps.
+   *
+   * Unlike ``runDry``, a failure CLEARS ``smokeTest``. The dry-run path keeps
+   * its stale result on purpose (see the note in OracleDryRunBar), but a smoke
+   * test carries a verdict banner, and a stale "discriminates" sitting above a
+   * fresh "the server refused the request" is an outright false statement about
+   * the oracle -- not merely redundant dots.
+   */
+  runSmokeTest: (
+    oracleId: string,
+    body: SmokeTestRequest,
+  ) => Promise<SmokeTestResult | null>;
   remove: (oracleId: string) => Promise<boolean>;
   selectOracle: (oracleId: string | null) => void;
   clearError: () => void;
@@ -110,6 +135,7 @@ export const useOracleStore = create<OracleState>((set) => ({
   status: null,
   selectedOracleId: null,
   dryRun: null,
+  smokeTest: null,
   loading: false,
   error: null,
 
@@ -212,6 +238,17 @@ export const useOracleStore = create<OracleState>((set) => ({
     if (result !== null) {
       set({ dryRun: result });
     }
+    return result;
+  },
+
+  runSmokeTest: async (oracleId, body) => {
+    const result = await guarded(set, () =>
+      smokeTestOracleApi(oracleId, body),
+    );
+    // Clear on failure, unlike ``runDry``. A verdict is an assertion about the
+    // oracle; keeping the previous one alive beside an error would leave the
+    // panel asserting something the server just declined to confirm.
+    set({ smokeTest: result });
     return result;
   },
 

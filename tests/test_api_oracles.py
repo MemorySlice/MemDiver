@@ -408,11 +408,12 @@ def test_status_and_enable_are_not_captured_by_the_oracle_id_route(oracle_api):
     would be the symptom of the ordering bug.
     """
     client, _registry, _tmp = oracle_api
-    assert set(client.get("/api/oracles/status").json()) == {
-        "enabled", "path", "source", "env_pinned", "default_path",
+    status_keys = {
+        "enabled", "path", "source", "env_pinned", "default_path", "orphans",
     }
+    assert set(client.get("/api/oracles/status").json()) == status_keys
     body = client.post("/api/oracles/enable").json()
-    assert set(body) == {"enabled", "path", "source", "env_pinned", "default_path"}
+    assert set(body) == status_keys
 
 
 def test_enable_without_a_body_uses_the_default_dir(oracle_api):

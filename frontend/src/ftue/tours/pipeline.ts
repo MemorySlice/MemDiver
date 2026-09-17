@@ -50,10 +50,14 @@ export const pipelineTour: Tour = {
       target: "pipeline-oracle-dryrun",
       placement: "top",
       title: "Smoke-test your oracle",
-      body: "Before committing to a 9000-candidate run, click 'Test on 16 samples'. Mostly-red dots are normal — random offsets almost never decrypt. We're just checking the oracle loads and answers.",
+      body: "Before committing to a 9000-candidate run, test the oracle against samples MemDiver composes from your own dump: one known-good control key it should accept, and decoys it should reject. The verdict line tells you which — a green control with red decoys means the oracle discriminates; a red control means it would find nothing at all.",
       requireAction: {
-        description: "Click 'Test on 16 samples' to continue.",
-        predicate: () => useOracleStore.getState().dryRun !== null,
+        description: "Run the smoke test to continue.",
+        // The smoke test, not the legacy dry-run: only this endpoint grades a
+        // positive control, so only this result means the oracle was actually
+        // shown to work. The store clears the field on a failed run, so a
+        // non-null value really does mean "a graded run came back".
+        predicate: () => useOracleStore.getState().smokeTest !== null,
       },
     },
     {

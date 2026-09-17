@@ -27,6 +27,7 @@ Security defaults (see the plan's "Security hardening" section):
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -37,9 +38,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from memdiver.app.oracle_autoconfig import split_reserved
+from memdiver.app.oracle_autoconfig import (
+    load_example_automation,
+    split_reserved,
+)
+from memdiver.app.oracle_smoke_test import compose_smoke_samples
+from memdiver.core.artifact_util import atomic_write_text
 from memdiver.engine.oracle import (
     OracleBuildError,
     OracleLoadError,
@@ -103,6 +109,13 @@ class OracleEntry:
     # filesystem path is security-relevant, so it belongs behind the same
     # user-intent gate that already guards execution.
     config: Dict[str, Any] = field(default_factory=dict)
+    # When this entry was last armed, and whether that happened in an EARLIER
+    # process. Arming never survives a restart (see _rehydrate), but silently
+    # presenting a restored oracle as never-armed reads as "my work is gone";
+    # ``previously_armed`` lets the UI say "armed in a previous session --
+    # re-arm to run" instead.
+    armed_at: Optional[float] = None
+    previously_armed: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -114,9 +127,45 @@ class OracleEntry:
             "head_lines": list(self.head_lines),
             "uploaded_at": self.uploaded_at,
             "armed": self.armed,
+            "previously_armed": self.previously_armed,
             "description": self.description,
             "config": dict(self.config),
         }
+
+
+_SIDECAR_SCHEMA = 1
+
+
+def _sidecar_path(oracle_path: Path) -> Path:
+    """The metadata file that sits beside ``<uuid>.py`` as ``<uuid>.json``."""
+    return oracle_path.with_suffix(".json")
+
+
+def _entry_to_sidecar(entry: OracleEntry) -> Dict[str, Any]:
+    """Serialise the entry metadata that must outlive this process.
+
+    ``head_lines`` is deliberately NOT stored: it is cheap to recompute from
+    the file and a stored copy could disagree with the bytes on disk.
+
+    ``shape`` IS stored, and that is load-bearing. Re-deriving it on rehydrate
+    would mean calling :func:`_detect_shape`, which *imports the user module*
+    -- executing every stored oracle's top level at server boot, with no user
+    present and no sandbox probe. A stored shape can only ever mislabel a
+    badge; :func:`load_oracle` re-derives the real shape (and re-hashes, and
+    re-checks the safe path) every time the oracle is actually run.
+    """
+    return {
+        "schema": _SIDECAR_SCHEMA,
+        "oracle_id": entry.oracle_id,
+        "filename": entry.filename,
+        "description": entry.description,
+        "sha256": entry.sha256,
+        "size": entry.size,
+        "shape": entry.shape,
+        "uploaded_at": entry.uploaded_at,
+        "config": dict(entry.config),
+        "armed_at": entry.armed_at,
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -310,6 +359,95 @@ def _describe_config_keys(config: Dict[str, Any]) -> str:
     return "config keys: " + ", ".join(sorted(config))
 
 
+def _grade_samples(
+    verify: Callable[[bytes], bool],
+    samples: Sequence[bytes],
+) -> Dict[str, Any]:
+    """Run ``verify`` over ``samples`` and tally the outcome.
+
+    The grading half of :meth:`OracleRegistry.dry_run`, lifted out verbatim so
+    :meth:`OracleRegistry.smoke_test` grades identically rather than growing a
+    second, subtly different loop.
+
+    Returns every key ``dry_run`` reports except ``oracle_id``, in the same
+    order, so a caller can splice it back in with
+    ``{"oracle_id": ..., **_grade_samples(...)}`` and keep the serialized
+    response byte-identical.
+
+    Note the ``per_call_us_avg`` arithmetic: ``t_total`` accumulates only
+    non-erroring calls while the divisor subtracts ``errors``, and an
+    all-error run clamps the divisor to 1 and reports ``0.0``. That is the
+    pinned contract, quirk and all -- this function must not "fix" it.
+    """
+    results: List[Dict[str, Any]] = []
+    passes = 0
+    fails = 0
+    errors = 0
+    t_total = 0.0
+    for idx, sample in enumerate(samples):
+        t0 = time.monotonic()
+        try:
+            ok = bool(verify(sample))
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            results.append({
+                "index": idx,
+                "ok": False,
+                "error": repr(exc),
+            })
+            continue
+        dt = (time.monotonic() - t0) * 1_000_000
+        t_total += dt
+        if ok:
+            passes += 1
+        else:
+            fails += 1
+        results.append({
+            "index": idx,
+            "ok": ok,
+            "duration_us": round(dt, 2),
+        })
+    return {
+        "samples": len(samples),
+        "passes": passes,
+        "fails": fails,
+        "errors": errors,
+        "per_call_us_avg": round(t_total / max(1, len(samples) - errors), 2),
+        "results": results,
+    }
+
+
+def _smoke_verdict(
+    positive: Dict[str, Any],
+    accepted: int,
+    rejected: int,
+) -> str:
+    """Decide what the smoke test PROVED. Evaluated top-down, first match wins.
+
+    The ordering is the whole design:
+
+    1. ``accepts_noise`` outranks everything. An oracle that accepts random
+       bytes out of a memory dump is a proven non-detector, and that stays the
+       headline even when there is no ground truth to check against.
+    2. No positive control is reported as its own verdict, never as a failure.
+    3. ``discriminates`` requires BOTH halves: the key accepted AND at least
+       one clean rejection. Without the second clause a dump that yielded zero
+       usable negatives would green-light an oracle nothing had contradicted.
+    4. Positive passed but nothing was rejected (no negatives, or every one
+       raised) proves only half the claim -> ``inconclusive``.
+    5. Otherwise the oracle failed to accept its own known-good key.
+    """
+    if accepted >= 1:
+        return "accepts_noise"
+    if not positive["present"]:
+        return "no_positive_control"
+    if positive["ok"] and rejected >= 1:
+        return "discriminates"
+    if positive["ok"]:
+        return "inconclusive"
+    return "never_accepts"
+
+
 class OracleRegistry:
     """Per-process in-memory oracle catalog backed by a whitelisted dir."""
 
@@ -328,6 +466,7 @@ class OracleRegistry:
                 os.chmod(self._oracle_dir, 0o700)
             except OSError:
                 pass
+            self._rehydrate()
 
     # ------------------------------------------------------------------
     # configuration state
@@ -376,6 +515,8 @@ class OracleRegistry:
             except OSError:
                 pass
             self._oracle_dir = path
+        # After the lock: rehydrate takes it again for each entry it restores.
+        self._rehydrate()
         logger.info("oracle registry enabled at %s", path)
         return path
 
@@ -512,6 +653,7 @@ class OracleRegistry:
         )
         with self._lock:
             self._entries[oracle_id] = entry
+        self._persist(entry)
         return entry
 
     def find_example(self, filename: str) -> Dict[str, Any]:
@@ -592,6 +734,7 @@ class OracleRegistry:
         entry = self.get(oracle_id)
         with self._lock:
             entry.config = dict(config or {})
+        self._persist(entry)
         return entry
 
     def arm(
@@ -669,6 +812,8 @@ class OracleRegistry:
                 f"key)."
             ) from exc
         entry.armed = True
+        entry.armed_at = time.time()
+        self._persist(entry)
         return entry
 
     def delete(self, oracle_id: str) -> None:
@@ -679,7 +824,170 @@ class OracleRegistry:
             entry.path.unlink(missing_ok=True)
         except OSError:  # pragma: no cover
             pass
+        try:
+            _sidecar_path(entry.path).unlink(missing_ok=True)
+        except OSError:  # pragma: no cover
+            pass
         _purge_pycache(entry.path)
+
+    # ------------------------------------------------------------------
+    # persistence
+    # ------------------------------------------------------------------
+
+    def _persist(self, entry: OracleEntry) -> None:
+        """Write ``entry``'s sidecar. Best-effort: logs, never raises.
+
+        Losing persistence must not fail the upload/arm the user just made --
+        the entry is already live in ``_entries`` and works for this process.
+
+        ``0o600`` matches the ``.py``: the sidecar carries ``config``, which
+        may name absolute filesystem paths or, for a third-party oracle, a
+        passphrase. The mode is applied to the tmp file *before* the atomic
+        replace, so the final path never exists world-readable.
+        """
+        try:
+            atomic_write_text(
+                _sidecar_path(entry.path),
+                json.dumps(_entry_to_sidecar(entry), indent=2),
+                mode=0o600,
+            )
+        except OSError as exc:  # pragma: no cover - disk-level failure
+            logger.warning(
+                "could not persist oracle %s metadata: %s", entry.filename, exc
+            )
+
+    def _rehydrate(self) -> None:
+        """Restore entries from sidecars so a restart does not 404 them.
+
+        Without this the registry is memory-only: a restart drops every
+        config and arm state, orphans the ``.py`` files, and makes the
+        pipeline's stored ``oracleId`` 404 mid-run -- with the wizard's Next
+        button silently going dead because its entry vanished.
+
+        Three refusals, each deliberate:
+
+        * A sidecar whose sibling ``.py`` is missing is skipped (dangling).
+        * The ``.py`` is **re-hashed** and compared to the stored digest. The
+          whole point of the stored sha is to give :meth:`arm`'s
+          display-vs-disk check something truthful to compare against;
+          adopting an entry whose bytes changed while the server was down
+          would hand a tampered file an id the UI already trusts.
+        * ``armed`` is always restored as ``False``. Arming is not cached
+          state, it is an authorization act: it is bound to a sha the user saw
+          in the UI and echoed back, it is the one place the real config is
+          replayed through the strict sandbox, and it is the gate between "a
+          .py sits in a directory" and "this process will exec it". A restart
+          invalidates all three. Restoring the *entry* is what fixes the 404;
+          re-arming costs one click.
+        """
+        oracle_dir = self._oracle_dir
+        if oracle_dir is None or not oracle_dir.is_dir():
+            return
+        restored = 0
+        for sidecar in sorted(oracle_dir.glob("*.json")):
+            entry = self._entry_from_sidecar(sidecar)
+            if entry is None:
+                continue
+            with self._lock:
+                self._entries[entry.oracle_id] = entry
+            restored += 1
+        if restored:
+            logger.info("restored %d oracle(s) from %s", restored, oracle_dir)
+        orphans = self.orphan_files()
+        if orphans:
+            logger.info(
+                "%d oracle file(s) in %s have no metadata and were left alone: %s",
+                len(orphans),
+                oracle_dir,
+                ", ".join(orphans),
+            )
+
+    def _entry_from_sidecar(self, sidecar: Path) -> Optional[OracleEntry]:
+        """Parse one sidecar into an entry, or ``None`` with a logged reason."""
+        try:
+            payload = json.loads(sidecar.read_text())
+        except (OSError, ValueError) as exc:
+            logger.warning("ignoring unreadable oracle metadata %s: %s", sidecar.name, exc)
+            return None
+        if not isinstance(payload, dict) or payload.get("schema") != _SIDECAR_SCHEMA:
+            logger.warning("ignoring oracle metadata %s: unsupported schema", sidecar.name)
+            return None
+        oracle_id = str(payload.get("oracle_id", ""))
+        try:
+            _assert_safe_id(oracle_id)
+        except OracleRegistryError:
+            logger.warning("ignoring oracle metadata %s: bad id", sidecar.name)
+            return None
+        py_path = sidecar.with_suffix(".py")
+        if not py_path.is_file():
+            logger.warning(
+                "ignoring oracle metadata %s: %s is gone", sidecar.name, py_path.name
+            )
+            return None
+        _purge_pycache(py_path)
+        try:
+            on_disk_sha = _sha256_file(py_path)
+        except OSError as exc:  # pragma: no cover
+            logger.warning("ignoring oracle %s: %s", py_path.name, exc)
+            return None
+        if on_disk_sha != payload.get("sha256"):
+            logger.warning(
+                "refusing to restore oracle %s: file changed since it was stored "
+                "(sha256 on disk does not match its metadata)",
+                py_path.name,
+            )
+            return None
+        armed_at = payload.get("armed_at")
+        return OracleEntry(
+            oracle_id=oracle_id,
+            filename=str(payload.get("filename", py_path.name)),
+            path=py_path,
+            sha256=on_disk_sha,
+            size=int(payload.get("size", py_path.stat().st_size)),
+            shape=int(payload.get("shape", 1)),
+            head_lines=_read_head(py_path),
+            uploaded_at=float(payload.get("uploaded_at", time.time())),
+            armed=False,
+            description=payload.get("description"),
+            config=dict(payload.get("config") or {}),
+            armed_at=armed_at,
+            previously_armed=armed_at is not None,
+        )
+
+    def orphan_files(self) -> List[str]:
+        """``.py`` files in the oracle dir with no metadata and no live entry.
+
+        Not deleted automatically: a boot-time process must never remove a
+        user's file because a schema check failed. :meth:`prune_orphans` is
+        the user-initiated counterpart.
+        """
+        oracle_dir = self._oracle_dir
+        if oracle_dir is None or not oracle_dir.is_dir():
+            return []
+        with self._lock:
+            live = {entry.path.name for entry in self._entries.values()}
+        return sorted(
+            py.name
+            for py in oracle_dir.glob("*.py")
+            if py.name not in live and not _sidecar_path(py).is_file()
+        )
+
+    def prune_orphans(self) -> List[str]:
+        """Delete the files :meth:`orphan_files` reports; returns their names."""
+        oracle_dir = self.require_enabled()
+        removed: List[str] = []
+        for name in self.orphan_files():
+            path = oracle_dir / name
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:  # pragma: no cover
+                logger.warning("could not remove orphaned oracle %s: %s", name, exc)
+                continue
+            _purge_pycache(path)
+            removed.append(name)
+        if removed:
+            logger.info("removed %d orphaned oracle file(s)", len(removed))
+        return removed
 
     def require_armed(self, oracle_id: str) -> OracleEntry:
         entry = self.get(oracle_id)
@@ -687,22 +995,13 @@ class OracleRegistry:
             raise OracleNotArmed(f"oracle {oracle_id} not armed")
         return entry
 
-    def dry_run(
-        self,
-        oracle_id: str,
-        *,
-        samples: List[bytes],
-    ) -> Dict[str, Any]:
-        """Run the oracle against ``samples`` and report pass/fail counts.
+    def _load_verify(self, entry: OracleEntry) -> Callable[[bytes], bool]:
+        """Build ``entry``'s oracle, translating any user-code failure.
 
-        Does NOT require the oracle to be armed: the whole point is to
-        let a user smoke-test before committing to arming + running.
-
-        Pre-checked for unexpanded ``${VAR}`` placeholders, so smoke-testing a
-        bundled template straight off the Examples tab says which key still
-        holds a placeholder instead of failing on an unopenable path.
+        The loading half of :meth:`dry_run`, shared with
+        :meth:`smoke_test` so both report a misconfigured oracle with the
+        same sentence instead of one of them 500-ing.
         """
-        entry = self.get(oracle_id)
         _purge_pycache(entry.path)
         # Before load_oracle, for the same reason arm() checks before its
         # sandbox: dereferencing a placeholder produces a true-but-useless
@@ -728,42 +1027,151 @@ class OracleRegistry:
                 f"oracle {entry.filename} could not be loaded with the supplied "
                 f"configuration ({supplied}): {exc!r}"
             ) from exc
-        results: List[Dict[str, Any]] = []
-        passes = 0
-        fails = 0
-        errors = 0
-        t_total = 0.0
-        for idx, sample in enumerate(samples):
-            t0 = time.monotonic()
-            try:
-                ok = bool(verify(sample))
-            except Exception as exc:  # noqa: BLE001
-                errors += 1
-                results.append({
-                    "index": idx,
-                    "ok": False,
-                    "error": repr(exc),
-                })
-                continue
-            dt = (time.monotonic() - t0) * 1_000_000
-            t_total += dt
-            if ok:
-                passes += 1
-            else:
-                fails += 1
-            results.append({
-                "index": idx,
-                "ok": ok,
-                "duration_us": round(dt, 2),
-            })
+        return verify
+
+    def dry_run(
+        self,
+        oracle_id: str,
+        *,
+        samples: List[bytes],
+    ) -> Dict[str, Any]:
+        """Run the oracle against ``samples`` and report pass/fail counts.
+
+        Does NOT require the oracle to be armed: the whole point is to
+        let a user smoke-test before committing to arming + running.
+
+        Pre-checked for unexpanded ``${VAR}`` placeholders, so smoke-testing a
+        bundled template straight off the Examples tab says which key still
+        holds a placeholder instead of failing on an unopenable path.
+        """
+        entry = self.get(oracle_id)
+        verify = self._load_verify(entry)
+        return {"oracle_id": oracle_id, **_grade_samples(verify, samples)}
+
+    def _requires_cipher_for(self, entry: OracleEntry) -> Optional[str]:
+        """The cipher this oracle declares it needs, if it is a known example.
+
+        Best-effort: an uploaded third-party oracle has no bundled ``.toml``
+        and simply gets ``None``. Used only to add a caveat, never to block.
+        """
+        try:
+            example = self.find_example(entry.filename)
+            automation = load_example_automation(Path(example["path"]).with_suffix(".toml"))
+            return automation.requires_cipher
+        except Exception:  # noqa: BLE001 - a missing/unreadable template is not an error
+            return None
+
+    def smoke_test(
+        self,
+        oracle_id: str,
+        *,
+        source_paths: Sequence[str],
+        key_size: int = 32,
+        negatives: int = 15,
+        include_positive_control: bool = True,
+        seed: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Grade the oracle against a positive control plus real dump bytes.
+
+        This exists because :meth:`dry_run` grades whatever the *client* sends,
+        and the web UI sent 16 hard-coded synthetic byte strings -- so a
+        correct oracle and one whose ``verify`` is wired to ``return False``
+        both scored zero passes. A smoke test that cannot tell those apart is
+        not a smoke test.
+
+        Here the samples are composed server-side: one candidate the oracle
+        MUST accept (the run's recorded master key) and N it must reject (bytes
+        read at random offsets from the dump itself). The verdict is about
+        *discrimination*, not about a raw pass count.
+
+        Like :meth:`dry_run`, does NOT require the oracle to be armed -- the
+        whole point is triage before committing to arming.
+
+        The response never contains sample bytes. The positive control IS the
+        run's master key; echoing it back would hand it to any HTTP client.
+        """
+        entry = self.get(oracle_id)
+        if not source_paths:
+            raise OracleRegistryError(
+                "a smoke test needs at least one dump to sample from; "
+                "pick your dumps before testing the oracle"
+            )
+        # Before any dump I/O, so a misconfigured oracle is reported as such
+        # rather than after a multi-second read of a multi-GB dump.
+        verify = self._load_verify(entry)
+        composed = compose_smoke_samples(
+            source_paths,
+            key_size=key_size,
+            negatives=negatives,
+            include_positive_control=include_positive_control,
+            requires_cipher=self._requires_cipher_for(entry),
+            seed=seed,
+        )
+        positive = composed.positive
+        samples: List[bytes] = []
+        if positive is not None:
+            samples.append(positive.sample)
+        samples.extend(composed.negatives)
+        graded = _grade_samples(verify, samples)
+        results = graded["results"]
+
+        if positive is not None:
+            head = results[0]
+            positive_payload: Dict[str, Any] = {
+                "present": True,
+                "index": 0,
+                "ok": bool(head["ok"]) if "error" not in head else False,
+                "error": head.get("error"),
+                "source": positive.source,
+                "provenance_label": positive.provenance_label,
+                "reason": None,
+            }
+            negative_results = results[1:]
+        else:
+            # ok stays None, NOT False: "there was no ground truth to test
+            # with" is not "the oracle rejected the key", and rendering the
+            # absence as a failure is exactly the confusion this endpoint
+            # exists to remove.
+            positive_payload = {
+                "present": False,
+                "index": None,
+                "ok": None,
+                "error": None,
+                "source": None,
+                "provenance_label": None,
+                "reason": composed.no_positive_reason,
+            }
+            negative_results = results
+
+        accepted = sum(1 for r in negative_results if r.get("ok") and "error" not in r)
+        neg_errors = sum(1 for r in negative_results if "error" in r)
+        rejected = len(negative_results) - accepted - neg_errors
+
         return {
             "oracle_id": oracle_id,
-            "samples": len(samples),
-            "passes": passes,
-            "fails": fails,
-            "errors": errors,
-            "per_call_us_avg": round(t_total / max(1, len(samples) - errors), 2),
-            "results": results,
+            **graded,
+            "positive": positive_payload,
+            "negatives": {
+                "count": len(negative_results),
+                "accepted": accepted,
+                "rejected": rejected,
+                "errors": neg_errors,
+                "key_size": composed.key_size,
+                "low_entropy_included": composed.low_entropy_included,
+                "offsets": list(composed.negative_offsets),
+            },
+            "dump": (
+                {
+                    "path": composed.dump_path,
+                    "format": composed.dump_format or "",
+                    "view": composed.view,
+                    "size": composed.dump_size,
+                }
+                if composed.dump_path
+                else None
+            ),
+            "verdict": _smoke_verdict(positive_payload, accepted, rejected),
+            "caveats": list(composed.caveats),
         }
 
 

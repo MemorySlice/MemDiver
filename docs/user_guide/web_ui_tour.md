@@ -75,7 +75,11 @@ Consensus over multiple dumps from the same library and phase. Classification ba
 :alt: Pipeline oracle-stage wizard showing uploaded decryption oracle with dry-run status
 :align: center
 
-Upload a bring-your-own decryption oracle (Python module matching the [oracle interface](../oracle/interface.md)), arm it, and preview dry-run results.
+Upload a bring-your-own decryption oracle (Python module matching the [oracle interface](../oracle/interface.md)), arm it, and smoke-test it before committing to a full sweep.
+
+The smoke test is a *discrimination* test, not a pass count. The server feeds the oracle one candidate it must accept — the master key the run's `meta.json` records — and fifteen it must reject, read at random offsets from the dump itself. A green **discriminates** verdict means both halves held. **accepts_noise** means the oracle accepted arbitrary memory and would flood a real sweep with false positives; **never_accepts** means it rejected its own known-good key, so the oracle or its config is wrong. When the dump has no `meta.json` there is no ground truth to test against, and the verdict says **no_positive_control** rather than pretending to a result.
+
+The positive control uses the dataset's recorded answer key, so it proves the oracle works — it is not itself a finding.
 ```
 
 ## Pipeline — run dashboard

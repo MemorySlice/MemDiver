@@ -129,6 +129,84 @@ def test_subscribe_terminates_on_error_event():
     assert received[-1].type == "error"
 
 
+# ---------- close / shutdown ----------
+
+
+def test_subscriber_parked_in_get_exits_on_close():
+    """A subscriber suspended in ``q.get()`` must be woken by ``close_task``.
+
+    Without the close sentinel this hangs forever: the ``channel.closed``
+    pre-check only runs *before* the ``await``, so a subscriber that parked
+    first never re-evaluates it. In the real app that parked subscriber is a
+    WebSocket handler, and uvicorn waits on it before starting its own
+    shutdown — hence the short ``wait_for`` here standing in for "the process
+    can actually exit".
+    """
+
+    async def scenario():
+        bus = ProgressBus()
+        received: list[Event] = []
+
+        async def consume():
+            async for ev in bus.subscribe("t1"):
+                received.append(ev)
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)  # let the subscriber attach and park in get()
+        bus.close_task("t1")
+        await asyncio.wait_for(task, timeout=1.0)
+        return received
+
+    received = asyncio.run(scenario())
+    # No events were ever published, so the iterator ends empty rather than
+    # on a terminal event.
+    assert received == []
+
+
+def test_close_all_releases_every_channel():
+    async def scenario():
+        bus = ProgressBus()
+
+        async def consume(task_id: str):
+            async for _ev in bus.subscribe(task_id):
+                pass
+
+        tasks = [asyncio.create_task(consume("t1")), asyncio.create_task(consume("t2"))]
+        await asyncio.sleep(0)  # let both subscribers park
+        bus.close_all()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_close_task_drains_queued_events_before_ending():
+    """Events published before the close are still delivered, in order."""
+
+    async def scenario():
+        bus = ProgressBus()
+        received: list[Event] = []
+
+        async def consume():
+            async for ev in bus.subscribe("t1"):
+                received.append(ev)
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)
+        bus.publish(_evt(msg="a"))
+        bus.publish(_evt(msg="b"))
+        bus.close_task("t1")
+        await asyncio.wait_for(task, timeout=1.0)
+        return received
+
+    received = asyncio.run(scenario())
+    assert [e.msg for e in received] == ["a", "b"]
+
+
+def test_close_unknown_task_is_noop():
+    bus = ProgressBus()
+    bus.close_task("never")  # must not raise
+
+
 # ---------- serialization ----------
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.8.8"
+version = "0.9.0"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -466,6 +466,12 @@ files = [
     # Optional/int slip would hand a viewer real bytes at the wrong address --
     # a silently WRONG answer rather than a crash.
     "app/tools_consensus.py",
+    # Wave 12 -- the parent-death watchdog. Stdlib-only and typed from the
+    # start, so it joins the island on arrival. Its whole job is to run in a
+    # child that is about to be orphaned, where a TypeError would simply leave
+    # the orphan alive -- the failure it exists to prevent, and one nothing
+    # would ever report.
+    "core/process_guard.py",
 
 ]
 

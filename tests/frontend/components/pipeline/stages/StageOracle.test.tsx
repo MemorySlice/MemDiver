@@ -22,6 +22,7 @@ const uploadOracle = vi.fn();
 const loadOracleExample = vi.fn();
 const armOracle = vi.fn();
 const dryRunOracle = vi.fn();
+const smokeTestOracle = vi.fn();
 const deleteOracle = vi.fn();
 vi.mock("@/api/oracles", () => ({
   enableOracles: (...a: unknown[]) => enableOracles(...a),
@@ -32,6 +33,7 @@ vi.mock("@/api/oracles", () => ({
   loadOracleExample: (...a: unknown[]) => loadOracleExample(...a),
   armOracle: (...a: unknown[]) => armOracle(...a),
   dryRunOracle: (...a: unknown[]) => dryRunOracle(...a),
+  smokeTestOracle: (...a: unknown[]) => smokeTestOracle(...a),
   deleteOracle: (...a: unknown[]) => deleteOracle(...a),
   ORACLE_EXAMPLES_DIR: "docs/oracle/examples/",
 }));
@@ -101,5 +103,34 @@ describe("StageOracle tab switching", () => {
     // Nothing refetched: the clear came from the switch, not from a refresh.
     expect(listOracleExamples).not.toHaveBeenCalled();
     expect(getOracleStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The reported navigation bug: the Back/Next row was the last child of a stage
+ * several screens tall, so it sat below the entire pcap block and users
+ * concluded the wizard had no way forward. Two things fix it, and both are
+ * pinned here: the row is sticky, and the pcap block is collapsed by default.
+ */
+describe("StageOracle navigation affordances", () => {
+  it("pins the Back/Next row and states why Next is blocked", () => {
+    render(<StageOracle onAdvance={() => {}} />);
+
+    const next = screen.getByRole("button", { name: /Next: Thresholds/ });
+    expect(next).toBeDisabled();
+    // The reason is on screen, not only in the disabled button's `title`.
+    expect(screen.getByTestId("oracle-next-blocked")).toHaveTextContent(
+      /Upload and arm an oracle/,
+    );
+    expect(next.closest("div")?.parentElement?.className).toMatch(/sticky/);
+  });
+
+  it("keeps the pcap alternative collapsed until asked for", () => {
+    render(<StageOracle onAdvance={() => {}} />);
+
+    const summary = screen.getByText(/verify against a pcap instead/);
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
   });
 });

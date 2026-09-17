@@ -11,9 +11,15 @@
  *    upload an edited copy stays available beside it.
  *  - **Help** — collapsible Shape 1 vs Shape 2 explainer.
  *
- * An oracle "dry-run" smoke test sits below the active tab so the
- * user can verify their uploaded oracle responds before committing
- * to a full 9000-candidate run.
+ * An oracle smoke test sits below the active tab so the user can verify
+ * their oracle actually DISCRIMINATES before committing to a full
+ * 9000-candidate run. The samples are composed server-side from the dumps
+ * picked on the previous stage -- this stage only forwards ``sourcePaths``
+ * and the sweep's first key size.
+ *
+ * Layout note: the Back/Next row is pinned to the bottom of the scrolling
+ * stage panel. It used to sit below the whole pcap block, far off-screen, and
+ * users reported the stage as having no way forward at all.
  */
 
 import { useState } from "react";
@@ -36,16 +42,6 @@ import { usePipelineStore } from "@/stores/pipeline-store";
 
 type OracleTab = "upload" | "examples";
 
-// Sixteen short base64 samples for dry-run. In a real investigation a
-// future enhancement will pull these from high-entropy regions of the
-// first dump; for v1 we just use a deterministic pattern so the dots
-// are always the same across runs and easy to debug.
-const DRY_RUN_SAMPLES = Array.from({ length: 16 }, (_, i) => {
-  const bytes = new Uint8Array(32);
-  for (let j = 0; j < 32; j++) bytes[j] = (i * 31 + j) & 0xff;
-  return btoa(String.fromCharCode(...bytes));
-});
-
 interface Props {
   onAdvance: (next: WizardStage) => void;
 }
@@ -63,6 +59,12 @@ export function StageOracle({ onAdvance }: Props) {
     -- so the config editor is not a form of questions nobody can answer.
   */
   const sourcePaths = usePipelineStore((s) => s.form.sourcePaths);
+  /*
+    Only the first key size is read, and only to size the smoke test's decoys:
+    the sweep may enumerate several widths, but the bar tests one shape and the
+    first is the one the run starts with.
+  */
+  const keySizes = usePipelineStore((s) => s.form.bruteForce.key_sizes);
   const updateForm = usePipelineStore((s) => s.updateForm);
   const uploaded = useOracleStore((s) => s.uploaded);
   const selectOracle = useOracleStore((s) => s.selectOracle);
@@ -198,10 +200,33 @@ export function StageOracle({ onAdvance }: Props) {
       </div>
 
       <div className="pt-1" data-tour-id="pipeline-oracle-dryrun">
-        <OracleDryRunBar oracleId={oracleId} samplesB64={DRY_RUN_SAMPLES} />
+        {/*
+          ``keySize`` follows the sweep's first configured width so the decoys
+          the server cuts are the same shape as the candidates the oracle will
+          really be handed. A smoke test at 32 bytes proves nothing about an
+          oracle that is about to be fed 16-byte candidates.
+        */}
+        <OracleDryRunBar
+          oracleId={oracleId}
+          sourcePaths={sourcePaths}
+          keySize={keySizes?.[0] ?? 32}
+          negativeCount={15}
+          onContinue={() => onAdvance("thresholds")}
+        />
       </div>
 
-      <div className="md-panel p-3 space-y-2" data-tour-id="pipeline-oracle-pcap">
+      {/*
+        Collapsed by default. This is the ALTERNATIVE route -- a first-party
+        pcap oracle instead of a BYO one -- and expanded it ran to several
+        screens of upload box, path field, session picker and field list, which
+        is what pushed the Back/Next row out of sight entirely. Everything
+        inside is unchanged; it is only closed until asked for.
+      */}
+      <details className="md-panel" data-tour-id="pipeline-oracle-pcap">
+        <summary className="cursor-pointer text-xs md-text-secondary p-3">
+          {t("stages.oracle.pcap.disclosure")}
+        </summary>
+        <div className="p-3 pt-0 space-y-2">
         <p className="text-xs md-text-muted">{t("stages.oracle.pcap.hint")}</p>
         <PcapUpload />
         {/*
@@ -266,29 +291,56 @@ export function StageOracle({ onAdvance }: Props) {
             className="mt-1 w-full text-xs px-2 py-1 rounded bg-[var(--md-bg-hover)] md-text-primary border border-[var(--md-border)]"
           />
         </label>
-      </div>
+        </div>
+      </details>
 
-      <div className="flex justify-between items-center pt-2">
-        <button
-          type="button"
-          onClick={() => onAdvance("dumps")}
-          className="text-xs px-3 py-1.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
-        >
-          {t("stages.oracle.back")}
-        </button>
-        <button
-          type="button"
-          disabled={!canAdvance}
-          onClick={() => onAdvance("thresholds")}
-          className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
-          title={
-            canAdvance
-              ? t("stages.oracle.nextTitleEnabled")
-              : t("stages.oracle.nextTitleDisabled")
-          }
-        >
-          {t("stages.oracle.next")}
-        </button>
+      {/*
+        Pinned to the bottom of PipelinePanel's scroll viewport.
+
+        Reported bug: this row was the last child of a stage several screens
+        tall, so on any normal window the user saw the pcap block and concluded
+        the wizard was stuck. Sticky keeps the only two exits from the stage
+        permanently on screen. The negative margins cancel the stage's `p-4` so
+        the bar spans the full width and its top border reads as a real edge,
+        and the opaque background stops content scrolling through it.
+      */}
+      <div className="sticky bottom-0 -mx-4 -mb-4 mt-2 px-4 py-2 border-t border-[var(--md-border)] bg-[var(--md-bg-primary)] space-y-1">
+        {/*
+          Stated, not hovered. The reason used to live only in the disabled
+          button's `title`, which never appears on touch, never appears to a
+          screen reader in any dependable way, and requires the user to suspect
+          there is something to hover in the first place.
+        */}
+        {!canAdvance && (
+          <p
+            data-testid="oracle-next-blocked"
+            className="text-[10px] md-text-warning"
+          >
+            {t("stages.oracle.nextTitleDisabled")}
+          </p>
+        )}
+        <div className="flex justify-between items-center">
+          <button
+            type="button"
+            onClick={() => onAdvance("dumps")}
+            className="text-xs px-3 py-1.5 rounded bg-[var(--md-bg-hover)] md-text-secondary hover:bg-[var(--md-border)]"
+          >
+            {t("stages.oracle.back")}
+          </button>
+          <button
+            type="button"
+            disabled={!canAdvance}
+            onClick={() => onAdvance("thresholds")}
+            className="text-xs px-3 py-1.5 rounded bg-[var(--md-accent-blue)] md-text-on-accent disabled:opacity-50"
+            title={
+              canAdvance
+                ? t("stages.oracle.nextTitleEnabled")
+                : t("stages.oracle.nextTitleDisabled")
+            }
+          >
+            {t("stages.oracle.next")}
+          </button>
+        </div>
       </div>
     </div>
   );
