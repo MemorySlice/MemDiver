@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface Props {
   mslPath: string;
@@ -18,21 +18,10 @@ interface ReservedResponse {
 
 export function ReservedBlocksList({ mslPath, endpoint, title }: Props) {
   const { t } = useTranslation("msl");
-  const [data, setData] = useState<ReservedResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    setData(null);
-    fetch(`/api/inspect/${endpoint}?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((body: ReservedResponse) => setData(body))
-      .catch((e) => setError(String(e)));
-  }, [mslPath, endpoint]);
+  const { data, error } = useFetchJson<ReservedResponse>(
+    mslInspectUrl(endpoint, mslPath),
+    { resetDataOnChange: true },
+  );
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!data) return null;

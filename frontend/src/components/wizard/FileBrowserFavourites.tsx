@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useBrowserStore } from "@/stores/browser-store";
-import { preventMouseDownFocus } from "./FileBrowserEntryList";
+import { preventMouseDownFocus } from "./file-browser-entry";
 
 interface FileBrowserFavouritesProps {
   onNavigate: (path: string) => void;

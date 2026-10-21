@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface Handle {
   pid: number;
@@ -26,20 +27,8 @@ const TYPE_COLORS: Record<string, string> = {
 
 export function HandleList({ mslPath }: Props) {
   const { t } = useTranslation("msl");
-  const [handles, setHandles] = useState<Handle[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/handles?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: Handle[]) => setHandles(data))
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
+  const { data, error } = useFetchJson<Handle[]>(mslInspectUrl("handles", mslPath));
+  const handles = useMemo(() => data ?? [], [data]);
 
   const grouped = useMemo(() => {
     const out: Record<string, Handle[]> = {};

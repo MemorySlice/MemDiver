@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 import { useHexStore } from "../../stores/hex-store";
 
 interface Module {
@@ -33,22 +34,10 @@ async function resolveVa(
 
 export function ModuleList({ mslPath }: Props) {
   const { t } = useTranslation("msl");
-  const [modules, setModules] = useState<Module[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const { data, error } = useFetchJson<Module[]>(mslInspectUrl("modules", mslPath));
+  const modules = data ?? [];
   const [notice, setNotice] = useState<string | null>(null);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/modules?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: Module[]) => setModules(data))
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
 
   const handleModuleClick = async (m: Module) => {
     setNotice(null);

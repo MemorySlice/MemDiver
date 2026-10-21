@@ -11,6 +11,22 @@ interface OverlayProps {
 const PAGE_SIZE = 512;
 const BYTES_PER_ROW = 16;
 
+interface RawPage {
+  bytes: Uint8Array;
+  fileSize: number;
+}
+
+async function fetchRawPage(path: string, off: number): Promise<RawPage> {
+  const url = `/api/inspect/hex-raw?dump_path=${encodeURIComponent(path)}&offset=${off}&length=${PAGE_SIZE}`;
+  const res = await fetch(url);
+  if (!res.ok) return { bytes: new Uint8Array(0), fileSize: 0 };
+  const json = await res.json();
+  return {
+    bytes: decodeBase64(json.bytes ?? json.data ?? ""),
+    fileSize: json.file_size ?? 0,
+  };
+}
+
 function nameFromPath(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || p;
@@ -22,32 +38,43 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
   const [bytesA, setBytesA] = useState<Uint8Array | null>(null);
   const [bytesB, setBytesB] = useState<Uint8Array | null>(null);
   const [fileSize, setFileSize] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const loadPage = useCallback(
-    async (off: number) => {
-      setLoading(true);
-      const fetchRaw = async (path: string): Promise<Uint8Array> => {
-        const url = `/api/inspect/hex-raw?dump_path=${encodeURIComponent(path)}&offset=${off}&length=${PAGE_SIZE}`;
-        const res = await fetch(url);
-        if (!res.ok) return new Uint8Array(0);
-        const json = await res.json();
-        setFileSize((prev) => Math.max(prev, json.file_size ?? 0));
-        return decodeBase64(json.bytes ?? json.data ?? "");
-      };
-      const [a, b] = await Promise.all([fetchRaw(pathA), fetchRaw(pathB)]);
-      setBytesA(a);
-      setBytesB(b);
-      setOffset(off);
-      setLoading(false);
+  /** Fetch one page of both dumps; touches state only once responses land. */
+  const fetchPage = useCallback(
+    (off: number) => {
+      const fetchRaw = (path: string): Promise<Uint8Array> =>
+        fetchRawPage(path, off).then((page) => {
+          setFileSize((prev) => Math.max(prev, page.fileSize));
+          return page.bytes;
+        });
+      return Promise.all([fetchRaw(pathA), fetchRaw(pathB)]).then(([a, b]) => {
+        setBytesA(a);
+        setBytesB(b);
+        setOffset(off);
+        setLoading(false);
+      });
     },
     [pathA, pathB],
   );
 
-  useEffect(() => {
+  // A new pair of dumps resets the size and shows the loading state right
+  // away while rendering; the effect below then fetches page 0.
+  const [activeFetcher, setActiveFetcher] = useState(() => fetchPage);
+  if (activeFetcher !== fetchPage) {
+    setActiveFetcher(() => fetchPage);
     setFileSize(0);
-    loadPage(0);
-  }, [loadPage]);
+    setLoading(true);
+  }
+
+  useEffect(() => {
+    fetchPage(0);
+  }, [fetchPage]);
+
+  const loadPage = (off: number) => {
+    setLoading(true);
+    fetchPage(off);
+  };
 
   const totalPages = Math.max(1, Math.ceil(fileSize / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE);

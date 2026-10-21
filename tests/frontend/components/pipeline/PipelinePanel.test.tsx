@@ -68,7 +68,9 @@ const RUNNING_RECORD: TaskRecord = {
   schema_version: 1,
 };
 
-describe("PipelinePanel mid-run resume", () => {
+// The first test pays for the cold dynamic import of the whole panel tree
+// (3.5-7s locally), which straddles vitest's 5s default and made it flaky.
+describe("PipelinePanel mid-run resume", { timeout: 20_000 }, () => {
   const PRISTINE = usePipelineStore.getState();
 
   beforeEach(() => {

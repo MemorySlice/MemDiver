@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useStringsStore } from "@/stores/strings-store";
+import { useStringsStore, filterStrings } from "@/stores/strings-store";
 import { useHexStore } from "@/stores/hex-store";
 
 const ROW_HEIGHT = 22;
@@ -43,7 +43,6 @@ export function StringsPanel({ dumpPath }: Props) {
   const setVisibleRange = useStringsStore((s) => s.setVisibleRange);
   const resetAndFetch = useStringsStore((s) => s.resetAndFetch);
   const fetchNextPage = useStringsStore((s) => s.fetchNextPage);
-  const getFilteredStrings = useStringsStore((s) => s.getFilteredStrings);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -52,8 +51,8 @@ export function StringsPanel({ dumpPath }: Props) {
   }, [dumpPath, resetAndFetch]);
 
   const filteredRows = useMemo(
-    () => getFilteredStrings(),
-    [rows, filterText, getFilteredStrings],
+    () => filterStrings(rows, filterText),
+    [rows, filterText],
   );
 
   const parentRef = useRef<HTMLDivElement | null>(null);

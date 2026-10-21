@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useTheme } from "@/providers/ThemeProvider";
+import { useTheme } from "@/hooks/useTheme";
 
 const LABEL_KEYS: Record<string, string> = {
   light: "app.themeLabelLight",

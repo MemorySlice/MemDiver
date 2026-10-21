@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface ModuleIndexEntry {
   module_uuid: string;
@@ -23,20 +23,8 @@ function shortPath(p: string): string {
 
 export function ModuleIndex({ mslPath }: Props) {
   const { t } = useTranslation("msl");
-  const [entries, setEntries] = useState<ModuleIndexEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/module-index?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: ModuleIndexEntry[]) => setEntries(data))
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
+  const { data, error } = useFetchJson<ModuleIndexEntry[]>(mslInspectUrl("module-index", mslPath));
+  const entries = data ?? [];
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!entries.length) return <p className="p-3 text-xs md-text-muted">{t("moduleIndex.empty")}</p>;

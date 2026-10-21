@@ -35,7 +35,7 @@ export const EntropyChart = memo(function EntropyChart({
   const { svg: tokens } = useChartTheme();
   const [containerRef, containerWidth] = useContainerWidth();
 
-  const points = data.profile_sample ?? [];
+  const points = useMemo(() => data.profile_sample ?? [], [data.profile_sample]);
 
   const { xScale, yScale, offsetMin, offsetMax, plotW, plotH, lineD, fillD } =
     useMemo(() => {

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useTheme } from "@/providers/ThemeProvider";
+import { useTheme } from "@/hooks/useTheme";
 import { downloadJsonFile } from "@/utils/download";
 import { useTourController } from "@/ftue/useTourController";
 import type { ChartBackend } from "@/components/charts/types";

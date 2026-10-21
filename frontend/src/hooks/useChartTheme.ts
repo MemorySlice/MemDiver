@@ -18,7 +18,7 @@
  * `chartTokens()` and are theme-reactive automatically.
  */
 import { useMemo } from "react";
-import { useTheme } from "@/providers/ThemeProvider";
+import { useTheme } from "@/hooks/useTheme";
 import { chartTokens } from "@/components/charts/tokens";
 
 export function useChartTheme() {

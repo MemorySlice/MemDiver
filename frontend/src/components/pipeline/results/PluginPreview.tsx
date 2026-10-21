@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import { ARTIFACT_NAMES } from "@/components/pipeline/constants";
+import { useFetchText } from "@/hooks/useFetchText";
 
 interface Props {
   taskId: string;
@@ -19,41 +20,10 @@ export function PluginPreview({
   artifactName = ARTIFACT_NAMES.VOL3_PLUGIN,
 }: Props) {
   const { t } = useTranslation("pipeline");
-  const [source, setSource] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
   const url = artifactDownloadUrl(taskId, artifactName);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setSource(null);
-    fetch(url)
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        return res.text();
-      })
-      .then((text) => {
-        if (!cancelled) {
-          setSource(text);
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
+  const { text: source, error, loading } = useFetchText(url);
 
   const handleCopy = async () => {
     if (!source) return;

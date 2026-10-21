@@ -21,12 +21,20 @@ export function CoverageMap({ mslPath }: Props) {
   const [data, setData] = useState<PageStatesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(mslPath));
+  // Drop the previous result as soon as the request inputs change —
+  // "adjusting state while rendering" instead of resetting in the effect.
+  const [lastRequest, setLastRequest] = useState({ mslPath, keyMaterial });
+  if (lastRequest.mslPath !== mslPath || lastRequest.keyMaterial !== keyMaterial) {
+    setLastRequest({ mslPath, keyMaterial });
+    if (mslPath) {
+      setError(null);
+      setData(null);
+    }
+  }
 
   useEffect(() => {
     if (!mslPath) return;
     let cancelled = false;
-    setError(null);
-    setData(null);
     getPageStates(mslPath, keyMaterial)
       .then((res) => {
         if (!cancelled) setData(res);

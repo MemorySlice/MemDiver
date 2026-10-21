@@ -46,11 +46,10 @@ export const VarianceMap = memo(function VarianceMap({
         ...theme, title: { text: resolvedTitle }, height: 350, bargap: 0,
         xaxis: { ...theme.xaxis, title: { text: t("variance.axis.offset") } },
         yaxis: { ...theme.yaxis, title: { text: t("variance.axis.variance") }, type: "log" },
-         
         shapes: [
           { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 200, y1: 200, line: { color: colors.structural, width: 1, dash: "dot" } },
           { type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: 3000, y1: 3000, line: { color: colors.pointer, width: 1, dash: "dot" } },
-        ] as any,
+        ],
         showlegend: false,
       }}
       config={PLOTLY_CONFIG}

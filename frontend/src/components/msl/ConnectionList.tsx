@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface Connection {
   pid: number;
@@ -35,20 +35,8 @@ function formatEndpoint(addr: string, port: number, family: number): string {
 
 export function ConnectionList({ mslPath }: Props) {
   const { t } = useTranslation("msl");
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/connections?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: Connection[]) => setConnections(data))
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
+  const { data, error } = useFetchJson<Connection[]>(mslInspectUrl("connections", mslPath));
+  const connections = data ?? [];
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!connections.length) return <p className="p-3 text-xs md-text-muted">{t("connections.empty")}</p>;

@@ -6,7 +6,7 @@
  * button and Ctrl+N share one policy while only this file knows how it looks.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Modal } from "@/components/common/Modal";
@@ -23,10 +23,16 @@ export function NewSessionDialog({ guard, existingNames = [] }: NewSessionDialog
   const [name, setName] = useState(guard.defaultName);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  const [prevDefaultName, setPrevDefaultName] = useState(guard.defaultName);
+
   // The suggestion is computed when the dialog opens, which is after this
   // component first mounts in practice; keep the field in step with it until
-  // the user types something of their own.
-  useEffect(() => setName(guard.defaultName), [guard.defaultName]);
+  // the user types something of their own. Adjusted during render rather than
+  // in an effect, so the stale suggestion is never committed.
+  if (prevDefaultName !== guard.defaultName) {
+    setPrevDefaultName(guard.defaultName);
+    setName(guard.defaultName);
+  }
 
   const trimmed = name.trim();
   // Saving over an existing name silently overwrites it server-side, so say so

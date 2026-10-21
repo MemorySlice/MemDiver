@@ -293,6 +293,19 @@ function DatasetOverview({ path }: { path: string }) {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
+  // ``null`` until the first render so the initial path is treated as a change.
+  const [prevPath, setPrevPath] = useState<string | null>(null);
+
+  // Reset the listing as soon as the directory changes (adjusted during
+  // render rather than in the fetch effect below).
+  if (prevPath !== path) {
+    setPrevPath(path);
+    setLoading(true);
+    setError(false);
+    setRuns([]);
+    setOffset(0);
+    setTotal(0);
+  }
 
   // Enumerate the runs (and their dump files) under the selected directory so
   // the user can drill into an individual dump instead of only seeing a count.
@@ -300,11 +313,6 @@ function DatasetOverview({ path }: { path: string }) {
   // ``loadMore`` (button click or the IntersectionObserver sentinel below).
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(false);
-    setRuns([]);
-    setOffset(0);
-    setTotal(0);
     listDatasetRuns(path, RUNS_PAGE, 0)
       .then((res) => {
         if (cancelled) return;
@@ -632,12 +640,13 @@ function BottomTabs() {
   const pipelineStatus = usePipelineStore((s) => s.status);
   const pipelineRunning =
     pipelineStatus === "running" || pipelineStatus === "pending";
-  const prevHitsRef = useRef(totalHits);
+  const [prevHits, setPrevHits] = useState(totalHits);
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const [entropyData, setEntropyData] = useState<EntropyData | null>(null);
   const [entropyLoading, setEntropyLoading] = useState(false);
-  const entropyPathRef = useRef("");
+  // The dump path whose entropy was last requested; fetched at most once per path.
+  const [entropyPath, setEntropyPath] = useState("");
   // VAS entries are tagged with the dump path they were fetched for, so the
   // chart never briefly renders a previous dump's regions while the new
   // dump's fetch is still in flight (there is no VAS loading placeholder).
@@ -657,50 +666,58 @@ function BottomTabs() {
       ? ["analysis", "results", "strings", "verify-key", "pipeline"]
       : ["analysis", "results", "strings", "entropy", "consensus", "live-consensus", "architect", "experiment", "convergence", "variance", "vas", "verify-key", "pipeline"];
 
+  // The tab switches below react to store changes, so they adjust state
+  // during render (each guarded by the value it last saw) instead of in
+  // effects. Order matters: when several fire together the last one wins.
+  // ``null`` until the first render so the initial flags count as a change.
+  const runFlags = `${isRunning}|${pipelineRunning}`;
+  const [prevRunFlags, setPrevRunFlags] = useState<string | null>(null);
+  const [prevMode, setPrevMode] = useState(mode);
+
   // Auto-switch to analysis tab when analysis starts — except when a
   // pipeline task is running; the user is watching the Pipeline tab
   // and we must not steal focus from it.
-  useEffect(() => {
+  if (prevRunFlags !== runFlags) {
+    setPrevRunFlags(runFlags);
     if (isRunning && !pipelineRunning) setTab("analysis");
-  }, [isRunning, pipelineRunning]);
+  }
 
   // Reset tab when mode hides the current tab
-  useEffect(() => {
+  if (prevMode !== mode) {
+    setPrevMode(mode);
     if (!availableTabs.includes(tab)) setTab("analysis");
-  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
-  useEffect(() => {
-    // Don't hijack the bottom tab on first-hit notifications while a
-    // pipeline run owns the stage.
-    if (pipelineRunning) {
-      prevHitsRef.current = totalHits;
-      return;
-    }
-    if (totalHits > 0 && totalHits !== prevHitsRef.current) {
-      setTab("results");
-    }
-    prevHitsRef.current = totalHits;
-  }, [totalHits, pipelineRunning]);
+  // Switch to results on new hits — but don't hijack the bottom tab on
+  // first-hit notifications while a pipeline run owns the stage.
+  if (prevHits !== totalHits) {
+    setPrevHits(totalHits);
+    if (!pipelineRunning && totalHits > 0) setTab("results");
+  }
 
-  useEffect(() => {
-    if (tab !== "entropy" || !dumpPath) return;
-    if (entropyPathRef.current === dumpPath) return;
-    entropyPathRef.current = dumpPath;
-    let cancelled = false;
+  // Request entropy the first time the tab is shown for a dump; the loading
+  // flag is raised here so the fetch effect below only does the I/O.
+  if (tab === "entropy" && dumpPath && entropyPath !== dumpPath) {
+    setEntropyPath(dumpPath);
     setEntropyLoading(true);
-    getEntropy(dumpPath, 0, 0, useDumpStore.getState().getKeyMaterialByPath(dumpPath))
+  }
+
+  useEffect(() => {
+    if (!entropyPath) return;
+    let cancelled = false;
+    getEntropy(entropyPath, 0, 0, useDumpStore.getState().getKeyMaterialByPath(entropyPath))
       .then((d) => { if (!cancelled) setEntropyData(d); })
       .catch((err) => {
         if (!cancelled) setEntropyData(null);
         notifyError(
-          `Entropy fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          t("entropyFetchFailed", { error: err instanceof Error ? err.message : String(err) }),
           "entropy",
           { severity: "warning" },
         );
       })
       .finally(() => { if (!cancelled) setEntropyLoading(false); });
     return () => { cancelled = true; };
-  }, [tab, dumpPath]);
+  }, [entropyPath, t]);
 
   useEffect(() => {
     if (tab !== "vas" || !dumpPath) return;
@@ -712,13 +729,13 @@ function BottomTabs() {
       .catch((err) => {
         if (!cancelled) setVasData({ path: dumpPath, entries: [] });
         notifyError(
-          `VAS fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+          t("vasFetchFailed", { error: err instanceof Error ? err.message : String(err) }),
           "vas",
           { severity: "warning" },
         );
       });
     return () => { cancelled = true; };
-  }, [tab, dumpPath]);
+  }, [tab, dumpPath, t]);
 
   return (
     <div data-tour-id="workspace-bottom" className="h-full flex flex-col md-bg-secondary">

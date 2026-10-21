@@ -1,6 +1,7 @@
-import { forwardRef, type MouseEvent } from "react";
+import { forwardRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { BrowseEntry } from "@/api/types";
+import { preventMouseDownFocus } from "./file-browser-entry";
 
 interface FileBrowserEntryListProps {
   loading: boolean;
@@ -11,10 +12,6 @@ interface FileBrowserEntryListProps {
   onNavigateParent: (path: string) => void;
   onEntryClick: (entry: BrowseEntry) => void;
 }
-
-export const ENTRY_ROW_ATTR = "data-entry-row";
-
-export const preventMouseDownFocus = (e: MouseEvent) => e.preventDefault();
 
 const ENTRY_CLASS =
   "w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--md-bg-hover)] transition-colors text-left";

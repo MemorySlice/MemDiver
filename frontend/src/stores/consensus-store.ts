@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { create } from "zustand";
 
+import i18n from "@/i18n";
 import { useDumpStore } from "./dump-store";
 
 // Cap on cached page-classification entries. Scrolling a large dump would
@@ -325,7 +326,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       `&offset=${offset}&length=${length}`;
     const res = await fetch(url);
     if (!res.ok) {
-      throw new Error(`Consensus range fetch failed: ${res.status}`);
+      throw new Error(i18n.t("hex:fetchErrors.consensusRange", { status: res.status }));
     }
     const json = await res.json();
     const classifications: number[] = json.classifications ?? [];
@@ -359,7 +360,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       `&dump_path=${encodeURIComponent(dumpPath)}&va=${va}&length=${length}`;
     const res = await fetch(url);
     if (!res.ok) {
-      throw new Error(`Consensus VA range fetch failed: ${res.status}`);
+      throw new Error(i18n.t("hex:fetchErrors.consensusVaRange", { status: res.status }));
     }
     const json = await res.json();
     const classes: number[] = json.classes ?? [];
@@ -386,7 +387,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       `&dump_path=${encodeURIComponent(dumpPath)}&bins=${bins}`;
     const res = await fetch(url);
     if (!res.ok) {
-      throw new Error(`Consensus VA overview fetch failed: ${res.status}`);
+      throw new Error(i18n.t("hex:fetchErrors.consensusVaOverview", { status: res.status }));
     }
     const json = await res.json();
     set({

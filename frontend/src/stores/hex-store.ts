@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18n from "@/i18n";
 import { decodeBase64 } from "@/utils/hex-codec";
 import { getPageStates } from "@/api/client";
 import type { PageState } from "@/api/types";
@@ -214,7 +215,7 @@ async function fetchChunkData(
   if (key?.kem_key_hex) qs.set("kem_key_hex", key.kem_key_hex);
   const res = await fetch(`/api/inspect/hex-raw?${qs.toString()}`);
   if (!res.ok) {
-    throw new Error(`Hex fetch failed: ${res.status}`);
+    throw new Error(i18n.t("hex:fetchErrors.hex", { status: res.status }));
   }
   const json = await res.json();
   if (json.error) {

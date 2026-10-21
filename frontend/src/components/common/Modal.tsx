@@ -18,7 +18,7 @@
  * under its own test run.
  */
 
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
 export interface ModalProps {
@@ -54,12 +54,15 @@ export function Modal({
 
   // Focus on open, restore on close. `previous` is captured at mount so the
   // control that opened the dialog gets focus back when it goes away.
+  // The focus target is read through an effect event so the effect itself
+  // stays mount-only: re-running would steal focus mid-interaction.
+  const focusInitial = useEffectEvent(() => {
+    (initialFocusRef?.current ?? closeRef.current)?.focus();
+  });
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    (initialFocusRef?.current ?? closeRef.current)?.focus();
+    focusInitial();
     return () => previous?.focus?.();
-    // Intentionally mount-only: re-running would steal focus mid-interaction.
-
   }, []);
 
   // Escape closes from anywhere, not just from inside the dialog subtree: a

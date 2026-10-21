@@ -17,12 +17,21 @@ export function SessionInfoPanel({ mslPath }: Props) {
   const [info, setInfo] = useState<SessionInfoResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(mslPath));
+  const [prevSource, setPrevSource] = useState({ mslPath, keyMaterial });
+
+  // Clear the previous session's result as soon as the source changes
+  // (adjusted during render rather than in the fetch effect below).
+  if (prevSource.mslPath !== mslPath || prevSource.keyMaterial !== keyMaterial) {
+    setPrevSource({ mslPath, keyMaterial });
+    if (mslPath) {
+      setError(null);
+      setInfo(null);
+    }
+  }
 
   useEffect(() => {
     if (!mslPath) return;
     let cancelled = false;
-    setError(null);
-    setInfo(null);
     getSessionInfo(mslPath, keyMaterial)
       .then((res) => {
         if (!cancelled) setInfo(res);

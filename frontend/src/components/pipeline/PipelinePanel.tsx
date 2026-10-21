@@ -115,10 +115,14 @@ function HeaderBar() {
   const resetRun = usePipelineStore((s) => s.resetRun);
   const [cancelling, setCancelling] = useState(false);
 
-  // Reset the debounce whenever the run transitions to a fresh task.
-  useEffect(() => {
+  const [prevTaskId, setPrevTaskId] = useState(taskId);
+
+  // Reset the debounce whenever the run transitions to a fresh task
+  // (adjusted during render rather than in an effect).
+  if (prevTaskId !== taskId) {
+    setPrevTaskId(taskId);
     setCancelling(false);
-  }, [taskId]);
+  }
 
   return (
     <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--md-border)] md-bg-secondary">

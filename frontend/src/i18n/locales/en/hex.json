@@ -346,5 +346,11 @@
     "invariantDimmed": "Invariant is deliberately dimmed. It is almost every byte in a dump, and it is the background the changing bytes have to stand out against — not a finding in itself.",
     "differsRing": "Differs is a ring, not a fill, precisely so a byte can be both \"pointer\" and \"the dumps disagree here\" at once.",
     "mixedClass": "A region is rarely one class. A planted 48-byte TLS secret measured here as 27 key candidate + 18 pointer + 3 structural bytes, so asking for key candidates alone can return nothing. The Changing chip asks for all three non-invariant bands together."
+  },
+  "fetchErrors": {
+    "hex": "Hex fetch failed: {{status}}",
+    "consensusRange": "Consensus range fetch failed: {{status}}",
+    "consensusVaRange": "Consensus VA range fetch failed: {{status}}",
+    "consensusVaOverview": "Consensus VA overview fetch failed: {{status}}"
   }
 }

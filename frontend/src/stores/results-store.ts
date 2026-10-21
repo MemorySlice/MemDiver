@@ -74,6 +74,38 @@ function compareHits(
   return direction === "asc" ? cmp : -cmp;
 }
 
+type HitFilterState = Pick<
+  ResultsState,
+  "algorithmResults" | "filterAlgorithm" | "sortField" | "sortDirection"
+>;
+
+/** Pure form of `getFilteredHits`, usable from components with explicit deps. */
+export function filterAndSortHits({
+  algorithmResults, filterAlgorithm, sortField, sortDirection,
+}: HitFilterState): { algorithm: string; hit: SecretHit }[] {
+  const tagged: { algorithm: string; hit: SecretHit }[] = [];
+
+  for (const [algo, entry] of Object.entries(algorithmResults)) {
+    if (filterAlgorithm !== null && algo !== filterAlgorithm) continue;
+    for (const hit of entry.hits) {
+      tagged.push({ algorithm: algo, hit });
+    }
+  }
+
+  return tagged.sort((a, b) =>
+    compareHits(a.hit, b.hit, sortField, sortDirection, a.algorithm, b.algorithm),
+  );
+}
+
+/** Pure form of `getTotalHitCount`. */
+export function countTotalHits(algorithmResults: Record<string, AlgorithmResult>): number {
+  let total = 0;
+  for (const entry of Object.values(algorithmResults)) {
+    total += entry.hits.length;
+  }
+  return total;
+}
+
 export const useResultsStore = create<ResultsState>((set, get) => ({
   algorithmResults: {},
   filterAlgorithm: null,
@@ -136,22 +168,7 @@ export const useResultsStore = create<ResultsState>((set, get) => ({
     );
   },
 
-  getFilteredHits: () => {
-    const { algorithmResults, filterAlgorithm, sortField, sortDirection } =
-      get();
-    const tagged: { algorithm: string; hit: SecretHit }[] = [];
-
-    for (const [algo, entry] of Object.entries(algorithmResults)) {
-      if (filterAlgorithm !== null && algo !== filterAlgorithm) continue;
-      for (const hit of entry.hits) {
-        tagged.push({ algorithm: algo, hit });
-      }
-    }
-
-    return tagged.sort((a, b) =>
-      compareHits(a.hit, b.hit, sortField, sortDirection, a.algorithm, b.algorithm),
-    );
-  },
+  getFilteredHits: () => filterAndSortHits(get()),
 
   getHitCountByAlgorithm: () => {
     const { algorithmResults } = get();
@@ -162,12 +179,5 @@ export const useResultsStore = create<ResultsState>((set, get) => ({
     return counts;
   },
 
-  getTotalHitCount: () => {
-    const { algorithmResults } = get();
-    let total = 0;
-    for (const entry of Object.values(algorithmResults)) {
-      total += entry.hits.length;
-    }
-    return total;
-  },
+  getTotalHitCount: () => countTotalHits(get().algorithmResults),
 }));

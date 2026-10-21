@@ -46,6 +46,13 @@ interface StringsState {
   clear: () => void;
 }
 
+/** Pure form of `getFilteredStrings`: case-insensitive substring match. */
+export function filterStrings(rows: StringMatch[], filterText: string): StringMatch[] {
+  if (!filterText) return rows;
+  const lower = filterText.toLowerCase();
+  return rows.filter((s) => s.value.toLowerCase().includes(lower));
+}
+
 function buildHighlightPayload(
   rows: StringMatch[],
   visibleFirst: number,
@@ -220,9 +227,7 @@ export const useStringsStore = create<StringsState>((set, get) => {
 
     getFilteredStrings: () => {
       const { rows, filterText } = get();
-      if (!filterText) return rows;
-      const lower = filterText.toLowerCase();
-      return rows.filter((s) => s.value.toLowerCase().includes(lower));
+      return filterStrings(rows, filterText);
     },
 
     clear: () => {

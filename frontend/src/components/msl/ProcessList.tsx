@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface Process {
   pid: number;
@@ -31,20 +31,8 @@ function shortPath(path: string): string {
 
 export function ProcessList({ mslPath }: Props) {
   const { t } = useTranslation("msl");
-  const [processes, setProcesses] = useState<Process[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/processes?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: Process[]) => setProcesses(data))
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
+  const { data, error } = useFetchJson<Process[]>(mslInspectUrl("processes", mslPath));
+  const processes = data ?? [];
 
   if (error) return <p className="p-3 text-xs md-text-error">{error}</p>;
   if (!processes.length) return <p className="p-3 text-xs md-text-muted">{t("processes.empty")}</p>;

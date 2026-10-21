@@ -27,22 +27,36 @@ export function HexComparison({ pathA, pathB, labelA, labelB }: Props) {
   const keyA = useDumpStore((s) => s.getKeyMaterialByPath(pathA));
   const keyB = useDumpStore((s) => s.getKeyMaterialByPath(pathB));
 
-  const fetchBoth = useCallback(async (off: number) => {
-    try {
-      setError(null);
-      const [a, b] = await Promise.all([
-        readHex(pathA, off, PAGE_SIZE, keyA),
-        readHex(pathB, off, PAGE_SIZE, keyB),
-      ]);
-      setDataA(a);
-      setDataB(b);
-      setOffset(off);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("comparison.loadError"));
-    }
+  /** Load one page of both dumps; touches state only once it settles. */
+  const loadPage = useCallback((off: number) => {
+    return Promise.all([
+      readHex(pathA, off, PAGE_SIZE, keyA),
+      readHex(pathB, off, PAGE_SIZE, keyB),
+    ])
+      .then(([a, b]) => {
+        setDataA(a);
+        setDataB(b);
+        setOffset(off);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : t("comparison.loadError"));
+      });
   }, [pathA, pathB, t, keyA, keyB]);
 
-  useEffect(() => { fetchBoth(0); }, [fetchBoth]);
+  // A new loader (paths / keys / language changed) clears the old error
+  // right away while rendering; the effect below then reloads page 0.
+  const [activeLoader, setActiveLoader] = useState(() => loadPage);
+  if (activeLoader !== loadPage) {
+    setActiveLoader(() => loadPage);
+    setError(null);
+  }
+
+  useEffect(() => { loadPage(0); }, [loadPage]);
+
+  const fetchBoth = (off: number) => {
+    setError(null);
+    loadPage(off);
+  };
 
   const syncScroll = (source: "a" | "b") => {
     if (isScrolling.current) return;

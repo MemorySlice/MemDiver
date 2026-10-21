@@ -15,13 +15,24 @@ export function InvestigationPanel({ dumpPath, offset }: Props) {
   const [byteError, setByteError] = useState<string | null>(null);
   const [entropyError, setEntropyError] = useState<string | null>(null);
   const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(dumpPath));
+  const [prevRequest, setPrevRequest] = useState({ dumpPath, offset, t, keyMaterial });
 
-  useEffect(() => {
+  // Clear the previous offset's values whenever the request inputs change
+  // (adjusted during render rather than in the fetch effect below).
+  if (
+    prevRequest.dumpPath !== dumpPath ||
+    prevRequest.offset !== offset ||
+    prevRequest.t !== t ||
+    prevRequest.keyMaterial !== keyMaterial
+  ) {
+    setPrevRequest({ dumpPath, offset, t, keyMaterial });
     setByteError(null);
     setEntropyError(null);
     setByteVal(null);
     setEntropy(null);
+  }
 
+  useEffect(() => {
     readHex(dumpPath, offset, 1, keyMaterial).then((d) => {
       if (d.hex_lines.length > 0) {
         const hex = d.hex_lines[0].split(/\s+/)[1];

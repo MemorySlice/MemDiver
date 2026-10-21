@@ -308,10 +308,20 @@ export function FormatNavigator({ dumpPath }: Props) {
     setLastDumpPath(dumpPath);
     setForcedFormat(null);
   }
-
-  useEffect(() => {
+  // Same pattern for the detection result: drop it as soon as any request
+  // input changes so the "detecting" state shows without a stale frame.
+  const [lastRequest, setLastRequest] = useState({ dumpPath, forcedFormat, keyMaterial });
+  if (
+    lastRequest.dumpPath !== dumpPath ||
+    lastRequest.forcedFormat !== forcedFormat ||
+    lastRequest.keyMaterial !== keyMaterial
+  ) {
+    setLastRequest({ dumpPath, forcedFormat, keyMaterial });
     setInfo(null);
     setError(null);
+  }
+
+  useEffect(() => {
     // Clear any stale structure overlay from the previous dump/parser
     // immediately — otherwise e.g. ELF field boxes linger across a dump
     // switch until the new detect call lands.

@@ -57,5 +57,18 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Conventional opt-out: a leading underscore marks a binding as
+      // intentionally unused (e.g. a positional parameter kept for signature
+      // stability, or a skipped tuple slot).
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
+    },
   },
 ]);

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mslInspectUrl, useFetchJson } from "@/hooks/useFetchJson";
 
 interface BlockEntry {
   label: string;
@@ -21,30 +22,19 @@ interface Props {
 
 export function BlockNavigator({ mslPath, onBlockClick }: Props) {
   const { t } = useTranslation("misc");
-  const [groups, setGroups] = useState<BlockGroup[]>([]);
-  const [totalBlocks, setTotalBlocks] = useState(0);
+  const { data, error } = useFetchJson<BlockGroup[]>(mslInspectUrl("blocks", mslPath));
+  const groups = useMemo(() => data ?? [], [data]);
+  const totalBlocks = useMemo(
+    () => groups.reduce((s, g) => s + g.blocks.length, 0),
+    [groups],
+  );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!mslPath) return;
-    setError(null);
-    fetch(`/api/inspect/blocks?msl_path=${encodeURIComponent(mslPath)}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: BlockGroup[]) => {
-        setGroups(data);
-        setTotalBlocks(data.reduce((s, g) => s + g.blocks.length, 0));
-      })
-      .catch((e) => setError(String(e)));
-  }, [mslPath]);
 
   const toggle = (cat: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      next.has(cat) ? next.delete(cat) : next.add(cat);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
       return next;
     });
   };

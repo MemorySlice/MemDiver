@@ -55,6 +55,8 @@
   "loadingEntropy": "Loading entropy data...",
   "entropyChartFailed": "Entropy chart failed to render.",
   "entropyLoadFailed": "Failed to load entropy data.",
+  "entropyFetchFailed": "Entropy fetch failed: {{error}}",
+  "vasFetchFailed": "VAS fetch failed: {{error}}",
   "loadDumpForStrings": "Load a dump file to extract strings.",
   "noVarianceData": "Select a hit or neighborhood overlay in the hex viewer to inspect its variance profile.",
   "newSessionTitle": "Start a new session (prompts to save unsaved work)"

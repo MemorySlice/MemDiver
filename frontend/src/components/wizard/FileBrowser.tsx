@@ -5,7 +5,8 @@ import type { BrowseEntry } from "@/api/types";
 import { useBrowserStore, normalizePath } from "@/stores/browser-store";
 import { FileBrowserFavourites } from "./FileBrowserFavourites";
 import { FileBrowserPathBar } from "./FileBrowserPathBar";
-import { FileBrowserEntryList, ENTRY_ROW_ATTR } from "./FileBrowserEntryList";
+import { FileBrowserEntryList } from "./FileBrowserEntryList";
+import { ENTRY_ROW_ATTR } from "./file-browser-entry";
 
 interface FileBrowserProps {
   onSelect: (path: string) => void;

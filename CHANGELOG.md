@@ -25,6 +25,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   marimo 0.15.1, which failed to import against the websockets version pinned
   by frida-tools.
 - The pytest `test` CI job runs in parallel (`pytest-xdist`, `-n auto`).
+- **Frontend is eslint-clean (0 errors).** All 22 `react-hooks/set-state-in-effect`
+  findings were refactored to render-time state adjustment or to the new shared
+  `useFetchJson` / `useFetchText` hooks (no `eslint-disable`); theme context and
+  file-browser helpers moved out of component modules for fast refresh;
+  `exhaustive-deps` warnings fixed via pure store helpers. The entropy tab no
+  longer gets stuck on "loading" when left mid-fetch. The entropy / VAS
+  fetch-failure notifications are now localized (`layout.entropyFetchFailed`,
+  `layout.vasFetchFailed`) instead of hardcoded, as are the hex / consensus
+  store fetch errors (`hex:fetchErrors.*`). A PipelinePanel test whose cold
+  dynamic import straddled vitest's 5s default timeout no longer flakes.
 - The REST API's OpenAPI `version` now reports the package version instead of
   a hard-coded `0.1.0`.
 

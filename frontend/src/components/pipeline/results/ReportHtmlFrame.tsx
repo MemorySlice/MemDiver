@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { artifactDownloadUrl } from "@/api/pipeline";
 import { ARTIFACT_NAMES } from "@/components/pipeline/constants";
+import { useFetchText } from "@/hooks/useFetchText";
 
 interface Props {
   taskId: string;
@@ -21,39 +21,9 @@ export function ReportHtmlFrame({
   artifactName = ARTIFACT_NAMES.NSWEEP_HTML,
 }: Props) {
   const { t } = useTranslation("pipeline");
-  const [html, setHtml] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setHtml(null);
-    const url = artifactDownloadUrl(taskId, artifactName);
-    fetch(url)
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        return res.text();
-      })
-      .then((text) => {
-        if (!cancelled) {
-          setHtml(text);
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [taskId, artifactName]);
+  const { text: html, error, loading } = useFetchText(
+    artifactDownloadUrl(taskId, artifactName),
+  );
 
   if (loading) {
     return <div className="md-panel p-3 text-xs md-text-muted">{t("results.report.loading")}</div>;

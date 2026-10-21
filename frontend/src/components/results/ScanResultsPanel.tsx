@@ -2,7 +2,9 @@ import { useState, useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { runAnalysisAndWait } from "@/api/analysis";
-import { useResultsStore, type SortField } from "@/stores/results-store";
+import {
+  useResultsStore, filterAndSortHits, countTotalHits, type SortField,
+} from "@/stores/results-store";
 import { useAppStore } from "@/stores/app-store";
 import { downloadJsonFile } from "@/utils/download";
 import { secretTypeToHighlight } from "@/utils/highlight-types";
@@ -19,7 +21,7 @@ export function ScanResultsPanel() {
   const { t } = useTranslation("results");
   const {
     algorithmResults, filterAlgorithm, sortField, sortDirection,
-    setFilter, setSort, getFilteredHits, getTotalHitCount,
+    setFilter, setSort,
   } = useResultsStore(
     useShallow((s) => ({
       algorithmResults: s.algorithmResults,
@@ -28,15 +30,16 @@ export function ScanResultsPanel() {
       sortDirection: s.sortDirection,
       setFilter: s.setFilter,
       setSort: s.setSort,
-      getFilteredHits: s.getFilteredHits,
-      getTotalHitCount: s.getTotalHitCount,
     })),
   );
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const algos = Object.keys(algorithmResults);
-  const filtered = useMemo(() => getFilteredHits(), [algorithmResults, filterAlgorithm, sortField, sortDirection]);
-  const totalCount = useMemo(() => getTotalHitCount(), [algorithmResults]);
+  const filtered = useMemo(
+    () => filterAndSortHits({ algorithmResults, filterAlgorithm, sortField, sortDirection }),
+    [algorithmResults, filterAlgorithm, sortField, sortDirection],
+  );
+  const totalCount = useMemo(() => countTotalHits(algorithmResults), [algorithmResults]);
 
   const toggleCollapse = useCallback((algo: string) => {
     setCollapsed((prev) => ({ ...prev, [algo]: !prev[algo] }));
