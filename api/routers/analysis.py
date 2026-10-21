@@ -220,7 +220,12 @@ def analysis_locate_key(req: LocateKeyRequest):
     same reason: the result is a per-dump census a human is waiting to read.
 
     ``secret_hex`` — NOT ``key_hex`` — carries the secret to search for; see the
-    wire-collision note on ``api.models.KeyMaterialFields``.
+    wire-collision note on ``api.models.KeyMaterialFields``. ``pcap_field``
+    (``{pcap_path, field_id, client_random?}``) is the fourth, symbolic form:
+    the needle is read off a capture instead of pasted, exactly as the CLI's
+    ``--pcap-field`` and the MCP tool's ``pcap_field`` do. The producer
+    validates the mapping and existence-checks the capture; no containment is
+    added here, consistent with the other pcap routes (accepted risk O-15).
 
     Deliberately NO ``try/except``: a ``CapabilityError`` out of the producer is
     translated by the app's single global handler (``api.main``). A key that is
@@ -235,6 +240,7 @@ def analysis_locate_key(req: LocateKeyRequest):
         key_hex=req.secret_hex,
         keylog_line=req.keylog_line,
         secret=req.secret,
+        pcap_field=req.pcap_field,
         view=req.view,
         max_offsets=req.max_offsets,
         key_material=km,

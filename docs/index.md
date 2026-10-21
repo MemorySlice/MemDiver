@@ -62,9 +62,9 @@ Reference pages for the eight detection algorithms and nine visualization views 
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | `algorithms/` |
-| CLI subcommands | **22** | `cli.py` |
-| FastAPI routers | **12** + WebSocket | `api/routers/` |
-| MCP tools | **15** | `mcp_server/` |
+| CLI subcommands | **33** | `cli/` |
+| FastAPI routers | **18** + WebSocket | `api/routers/` |
+| MCP tools | **45** | `mcp_server/` |
 | Exporters | YARA · JSON · Volatility3 | `architect/` |
 | Dump backends | `memslicer` · `lldb` · `fridump` | `core/dump_driver.py` |
 | Visualization views | 4 SPA + 5 research-mode (Marimo) | `frontend/` + `ui/` |
@@ -89,6 +89,8 @@ user_guide/cli_reference
 user_guide/auto_floor
 user_guide/mcp_reference
 user_guide/keylog_export
+user_guide/locate_key
+user_guide/configuration
 ```
 
 ```{toctree}

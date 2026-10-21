@@ -528,6 +528,32 @@ def test_enable_rejects_a_relative_path(oracle_api):
     assert r.status_code == 400
 
 
+def test_prune_orphans_is_503_not_500_when_disabled(oracle_api):
+    """``OracleDisabled`` used to escape the route unhandled and become a 500."""
+    client, _registry, _tmp = oracle_api
+    r = client.delete("/api/oracles/orphans")
+    assert r.status_code == 503, r.text
+    # The same enable hint the other writing endpoints give.
+    assert "POST /api/oracles/enable" in r.json()["detail"]
+
+
+def test_prune_orphans_removes_a_stray_file_when_enabled(oracle_api):
+    """Only the metadata-less ``.py`` goes; the route is not shadowed by ``/{id}``."""
+    client, _registry, tmp_path = oracle_api
+    chosen = tmp_path / "chosen_oracles"
+    assert client.post(
+        "/api/oracles/enable", json={"path": str(chosen)}
+    ).status_code == 200
+    stray = chosen / "leftover.py"
+    stray.write_text(ORACLE_SHAPE1)
+
+    r = client.delete("/api/oracles/orphans")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"removed": ["leftover.py"]}
+    assert not stray.exists()
+
+
 def test_registry_enable_keeps_already_registered_entries(registry, tmp_path):
     """Why enable() is a method and not a call to init_oracle_registry().
 

@@ -31,6 +31,7 @@ proves for real.
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from pathlib import Path
 
@@ -630,6 +631,112 @@ def test_route_maps_a_missing_dump_to_404(client, planted_dumps, tmp_path):
         "secret_hex": SECRET_HEX,
     })
     assert resp.status_code == 404, resp.text
+
+
+# -- the symbolic ``pcap_field`` form over HTTP (CLI/MCP parity) --------------
+
+#: The committed one-session TLS 1.3 capture ``test_pcap_field_selection`` uses.
+_PCAP_FIXTURE_DIR = Path(__file__).resolve().parent / "e2e" / "fixtures" / "pcap"
+_PCAP_FIXTURE = _PCAP_FIXTURE_DIR / "session_tls13.pcap"
+_PCAP_PLANT_OFFSET = 2048
+
+
+@pytest.fixture
+def fixture_pcap() -> str:
+    """The committed capture, or a clean skip without dpkt."""
+    pytest.importorskip("dpkt")
+    if not _PCAP_FIXTURE.is_file():  # pragma: no cover - committed fixture
+        pytest.skip(f"fixture capture missing: {_PCAP_FIXTURE}")
+    return str(_PCAP_FIXTURE)
+
+
+@pytest.fixture
+def pcap_planted_dumps(tmp_path):
+    """Three dumps; the capture's ``client_random`` (per its manifest) sits at
+    2048 in the first two."""
+    manifest = json.loads((_PCAP_FIXTURE_DIR / "manifest.json").read_text())
+    needle = np.frombuffer(bytes.fromhex(manifest["client_random"]), dtype=np.uint8)
+    background = _background(2026)
+    paths = []
+    for index in range(3):
+        body = background.copy()
+        if index < 2:
+            body[_PCAP_PLANT_OFFSET:_PCAP_PLANT_OFFSET + len(needle)] = needle
+        paths.append(_write(tmp_path / f"pcap_phase_{index}.dump", body))
+    return paths
+
+
+def test_route_accepts_a_pcap_field_needle(
+    client, pcap_planted_dumps, fixture_pcap,
+):
+    resp = client.post("/api/analysis/locate-key", json={
+        "dump_paths": pcap_planted_dumps,
+        "pcap_field": {"pcap_path": fixture_pcap, "field_id": "client_random"},
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["verdict"] == "found"
+    assert body["input_form"] == "pcap_field"
+    # For this form ``secret_type`` carries the resolved field id.
+    assert body["secret_type"] == "client_random"
+    assert (body["dumps_present"], body["dumps_absent"]) == (2, 1)
+    assert body["common_offset"] == _PCAP_PLANT_OFFSET
+
+
+@pytest.mark.parametrize(
+    ("pcap_field", "fragment"),
+    [
+        ({"field_id": "no_such_field"}, "no_such_field"),
+        ({"field_id": "client_random", "feild_id": "sni"}, "feild_id"),
+    ],
+)
+def test_route_refuses_a_bad_pcap_field_as_400(
+    client, pcap_planted_dumps, fixture_pcap, pcap_field, fragment,
+):
+    """An unknown field id and a misspelt key are both the PRODUCER's 400 —
+    the plain-dict field means Pydantic never turns the typo into a 422."""
+    resp = client.post("/api/analysis/locate-key", json={
+        "dump_paths": pcap_planted_dumps,
+        "pcap_field": {"pcap_path": fixture_pcap, **pcap_field},
+    })
+    assert resp.status_code == 400, resp.text
+    assert fragment in resp.text
+
+
+def test_route_refuses_pcap_field_mixed_with_secret_hex(
+    client, pcap_planted_dumps, fixture_pcap,
+):
+    resp = client.post("/api/analysis/locate-key", json={
+        "dump_paths": pcap_planted_dumps,
+        "secret_hex": SECRET_HEX,
+        "pcap_field": {"pcap_path": fixture_pcap, "field_id": "client_random"},
+    })
+    assert resp.status_code == 400, resp.text
+
+
+#: ``locate_key`` parameters the HTTP body deliberately does NOT carry: the
+#: web surface decodes key material itself (the inherited hex fields) and
+#: passes ``key_material=``; ``on_source`` is an in-process callback.
+_LOCATE_KEY_NON_WIRE_PARAMS = frozenset(
+    {"key_file", "passphrase", "kem_key_file", "key_material", "on_source"}
+)
+#: Producer parameter -> request field, where the wire renames it.
+_LOCATE_KEY_WIRE_RENAMES = {"key_hex": "secret_hex"}
+
+
+def test_every_locate_key_parameter_reaches_the_http_body():
+    """The gap that hid ``pcap_field`` from the web UI cannot reopen: a new
+    caller-facing producer parameter must land on ``LocateKeyRequest`` too."""
+    from memdiver.api.models import LocateKeyRequest
+
+    params = set(inspect.signature(locate_key).parameters)
+    assert _LOCATE_KEY_NON_WIRE_PARAMS <= params, "stale exclusion list"
+    wire = {
+        _LOCATE_KEY_WIRE_RENAMES.get(name, name)
+        for name in params - _LOCATE_KEY_NON_WIRE_PARAMS
+    }
+    missing = wire - set(LocateKeyRequest.model_fields)
+    assert not missing, f"LocateKeyRequest lacks {sorted(missing)}"
 
 
 def test_key_pattern_route_returns_the_windows(client, planted_dumps):

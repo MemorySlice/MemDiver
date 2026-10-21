@@ -12,7 +12,9 @@ from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 from ._shared import (
     _key_material_from_args,
+    _report_unrecognised_inputs,
     _resolve_dump_paths,
+    _scan_dump_inputs,
     _warn_tag_status,
     _write_output,
 )
@@ -545,6 +547,12 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
     not a failure, and the census that produced it is exactly what the operator
     needs to see.
 
+    A dump path that does not exist is INVALID_INPUT (exit ``2``, no payload),
+    never a silent drop: searching the remaining dumps and answering ``absent``
+    (exit ``3``) would be an absence claim over a dump nobody read. Directory
+    files skipped for their extension are only noted on stderr — the operator
+    did not name them individually, so they do not void the search.
+
     Three spellings of the secret reach the producer from here: ``--key-hex``,
     ``--keylog-line`` and — C2's symbolic form — ``--pcap-field FIELD_ID``
     together with ``--pcap`` (and ``--pcap-session`` when the capture holds more
@@ -554,7 +562,7 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
     from memdiver.app.tools_pipeline import locate_key
 
     payload = locate_key(
-        dump_paths=[str(p) for p in _resolve_dump_paths(args.dumps)],
+        dump_paths=_locate_key_dump_paths(args.dumps),
         key_hex=args.key_hex or "",
         keylog_line=args.keylog_line or "",
         pcap_field=_pcap_field_from_args(args),
@@ -575,6 +583,23 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
         print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
     _write_output(payload, args.output)
     return _LOCATE_KEY_EXIT.get(payload["verdict"], 2)
+
+
+def _locate_key_dump_paths(raw_paths: list) -> list:
+    """Resolve ``locate-key``'s dump arguments, refusing any missing path.
+
+    Unrecognised directory files get the shared stderr note; a missing path
+    raises INVALID_INPUT (the CLI backstop maps it to exit 2) BEFORE the
+    producer runs, so no payload is written for it.
+    """
+    inputs = _scan_dump_inputs(raw_paths)
+    _report_unrecognised_inputs(inputs)
+    if inputs.missing:
+        raise CapabilityError(
+            f"Dump path(s) not found: {', '.join(inputs.missing)}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    return [str(p) for p in inputs.paths]
 
 
 def _pcap_field_from_args(args: argparse.Namespace) -> Optional[dict]:

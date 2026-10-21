@@ -6,8 +6,8 @@ broader than the SPA needs. ``create_app`` (see api/main.py) therefore:
 
 * strips any literal "*" from the configured origins (falling back to the
   localhost dev origin), and
-* narrows methods to GET/POST/DELETE (+ the OPTIONS preflight) and headers to
-  ``Content-Type``.
+* narrows methods to GET/POST/PUT/DELETE (+ the OPTIONS preflight) and
+  headers to ``Content-Type``, ``Authorization`` and ``X-API-Key``.
 
 These tests exercise that via CORS preflight responses rather than reaching
 into Starlette middleware internals.
@@ -66,16 +66,44 @@ def test_dev_origin_allowed_but_not_wildcarded(isolated_env, monkeypatch):
 
 
 def test_allowed_methods_are_narrowed(isolated_env, monkeypatch):
-    """Preflight advertises only the verbs the SPA uses (no PUT/PATCH)."""
+    """Preflight advertises only the verbs the SPA uses (PUT yes, PATCH no)."""
     monkeypatch.setenv("MEMDIVER_CORS_ORIGINS", f'["{DEV_ORIGIN}"]')
     get_settings.cache_clear()
     with TestClient(create_app()) as client:
         resp = _preflight(client, DEV_ORIGIN)
     allowed = resp.headers.get("access-control-allow-methods", "")
     granted = {m.strip() for m in allowed.split(",") if m.strip()}
-    assert granted == {"GET", "POST", "DELETE", "OPTIONS"}
-    assert "PUT" not in granted and "PATCH" not in granted
+    assert granted == {"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+    # PUT is needed by ``PUT /api/settings/last-dir``; no route uses PATCH.
+    assert "PATCH" not in granted
     assert "*" not in granted
+
+
+def test_put_preflight_for_last_dir_is_granted(isolated_env, monkeypatch):
+    """The SPA's ``setLastDir`` (PUT + JSON body) must pass its preflight."""
+    monkeypatch.setenv("MEMDIVER_CORS_ORIGINS", f'["{DEV_ORIGIN}"]')
+    get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        resp = client.options(
+            "/api/settings/last-dir",
+            headers={
+                "Origin": DEV_ORIGIN,
+                "Access-Control-Request-Method": "PUT",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers.get("access-control-allow-origin") == DEV_ORIGIN
+    assert "PUT" in resp.headers.get("access-control-allow-methods", "")
+
+
+def test_patch_preflight_is_refused(isolated_env, monkeypatch):
+    """Non-vacuity for the test above: an unlisted verb fails its preflight."""
+    monkeypatch.setenv("MEMDIVER_CORS_ORIGINS", f'["{DEV_ORIGIN}"]')
+    get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        resp = _preflight(client, DEV_ORIGIN, method="PATCH")
+    assert resp.status_code == 400
 
 
 def test_allowed_headers_are_narrowed(isolated_env, monkeypatch):

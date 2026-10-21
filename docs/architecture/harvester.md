@@ -9,6 +9,7 @@ Data ingestion layer. Maps on-disk dataset trees into `RunDirectory` records the
 Filename conventions recognized:
 
 - Dump: `^(\d{8}_\d{6}_\d+)_(pre|post)_(.+)\.(dump|msl)$` — timestamp, phase prefix, phase name.
+- Dataset-style dumps (no timestamp prefix): suffixes `.gcore.core`, `.gdb_raw.bin`, `.lldb_raw.bin`, `.msl`, `.core` (`core.discovery.DATASET_DUMP_SUFFIXES`).
 - Run dir: `^(.+?)_run_(\d+)_(\d+)$` — library, protocol version, run number.
 - Keylog: `keylog.csv` (configurable via `--keylog-filename`).
 

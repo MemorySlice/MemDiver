@@ -7,11 +7,13 @@ Summary:
 - **Shape 1** — stateless function `verify(data: bytes) -> bool`.
 - **Shape 2** — stateful factory `build_oracle(config: dict) -> Oracle` where `Oracle` implements `verify` + `close`.
 
-Both shapes are loaded by `engine.oracle.load_oracle`, which refuses world-writable paths and prints a sha256 fingerprint of the loaded script to stderr. Oracles can be armed via:
+Both shapes are loaded by `engine.oracle.load_oracle`, which refuses oracle files (or parent directories) that are group- or world-writable and logs a sha256 fingerprint of the loaded script to stderr. Before importing in-process it replays `import` + `build_oracle(config)` in a resource-capped subprocess (limits: `MEMDIVER_ORACLE_SANDBOX_TIMEOUT` / `_CPU` / `_MEM`, see [](../user_guide/configuration.md)). Oracles can be armed via:
 
 - CLI: `memdiver brute-force --oracle path/to/oracle.py --oracle-config config.toml …`
-- HTTP: `POST /api/oracles/upload` (requires `MEMDIVER_ORACLE_DIR`), then `POST /api/oracles/{id}/arm`.
+- HTTP: `POST /api/oracles/upload` (or `POST /api/oracles/examples/{filename}/load` for a bundled example), then `POST /api/oracles/{id}/arm`. Both need an enabled oracle directory: turn it on from the pipeline's Oracle stage (`POST /api/oracles/enable`) or pin it with `MEMDIVER_ORACLE_DIR`, which wins over the UI choice. Otherwise they answer 503. See [](../oracle/interface.md#running-oracles-from-the-web-ui).
 - MCP: the `brute_force` / `n_sweep` tools accept an oracle path.
+
+To ship a new bundled example, drop `<name>.py` (and, for Shape 2, a sibling `<name>.toml` config template) into `docs/oracle/examples/`; files starting with `_` are skipped. `GET /api/oracles/examples` picks it up with no registration step, and the `.toml` becomes the form the web UI prefills. See [](../oracle/examples.md#using-the-examples-from-the-web-ui) for the reserved `[memdiver]` table that drives config auto-fill.
 
 ## Verification resources (`memdiver.oracles`)
 

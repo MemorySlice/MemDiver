@@ -9,6 +9,9 @@
  * response shapes live here so a backend change lands in one file rather than in
  * every component that fetches.
  *
+ * `locateKey` takes the secret in one of FOUR forms (`secret_hex`,
+ * `keylog_line`, `secret`, `pcap_field`); `exportKeyPattern` in the first three.
+ *
  * Unlike every other analysis route, `locateKey` accepts a SINGLE dump: locating
  * a key in one dump is a complete answer. `exportKeyPattern` needs two, because
  * a static mask is a comparison.
@@ -84,8 +87,23 @@ export interface KeyDiagnostic {
 
 // ---- locate-key ----
 
-/** Which of the three input forms the answer was computed from. */
-export type KeyInputForm = "key_hex" | "keylog_line" | "secret";
+/**
+ * Which input form the answer was computed from. `exportKeyPattern` accepts
+ * only the first three; `"pcap_field"` is `locateKey`'s symbolic fourth.
+ */
+export type KeyInputForm = "key_hex" | "keylog_line" | "secret" | "pcap_field";
+
+/**
+ * The SYMBOLIC input form: name a handshake field of a capture instead of
+ * pasting its bytes (`field_id: "client_random"` = "this capture's
+ * ClientHello.random"). `client_random` picks the session when the capture
+ * holds several. Unknown keys are refused BY NAME by the backend (400).
+ */
+export interface PcapFieldSelector {
+  pcap_path: string;
+  field_id: string;
+  client_random?: string;
+}
 
 export interface LocateKeyRequest {
   dump_paths: string[];
@@ -98,6 +116,8 @@ export interface LocateKeyRequest {
   /** One NSS key-log row: `<LABEL> <client_random_hex> <secret_hex>`. */
   keylog_line?: string;
   secret?: { secret_type: string; client_random: string; secret: string } | null;
+  /** Read the needle off a capture; `locateKey` only, not `exportKeyPattern`. */
+  pcap_field?: PcapFieldSelector | null;
   view?: string | null;
   max_offsets?: number;
   // container decryption (KeyMaterialFields)
@@ -109,9 +129,17 @@ export interface LocateKeyRequest {
 export interface LocateKeyResponse {
   verdict: KeyLocationVerdict;
   input_form: KeyInputForm;
-  /** NSS label, or `""` for the bare-hex input form. */
+  /**
+   * NSS label, or `""` for the bare-hex input form. For `"pcap_field"` it is
+   * the resolved FIELD ID (e.g. `"client_random"`), not an NSS label —
+   * branch on `input_form` before reading it as one.
+   */
   secret_type: string;
-  /** Public handshake material, or `""` for the bare-hex input form. */
+  /**
+   * Public handshake material, or `""` for the bare-hex input form. For
+   * `"pcap_field"` it is the client random of the capture session the field
+   * was read from.
+   */
   client_random: string;
   needle_length: number;
   /** Correlates two results without disclosing the secret, which is never echoed. */

@@ -36,8 +36,16 @@ def _cmd_web(args: argparse.Namespace) -> int:
     except ImportError:
         _print_missing_package("The FastAPI web backend (fastapi + uvicorn)", extra="api")
         return 1
-    port = getattr(args, "port", 8080)
     settings = get_settings()
+    # Precedence: --port > MEMDIVER_PORT / .env > 8080 (Settings' default).
+    # ``port`` may be absent entirely: bare ``memdiver`` runs this with a
+    # Namespace that never went through the ``web`` subparser.
+    port = getattr(args, "port", None)
+    if port is None:
+        port = settings.port
+    # Write the effective port back onto the cached Settings so the startup
+    # log in api/main.py's lifespan reports the port actually bound.
+    settings.port = port
     # Refuse a non-loopback bind with no auth and no explicit override
     # *before* touching the socket — see api/security.py for the rationale.
     try:

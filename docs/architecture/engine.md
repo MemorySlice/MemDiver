@@ -5,7 +5,7 @@ The analysis orchestrator. Not an algorithm itself — it composes the 8 algorit
 ## Pipelines
 
 - `pipeline.AnalysisPipeline` — classic `consensus → search → DiffStore → optional verify`.
-- `pipeline_runner.run_pipeline` — Phase-25 worker-safe orchestrator with five stages (`build_consensus → run_reduce → run_brute_force → run_nsweep → run_emit_plugin`), emitting progress events onto an `mp.Queue`.
+- `app/pipeline/pipeline_runner.run_pipeline` (lives in `app/`, not `engine/`) — worker-safe orchestrator over an ordered stage registry (`consensus → search_reduce → brute_force → escalate → nsweep → emit_plugin`; the last three are gated), emitting progress events onto an `mp.Queue`. See [Adding a pipeline stage](../contributing/adding_pipeline_stage.md).
 - `candidate_pipeline.reduce_search_space` — composable `variance-mask → aligned-mask → entropy-coverage-mask`, O(total_size) memory.
 
 ## Consensus
@@ -25,7 +25,7 @@ The analysis orchestrator. Not an algorithm itself — it composes the 8 algorit
 
 ## Exports
 
-- `vol3_emit.emit_plugin_for_hit` — synthesizes a Volatility3 plugin from neighborhood variance + reference bytes via `architect.PatternGenerator`.
+- `vol3_emit.emit_plugin_for_hit` — synthesizes a Volatility3 plugin from neighborhood variance + reference bytes via `architect.pattern_generator.PatternGenerator`.
 
 ## Persistence
 

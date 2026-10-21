@@ -202,14 +202,15 @@ class AnalysisCandidatesRequest(KeyMaterialFields):
 
 
 class KeySecretFields(KeyMaterialFields):
-    """The three mutually-exclusive spellings of "here is the secret".
+    """The three LITERAL spellings of "here is the secret", shared by both routes.
 
     ``secret_hex`` is the producer's ``key_hex`` parameter renamed for the wire:
     see the collision note on :class:`KeyMaterialFields`. The inherited
     ``key_hex`` keeps its container-decryption meaning, so one request can both
     decrypt an encrypted ``.msl`` and search it for a secret.
 
-    Exactly one of the three must be supplied. The check is NOT duplicated here
+    Exactly one form must be supplied — of these three, plus ``pcap_field`` on
+    :class:`LocateKeyRequest` alone (four there). The check is NOT duplicated here
     as a validator: the producer owns it, so the CLI, MCP and library surfaces
     get the identical error, and a 400 out of the app's global
     ``CapabilityError`` handler is exactly what a 422 from here would have been.
@@ -223,12 +224,32 @@ class KeySecretFields(KeyMaterialFields):
 class LocateKeyRequest(KeySecretFields):
     """Request body for ``POST /api/analysis/locate-key``.
 
-    Mirrors ``app.tools_pipeline.locate_key`` 1:1. ``dump_paths`` may hold a
-    SINGLE dump — locating a key in one dump is a complete answer, unlike every
-    other N-dump route.
+    Mirrors every caller-facing parameter of ``app.tools_pipeline.locate_key``:
+    the producer's ``key_hex`` arrives as ``secret_hex`` (see
+    :class:`KeyMaterialFields`), and ``key_file`` / ``kem_key_file`` /
+    ``passphrase`` / ``key_material`` / ``on_source`` are replaced by the
+    inherited hex key-material fields the route decodes itself.
+    ``tests/test_api_locate_key.py`` pins that mapping so a new producer
+    parameter cannot silently go missing here again.
+
+    Four mutually-exclusive input forms: the three of :class:`KeySecretFields`
+    plus ``pcap_field``, which lives HERE rather than on the shared mixin
+    because ``export_key_pattern`` (and so :class:`KeyPatternRequest`) does not
+    accept it.
+
+    ``dump_paths`` may hold a SINGLE dump — locating a key in one dump is a
+    complete answer, unlike every other N-dump route.
     """
 
     dump_paths: list[str]
+    # ``{"pcap_path", "field_id", "client_random"?}``. A plain dict ON PURPOSE,
+    # not a nested model: a misspelt key then reaches the producer, which
+    # refuses it BY NAME as INVALID_INPUT (400) — the same message the CLI and
+    # MCP surfaces give — instead of a generic 422 from Pydantic. The pcap path
+    # is existence-checked by the producer only, like every other pcap route
+    # (read paths on this localhost API are an accepted risk: ``api/main.py``,
+    # handoff item O-15).
+    pcap_field: dict[str, str] | None = None
     view: str | None = None
     max_offsets: int = DEFAULT_MAX_KEY_OFFSETS
 

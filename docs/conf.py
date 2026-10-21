@@ -39,7 +39,16 @@ extensions = [
 ]
 
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "screenshots"]
+# dev/ and issue-drafts/ hold internal working notes (session handoffs,
+# audits, issue drafts) that are not part of the published site.
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "screenshots",
+    "dev",
+    "issue-drafts",
+]
 
 myst_enable_extensions = [
     "colon_fence",

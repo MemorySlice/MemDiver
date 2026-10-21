@@ -373,7 +373,12 @@ and dumps should live; the choice is stored in your user-local
 `~/.memdiver/config.json` (never the git-tracked repo `config.json`) and the
 directory is created owner-only (`0o700`). You can review or change it later
 under **Settings → Storage**, or pin it for the whole server with
-`MEMDIVER_UPLOAD_DIR` — which always wins, and makes the UI control read-only.
+`MEMDIVER_UPLOAD_DIR` (in the environment or a `.env` file) — which always wins,
+and makes the UI control read-only (`POST /api/settings/upload-dir` answers
+**409**). An empty `MEMDIVER_UPLOAD_DIR=""` is treated as unset rather than as
+the server's working directory. Imported dumps share the same root
+(`upload_dir/imports`) under their own quota, `MEMDIVER_DUMP_QUOTA_BYTES`. All
+of these variables are listed in [](../user_guide/configuration.md).
 An unconfigured server answers `POST /api/pcaps/upload` with **409**
 `upload_dir_unconfigured: …`; the UI turns that into the "choose a directory"
 prompt and then retries the upload with the same file, so nothing is lost.

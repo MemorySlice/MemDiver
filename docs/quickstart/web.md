@@ -7,6 +7,10 @@ memdiver          # equivalent to: memdiver web
 memdiver web --port 8080
 ```
 
+The port is `--port` if given, otherwise `MEMDIVER_PORT` (environment or
+`.env`), otherwise `8080`. See
+[Configuration](../user_guide/configuration.md).
+
 On first launch the session-landing page opens. Click **New session**, point the wizard at a dump directory, choose algorithms, and drop into the workspace.
 
 ## What you see

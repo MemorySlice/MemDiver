@@ -11,8 +11,8 @@ MemDiver auto-discovers algorithms via `pkgutil.walk_packages` on import. Adding
 
 ```python
 # algorithms/unknown_key/my_algo.py
-from algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
-from core.constants import UNKNOWN_KEY
+from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.constants import UNKNOWN_KEY
 
 
 class MyAlgoAlgorithm(BaseAlgorithm):
@@ -33,7 +33,7 @@ class MyAlgoAlgorithm(BaseAlgorithm):
         )
 ```
 
-No registration call is needed — the next `get_registry()` call discovers the class via `pkgutil.walk_packages` + `issubclass(BaseAlgorithm)`.
+No registration call is needed — the first `get_registry()` call in a process (`algorithms/registry.py`; the registry is a cached singleton) discovers the class via `pkgutil.walk_packages` + `issubclass(BaseAlgorithm)`.
 
 ## 3. (Optional) Ship an algorithm from an out-of-tree package
 
@@ -54,7 +54,7 @@ equivalent is the `memdiver.kdfs` entry-point group (see
 
 ## 4. Surface in the UI
 
-Add `"my_algo"` to `frontend/src/stores/app-store.ts` `ANALYSIS_ALGORITHMS`. Optionally extend `frontend/src/utils/algorithm-availability.ts` if the algorithm has mode-specific requirements.
+Add `"my_algo"` to the matching category array in `frontend/src/stores/app-store.ts` (`SINGLE_FILE_ALGORITHMS`, `REFERENCE_ALGORITHMS`, `MULTI_DUMP_ALGORITHMS` or `PROTOCOL_ALGORITHMS`); `ALL_ALGORITHMS` is composed from those and drives the analysis panel's checkbox list. Availability gating is decided server-side: if the algorithm has input requirements (e.g. needs a keylog or 2+ dumps), add a rule to `_availability_for` in `app/tools_algorithms.py` (served by `GET /api/algorithms/availability`, `api/routers/algorithms.py`). Every algorithm without a rule is available by default.
 
 ## 5. Test
 

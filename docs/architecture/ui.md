@@ -4,7 +4,7 @@ Legacy Python-side UI layer.
 
 - **Marimo sandbox** — `run.py` is the single `marimo.App`. `memdiver ui` launches it via `python -m marimo run run.py`. This is where the 5 Marimo-only visualization views live (heatmap, variance map, phase lifecycle, cross-library comparison, differential diff).
 
-`ui/mode.py` defines the `VERIFICATION_VIEWS` and `RESEARCH_VIEWS` lists consumed by the sandbox.
+`ui/mode.py` defines `ModeManager`, whose `TESTING_VIEWS` and `RESEARCH_VIEWS` lists (returned by `available_views()`) gate which views the sandbox shows in each mode. The view implementations live in `ui/views/`.
 
 ## When to prefer Marimo
 

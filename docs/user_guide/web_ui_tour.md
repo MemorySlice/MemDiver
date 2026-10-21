@@ -4,18 +4,30 @@ A guided walk through the React SPA. Each screenshot below is regenerated determ
 
 ## Session landing
 
-First screen when you open `http://127.0.0.1:8080`. Pick a saved session or start a new one.
+First screen when you open `http://127.0.0.1:8080`. Pick a saved session (**Load** / **Delete**) or click **New Session** to open the wizard. If you previously discarded unsaved work, a **Recovered work** entry (badge **RECOVERED**) is pinned to the top of the list — it is the only copy, so delete it deliberately.
 
 ```{figure} /_static/screenshots/01_landing.png
 :alt: MemDiver session landing page, listing previously saved analysis sessions
 :align: center
 
-The session-landing view enumerates `.memdiver` SessionStore entries and offers a "New session" entry point into the wizard.
+The session-landing view enumerates `.memdiver` SessionStore entries and offers a "New Session" entry point into the wizard.
 ```
+
+## Starting a new session
+
+**New Session** in the workspace toolbar (or `Ctrl+N`) resets the workspace. If the workspace has changes that were not saved yet, a **Start a new session?** dialog lists what is at stake (dumps loaded, analysis results, bookmarks) and offers:
+
+- **Save and start new** — saves under the name in **Save as** (default: `<input folder>-YYYY-MM-DD-HHmm`) and then resets. Saving under an existing name replaces that session, so when the name matches a saved session the dialog warns *"A session named “…” already exists and will be overwritten."* The saved-session list is fetched each time the dialog opens; if that fetch fails, the warning is simply not shown. The warning does not block saving.
+- **Discard and start new** — keeps the discarded workspace as the **Recovered work** session on the landing page, then resets.
+- **Cancel**.
+
+A clean workspace resets without asking. Closing or reloading the browser tab with unsaved changes triggers the browser's own "leave this page?" confirmation.
 
 ## Wizard — select data
 
 Type a path or click **Browse** to open the file-browser modal.
+
+The browser opens in the folder you last picked from (falling back to your home directory). Click **☆ Favourite** in the path bar to save the current folder; it then reads **Favourited**, and clicking it again removes it. Saved folders appear in the collapsible **Favourites** section — click one to jump there, or hover and press **✕** to remove it. Favourites and the last-browsed folder are stored per user on the server in `~/.memdiver/config.json` (or `$XDG_DATA_HOME/memdiver/config.json`), next to the upload and oracle directories, so they survive browser resets.
 
 ```{figure} /_static/screenshots/02_wizard_select_data.png
 :alt: Wizard step one, showing path input and a file-browser modal
@@ -51,6 +63,8 @@ The IDA-Pro-style dockable workspace: main hex panel, sidebar with six tabs, det
 Structural fields are colored by class (`static`, `dynamic`, `key_material`); overlays drive the investigation panel on the right.
 ```
 
+The toolbar's search box finds a byte sequence typed as hex, text, UTF-16LE text, base64, or a 32/64-bit integer, and previews the resolved bytes before searching — see [Byte search](../visualizations/hex.md#byte-search) for the accepted formats. With two or more dumps selected, the **Main view layout** switcher offers **Single**, **Side by side**, and **Overlay**.
+
 ## Entropy profile
 
 ```{figure} /_static/screenshots/06_entropy_tab.png
@@ -69,7 +83,18 @@ Sliding-window Shannon entropy. Shaded regions exceed the configurable threshold
 Consensus over multiple dumps from the same library and phase. Classification bands: `INVARIANT`, `STRUCTURAL`, `POINTER`, `KEY_CANDIDATE`.
 ```
 
-## Pipeline — oracle stage
+The same consensus vector can be painted onto the hex bytes: switch the main view to **Overlay**, then use the **Regions** tab to list runs by class, filter them to an exact key size (`16 B`, `24 B`, `32 B`, `48 B`) and sort **Longest first**. See [Hex overlay](../visualizations/consensus.md#hex-overlay).
+
+## Pipeline — wizard
+
+The **pipeline** bottom tab is a six-step wizard: **Recipe** → **Dumps** → **Oracle** → **Thresholds** → **Run** → **Results**.
+
+- **Recipe** — **Start blank** (store defaults) or **Replicate gocryptfs IMF result** (a preset that also turns on the N-sweep).
+- **Dumps** — paste paths and **Add paths**, or **Browse folder…**. At least one dump is required; three or more make variance filtering meaningful. Dump 1 is marked **reference**: only its bytes are verified against the oracle.
+- **Oracle** — **Upload** a `.py` oracle and **Arm oracle** it, or pick one from **Examples** (**Use this example**; examples that need config ask for it, then offer **Load + arm**). Alternatively, verify against a pcap instead of a BYO oracle. A smoke test (below) checks the oracle before you continue.
+- **Thresholds** — search-reduce and brute-force parameters, plus optional **Emit a Volatility 3 plugin from the best hit** and **Run the N-sweep harness and build the interactive report**. **Run pipeline** submits the job.
+
+## Pipeline — oracle smoke test
 
 ```{figure} /_static/screenshots/08_pipeline_oracle.png
 :alt: Pipeline oracle-stage wizard showing uploaded decryption oracle with dry-run status
@@ -77,7 +102,7 @@ Consensus over multiple dumps from the same library and phase. Classification ba
 
 Upload a bring-your-own decryption oracle (Python module matching the [oracle interface](../oracle/interface.md)), arm it, and smoke-test it before committing to a full sweep.
 
-The smoke test is a *discrimination* test, not a pass count. The server feeds the oracle one candidate it must accept — the master key the run's `meta.json` records — and fifteen it must reject, read at random offsets from the dump itself. A green **discriminates** verdict means both halves held. **accepts_noise** means the oracle accepted arbitrary memory and would flood a real sweep with false positives; **never_accepts** means it rejected its own known-good key, so the oracle or its config is wrong. When the dump has no `meta.json` there is no ground truth to test against, and the verdict says **no_positive_control** rather than pretending to a result.
+The smoke test (**Test on 16 samples**) is a *discrimination* test, not a pass count. The server feeds the oracle one candidate it must accept — the master key the run's `meta.json` records — and fifteen it must reject, read at random offsets from the dump itself. The verdict is shown as a sentence; its id (`discriminates`, `accepts_noise`, `never_accepts`, `no_positive_control`, `inconclusive`) is what the API returns. A green **discriminates** verdict means both halves held, and only then does **Continue to Thresholds →** appear. **accepts_noise** means the oracle accepted arbitrary memory and would flood a real sweep with false positives; **never_accepts** means it rejected its own known-good key, so the oracle or its config is wrong. When the dump has no `meta.json` there is no ground truth to test against, and the verdict says **no_positive_control** ("Half-tested") rather than pretending to a result. **inconclusive** means the run did not produce enough clean signal to judge the oracle; check the listed errors.
 
 The positive control uses the dataset's recorded answer key, so it proves the oracle works — it is not itself a finding.
 ```
@@ -88,7 +113,7 @@ The positive control uses the dataset's recorded answer key, so it proves the or
 :alt: Live pipeline run dashboard with funnel chart, stage timings, and live oracle log
 :align: center
 
-Stages: `search-reduce` → `brute-force` → `n-sweep` → `emit-plugin`. Funnel shows candidates surviving each stage; live log streams oracle hits.
+Stages: `consensus` → `search_reduce` → `brute_force`, then the optional `escalate`, `nsweep`, and `emit_plugin`. The **Reduction funnel** shows candidates surviving each step (Raw → Variance → Aligned → Entropy → Candidates → Verified); the live log streams oracle hits, and **Verified hits** rows offer **Open in hex**.
 ```
 
 ## Pipeline — results
@@ -97,7 +122,7 @@ Stages: `search-reduce` → `brute-force` → `n-sweep` → `emit-plugin`. Funne
 :alt: Pipeline results with survivor-curve chart and downloadable artifacts
 :align: center
 
-Downloadable artifacts include the finalized Welford state (`mean.npy`, `m2.npy`), the `hits.json` catalog, and the synthesized Volatility3 plugin.
+Downloadable artifacts include the finalized consensus state (`consensus/state.json`, which points at the Welford `mean.npy` / `m2.npy` arrays written next to it), the variance vector, `search_reduce/candidates.json`, the `brute_force/hits.json` catalog, the N-sweep report, and the synthesized Volatility 3 plugin with its YARA rule. The results view has **Plugin**, **Report**, and **Raw** tabs.
 ```
 
 ## Theme triptych
@@ -114,11 +139,18 @@ Light, dark, and dark+high-contrast modes. High-contrast mode passes WCAG AAA fo
 | Shortcut | Action |
 |---|---|
 | `Ctrl+N` | New session |
-| `Ctrl+S` | Autosave |
+| `Ctrl+S` | Save the workspace as the session `autosave` |
 | `Ctrl+G` | Go to offset |
 | `Ctrl+B` | Toggle sidebar |
 | `Arrow`, `Shift+Arrow` | Hex navigation / selection |
 | `PageUp`, `PageDown` | Page-wise scrolling |
-| `Home`, `End` | (with `Ctrl`) jump to file start/end |
-| `Tab` | Toggle hex ↔ ASCII column focus |
+| `Home`, `End` | Start / end of the row; with `Ctrl`, start / end of the file |
+| `n`, `p` | Jump to the next / previous region of the class chosen in the **Regions** panel |
+| `Tab` | Move focus from the hex to the ASCII column (a second `Tab` leaves the grid) |
 | `Esc` | Clear selection / back in wizard |
+
+On macOS, `⌘` works wherever `Ctrl` is listed.
+
+## Guided tours
+
+The first time you reach the workspace a short layout tour runs, followed by a structure-overlay tour; the pipeline tab has its own tour the first time it opens. Dismissed or finished tours are remembered in the browser. Replay one from **Settings** → **Run onboarding tour**.

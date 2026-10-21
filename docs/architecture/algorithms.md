@@ -20,6 +20,6 @@ class BaseAlgorithm:
 
 ## Discovery
 
-`algorithms.registry.get_registry()` is a module-level singleton. First call walks three subdirs (`known_key/`, `unknown_key/`, `patterns/`) and registers every subclass of `BaseAlgorithm` with a truthy `name`.
+`algorithms.registry.get_registry()` is a module-level singleton. First call walks three subdirs (`known_key/`, `unknown_key/`, `patterns/`) and registers every subclass of `BaseAlgorithm` with a truthy `name`. It then loads any algorithms advertised by installed packages under the `memdiver.algorithms` entry-point group (shared helpers in `core/plugin_discovery.py`).
 
 Adding an algorithm is one file. See [](../contributing/adding_algorithms.md).

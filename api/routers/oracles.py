@@ -37,9 +37,12 @@ Contract (see the plan's B5 task):
 * ``POST /api/oracles/enable``     — the user's explicit consent to store and
   execute oracle code, replacing the "set an env var and restart" ritual.
 
-When ``MEMDIVER_ORACLE_DIR`` is unset the *upload* / *arm* / *delete*
-endpoints return **503** with an explanatory detail. ``examples`` and
-``dry-run`` on example oracles keep working because they don't write.
+When ``MEMDIVER_ORACLE_DIR`` is unset (and the user has not opted in) the
+endpoints that would write into the oracle dir -- *upload*, example *load* and
+orphan *prune* -- return **503** with an explanatory detail. *arm* / *delete*
+answer **404** instead, because with no oracle dir there are no entries to act
+on. ``examples`` and ``dry-run`` on example oracles keep working because they
+don't write.
 """
 
 from __future__ import annotations
@@ -362,8 +365,14 @@ def prune_orphan_oracles():
     gets to make -- so this endpoint exists to do it on request.
     """
     registry = _registry()
-    registry.require_enabled()
-    return {"removed": registry.prune_orphans()}
+    # ``OracleDisabled`` must surface as the 503 every other writing endpoint
+    # gives, not escape as an unhandled 500. ``prune_orphans`` re-checks it.
+    try:
+        registry.require_enabled()
+        removed = registry.prune_orphans()
+    except OracleRegistryError as exc:
+        raise _map_registry_error(exc)
+    return {"removed": removed}
 
 
 @router.get("/status")

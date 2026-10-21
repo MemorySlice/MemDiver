@@ -22,12 +22,19 @@ Modules:
   `session_info_result`, `page_states_result`, `processes_result`,
   `modules_result`, `handles_result`, `connections_result`,
   `module_index_result`, `blocks_result`. (The legacy `read_hex` / `get_*`
-  dict-returning siblings are kept only as deprecated backward-compat shims.)
+  dict-returning siblings live in `tools_inspect_legacy.py` and are re-exported
+  from `tools_inspect` only as deprecated backward-compat shims.)
 - `tools_xref.py` — `get_cross_references_result`, `identify_structure_result`,
   `apply_structure_result`.
 - `tools_pipeline.py` — the pipeline stages (`consensus`, `search_reduce`,
   `brute_force`, `n_sweep`, `auto_floor`, `emit_plugin`, `export_pattern`) plus
-  `verify_key_result` and `experiment_result`.
+  `verify_key_result`. `experiment_result` lives in `experiment_orchestration.py`.
+- `pipeline/` — the TaskManager spawn-worker entry points: `pipeline_runner.py`
+  (the staged end-to-end pipeline, see
+  [Adding a pipeline stage](../contributing/adding_pipeline_stage.md)) plus the
+  analysis, batch, experiment and corpus-pcap task runners.
+- `tools_algorithms.py` — `algorithm_availability`, the server-side gating rules
+  behind `GET /api/algorithms/availability`.
 - `tools.py` — dataset / analysis producers: `scan_dataset`, `list_protocols`,
   `list_phases`, `analyze_library`, `import_dump`.
 - `session.py` — `ToolSession`, the stateful context (dataset root, scan cache,
@@ -61,7 +68,7 @@ Modules:
       ┌──────────────┬───────┴────────┬───────────────┐
       ▼              ▼                ▼               ▼
  library         CLI presenter   web presenter    MCP presenter
- (services.py:   (cli.py)        (api/routers/*)  (mcp_server/
+ (services.py:   (cli/)          (api/routers/*)  (mcp_server/
   ServiceResult                                    presenters.py)
   as-is)
 ```

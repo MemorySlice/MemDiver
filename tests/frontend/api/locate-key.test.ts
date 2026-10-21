@@ -254,6 +254,37 @@ describe("locateKey", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("serialises pcap_field, the symbolic fourth input form", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ verdict: "found", input_form: "pcap_field" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pcapField = {
+      pcap_path: "/captures/session.pcap",
+      field_id: "client_random",
+      client_random: "ab".repeat(32),
+    };
+    const body: LocateKeyRequest = {
+      dump_paths: ["/a.dump"],
+      pcap_field: pcapField,
+    };
+    const resp = await locateKey(body);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/analysis/locate-key");
+    const sent = JSON.parse(init.body as string);
+    expect(sent.pcap_field).toEqual(pcapField);
+    // No pasted secret rides along: the backend refuses two forms at once.
+    expect(sent.secret_hex).toBeUndefined();
+    expect(resp.input_form).toBe("pcap_field");
+
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("exportKeyPattern", () => {

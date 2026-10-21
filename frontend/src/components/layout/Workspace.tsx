@@ -65,6 +65,7 @@ import PipelinePanel from "@/components/pipeline/PipelinePanel";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { notifyError } from "@/utils/errorNotifier";
 import { useNewSessionGuard } from "@/hooks/useNewSessionGuard";
+import { useSessionLoader } from "@/hooks/useSessionLoader";
 import { useBeforeUnloadGuard } from "@/hooks/useBeforeUnloadGuard";
 import { NewSessionDialog } from "@/components/session/NewSessionDialog";
 import { persistSession } from "@/utils/session-persistence";
@@ -809,12 +810,30 @@ function BottomTabs() {
   );
 }
 
+/**
+ * Names of the saved sessions, refreshed each time `active` turns true.
+ *
+ * Feeds the new-session dialog's "already exists and will be overwritten"
+ * warning: the backend saves under the name as file stem and silently replaces
+ * a same-named file. `SessionInfo.name` is that stem. Nothing is fetched until
+ * the dialog opens, and a failed listing just leaves the warning off rather
+ * than blocking the save.
+ */
+function useExistingSessionNames(active: boolean): readonly string[] {
+  const { sessions, refresh } = useSessionLoader();
+  useEffect(() => {
+    if (active) refresh().catch(() => {});
+  }, [active, refresh]);
+  return useMemo(() => sessions.map((s) => s.name), [sessions]);
+}
+
 export function Workspace() {
   // Called once, here, on purpose: Ctrl+N is registered in this component while
   // the toolbar button lives two components away, so this is the nearest place
   // that can put BOTH on the same guarded entry point.
   const guard = useNewSessionGuard();
   useBeforeUnloadGuard();
+  const existingSessionNames = useExistingSessionNames(guard.open);
   const sidebarRef = useRef<PanelImperativeHandle>(null);
 
   const toggleSidebar = useCallback(() => {
@@ -895,7 +914,7 @@ export function Workspace() {
         </Panel>
       </Group>
       <NotificationStack />
-      {guard.open && <NewSessionDialog guard={guard} />}
+      {guard.open && <NewSessionDialog guard={guard} existingNames={existingSessionNames} />}
     </div>
   );
 }

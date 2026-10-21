@@ -336,8 +336,15 @@ def test_bind_guardrail_refuses_non_loopback_without_token_or_override():
         enforce_bind_guardrail("0.0.0.0", settings)
     assert str(exc_info.value) == (
         "Refusing to bind 0.0.0.0 without MEMDIVER_API_TOKEN. Set a token, "
-        "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+        "or MEMDIVER_ALLOW_INSECURE=1 to override."
     )
+
+
+def test_allow_insecure_env_var_named_in_guardrail_message_is_honoured(monkeypatch):
+    # The guardrail message tells operators which variable to set; it must be
+    # the one Settings actually reads (it once said MEMDIVER_API_ALLOW_INSECURE).
+    monkeypatch.setenv("MEMDIVER_ALLOW_INSECURE", "1")
+    assert Settings(api_token=None).allow_insecure is True
 
 
 def test_bind_guardrail_allows_non_loopback_with_token():
@@ -365,7 +372,7 @@ def test_insecure_bind_error_funnels_through_cli_error_mapper(capsys):
 
     err = InsecureBindError(
         "Refusing to bind 0.0.0.0 without MEMDIVER_API_TOKEN. Set a token, "
-        "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+        "or MEMDIVER_ALLOW_INSECURE=1 to override."
     )
     assert isinstance(err, CapabilityError)
     assert err.category is ErrorCategory.PRECONDITION
@@ -391,7 +398,7 @@ def test_cmd_web_routes_insecure_bind_through_funnel(monkeypatch, capsys):
         # will catch — otherwise a stale class object would slip past the except.
         raise security.InsecureBindError(
             "Refusing to bind 0.0.0.0 without MEMDIVER_API_TOKEN. Set a token, "
-            "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+            "or MEMDIVER_ALLOW_INSECURE=1 to override."
         )
 
     monkeypatch.setattr(security, "enforce_bind_guardrail", _refuse)

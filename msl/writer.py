@@ -170,6 +170,7 @@ class MslEncryptionConfig:
     Pass to ``MslWriter(encryption=...)`` to emit an encrypted container.
     Provide exactly one form of key material matching the chosen
     ``key_encap`` / ``kdf_type``:
+
       * key_encap=NONE, kdf_type=NONE      -> raw_key (32 bytes)
       * key_encap=NONE, kdf_type=ARGON2ID  -> passphrase
       * key_encap!=NONE                     -> recipient_public
@@ -632,7 +633,8 @@ class MslWriter:
     def write(self) -> None:
         """Write all accumulated blocks to the output file.
 
-        Spec-mandated block ordering (§6.1):
+        Spec-mandated block ordering (§6.1)::
+
           Block 0 -> Import Provenance (if imported) OR Process Identity
           Block 1 -> Module List Index (+ Module Entry children)
           Block 2 -> System Context (if investigation) (+ table children)

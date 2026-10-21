@@ -95,7 +95,14 @@ memdiver experiment --target path/to/target.py --num-runs 10
 
 # 5. Marimo research sandbox (houses the 5 deeper visualization views)
 memdiver ui
+
+# 6. Already know the key? Find where it sits in every dump
+memdiver locate-key runs/ --key-hex '<hex>' -o loc.json
 ```
+
+`locate-key` exits `0` when the secret is found, `3` when it is proven absent,
+and `2` when nothing could be searched — see
+[Locating a known key](https://memoryslice.github.io/MemDiver/user_guide/locate_key.html).
 
 ## Verify against a real capture
 
@@ -173,16 +180,16 @@ token even when one is set.
 to anything other than `127.0.0.1` / `::1` / `localhost` and no
 `MEMDIVER_API_TOKEN` is configured — binding a forensic-data API to the
 network with zero auth is refused outright. Set a token, or override with
-`MEMDIVER_API_ALLOW_INSECURE=1` (logs a loud warning on every startup).
+`MEMDIVER_ALLOW_INSECURE=1` (logs a loud warning on every startup).
 
 ## At a glance
 
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
-| CLI subcommands | **24** | [`cli/`](cli/) |
-| FastAPI routers | **15** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **34** | [`mcp_server/`](mcp_server/) |
+| CLI subcommands | **33** | [`cli/`](cli/) |
+| FastAPI routers | **18** + WebSocket | [`api/routers/`](api/routers/) |
+| MCP tools | **45** | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
 | Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
 | Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
@@ -201,15 +208,27 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 34 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 45 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
-All 24 subcommands exposed by [`cli/`](cli/):
+All 33 subcommands exposed by [`cli/`](cli/):
 
-| Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Format conversion | Runtime shells |
-|---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` | `search-reduce` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
+| Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Known secret &amp; detectors | Format conversion | Runtime shells |
+|---|---|---|---|---|---|
+| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
+
+Newer subcommands at a glance:
+
+- `consensus-window` — read one window in every dump at the address the consensus aligned
+- `consensus-regions` — list every occurrence of a consensus class, with jump offsets
+- `analyze-candidates` — rank candidate regions across N dumps (no oracle needed)
+- `locate-key` — locate a KNOWN secret across N dumps ([guide](https://memoryslice.github.io/MemDiver/user_guide/locate_key.html))
+- `locate-field-pairs` — locate a handshake FIELD across N dumps, each dump taking the field from its own capture
+- `export-key-pattern` — export a scanning signature anchored on a KNOWN secret (wildcards the key, keeps its neighbourhood)
+- `scan-yara` — scan N dumps with a YARA rule set
+- `verify-plugin` — run a MemDiver-emitted Volatility3 plugin over N dumps
+- `score-detector` — score detector firings against known-true key intervals
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -241,7 +260,7 @@ Switch via **Settings → Display → Chart backend**. The preference persists p
 ## Architecture
 
 ```
-api/            FastAPI backend — 15 routers + WebSocket, OpenAPI docs at /docs
+api/            FastAPI backend — 18 routers + WebSocket, OpenAPI docs at /docs
 frontend/       React + Vite SPA (TypeScript, Tailwind, Zustand) — dockable workspace
 core/           Stdlib-only data layer (models, discovery, parsing, entropy, KDF, variance, ASLR alignment)
 engine/         Differential Engine — ConsensusVector (Welford), SearchCorrelator, DiffStore,
@@ -250,7 +269,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 34 tools exposed to AI assistants
+mcp_server/     MCP server — 45 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

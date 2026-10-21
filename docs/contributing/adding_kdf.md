@@ -44,8 +44,8 @@ class MyProtoKDF(BaseKDF):
         ...
 ```
 
-No registration call is needed — the next `get_kdf_registry()` call discovers
-the class via the shared plugin loader (`core/plugin_discovery.py`) and
+No registration call is needed — the first `get_kdf_registry()` call in a
+process (the registry is a cached singleton) discovers the class via the shared plugin loader (`core/plugin_discovery.py`) and
 `issubclass(BaseKDF)`. A KDF whose `__init__` raises is logged and skipped; it
 no longer aborts discovery of the other KDFs.
 

@@ -1,6 +1,6 @@
 # Adding a pipeline stage
 
-The end-to-end pipeline in `engine/pipeline_runner.py` is composed from an
+The end-to-end pipeline in `app/pipeline/pipeline_runner.py` is composed from an
 ordered **stage registry** rather than a hardcoded sequence. You can add or
 insert a stage without editing `run_pipeline`'s body.
 
@@ -37,13 +37,20 @@ stage = Stage(
 
 ## Writing artifacts + emits
 
-Follow the existing `_run_*` helpers: create your subdirectory under
-`state.artifact_dir`, write files, then register each with
-`_register_artifact(state.artifacts, state.artifact_dir, name=..., relpath=...)`
-so it computes size + sha256 and appends the spec. Wrap the work in
-`ctx.emit("stage_start", ...)` / `ctx.emit("stage_end", ...)` and pass
-`progress_callback=_bridge(ctx, "my_stage")` to any engine function so
-fine-grained progress reaches the UI.
+Create your subdirectory under `state.artifact_dir`, write files, then
+register each with
+`register_artifact(state.artifacts, state.artifact_dir, name=..., relpath=...)`
+(from `memdiver.core.artifact_util`) so it computes size + sha256 and appends
+the spec. Wrap the work in `state.ctx.emit("stage_start", ...)` /
+`state.ctx.emit("stage_end", ...)` and pass
+`progress_callback=_bridge(state.ctx, "my_stage")` to any engine function so
+fine-grained progress reaches the UI. (The default stages delegate their
+compute and stage bracketing to the `app.tools_pipeline` producers via
+`_run_producer` / `_producer_sink`; `_bridge` is kept as the reference adapter
+for out-of-tree stages.)
+
+The default stages, in order, are `consensus`, `search_reduce`, `brute_force`,
+`escalate`, `nsweep` and `emit_plugin`.
 
 ## Registering
 
@@ -64,18 +71,18 @@ with `get_pipeline_stages()`.
 **Where you call `register_stage()` decides whether the stage ever runs.** Real
 pipeline runs execute in a `mp_context="spawn"` process pool
 (`api/services/task_manager.py`), and each freshly-spawned worker re-imports
-`engine/pipeline_runner.py` clean and rebuilds its stage registry from scratch.
+`app/pipeline/pipeline_runner.py` clean and rebuilds its stage registry from scratch.
 A `register_stage()` call made only in the parent/API process is invisible to
 those workers — the stage silently no-ops in every actual run even though it
 shows up in `get_pipeline_stages()` in the parent.
 
 For a stage to execute, its `register_stage()` call must run at **import time**
-of a module that `engine/pipeline_runner` itself imports (so every spawned
+of a module that `app/pipeline/pipeline_runner` itself imports (so every spawned
 worker re-runs it) — or the stage must otherwise be re-registered inside each
 worker. The simplest pattern is to register at module scope:
 
 ```python
-# engine/stages/my_stage.py — imported by engine/pipeline_runner
+# app/pipeline/my_stage.py — imported by app/pipeline/pipeline_runner
 from memdiver.app.pipeline.pipeline_runner import Stage, register_stage
 
 def _my_stage(state):
@@ -84,14 +91,14 @@ def _my_stage(state):
 register_stage(Stage(name="my_stage", run=_my_stage), after="brute_force")
 ```
 
-and ensure `engine/pipeline_runner` imports that module so registration happens
+and ensure `app/pipeline/pipeline_runner` imports that module so registration happens
 on every re-import.
 
 ### (Optional) out-of-tree via entry point
 
 An installed third-party package can add a stage without living in this repo by
 advertising it under the `memdiver.pipeline_stages` entry-point group. MemDiver
-loads the group **at import time** of `engine/pipeline_runner.py` — which is
+loads the group **at import time** of `app/pipeline/pipeline_runner.py` — which is
 exactly the import-time requirement above: because each spawned worker
 re-imports the module, it re-runs entry-point discovery too, so an out-of-tree
 stage is spawn-visible and actually executes (this is the recommended way to

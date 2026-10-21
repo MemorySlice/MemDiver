@@ -14,10 +14,17 @@ You write the oracle. Memdiver owns the rest of the pipeline:
 
 The oracle is invoked via `--oracle /abs/path/to/script.py`. Memdiver
 prints the SHA-256 of the loaded file to stderr on startup and refuses
-to load oracles from world-writable files or directories. Beyond that
-it is equivalent to `find -exec` — the script runs with your privileges,
-on your evidence, with full filesystem and network access. There is no
-sandbox because sandboxes break legitimate network-replay and
+to load oracles from group- or world-writable files or directories.
+Before importing the script in-process it replays the *load path* —
+`import` plus `build_oracle(config)`, never `verify()` — in a throwaway
+subprocess under a wall-clock timeout and best-effort CPU/memory limits
+(`MEMDIVER_ORACLE_SANDBOX_TIMEOUT`, `MEMDIVER_ORACLE_SANDBOX_CPU`,
+`MEMDIVER_ORACLE_SANDBOX_MEM`; see [](../user_guide/configuration.md)),
+so an oracle that hangs or exhausts memory while loading is rejected
+before it can take the process down. That probe is the only containment:
+`verify()` itself runs unsandboxed, equivalent to `find -exec` — the
+script runs with your privileges, on your evidence, with full filesystem
+and network access, because sandboxes break legitimate network-replay and
 filesystem-probe oracles. Treat unknown oracles like any other piece of
 untrusted code.
 
@@ -133,3 +140,65 @@ handshake_hash_hex = "aabbcc..."
 
 Copy any of these into your experiment directory, adjust the `config`
 keys for your target, and point `--oracle` at the result.
+
+## Running oracles from the web UI
+
+The pipeline wizard's **Oracle** stage drives the same registry through
+`/api/oracles` (`api/routers/oracles.py`).
+
+**Enable an oracle directory first.** Oracles are stored in, and executed
+from, a dedicated directory, and storing one is a consent decision, so it
+is off until you opt in. The Oracle stage shows a consent panel that calls
+`POST /api/oracles/enable` (optional body `{"path": "/abs/dir"}`; the
+default is `<memdiver home>/oracles`). The directory is validated, created
+with mode `0o700`, saved in the user-local `<memdiver home>/config.json`
+and takes effect immediately. The precedence is `MEMDIVER_ORACLE_DIR`
+(environment or `.env`) > the saved choice > disabled; an empty
+`MEMDIVER_ORACLE_DIR` counts as unset. While the variable is set the UI
+cannot change the directory — `POST /enable` answers **409** and
+`GET /api/oracles/status` reports `env_pinned: true` and `source: "env"`.
+Until a directory is enabled, upload and example-load answer **503**
+(and there is nothing registered to arm or delete). Full details: [](../user_guide/configuration.md#directories-chosen-in-the-ui).
+
+**Three gates.** An uploaded (or example-loaded) oracle is checked
+leniently at upload — only a hang or crash during the load probe is
+refused, because a Shape 2 oracle with no config yet is expected to raise
+— and stored as `<uuid>.py` at mode `0o600`, unarmed. **Arming**
+(`POST /api/oracles/{id}/arm`) is strict: the body echoes the sha256 the UI
+displayed (409 on mismatch with the file on disk), may carry the oracle's
+`config`, rejects config values that still contain an unexpanded `${VAR}`
+placeholder, and replays the load with that config. The brute-force run
+loads it strictly again. Registered oracles survive a server restart, but
+always come back unarmed.
+
+**Testing before arming.** Neither test needs the oracle to be armed:
+
+- `POST /api/oracles/{id}/dry-run` grades up to 64 base64 samples *you*
+  choose and returns pass/fail counts — it only means as much as the
+  samples do.
+- `POST /api/oracles/{id}/smoke-test` lets the server choose
+  (`source_paths` required; `key_size` default 32, `negatives` default 15):
+  one **positive control** — the run's master key from the `meta.json` that
+  owns the first dump — plus N **negative controls**: real `key_size`-byte
+  windows read at random offsets of that same first dump
+  (`app/oracle_smoke_test.py`). Offsets are drawn in the dump's `vas`
+  (captured-memory) view, or `raw` for a flat dump — never the zero-padded
+  `va` view, so no negative is a byte the dump did not capture. A window equal
+  to the key is redrawn, and windows with fewer than 8 distinct byte values
+  are used only as a last-resort top-up, reported in
+  `negatives.low_entropy_included` and in `caveats`. Pass `seed` for a
+  reproducible draw. It returns a `verdict`:
+
+  | `verdict` | Meaning |
+  |---|---|
+  | `accepts_noise` | At least one random dump window was accepted — the oracle says yes to arbitrary memory. Takes precedence over everything else. |
+  | `no_positive_control` | No ground-truth key was available (e.g. the dump is not part of a corpus with `meta.json`); only the negatives were tested. |
+  | `discriminates` | The real key was accepted **and** at least one negative was cleanly rejected. |
+  | `inconclusive` | The real key was accepted, but no negative was cleanly rejected. |
+  | `never_accepts` | The oracle rejected its own known-good key. |
+
+  The response never echoes sample bytes, because the positive control is
+  the run's master key.
+
+The bundled examples and their config auto-fill are described in
+[](examples.md#using-the-examples-from-the-web-ui).

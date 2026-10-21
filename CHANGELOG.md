@@ -6,6 +6,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **`memdiver locate-key` treated a missing dump path as "searched and
+  absent".** A path that did not exist was dropped with a log record and the
+  remaining dumps were searched, so the command could answer `absent` (exit 3)
+  over a dump nobody read. A missing path is now `INVALID_INPUT`:
+  `memdiver: ERROR — Dump path(s) not found: …`, exit 2, no payload. Files
+  directly inside a passed directory that match no dump pattern now get one
+  `memdiver: note — skipped N file(s) in DIR with unrecognised extensions …`
+  line on stderr (dotfiles and the sidecar suffixes in
+  `cli/_shared.py:_NON_DUMP_SUFFIXES` excluded), and `locate-key --help` prints
+  the exit-code table. Every other command that resolves dump paths
+  (`consensus`, `scan-yara`, `export`, …) still skips a missing path, but now
+  says so on stderr (`memdiver: WARNING — skipping non-existent path: X`)
+  instead of in a log record, and prints the same unrecognised-files note.
+- **`POST /api/analysis/locate-key` could not take a `pcap_field`.** The CLI
+  (`--pcap-field`) and the MCP tool accepted the symbolic
+  `{pcap_path, field_id, client_random?}` form; the HTTP route did not. It now
+  forwards `pcap_field` to the producer, which validates it (an unknown key is a
+  400) and existence-checks the capture.
+- **`DELETE /api/oracles/orphans` answered 500 when no oracle directory was
+  configured.** `OracleDisabled` escaped unhandled; it now maps to the same
+  **503** every other writing oracle endpoint returns.
+- **CORS refused `PUT`, which `PUT /api/settings/last-dir` needs.**
+  `allow_methods` is now `GET`/`POST`/`PUT`/`DELETE`/`OPTIONS`; `PATCH` is still
+  refused (no route uses it).
+- **`MEMDIVER_PORT` never changed the port `memdiver web` bound.** `--port`
+  defaulted to a literal `8080`, so the setting was only echoed in the startup
+  log. Precedence is now `--port` > `MEMDIVER_PORT` / `.env` > `8080`, and the
+  startup log reports the port actually bound.
+- **The new-session dialog silently overwrote a saved session of the same
+  name.** It now fetches the saved-session list when it opens and warns
+  "A session named … already exists and will be overwritten." (The warning
+  does not block saving.)
+- **`locate-key` was missing from the README and the published CLI reference
+  (#27).** `sphinx-argparse` and `autodoc` import the `memdiver` package, which
+  the docs workflow never installed, so the CLI reference could not regenerate.
+  `.github/workflows/docs.yml` now runs `pip install -e .`, `docs/dev/` and
+  `docs/issue-drafts/` are excluded from the published site, and the README
+  lists `locate-key`. New pages: a locate-key guide
+  (`docs/user_guide/locate_key.md`) and a configuration page
+  (`docs/user_guide/configuration.md`) listing every `MEMDIVER_*` variable.
 - **The web server could not be shut down, so `kill -9` was the only way out —
   and that leaked semaphores and orphaned processes permanently.** Killing
   `memdiver` printed `resource_tracker: There appear to be 5 leaked semaphore

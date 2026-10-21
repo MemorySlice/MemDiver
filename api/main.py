@@ -157,9 +157,10 @@ def create_app() -> FastAPI:
     # rejected by browsers and unsafe (it would let any site make credentialed
     # requests), so any literal "*" is stripped from the configured origins and
     # we fall back to the localhost dev origin. allow_methods / allow_headers
-    # are narrowed to exactly what the SPA sends (GET/POST/DELETE + the OPTIONS
-    # preflight; Content-Type on JSON/upload bodies, Authorization/X-API-Key
-    # when an API token is configured) instead of "*".
+    # are narrowed to exactly what the SPA sends (GET/POST/PUT/DELETE + the
+    # OPTIONS preflight -- PUT is used by ``PUT /api/settings/last-dir``, and no
+    # route uses PATCH; Content-Type on JSON/upload bodies, Authorization/
+    # X-API-Key when an API token is configured) instead of "*".
     cors_origins = [o for o in settings.cors_origins if o != "*"]
     if not cors_origins:
         cors_origins = ["http://localhost:5173"]
@@ -168,7 +169,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)

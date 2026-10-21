@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from memdiver.core.install_hints import (missing_package_message,
@@ -113,32 +114,116 @@ def _warn_tag_status(source) -> None:
               file=sys.stderr)
 
 
-def _resolve_dump_paths(raw_paths: list) -> list:
-    """Expand directories to all supported dump flavours; pass through files.
+#: Glob patterns a DIRECTORY argument is expanded with (see ``_scan_dump_inputs``).
+_DUMP_GLOBS = ("*.dump", "*.msl", "*.gcore.core", "*.core",
+               "*gdb_raw.bin", "*lldb_raw.bin")
+
+#: Suffixes of the sidecar files a run directory routinely holds next to its
+#: dumps (metadata, key logs, captures, rules, arrays, notes). A file matching
+#: no dump glob is reported as "skipped" only when it is NOT one of these, so the
+#: note names plausible dumps the operator may have expected to be searched
+#: rather than every meta.json in the tree.
+_NON_DUMP_SUFFIXES = frozenset({".json", ".txt", ".log", ".pcap", ".pcapng",
+                                ".yar", ".yara", ".npy", ".md"})
+
+#: How many skipped file names the per-directory note quotes as examples.
+_SKIPPED_EXAMPLES = 3
+
+
+@dataclass(frozen=True)
+class DumpInputs:
+    """What the dump-path arguments resolved to, before anything is reported.
+
+    ``paths`` is the searchable list (files passed through, directories
+    expanded); ``missing`` holds the raw arguments that named nothing on disk;
+    ``unrecognised`` maps each directory argument to the regular files directly
+    inside it that matched no dump glob and are not known sidecars.
+    """
+
+    paths: list = field(default_factory=list)
+    missing: list = field(default_factory=list)
+    unrecognised: dict = field(default_factory=dict)
+
+
+def _expand_dump_dir(path: Path) -> list:
+    """Glob one directory for every supported dump flavour, de-duplicated + sorted."""
+    collected: list[Path] = []
+    for pattern in _DUMP_GLOBS:
+        collected.extend(path.glob(pattern))
+    # De-duplicate (``*.gcore.core`` overlaps ``*.core``) and sort.
+    return sorted({c.resolve(): c for c in collected}.values())
+
+
+def _unrecognised_in_dir(path: Path, matched: list) -> list:
+    """Regular files in ``path`` that no glob matched, minus dotfiles + sidecars."""
+    taken = {m.resolve() for m in matched}
+    return sorted(
+        child for child in path.iterdir()
+        if child.is_file()
+        and not child.name.startswith(".")
+        and child.suffix.lower() not in _NON_DUMP_SUFFIXES
+        and child.resolve() not in taken
+    )
+
+
+def _scan_dump_inputs(raw_paths: list) -> DumpInputs:
+    """Resolve dump-path arguments WITHOUT printing anything (pure, testable).
 
     Recognised extensions inside a run directory:
       * ``.dump`` and ``.msl`` (legacy + Memory Slice)
       * ``.gcore.core`` and bare ``.core`` (Linux gcore/ELF core)
       * ``gdb_raw.bin`` / ``lldb_raw.bin`` (regioned raw dumps)
     """
-    paths: list[Path] = []
+    inputs = DumpInputs()
     for p in raw_paths:
         path = Path(p)
         if path.is_dir():
-            collected: list[Path] = []
-            collected.extend(path.glob("*.dump"))
-            collected.extend(path.glob("*.msl"))
-            collected.extend(path.glob("*.gcore.core"))
-            collected.extend(path.glob("*.core"))
-            collected.extend(path.glob("*gdb_raw.bin"))
-            collected.extend(path.glob("*lldb_raw.bin"))
-            # De-duplicate (``*.gcore.core`` overlaps ``*.core``) and sort.
-            paths.extend(sorted({c.resolve(): c for c in collected}.values()))
+            expanded = _expand_dump_dir(path)
+            inputs.paths.extend(expanded)
+            skipped = _unrecognised_in_dir(path, expanded)
+            if skipped:
+                inputs.unrecognised[path] = skipped
         elif path.is_file():
-            paths.append(path)
+            inputs.paths.append(path)
         else:
-            logger.warning("Skipping non-existent path: %s", p)
-    return paths
+            inputs.missing.append(str(p))
+    return inputs
+
+
+def _report_missing_inputs(inputs: DumpInputs) -> None:
+    """Warn on stderr about each dump-path argument that named nothing on disk."""
+    for raw in inputs.missing:
+        print(f"memdiver: WARNING — skipping non-existent path: {raw}",
+              file=sys.stderr)
+
+
+def _report_unrecognised_inputs(inputs: DumpInputs) -> None:
+    """Note on stderr, per directory, the files skipped for their extension."""
+    for directory, skipped in inputs.unrecognised.items():
+        examples = ", ".join(f.name for f in skipped[:_SKIPPED_EXAMPLES])
+        print(f"memdiver: note — skipped {len(skipped)} file(s) in {directory} "
+              f"with unrecognised extensions (e.g. {examples}); pass a file "
+              f"explicitly to include it", file=sys.stderr)
+
+
+def _report_skipped_inputs(inputs: DumpInputs) -> None:
+    """Print every missing path and every skipped-file note to stderr."""
+    _report_missing_inputs(inputs)
+    _report_unrecognised_inputs(inputs)
+
+
+def _resolve_dump_paths(raw_paths: list) -> list:
+    """Expand directories to all supported dump flavours; pass through files.
+
+    ``_scan_dump_inputs`` (see there for the recognised extensions) followed by
+    ``_report_skipped_inputs``: a non-existent path is dropped with a
+    ``memdiver: WARNING`` line on stderr, and a directory's files that match no
+    dump glob (dotfiles and known sidecars aside) get one ``memdiver: note``
+    line, so neither omission is silent. Returns only the searchable paths.
+    """
+    inputs = _scan_dump_inputs(raw_paths)
+    _report_skipped_inputs(inputs)
+    return inputs.paths
 
 
 def _setup_logging(verbose: bool) -> None:

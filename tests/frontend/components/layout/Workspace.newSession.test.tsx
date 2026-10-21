@@ -24,9 +24,24 @@ vi.mock("@/api/client", async (importOriginal) => {
     getEntropy: vi.fn(() => new Promise(() => {})),
     getVasRegions: vi.fn(() => new Promise(() => {})),
     listDatasetRuns: vi.fn(() => new Promise(() => {})),
+    // Read when the dialog opens, for the "will be overwritten" warning.
+    listSessions: vi.fn(async () => ({
+      sessions: [
+        {
+          path: "/sessions/taken.memdiver",
+          name: "taken",
+          display_name: "taken",
+          created_at: "2026-09-14T12:00:00",
+          mode: "exploration",
+          input_mode: "single",
+          input_path: "/dumps/target.raw",
+        },
+      ],
+    })),
   };
 });
 
+import { listSessions } from "@/api/client";
 import { useNewSessionGuard, type NewSessionGuard } from "@/hooks/useNewSessionGuard";
 import { Workspace } from "@/components/layout/Workspace";
 import { ThemeProvider } from "@/providers/ThemeProvider";
@@ -82,6 +97,7 @@ function mount(overrides: Partial<NewSessionGuard> = {}) {
 
 beforeEach(() => {
   guardHook.mockReset();
+  (listSessions as unknown as Mock).mockClear();
   requestNewSession = vi.fn();
   // A wipe that did NOT come through the guard is the failure this file exists
   // to catch, so `resetWizard` is watched rather than left to run.
@@ -144,5 +160,27 @@ describe("Workspace new-session entry points", () => {
     expect(screen.getByTestId("new-session-dialog")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Start a new session?" })).toBeInTheDocument();
     expect(screen.getAllByTestId("new-session-dialog")).toHaveLength(1);
+  });
+
+  /**
+   * The dialog can only warn about an overwrite if it is told which names are
+   * taken; Workspace is its only render site, so the wiring is checked here.
+   */
+  it("warns when the typed name matches a saved session", async () => {
+    mount({ open: true });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Save as" }), {
+      target: { value: "taken" },
+    });
+
+    expect(
+      await screen.findByText(/already exists and will be overwritten/),
+    ).toBeInTheDocument();
+  });
+
+  it("fetches the session list only once the dialog opens", () => {
+    mount();
+
+    expect(listSessions).not.toHaveBeenCalled();
   });
 });

@@ -164,7 +164,10 @@ def _build_parser() -> argparse.ArgumentParser:
     bt.add_argument("-v", "--verbose", action="store_true")
     # web (FastAPI + React — also the default when no command given)
     wp = sub.add_parser("web", help="Launch FastAPI + React web application (included in the base install)")
-    wp.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
+    # default=None, not 8080: an explicit 8080 here would always beat
+    # MEMDIVER_PORT / .env, so the env var could never take effect.
+    wp.add_argument("--port", type=int, default=None,
+                    help="Server port (default: $MEMDIVER_PORT or 8080)")
     # consensus
     cs = sub.add_parser("consensus", help="Build consensus matrix from dumps",
                         parents=[_decrypt_parent_parser()])
@@ -547,10 +550,29 @@ def _build_parser() -> argparse.ArgumentParser:
     ex.add_argument("-o", "--output", help="Output file path")
     ex.add_argument("-v", "--verbose", action="store_true")
     # locate-key (where ONE known secret sits across N dumps)
+    # The epilog is the scripting contract (cli.pipeline._LOCATE_KEY_EXIT plus
+    # the CapabilityError backstop below); Raw* keeps its table aligned.
     lk = sub.add_parser(
         "locate-key",
         help="Locate a KNOWN secret across N dumps (exit 0 found / 3 absent / "
-             "2 nothing searched)",
+             "2 not searched or invalid input)",
+        description="Search every given dump for ONE known secret and report "
+                    "where it sits. The verdict is three-valued, so a dump "
+                    "that could not be read is never reported as an absence.",
+        epilog="exit codes:\n"
+               "  0  found — the secret is in at least one searched dump\n"
+               "  3  absent — every dump was searched, the secret is in none\n"
+               # One line per row: sphinx-argparse renders this epilog as
+               # reStructuredText, where a deeper-indented continuation line
+               # is an "Unexpected indentation" error.
+               "  2  not searched — no dump could be searched (unreadable / "
+               "too small)\n"
+               "  2  invalid input — bad hex, missing dump path, bad "
+               "--pcap-field, locked encrypted dump\n"
+               "\n"
+               "The JSON payload (-o) is written for 0, 3 and 2-not-searched;\n"
+               "invalid input writes none.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         parents=[_decrypt_parent_parser()],
     )
     lk.add_argument("dumps", nargs="+",

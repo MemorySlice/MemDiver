@@ -182,7 +182,7 @@ def enforce_bind_guardrail(host: str, settings: Settings) -> None:
     (see the localhost trust model note in ``api/main.py::create_app``):
     request handlers deliberately trust free-form filesystem paths on that
     assumption. Binding a non-loopback interface with neither an API token
-    nor ``MEMDIVER_API_ALLOW_INSECURE=1`` would expose every forensic data
+    nor ``MEMDIVER_ALLOW_INSECURE=1`` would expose every forensic data
     route to the network with no auth at all, so that combination is refused
     outright. Loopback hosts are always allowed regardless of token state,
     matching the existing (pre-auth) default posture.
@@ -193,7 +193,7 @@ def enforce_bind_guardrail(host: str, settings: Settings) -> None:
         return
     if settings.allow_insecure:
         logger.warning(
-            "Binding %s with MEMDIVER_API_ALLOW_INSECURE=1 and no "
+            "Binding %s with MEMDIVER_ALLOW_INSECURE=1 and no "
             "MEMDIVER_API_TOKEN set: the API is reachable from the network "
             "with NO authentication. Set MEMDIVER_API_TOKEN to secure it.",
             host,
@@ -201,5 +201,5 @@ def enforce_bind_guardrail(host: str, settings: Settings) -> None:
         return
     raise InsecureBindError(
         f"Refusing to bind {host} without MEMDIVER_API_TOKEN. Set a token, "
-        "or MEMDIVER_API_ALLOW_INSECURE=1 to override."
+        "or MEMDIVER_ALLOW_INSECURE=1 to override."
     )

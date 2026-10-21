@@ -876,6 +876,121 @@ def test_locate_key_exits_two_when_nothing_was_searched(
     assert "never searched" in capsys.readouterr().err
 
 
+def test_locate_key_refuses_a_missing_dump_path(tmp_path, capsys):
+    """A missing dump is INVALID_INPUT (exit 2), never a silent drop: answering
+    ``absent`` over the remaining dumps would claim an absence nobody read."""
+    import pytest
+
+    from memdiver.cli import _CLI_EXIT, _cmd_locate_key
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+
+    out = tmp_path / "never.json"
+    dumps = _plant_locate_key_dumps(tmp_path, present=0)
+    missing = str(tmp_path / "no_such.dump")
+    with pytest.raises(CapabilityError) as excinfo:
+        _cmd_locate_key(_locate_key_args(dumps + [missing], str(out)))
+
+    assert excinfo.value.category is ErrorCategory.INVALID_INPUT
+    assert _CLI_EXIT[excinfo.value.category] == 2
+    assert missing in excinfo.value.message
+    assert not out.exists()
+    # No duplicate "skipping" warning: the error line is the only report.
+    assert "skipping non-existent" not in capsys.readouterr().err
+
+
+def test_locate_key_missing_dump_path_exits_two_through_main(
+    tmp_path, monkeypatch, capsys
+):
+    import pytest
+
+    from memdiver.cli import main
+
+    out = tmp_path / "never.json"
+    missing = str(tmp_path / "no_such.dump")
+    monkeypatch.setattr(sys, "argv", [
+        "memdiver", "locate-key", *_plant_locate_key_dumps(tmp_path), missing,
+        "--key-hex", _LK_SECRET.hex(), "-o", str(out)])
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 2
+    assert not out.exists()
+    assert (f"memdiver: ERROR — Dump path(s) not found: {missing}"
+            in capsys.readouterr().err)
+
+
+def test_locate_key_notes_unrecognised_files_and_still_searches(
+    tmp_path, capsys
+):
+    """``x.bin`` matches no dump glob: noted on stderr, the ``.dump`` beside it
+    is still searched; sidecars (``meta.json``) and dotfiles stay quiet."""
+    from memdiver.cli import _cmd_locate_key
+
+    run = tmp_path / "run"
+    run.mkdir()
+    _plant_locate_key_dumps(run, present=1, total=1)
+    (run / "x.bin").write_bytes(b"\x00" * 16)
+    (run / "meta.json").write_text("{}")
+    (run / ".DS_Store").write_bytes(b"\x00")
+
+    out = tmp_path / "located.json"
+    rc = _cmd_locate_key(_locate_key_args([str(run)], str(out)))
+
+    assert rc == 0
+    assert json.loads(out.read_text())["dumps_searched"] == 1
+    err = capsys.readouterr().err
+    assert (f"memdiver: note — skipped 1 file(s) in {run} with unrecognised "
+            f"extensions (e.g. x.bin)") in err
+    assert "meta.json" not in err
+    assert ".DS_Store" not in err
+
+
+def test_scan_dump_inputs_classifies_without_printing(tmp_path, capsys):
+    from memdiver.cli._shared import _scan_dump_inputs
+
+    run = tmp_path / "run"
+    run.mkdir()
+    for name in ("a.dump", "b.gcore.core", "c.raw", "d.bin", "e.txt", ".hid"):
+        (run / name).write_bytes(b"\x00")
+    missing = str(tmp_path / "gone")
+
+    inputs = _scan_dump_inputs([str(run), missing])
+
+    # ``*.gcore.core`` overlaps ``*.core``: de-duplicated, as before.
+    assert [p.name for p in inputs.paths] == ["a.dump", "b.gcore.core"]
+    assert inputs.missing == [missing]
+    assert [p.name for p in inputs.unrecognised[run]] == ["c.raw", "d.bin"]
+    assert capsys.readouterr().err == ""
+
+
+def test_resolve_dump_paths_warns_on_stderr_and_returns_paths(tmp_path, capsys):
+    from memdiver.cli import _resolve_dump_paths
+
+    dumps = _plant_locate_key_dumps(tmp_path, total=2)
+    missing = str(tmp_path / "gone.dump")
+
+    paths = _resolve_dump_paths([dumps[0], missing, dumps[1]])
+
+    assert [str(p) for p in paths] == dumps
+    err = capsys.readouterr().err
+    assert f"memdiver: WARNING — skipping non-existent path: {missing}" in err
+
+
+def test_locate_key_help_documents_exit_codes(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as excinfo:
+        _build_parser().parse_args(["locate-key", "--help"])
+
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    assert "0  found — the secret is in at least one searched dump" in out
+    assert "3  absent — every dump was searched, the secret is in none" in out
+    assert "2  not searched — no dump could be searched" in out
+    assert "missing dump path" in out
+    assert "invalid input writes none." in out
+
+
 def test_export_key_pattern_writes_the_pattern_and_warns(tmp_path, capsys):
     from memdiver.cli import _cmd_export_key_pattern
 

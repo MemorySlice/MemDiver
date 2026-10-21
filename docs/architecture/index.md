@@ -6,11 +6,11 @@ MemDiver is composed of eleven subsystems. The web UI, CLI, and MCP server all r
 flowchart TB
     subgraph UX
         Web[React SPA<br/>4 wired views + 7 feature panels]
-        CLI[memdiver CLI<br/>20 subcommands]
-        MCP[MCP server<br/>15 tools]
+        CLI[memdiver CLI<br/>33 subcommands]
+        MCP[MCP server<br/>45 tools]
         Marimo[Marimo sandbox<br/>+5 research views]
     end
-    subgraph API[FastAPI · 12 routers + WS]
+    subgraph API[FastAPI · 18 routers + WS]
         Routers[dataset · analysis · inspect ·<br/>sessions · tasks · dumps · path ·<br/>structures · architect · consensus ·<br/>oracles · pipeline]
     end
     subgraph Engine[Engine &amp; Algorithms]
