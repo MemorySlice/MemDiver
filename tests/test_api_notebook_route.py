@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from memdiver.api.frontend_build import frontend_dist_path
 from memdiver.api.main import create_app
 
 
@@ -52,9 +53,34 @@ def test_notebook_redirect_is_only_registered_when_the_mount_exists(
     assert client.get("/api/notebook/status").json()["available"] is True
 
 
+@pytest.mark.skipif(
+    not (frontend_dist_path() / "favicon.svg").is_file(),
+    reason="frontend bundle not built (run `npm run build` in frontend/)",
+)
 def test_favicon_is_served_rather_than_404ing(client: TestClient) -> None:
     """Browsers request /favicon.ico for any page that declares no icon."""
     response = client.get("/favicon.ico")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/svg+xml")
+
+
+def test_broken_marimo_install_is_not_reported_as_missing(monkeypatch) -> None:
+    """An ImportError raised *inside* marimo is a broken install, not an absent one.
+
+    CI once resolved an old marimo whose server imported a ``websockets`` name
+    the installed websockets lacked; the blanket ``except ImportError`` turned
+    that into "Marimo not installed" and hid the real error.
+    """
+
+    def _broken_create_asgi_app(**_kwargs):
+        raise ImportError(
+            "cannot import name 'ClientConnection' from 'websockets'",
+            name="websockets",
+        )
+
+    monkeypatch.setattr(marimo, "create_asgi_app", _broken_create_asgi_app)
+    status = TestClient(create_app()).get("/api/notebook/status").json()
+
+    assert status["available"] is False
+    assert "ClientConnection" in status["error"]

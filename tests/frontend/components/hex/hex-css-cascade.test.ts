@@ -16,6 +16,13 @@
  * jsdom does resolve specificity and source order across rules, and leaves
  * `var()` / `color-mix()` values as written — which is enough: what matters
  * here is WHICH rule supplies the winning value, not what colour it computes to.
+ *
+ * One caveat: since jsdom 30, a `background` SHORTHAND containing `var()`
+ * computes to the initial value (the substitution is never performed), while a
+ * `background-color` longhand keeps `var()` as written. So the stylesheet is
+ * applied with every `background:` shorthand rewritten to `background-color:`
+ * (same selectors, same order, so the same rule wins) and the tests read
+ * `backgroundColor`.
  */
 
 import { readFileSync } from "node:fs";
@@ -29,6 +36,13 @@ const HEX_CSS = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), "../../../../frontend/src/styles/hex.css"),
   "utf8",
 );
+
+/**
+ * `HEX_CSS` as applied to the test cells: each `background:` shorthand becomes
+ * a `background-color:` longhand so jsdom reports the winning value verbatim
+ * (see the header note). `background-image` and friends are left untouched.
+ */
+const HEX_CSS_FOR_CASCADE = HEX_CSS.replace(/(^|[;{\s])background\s*:/g, "$1background-color:");
 
 /** The value `.hex-byte.selected` alone paints, i.e. selection at full strength. */
 const SELECTED_BACKGROUND = "var(--md-bg-selected, #094771)";
@@ -50,7 +64,7 @@ function cellStyle(classes: string[], theme: "" | "high-contrast" = ""): CSSStyl
   markRings(marked);
 
   const style = document.createElement("style");
-  style.textContent = HEX_CSS;
+  style.textContent = HEX_CSS_FOR_CASCADE;
   document.head.appendChild(style);
   const root = document.createElement("div");
   if (theme) root.className = theme;
@@ -112,7 +126,7 @@ describe("ground-classes stays in step with hex.css", () => {
 
 describe("hex.css selection survives a tinted cell", () => {
   it("paints the plain selection background where nothing competes", () => {
-    expect(cellStyle(["hex-byte", "selected"]).background).toBe(SELECTED_BACKGROUND);
+    expect(cellStyle(["hex-byte", "selected"]).backgroundColor).toBe(SELECTED_BACKGROUND);
   });
 
   /**
@@ -134,7 +148,7 @@ describe("hex.css selection survives a tinted cell", () => {
   it("lets the invariant tint keep the background, and marks the cell anyway", () => {
     const cell = cellStyle(["hex-byte", "selected", "consensus-invariant"]);
 
-    expect(cell.background).not.toBe(SELECTED_BACKGROUND);
+    expect(cell.backgroundColor).not.toBe(SELECTED_BACKGROUND);
     expect(cell.outline).toBe(SELECTION_OUTLINE);
   });
 
@@ -206,7 +220,7 @@ describe("hex.css selection survives a tinted cell", () => {
 
 describe("hex.css search highlight survives a tinted cell", () => {
   it("keeps its own ground where nothing competes", () => {
-    expect(cellStyle(["hex-byte", "highlight-search"]).background).toMatch(/--md-hl-search/);
+    expect(cellStyle(["hex-byte", "highlight-search"]).backgroundColor).toMatch(/--md-hl-search/);
   });
 
   /** Its ground is intact, so the hit is not ringed on top of it. */
@@ -217,7 +231,7 @@ describe("hex.css search highlight survives a tinted cell", () => {
   it("marks an invariant search hit that lost its ground", () => {
     const cell = cellStyle(["hex-byte", "highlight-search", "consensus-invariant"]);
 
-    expect(cell.background).not.toMatch(/--md-hl-search/);
+    expect(cell.backgroundColor).not.toMatch(/--md-hl-search/);
     expect(cell.outline).toBe(SEARCH_OUTLINE);
   });
 
@@ -253,7 +267,7 @@ describe("hex.css search highlight survives a tinted cell", () => {
   it("marks a selection whose only competitor is the search hit", () => {
     const cell = cellStyle(["hex-byte", "selected", "highlight-search"]);
 
-    expect(cell.background).toMatch(/--md-hl-search/);
+    expect(cell.backgroundColor).toMatch(/--md-hl-search/);
     expect(cell.outline).toBe(SELECTION_OUTLINE);
   });
 });

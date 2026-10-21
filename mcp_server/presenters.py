@@ -2,7 +2,7 @@
 
 This module deliberately imports only the stdlib and ``memdiver.core``
 service types — never the optional ``mcp`` SDK — so it can be imported and
-unit-tested without FastMCP installed. ``mcp_server/server.py`` imports the
+unit-tested without the ``mcp`` SDK's MCPServer installed. ``mcp_server/server.py`` imports the
 two functions here to render the status-carrying ``ServiceResult`` producers
 in :mod:`memdiver.mcp_server.tools_inspect` back to the exact JSON shapes the
 MCP tools have always emitted.

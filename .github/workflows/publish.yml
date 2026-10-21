@@ -65,7 +65,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       # Root workspace install: frontend/ and tests/e2e/ share one lockfile.

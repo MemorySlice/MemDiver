@@ -36,7 +36,9 @@ def _resolve_key_material_by_path(
 
 def create_server():
     """Create and configure the MemDiver MCP server."""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
+
+    from memdiver import __version__
 
     from memdiver.app import experiment_orchestration
     from memdiver.app.composition import build_tool_session
@@ -83,9 +85,10 @@ def create_server():
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "memdiver",
         instructions="Memory dump forensic analysis platform for cryptographic key identification",
+        version=__version__,
     )
     _session = build_tool_session()
 
@@ -1530,15 +1533,17 @@ def create_server():
 def main(transport: str = "stdio", port: int = 8080) -> None:
     """Entry point for the MCP server.
 
-    For ``transport == "sse"``, ``port`` selects the SSE listener port.
-    For stdio transport the port argument is ignored.
+    For ``transport == "sse"``, ``port`` selects the SSE listener port
+    (bound to 127.0.0.1). Any other transport runs over stdio and the port
+    argument is ignored.
     """
     from memdiver.core.log import setup_logging
     setup_logging(level="WARNING")
 
     server = create_server()
     if transport == "sse":
-        # FastMCP's run() accepts the port via keyword for SSE transport.
-        server.run(transport=transport, port=port)
+        # mcp 2.x: MCPServer.run() takes the SSE listener's host/port as
+        # keywords (they are no longer constructor settings). Loopback only.
+        server.run(transport="sse", host="127.0.0.1", port=port)
     else:
-        server.run(transport=transport)
+        server.run(transport="stdio")

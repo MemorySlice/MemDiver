@@ -5,7 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-10-21
+
+### Changed
+- **MCP server migrated to the mcp 2.x SDK.** mcp 2.x removed
+  `mcp.server.fastmcp`; the server is now built on
+  `mcp.server.mcpserver.MCPServer` (FastMCP's successor) and reports the
+  package version. The dependency is now `mcp>=2.2,<3`.
+- **Frontend dependencies bumped:** i18next 26, react-i18next 17, jsdom 30,
+  @types/node 26. jsdom 30 requires a newer Node, so the frontend `engines`
+  range is now `^22.22.2 || ^24.15.0 || >=26` and every CI / publish /
+  docs-screenshots workflow runs on Node 22. Two jsdom-30 test adjustments:
+  computed `background` shorthands using `var()` are no longer resolved, so
+  the affected tests assert on `background-color` / inline style instead.
+- **Docs toolchain bumped** to Sphinx 8.2.3, myst-parser 5.1.0 and
+  sphinx-design 0.7.0 (`docs/requirements.txt` and the `docs` extra).
+- **`marimo` floor raised to `>=0.23.9`** (plus `pymdown-extensions>=11.0.1`)
+  to clear pip-audit advisories. The old open floor let pip backtrack to
+  marimo 0.15.1, which failed to import against the websockets version pinned
+  by frida-tools.
+- The pytest `test` CI job runs in parallel (`pytest-xdist`, `-n auto`).
+- The REST API's OpenAPI `version` now reports the package version instead of
+  a hard-coded `0.1.0`.
+
 ### Fixed
+- **`memdiver mcp --sse --port N` crashed with a `TypeError`**: the port was
+  passed to `run()`, which the 1.x SDK did not accept. With the 2.x SDK, host
+  (`127.0.0.1`) and port are passed to `run()` explicitly.
+- **A broken marimo install was reported as "Marimo not installed".** The
+  `/notebook` mount now distinguishes a missing package from one that fails to
+  import and logs the real error.
+- **CI test fixtures were never committed**: the `*.json` ignore rule swallowed
+  `tests/e2e/fixtures/pcap/manifest.json`, `keylog/expected.json`,
+  `verify_key/verify-fixture.json` and `tests/fixtures/tshark/secrets.json`;
+  they are now un-ignored.
+- **The route-protection test failed on FastAPI ≥ 0.141**, whose included
+  routers are no longer flattened into `app.routes`. The test walks routes via
+  `fastapi.routing.iter_route_contexts` when available (falling back to the
+  flat list) and asserts a minimum route count.
+- The favicon test is skipped when no frontend build is present, and the
+  e2e landing-page check targets the "Sessions" heading by role instead of an
+  ambiguous text match.
 - **`memdiver locate-key` treated a missing dump path as "searched and
   absent".** A path that did not exist was dropped with a log record and the
   remaining dumps were searched, so the command could answer `absent` (exit 3)

@@ -57,7 +57,7 @@ jobs:
         # that are only exercised by the separate test-crypto/test-e2e jobs
         # (this job doesn't run those), while still catching a real regression.
         # Raise this floor in a follow-up once coverage grows; do not lower it.
-        run: python -m pytest -q --ignore-glob='tests/e2e_*_test.py' --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=82
+        run: python -m pytest -q -n auto --ignore-glob='tests/e2e_*_test.py' --cov --cov-report=term-missing --cov-report=xml --cov-fail-under=82
       - name: Run the slow ratchets
         # `slow` is deselected by the default addopts in pyproject.toml so a
         # plain `pytest` stays fast, but tests/test_benchmarks.py's auto-floor
@@ -134,7 +134,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install memdiver with dev + all interface extras
@@ -165,7 +165,7 @@ jobs:
   # Since O-4 the smoke runs in TWO stages: first a BARE install to prove the
   # lean library core imports on its own (and that the web/MCP/UI deps are
   # genuinely absent), then an `[api,mcp]` install to exercise create_app() +
-  # the FastMCP server that those extras unlock.
+  # the MCPServer (mcp 2.x) that those extras unlock.
   wheel-install:
     runs-on: ubuntu-latest
     steps:
@@ -251,7 +251,7 @@ jobs:
           need = {'get_processes', 'get_modules', 'get_handles'}
           assert need <= names, ('missing granular inspect tools', sorted(names))
           assert len(names) >= 26, ('expected >= 26 tools, got', len(names), sorted(names))
-          print('mcp FastMCP server builds ok:', len(names), 'tools incl', sorted(need))
+          print('mcp MCPServer builds ok:', len(names), 'tools incl', sorted(need))
           "
       # The `vol` extra must install AND the `full` alias must resolve. Both
       # halves matter: `vol` is what engine/vol3_verify.py probes at module
@@ -318,7 +318,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install memdiver + Playwright (Python)
@@ -348,7 +348,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install JS deps (root workspace install)
@@ -421,7 +421,7 @@ jobs:
           cache: pip
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install memdiver

@@ -281,7 +281,9 @@ describe("OracleDryRunBar positive control", () => {
 
     const control = screen.getByTestId("oracle-smoke-positive-dot");
     expect(control).toHaveAttribute("data-state", "pass");
-    expect(control).toHaveStyle({ background: "var(--md-accent-green)" });
+    // Read the inline style, not `toHaveStyle`: since jsdom 30 a computed
+    // `background` shorthand holding `var()` collapses to its initial value.
+    expect(control.style.background).toBe("var(--md-accent-green)");
     // Not one of the decoy dots: the decoy row holds exactly the negatives.
     expect(
       screen.getByTestId("oracle-smoke-positive").contains(control),
@@ -323,7 +325,7 @@ describe("OracleDryRunBar positive control", () => {
 
     const control = screen.getByTestId("oracle-smoke-positive-dot");
     expect(control).toHaveAttribute("data-state", "absent");
-    expect(control).not.toHaveStyle({ background: "var(--md-accent-red)" });
+    expect(control.style.background).not.toBe("var(--md-accent-red)");
     expect(screen.getByTestId("oracle-smoke-positive-absent")).toHaveTextContent(
       "no meta.json beside this dump",
     );
@@ -342,9 +344,9 @@ describe("OracleDryRunBar dots and disclosures", () => {
       expect(screen.getByTitle("sample 1: fail")).toBeInTheDocument();
     });
     const [fail, errored] = negativeDots();
-    expect(fail).toHaveStyle({ background: "var(--md-accent-red)" });
+    expect(fail.style.background).toBe("var(--md-accent-red)");
     // A per-sample `error` outranks `ok`, so the errored decoy is grey, not red.
-    expect(errored).toHaveStyle({ background: "var(--md-text-muted)" });
+    expect(errored.style.background).toBe("var(--md-text-muted)");
     // ...and the message rides along in the title, which it never used to.
     expect(errored).toHaveAttribute("title", "sample 2: error — boom");
     expect(screen.getByText(/1 pass · 1 fail · 1 error/)).toBeInTheDocument();
@@ -416,7 +418,7 @@ describe("OracleDryRunBar dots and disclosures", () => {
     renderBar();
 
     for (const dot of negativeDots()) {
-      expect(dot).toHaveStyle({ background: "var(--md-bg-hover)" });
+      expect(dot.style.background).toBe("var(--md-bg-hover)");
     }
     expect(screen.getByTestId("oracle-smoke-positive-dot")).toHaveAttribute(
       "data-state",

@@ -94,7 +94,9 @@ def test_landing_page(page):
     page.wait_for_load_state("networkidle")
     page.screenshot(path=f"{SCREENSHOT_DIR}/01_landing.png", full_page=True)
 
-    heading = page.locator("text=Sessions")
+    # By role: a bare text= selector also matches the "No saved sessions yet."
+    # empty-state line and trips Playwright strict mode.
+    heading = page.get_by_role("heading", name="Sessions", exact=True)
     assert heading.is_visible(), "Landing page should show Sessions heading"
 
     new_btn = page.locator("text=New Session").first

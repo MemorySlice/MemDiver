@@ -1,6 +1,6 @@
 """Unit tests for the MCP inspect presenter.
 
-These target ``mcp_server.presenters`` DIRECTLY — never through FastMCP (the
+These target ``mcp_server.presenters`` DIRECTLY — never through MCPServer (the
 ``mcp`` SDK is not installed in CI, so ``mcp_server/server.py`` is not
 importable here). The presenter is the piece the server wrappers now route
 through, so pinning its output here locks the observable MCP JSON contract:
@@ -181,14 +181,14 @@ def test_error_funnel_passes_success_through_untouched():
     assert tool_body() == json.dumps({"ok": True})
 
 
-def test_error_funnel_preserves_wrapped_metadata_for_fastmcp():
+def test_error_funnel_preserves_wrapped_metadata_for_mcpserver():
     def tool_body(dump_path: str, offset: int = 0) -> str:
-        """Docstring FastMCP reads for the tool description."""
+        """Docstring MCPServer reads for the tool description."""
         return json.dumps({"dump_path": dump_path, "offset": offset})
 
     wrapped = mcp_error_funnel(tool_body)
 
     assert wrapped.__name__ == "tool_body"
-    assert wrapped.__doc__ == "Docstring FastMCP reads for the tool description."
+    assert wrapped.__doc__ == "Docstring MCPServer reads for the tool description."
     assert wrapped.__wrapped__ is tool_body
     assert wrapped("a.msl", offset=8) == json.dumps({"dump_path": "a.msl", "offset": 8})

@@ -7,7 +7,7 @@ report the lock purely through ``status.key`` / ``status.resolution``. Hard
 errors (missing file, wrong format) are RAISED as CapabilityError subclasses.
 
 These call the PURE ``mcp_server.tools_inspect`` producers directly (never via
-FastMCP) and reuse the encrypted-.msl fixture style from
+MCPServer) and reuse the encrypted-.msl fixture style from
 ``tests/test_mcp_new_tools.py`` (MslWriter + MslEncryptionConfig(raw_key=...)).
 """
 

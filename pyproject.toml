@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.9.0"
+version = "0.9.5"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -85,7 +85,7 @@ dependencies = [
     # `fastapi[standard]` does). Pinned to match fastapi's own `standard` extra.
     "python-multipart>=0.0.18",
     # --- MCP server for AI-agent integration (`memdiver mcp`) ---
-    "mcp>=1.0.0",
+    "mcp>=2.2,<3",
     # --- pcap/pcapng parsing for the TLS decryption-challenge oracle
     #     (`TlsPcapResource`): prove a memory-recovered key decrypts real
     #     captured records. ---
@@ -140,7 +140,7 @@ experiment = []
 crypto = []
 # The one interface that is still opt-in: Marimo pulls ~164 MB, more than four
 # times every other interface combined.
-marimo = ["marimo>=0.8.0"]
+marimo = ["marimo>=0.23.9", "pymdown-extensions>=11.0.1"]
 # Volatility3, for running (not merely emitting) the plugins the architect
 # layer generates -- engine/vol3_verify.py loads an emitted plugin and executes
 # it against a real framework, and engine/vol3_subproc.py drives a foreign
@@ -184,13 +184,13 @@ all = ["memdiver[marimo]", "memdiver[vol]"]
 # people type; it must resolve rather than error on an unknown extra. See the
 # volatility3[full] name-collision note above.
 full = ["memdiver[all]"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27", "ruff>=0.6", "mypy>=1.10", "hypothesis", "pytest-xdist>=3.5"]
 docs = [
-    "sphinx>=7.3,<9",
+    "sphinx>=8,<9",
     "sphinx-rtd-theme>=2.0,<4",
-    "myst-parser>=3.0,<5",
+    "myst-parser>=5,<6",
     "sphinx-copybutton>=0.5.2",
-    "sphinx-design>=0.6.0",
+    "sphinx-design>=0.6.1",
     "sphinxcontrib-mermaid>=0.9.2",
     "sphinx-argparse>=0.5",
     "linkify-it-py>=2.0.3",

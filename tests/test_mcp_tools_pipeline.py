@@ -1,6 +1,6 @@
 """Tests for mcp_server.tools_pipeline — pipeline-stage MCP wrappers.
 
-Exercises each tool as a pure function (no MCP server / FastMCP
+Exercises each tool as a pure function (no MCP server / MCPServer
 dependency). The wrappers are thin: search_reduce → candidates.json,
 brute_force → hits.json, n_sweep → report.{json,md,html}, emit_plugin
 → plugin.py. Failure at any layer surfaces through the engine call,

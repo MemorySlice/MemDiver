@@ -1,0 +1,9 @@
+{
+  "offset": 0,
+  "length": 32,
+  "cipher": "AES-256-GCM",
+  "ciphertext_hex": "9ad9d2f7f089f7e1bf4f0c6df231f4d69d0ec946a852c2613913ddbebe607f49",
+  "nonce_hex": "000102030405060708090a0b",
+  "tag_hex": "179fe663d2c7790985864a698179eace",
+  "key_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

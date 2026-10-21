@@ -40,6 +40,13 @@ env/
 # would pass every local test and then be missing for everyone else -- the
 # candidates.json failure above, repeated.
 !/tests/fixtures/needle_vectors.json
+# Generated-once, committed test fixtures (each dir has a generate.py whose
+# docstring says the output is committed). Tests open these directly, so an
+# ignored copy passes locally and is a FileNotFoundError in CI.
+!/tests/e2e/fixtures/pcap/manifest.json
+!/tests/e2e/fixtures/keylog/expected.json
+!/tests/e2e/fixtures/verify_key/verify-fixture.json
+!/tests/fixtures/tshark/secrets.json
 .DS_Store
 .dSYM/
 *.dSYM/

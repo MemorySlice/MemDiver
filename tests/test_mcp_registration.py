@@ -1,9 +1,9 @@
-"""Registration-layer test for the FastMCP server.
+"""Registration-layer test for the MCPServer (mcp 2.x) server.
 
 Unlike ``test_mcp_tools`` / ``test_mcp_new_tools`` (which call the pure
 ``tools_*`` functions directly), this exercises ``create_server()`` itself so a
 tool that exists but is never ``@mcp.tool()``-registered — the O-2 gap, and the
-class of bug that hid the ``FastMCP(description=)`` crash — fails loudly.
+class of bug that hid the v1 ``FastMCP(description=)`` crash — fails loudly.
 
 Skipped where the optional ``mcp`` SDK is absent (the default dev env); runs in
 the CI ``wheel-install`` env and any environment that has ``mcp`` installed.

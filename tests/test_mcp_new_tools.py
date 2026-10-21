@@ -1,7 +1,7 @@
 """Unit tests for the new MCP capability-parity tools (B2/B3/B5/B6).
 
 These call the PURE ``mcp_server.tools_*`` functions directly — never through
-FastMCP (the ``mcp`` SDK is not installed in CI) — covering:
+MCPServer (the ``mcp`` SDK is not installed in CI) — covering:
 
 * B5 consensus → produces a variance.npy that search_reduce accepts.
 * B6 detect_format → returns the expected format on an .msl fixture.

@@ -428,6 +428,33 @@ def test_check_ws_token_returns_false_for_none_and_empty_candidates():
 # ---------------------------------------------------------------------------
 
 
+# Lower bound on the routes the walk below must see. The real app registers
+# well over a hundred; a walk that stops at the top level (a plain loop over
+# ``app.routes`` on FastAPI versions with lazy ``_IncludedRouter`` entries)
+# sees only a handful, so this catches a walk that "passes" by checking nothing.
+_MIN_EXPECTED_ROUTES = 100
+
+
+def _iter_app_routes(app):
+    """Yield ``(route, path, methods)`` for every endpoint on *app*, flattened.
+
+    Newer FastAPI keeps each ``include_router`` call as one lazy
+    ``_IncludedRouter`` entry in ``app.routes`` (prefix applied on the fly);
+    its public ``fastapi.routing.iter_route_contexts`` expands those into one
+    context per real endpoint with the prefixed path. Older FastAPI has no
+    such helper because ``include_router`` already copied every route,
+    prefix and all, straight into ``app.routes``.
+    """
+    try:
+        from fastapi.routing import iter_route_contexts
+    except ImportError:  # older FastAPI: app.routes is already flat
+        for route in app.routes:
+            yield route, getattr(route, "path", None), getattr(route, "methods", None)
+        return
+    for context in iter_route_contexts(app.routes):
+        yield context.original_route, context.path, context.methods
+
+
 def test_all_routes_are_protected_or_intentionally_open():
     """Enumerate every route registered on the real app and require each one
     to either fall under ``_is_protected_path`` (so the token middleware
@@ -441,7 +468,9 @@ def test_all_routes_are_protected_or_intentionally_open():
     unauthenticated route.
     """
     app = create_app()
-    for route in app.routes:
+    seen_paths = set()
+    for route, path, methods in _iter_app_routes(app):
+        seen_paths.add(path)
         if isinstance(route, Mount):
             # The static SPA bundle mounted at the root — intentionally
             # open by design; it serves the frontend, not API data, so
@@ -452,8 +481,6 @@ def test_all_routes_are_protected_or_intentionally_open():
             f"Unexpected route type {type(route)!r} on {route!r}; teach "
             "this test about it before trusting the app's route table."
         )
-        path = route.path
-        methods = getattr(route, "methods", None)
 
         if _is_protected_path(path):
             continue
@@ -477,6 +504,12 @@ def test_all_routes_are_protected_or_intentionally_open():
             f"{_PROTECTED_PREFIXES}; if it's meant to be open, extend the "
             "allowlist in this test deliberately."
         )
+
+    # Guard the walk itself: it must reach the routes behind include_router,
+    # with their prefixes applied, or the loop above proved nothing.
+    assert len(seen_paths) >= _MIN_EXPECTED_ROUTES, sorted(seen_paths)
+    assert "/api/tasks/{task_id}/events" in seen_paths
+    assert "/ws/tasks/{task_id}" in seen_paths
 
 
 # ---------------------------------------------------------------------------

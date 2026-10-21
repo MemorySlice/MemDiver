@@ -13,6 +13,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from memdiver import __version__ as _MEMDIVER_VERSION
 from memdiver.api.config import get_settings
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -133,7 +134,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MemDiver",
         description="Memory dump forensic analysis API",
-        version="0.1.0",
+        version=_MEMDIVER_VERSION,
         lifespan=_lifespan,
     )
 
@@ -276,11 +277,21 @@ def create_app() -> FastAPI:
             logger.info("Marimo notebook mounted at /notebook/")
         else:
             _notebook_error = f"Notebook file not found: {notebook_path}"
-    except ImportError:
-        # Marimo is the one interface that is still opt-in, so this is the
-        # only place a genuine "install the extra" hint is still correct.
-        _notebook_error = missing_package_message("Marimo", extra="marimo")
-        logger.info("Marimo not installed, /notebook not available")
+    except ImportError as exc:
+        # ``exc.name`` is the module that failed to load: "marimo" itself only
+        # when the package is genuinely absent.
+        if exc.name != "marimo":
+            # Marimo IS installed but one of its own imports broke -- e.g. an
+            # old marimo that pip backtracked to imports a ``websockets`` name
+            # its declared dependency range does not guarantee. Calling that
+            # "not installed" sends people to reinstall a package they have.
+            _notebook_error = f"Marimo is installed but failed to import: {exc}"
+            logger.warning("Failed to mount Marimo notebook: %s", exc)
+        else:
+            # Marimo is the one interface that is still opt-in, so this is the
+            # only place a genuine "install the extra" hint is still correct.
+            _notebook_error = missing_package_message("Marimo", extra="marimo")
+            logger.info("Marimo not installed, /notebook not available")
     except Exception as exc:
         _notebook_error = str(exc)
         logger.warning("Failed to mount Marimo notebook: %s", exc)
