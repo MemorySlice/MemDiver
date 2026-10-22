@@ -31,9 +31,22 @@ import type { ComponentType } from "react";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ChartErrorBoundary } from "@/components/charts/ChartErrorBoundary";
 import { ChartSkeleton } from "@/components/charts/ChartSkeleton";
+import {
+  loadChartModule,
+  resolvedChartModule,
+  type ChartModule,
+} from "@/components/charts/chart-module-cache";
 
-interface ChartModule<P extends object> {
-  default: ComponentType<P>;
+/**
+ * The implementation behind *load*: rendered directly when its module has
+ * already resolved (see chart-module-cache.ts — avoids a needless suspend and
+ * React's Suspense reveal throttle), otherwise a fresh `lazy()` that records
+ * the module once it arrives.
+ */
+function chartComponent<P extends object>(
+  load: () => Promise<ChartModule<P>>,
+): ComponentType<P> {
+  return resolvedChartModule(load) ?? lazy(() => loadChartModule(load));
 }
 
 export type ChartDispatcherProps<P extends object> = P & {
@@ -66,9 +79,9 @@ export function ChartDispatcher<P extends object = Record<string, never>>({
   // callback, but bumping it is what forces useMemo to call `lazy()` again
   // on retry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const PlotlyImpl = useMemo(() => lazy(loadPlotly), [attempt]);
+  const PlotlyImpl = useMemo(() => chartComponent(loadPlotly), [attempt]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const SvgImpl = useMemo(() => lazy(loadSvg), [attempt]);
+  const SvgImpl = useMemo(() => chartComponent(loadSvg), [attempt]);
   const Impl = backend === "svg" ? SvgImpl : PlotlyImpl;
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 

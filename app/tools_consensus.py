@@ -561,6 +561,7 @@ def _open_one(
     stack: ExitStack,
     path: str,
     key_material_by_path: Optional[Dict[str, Any]],
+    region_filter: Optional[str] = None,
 ) -> Any:
     """Open ONE dump on ``stack``, inside its OWN key-material scope.
 
@@ -570,6 +571,11 @@ def _open_one(
     scope would hand every dump the first one's key. The scope only has to be
     active across the OPEN; the reads that follow use the source it produced,
     which stays live until the caller's ``ExitStack`` unwinds.
+
+    ``region_filter`` is the view filter the consensus was built through (see
+    :func:`_effective_region_filter`): a filtered ``vas`` view is a dense
+    concatenation of the included runs, so re-reading under any OTHER filter
+    would serve bytes from the wrong offsets.
     """
     from memdiver.app.reader_cache import key_material_scope
 
@@ -579,13 +585,17 @@ def _open_one(
         raise FileNotFoundServiceError(f"File not found: {path}")
     km = _key_material_for(key_material_by_path, path)
     with key_material_scope(km):
-        return stack.enter_context(open_dump_source(path, km or {}))
+        # The filter kwarg only when one is active: an unfiltered re-read keeps
+        # the historical two-argument call exactly.
+        extra = {} if region_filter is None else {"region_filter": region_filter}
+        return stack.enter_context(open_dump_source(path, km or {}, **extra))
 
 
 def _open_selected(
     stack: ExitStack,
     selected: Sequence[Tuple[int, str]],
     key_material_by_path: Optional[Dict[str, Any]],
+    region_filter: Optional[str] = None,
 ) -> List[Any]:
     """Open every selected dump ONCE, re-entering the key scope per dump.
 
@@ -594,8 +604,38 @@ def _open_selected(
     ``selected[i]``.
     """
     return [
-        _open_one(stack, path, key_material_by_path) for _index, path in selected
+        _open_one(stack, path, key_material_by_path, region_filter)
+        for _index, path in selected
     ]
+
+
+def _effective_region_filter(
+    consensus: Optional[ConsensusVector], requested: Any = None,
+) -> Optional[str]:
+    """The view filter every re-read must use, as a ``to_note()`` string.
+
+    A built consensus is AUTHORITATIVE: its offsets were measured through the
+    filter it records (``ConsensusVector.region_filter``), so a caller's
+    differing filter cannot be honoured without misplacing every byte — it is
+    logged and ignored. A vector with no recorded filter (an unfiltered build,
+    or one predating the field) re-reads unfiltered, exactly as before.
+    Without a consensus the caller's filter is the only answer.
+    """
+    from memdiver.core.region_view_filter import region_filter_note
+
+    try:
+        wanted = region_filter_note(requested)
+    except ValueError as exc:
+        raise CapabilityError(f"Invalid region filter: {exc}") from exc
+    if consensus is None:
+        return wanted
+    built = getattr(consensus, "region_filter", None)
+    if built is not None and requested is not None and wanted != built:
+        logger.warning(
+            "region filter %r ignored: the consensus was built with %r and its "
+            "offsets are only valid under that filter", wanted, built,
+        )
+    return built
 
 
 def _key_material_for(
@@ -1066,6 +1106,7 @@ def aligned_window_from_vector(
     include_bytes: bool = True,
     key_material_by_path: Optional[Dict[str, Any]] = None,
     session: Optional[ToolSession] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Project one window across every selected dump and read it back.
 
@@ -1088,6 +1129,9 @@ def aligned_window_from_vector(
         dump at a time.
     :param session: Accepted for producer-signature symmetry; this producer is
         stateless and does not read it.
+    :param region_filter: View filter for the no-consensus path. With a
+        consensus, the filter the BUILD recorded is used (see
+        :func:`_effective_region_filter`); echoed as ``region_filter``.
     :returns: The aligned-window payload — see Invariant W1 in the module
         docstring.
     """
@@ -1098,6 +1142,7 @@ def aligned_window_from_vector(
         _require_classified(consensus)
 
     coordinate = _coordinate_of(consensus)
+    view_filter = _effective_region_filter(consensus, region_filter)
     selected = _select_dumps(consensus, dumps)
     requested_length = max(0, int(length))
     window_length, truncated = _clamp_length(requested_length, len(selected))
@@ -1109,7 +1154,8 @@ def aligned_window_from_vector(
         alignment = consensus.alignment_report.to_dict()
 
     with ExitStack() as stack:
-        sources = _open_selected(stack, selected, key_material_by_path)
+        sources = _open_selected(
+            stack, selected, key_material_by_path, view_filter)
         anchor, anchor_runs = _resolve_anchor(
             consensus, coordinate, selected, sources, anchor_path, anchor_view,
             offset, slab_offset,
@@ -1175,6 +1221,8 @@ def aligned_window_from_vector(
         "variants": variants,
         "segments": segments,
         "dumps": blocks,
+        # Every offset above is in this filter's view (None = unfiltered).
+        "region_filter": view_filter,
     }
 
 
@@ -1191,6 +1239,8 @@ def aligned_window_result(
     classify: bool = True,
     include_bytes: bool = True,
     key_material_by_path: Optional[Dict[str, Any]] = None,
+    region_filter: Optional[str] = None,
+    force: bool = False,
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one aligned window.
 
@@ -1221,6 +1271,8 @@ def aligned_window_result(
             paths,
             normalize=normalize,
             key_material=_shared_key_material(paths, key_material_by_path),
+            region_filter=_effective_region_filter(None, region_filter),
+            force=force,
         )
 
     payload = aligned_window_from_vector(
@@ -1234,10 +1286,23 @@ def aligned_window_result(
         include_bytes=include_bytes,
         key_material_by_path=key_material_by_path,
         session=session,
+        region_filter=region_filter,
     )
     locked = [d for d in payload["dumps"] if not d["key_status"]["decrypted"]]
     resolution = Resolution.PARTIAL if locked else Resolution.OK
-    return ServiceResult(payload=payload, status=StatusBlock(resolution=resolution))
+    return ServiceResult(payload=payload, status=StatusBlock(
+        resolution=resolution, diagnostics=_alignment_diagnostics(consensus)))
+
+
+def _alignment_diagnostics(consensus: Optional[ConsensusVector]) -> Tuple[Any, ...]:
+    """The build's structured alignment notes for the result's status block.
+
+    They also ride in ``payload["alignment"]["diagnostics"]``; the status block
+    is where a ``ServiceResult`` consumer looks for qualifying notes.
+    """
+    if consensus is None:
+        return ()
+    return tuple(consensus.alignment_report.diagnostics)
 
 
 def _shared_key_material(
@@ -1381,6 +1446,7 @@ def _open_anchor(
     stack: ExitStack,
     anchor_path: str,
     key_material_by_path: Optional[Dict[str, Any]],
+    region_filter: Optional[str] = None,
 ) -> Any:
     """Open the anchor dump alone, with its own key material.
 
@@ -1389,7 +1455,7 @@ def _open_anchor(
     asserted in one place and drift in the other. A region page reads NO bytes
     from any peer, so only the anchor is opened.
     """
-    return _open_one(stack, anchor_path, key_material_by_path)
+    return _open_one(stack, anchor_path, key_material_by_path, region_filter)
 
 
 def _region_locator(
@@ -1529,6 +1595,7 @@ def class_regions_from_vector(
     include_anchor_offsets: bool = True,
     key_material_by_path: Optional[Dict[str, Any]] = None,
     session: Optional[ToolSession] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Every occurrence of a consensus class, paginated AND jumpable.
 
@@ -1580,11 +1647,15 @@ def class_regions_from_vector(
     :param key_material_by_path: ``{dump_path: open_dump kwargs}``; only the
         anchor's entry is ever used, since no peer is read.
     :param session: Accepted for producer-signature symmetry; unused.
+    :param region_filter: Ignored in favour of the filter the build recorded
+        (see :func:`_effective_region_filter`); the anchor is opened through
+        that filter and it is echoed as ``region_filter``.
     """
     del session  # stateless; the parameter exists for producer symmetry
     _require_classified(consensus)
     wanted = _parse_class_spec(classes)
     coordinate = _coordinate_of(consensus)
+    view_filter = _effective_region_filter(consensus, region_filter)
     limit = max(1, min(int(limit), MAX_REGIONS_PER_PAGE))
     min_length = max(1, int(min_length))
     max_length = max(0, int(max_length))
@@ -1609,7 +1680,8 @@ def class_regions_from_vector(
         anchor["dump_index"] = index
         if include_anchor_offsets:
             with ExitStack() as stack:
-                source = _open_anchor(stack, anchor_path, key_material_by_path)
+                source = _open_anchor(
+                    stack, anchor_path, key_material_by_path, view_filter)
                 # A LOCKED anchor is REPORTED, not fatal — unlike the aligned
                 # window, nothing here is read through it, so the regions
                 # themselves are unaffected and only the jump offsets are lost.
@@ -1679,6 +1751,8 @@ def class_regions_from_vector(
         # a second round trip to POST /consensus.
         "counts": consensus.classification_counts(),
         "regions": rows,
+        # Jump offsets are in this filter's view (None = unfiltered).
+        "region_filter": view_filter,
     }
 
 
@@ -1697,6 +1771,8 @@ def class_regions_result(
     include_anchor_offsets: bool = True,
     normalize: bool = False,
     key_material_by_path: Optional[Dict[str, Any]] = None,
+    region_filter: Optional[str] = None,
+    force: bool = False,
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one page of regions.
 
@@ -1722,6 +1798,8 @@ def class_regions_result(
         paths,
         normalize=normalize,
         key_material=_shared_key_material(paths, key_material_by_path),
+        region_filter=_effective_region_filter(None, region_filter),
+        force=force,
     )
     payload = class_regions_from_vector(
         consensus,
@@ -1736,6 +1814,7 @@ def class_regions_result(
         include_anchor_offsets=include_anchor_offsets,
         key_material_by_path=key_material_by_path,
         session=session,
+        region_filter=region_filter,
     )
     # PARTIAL when an anchor was asked for and could not be answered: the rows
     # are complete but carry no navigable offsets, which is exactly the
@@ -1746,4 +1825,5 @@ def class_regions_result(
         if asked_for_offsets and not payload["anchor"]["jumpable"]
         else Resolution.OK
     )
-    return ServiceResult(payload=payload, status=StatusBlock(resolution=resolution))
+    return ServiceResult(payload=payload, status=StatusBlock(
+        resolution=resolution, diagnostics=_alignment_diagnostics(consensus)))

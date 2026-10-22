@@ -35,25 +35,110 @@ class ConsensusSession:
         self.last_used_at = time.time()
 
     def live_stats(self) -> Dict[str, Any]:
-        variance = self.matrix.get_live_variance()
-        if len(variance) == 0:
-            return {
-                "mean_variance": 0.0,
-                "max_variance": 0.0,
-                "top_offsets": [],
-            }
+        """Mean / max variance and the top-5 offsets, computed slab by slab.
+
+        Never materialises the full variance vector: each slab of at most
+        ``PAIRWISE_LEAF`` positions is written into one reusable buffer
+        (``m2 / n`` during an incremental build, a slice of the finalized
+        vector afterwards). ``mean_variance`` and ``max_variance`` are
+        bit-identical to ``variance.mean()`` / ``variance.max()`` (the slabs
+        follow numpy's pairwise-summation tree). ``top_offsets`` is sorted by
+        descending variance; ties are broken by ascending offset (the old
+        ``argpartition`` tie order was unspecified).
+        """
+        source = _LiveVarianceSource.of(self.matrix)
+        if source is None:
+            return _live_stats_materialized(self.matrix.get_live_variance())
+        if source.size == 0:
+            return {"mean_variance": 0.0, "max_variance": 0.0, "top_offsets": []}
+        return _live_stats_slabbed(source)
+
+
+_TOP_K = 5
+
+
+class _LiveVarianceSource:
+    """Slab reader over the current variance without a full-size copy."""
+
+    def __init__(self, size: int, dtype, read_into) -> None:
+        self.size = size
+        self.dtype = dtype
+        self._read_into = read_into
+
+    @classmethod
+    def of(cls, matrix: ConsensusVector) -> "Optional[_LiveVarianceSource]":
+        """Source for ``matrix``, or None when only the legacy path applies."""
         import numpy as np
 
-        k = min(5, len(variance))
-        unsorted_top = np.argpartition(variance, -k)[-k:]
-        top_idx = unsorted_top[np.argsort(variance[unsorted_top])[::-1]].tolist()
+        try:
+            _mean, m2, n = matrix.welford_state()
+        except RuntimeError:  # finalized: read the materialized vector
+            variance = matrix.get_live_variance()
+            if not (isinstance(variance, np.ndarray) and variance.ndim == 1
+                    and variance.dtype in (np.float32, np.float64)):
+                return None
+            return cls(len(variance), variance.dtype,
+                       lambda s, e, out: np.copyto(out, variance[s:e]))
+        if m2.dtype != np.float32:
+            return None
+        if n == 0:
+            return cls(len(m2), m2.dtype, lambda s, e, out: out.fill(0.0))
+        return cls(len(m2), m2.dtype,
+                   lambda s, e, out: np.divide(m2[s:e], n, out=out))
+
+    def read(self, start: int, end: int, buf) -> Any:
+        """Fill and return ``buf[:end - start]`` with variance[start:end]."""
+        out = buf[: end - start]
+        self._read_into(start, end, out)
+        return out
+
+
+def _live_stats_slabbed(source: _LiveVarianceSource) -> Dict[str, Any]:
+    import numpy as np
+
+    from memdiver.core.variance import PAIRWISE_LEAF, RunningTopK, pairwise_leaves_sum
+
+    buf = np.empty(min(source.size, PAIRWISE_LEAF), dtype=source.dtype)
+    top = RunningTopK(min(_TOP_K, source.size))
+    peaks: List[float] = []
+
+    def leaf_sum(start: int, end: int):
+        slab = source.read(start, end, buf)
+        peaks.append(slab.max())
+        top.add_slab(slab, start)
+        return np.add.reduce(slab)
+
+    total = pairwise_leaves_sum(source.size, leaf_sum, PAIRWISE_LEAF)
+    mean = total.dtype.type(total / source.size)  # same expression as np.mean
+    return {
+        "mean_variance": float(mean),
+        "max_variance": float(max(peaks)),
+        "top_offsets": [
+            {"offset": offset, "variance": value} for offset, value in top.result()
+        ],
+    }
+
+
+def _live_stats_materialized(variance) -> Dict[str, Any]:
+    """Original whole-vector implementation (fallback for unusual dtypes)."""
+    if len(variance) == 0:
         return {
-            "mean_variance": float(variance.mean()),
-            "max_variance": float(variance.max()),
-            "top_offsets": [
-                {"offset": int(i), "variance": float(variance[i])} for i in top_idx
-            ],
+            "mean_variance": 0.0,
+            "max_variance": 0.0,
+            "top_offsets": [],
         }
+    import numpy as np
+
+    k = min(5, len(variance))
+    unsorted_top = np.argpartition(variance, -k)[-k:]
+    top_idx = unsorted_top[np.argsort(variance[unsorted_top])[::-1]].tolist()
+    return {
+        "mean_variance": float(variance.mean()),
+        "max_variance": float(variance.max()),
+        "top_offsets": [
+            {"offset": int(i), "variance": float(variance[i])} for i in top_idx
+        ],
+    }
 
 
 class ConsensusSessionManager:
@@ -64,10 +149,17 @@ class ConsensusSessionManager:
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
 
-    def begin(self, size: int) -> ConsensusSession:
+    def begin(self, size: int, region_filter: Optional[str] = None) -> ConsensusSession:
+        """Start an incremental session.
+
+        ``region_filter`` (``to_note()`` string) is recorded on the matrix:
+        every path folded in later is read through that view filter, and any
+        window re-read of the finished build uses it too.
+        """
         self._sweep()
         matrix = ConsensusVector()
         matrix.build_incremental(size)
+        matrix.region_filter = region_filter
         session = ConsensusSession(
             session_id=str(uuid.uuid4()),
             size=size,

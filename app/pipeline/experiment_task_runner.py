@@ -385,6 +385,8 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
       the bundled :class:`AesCbcVerifier`.
     * ``protocol_version`` / ``phase``: contextual tags surfaced to the
       SPA but not consumed by the engine here.
+    * ``force_memory`` (bool, default False): bypass the consensus
+      memory-budget guard (forwarded as ``experiment_result(force=)``).
 
     Returns ``{"artifacts": [...], "summary": {...}}`` so the
     TaskManager can publish the terminal ``done`` event.
@@ -412,6 +414,8 @@ def run_experiment(params: Dict[str, Any], ctx) -> Dict[str, Any]:
             export_format=str(params.get("export_format", "volatility3")),
             on_progress=lambda event, **fields: ctx.emit(event, **fields),
             is_cancelled=ctx.is_cancelled,
+            region_filter=params.get("region_filter"),
+            force=bool(params.get("force_memory", False)),
         )
     except CapabilityError as exc:
         # A missing/unusable backend is a graceful terminal summary (the SPA

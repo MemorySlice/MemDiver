@@ -1,0 +1,8 @@
+{
+  "classificationBasisMixed": {
+    "title": "Mixed region classification",
+    "body": "{{named}} of {{total}} dumps are classified by mapping names, {{stored}} by stored region type only. Anonymous-region ordinals may diverge, so filtered regions may not correspond across dumps.",
+    "storedDumps": "Classified by stored type only: {{dumps}}",
+    "hint": "Re-import older dumps to classify them by mapping names."
+  }
+}

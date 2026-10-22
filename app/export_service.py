@@ -169,6 +169,7 @@ def auto_export_pattern(
     context: int = 32,
     min_static_ratio: float = 0.3,
     key_material: Dict[str, Any] | None = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Run the full auto-export pipeline and return the export payload.
 
@@ -185,6 +186,9 @@ def auto_export_pattern(
         key_material: Optional decryption kwargs (``key``/``passphrase``/
             ``kem_private_key``) forwarded to ``open_dump`` so encrypted
             ``.msl`` inputs can be read (spec §10).
+        force: Bypass the consensus memory-budget guard (otherwise a
+            ``CapabilityError`` ``code="memory_budget_exceeded"`` is raised
+            when the estimate exceeds the budget).
 
     Returns:
         A dict with keys ``format``, ``content``, ``pattern`` and
@@ -232,7 +236,7 @@ def auto_export_pattern(
             raise_if_locked(source)
 
         cm = ConsensusVector()
-        cm.build_from_sources(sources)
+        cm.build_from_sources(sources, force=force)
 
     # Sources are closed once the consensus is built; reference_bytes
     # and variance are copies held on `cm` and outlive the sources.

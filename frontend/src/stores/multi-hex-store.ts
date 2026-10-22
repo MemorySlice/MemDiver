@@ -35,6 +35,7 @@ import { decodeBase64 } from "@/utils/hex-codec";
 import { fetchAlignedWindow, keysForPaths } from "@/api/aligned-window";
 import type { AlignedWindowResponse } from "@/api/aligned-window";
 import { readableFailure } from "@/api/client";
+import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import { selectionKey } from "@/stores/consensus-store";
 import type { HexViewMode } from "@/stores/hex-store";
 import {
@@ -1099,17 +1100,19 @@ function fetchChunks(
   const keys = keysForPaths(paths);
   for (const chunkOffset of offsets) {
     const key = cacheKeyFor(identity, chunkOffset);
-    fetchAlignedWindow({
-      ...(consensusId ? { consensus_id: consensusId } : { dump_paths: paths }),
-      anchor: "dump",
-      anchor_path: anchorPath,
-      offset: chunkOffset,
-      view,
-      length: CHUNK_SIZE,
-      dumps: paths,
-      include_bytes: true,
-      ...(keys.length > 0 ? { keys } : {}),
-    })
+    withMemoryBudgetOverride((force) =>
+      fetchAlignedWindow(withForceMemory({
+        ...(consensusId ? { consensus_id: consensusId } : { dump_paths: paths }),
+        anchor: "dump",
+        anchor_path: anchorPath,
+        offset: chunkOffset,
+        view,
+        length: CHUNK_SIZE,
+        dumps: paths,
+        include_bytes: true,
+        ...(keys.length > 0 ? { keys } : {}),
+      }, force)),
+    )
       .then((response) => {
         // Stale-response guard, mirroring `hex-store.ensureChunksLoaded`:
         // if the anchor, the view or the SELECTION changed while this was in

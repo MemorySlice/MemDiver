@@ -25,7 +25,7 @@ import { NoConsensusPrompt } from "./NoConsensusPrompt";
 import { WindowErrorBanner } from "./WindowErrorBanner";
 import { chunkErrorSignature } from "./chunk-error-signal";
 import { ConsensusErrorBanner } from "./ConsensusErrorBanner";
-import { buildRegionIndex } from "./highlight-utils";
+import { buildRegionIndex, regionsForView } from "./highlight-utils";
 import { MAX_PANES, PANE_COLUMN_WIDTH_PX, visiblePanes } from "./multi-window-utils";
 import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
 
@@ -105,6 +105,7 @@ export function MultiHexViewer() {
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
+  const availableViews = useHexStore((s) => s.availableViews);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
   const extendSelection = useHexStore((s) => s.extendSelection);
@@ -191,8 +192,8 @@ export function MultiHexViewer() {
   const selectionEnd = selection ? Math.max(selection.anchor, selection.active) : null;
 
   const regionIndex = useMemo(
-    () => buildRegionIndex(highlightedRegions),
-    [highlightedRegions],
+    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
+    [highlightedRegions, viewMode, availableViews],
   );
 
   /**

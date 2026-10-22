@@ -71,6 +71,14 @@ def test_classify_variants() -> None:
     assert classify_region("/opt/app/plugin.so") == int(RegionType.IMAGE)
     assert classify_region("/lib/x86_64-linux-gnu/libssl.so.1.1") == int(RegionType.IMAGE)
     assert classify_region("/home/user/data.bin") == int(RegionType.MAPPED_FILE)
+
+
+def test_classify_region_macos_images():
+    assert classify_region("/opt/homebrew/opt/openssl/libssl.3.dylib") == int(RegionType.IMAGE)
+    assert classify_region(
+        "/Applications/X.app/Contents/Frameworks/Y.framework/Versions/A/Y") == int(RegionType.IMAGE)
+    assert classify_region("/System/Library/PrivateFrameworks/Foo") == int(RegionType.IMAGE)
+    assert classify_region("/Users/me/notes.txt") == int(RegionType.MAPPED_FILE)
     assert classify_region("[vdso]") == int(RegionType.OTHER)
     assert classify_region("[vvar]") == int(RegionType.OTHER)
     assert classify_region("[vsyscall]") == int(RegionType.OTHER)

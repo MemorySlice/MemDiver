@@ -9,7 +9,7 @@ import {
   pcapCapturePath,
   pcapManifestPath,
 } from "../fixtures/dataset";
-import { enterWorkspaceWithMsl } from "../fixtures/workspace";
+import { enterWorkspaceWithMsl, revealPcapDropzone } from "../fixtures/workspace";
 
 /**
  * C3 — pcap-oracle pipeline run, browser-driven end to end (@requires-pcap).
@@ -130,9 +130,10 @@ test.describe("Pcap-oracle pipeline run", { tag: "@requires-pcap" }, () => {
     await page.getByRole("button", { name: /Next: Oracle/i }).click();
 
     // Stage 2 — oracle: upload the pcap via the detached filechooser.
+    const pcapDropzone = await revealPcapDropzone(page);
     const [chooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByTestId("pcap-upload-dropzone").click(),
+      pcapDropzone.click(),
     ]);
     await chooser.setFiles(pcapCapturePath);
 

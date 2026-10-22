@@ -38,6 +38,11 @@ class AnalyzeRequestAPI(BaseModel):
     normalize: bool = False
     expand_keys: bool = True
     algorithms: list[str] | None = None
+    #: Bypass the memory-budget guard (see :class:`MemoryOverrideFields`).
+    force_memory: bool = Field(
+        default=False,
+        description="Bypass the memory-budget guard (HTTP 507 otherwise).",
+    )
 
 
 class KeyMaterialFields(BaseModel):
@@ -61,7 +66,58 @@ class KeyMaterialFields(BaseModel):
     kem_key_hex: str | None = None
 
 
-class ConsensusRequest(KeyMaterialFields):
+def validate_region_filter(value):
+    """Shared validator: ``"heap,stack"`` / note / ``None`` -> note or ``None``.
+
+    Normalises to the persisted :meth:`RegionSelection.to_note` form; an
+    all-category selection becomes ``None``. Unknown names raise
+    ``ValueError`` (a 422 from Pydantic).
+    """
+    from memdiver.core.region_view_filter import region_filter_note
+    return region_filter_note(value)
+
+
+class RegionFilterFields(BaseModel):
+    """Mixin: the analysis-time region view filter + its session default.
+
+    ``region_filter`` (``"heap,stack"`` / ``to_note()``; ``.msl`` only) is
+    normalised to the persisted ``to_note()`` form; ``"all"`` becomes
+    ``None``. ``session_name`` names a saved session whose persisted
+    ``region_filter`` applies when the request does NOT set the field — an
+    explicitly sent value (including ``"all"`` / ``null``) always wins. See
+    ``api.region_filter_resolution.request_region_filter``.
+    """
+
+    #: Analysis-time region view filter (``"heap,stack"``), ``.msl`` only.
+    region_filter: str | None = None
+    #: Saved session whose ``region_filter`` is the default for this request.
+    session_name: str | None = None
+
+    @field_validator("region_filter", mode="before")
+    @classmethod
+    def _check_region_filter(cls, value):
+        return validate_region_filter(value)
+
+
+class MemoryOverrideFields(BaseModel):
+    """Mixin: opt-in override for the memory-budget guard.
+
+    Budget-gated routes refuse (HTTP 507, ``code: memory_budget_exceeded``)
+    when the estimated peak memory exceeds the configured budget. Sending
+    ``force_memory: true`` re-runs the same request with the guard bypassed
+    (forwarded to the producer as ``force=True``).
+    """
+
+    force_memory: bool = Field(
+        default=False,
+        description=(
+            "Bypass the memory-budget guard and run even when the estimated "
+            "peak memory exceeds the budget (HTTP 507 otherwise)."
+        ),
+    )
+
+
+class ConsensusRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields):
     """Request body for consensus matrix computation."""
 
     dump_paths: list[str]
@@ -81,7 +137,7 @@ class AlignedWindowKey(KeyMaterialFields):
     dump_path: str
 
 
-class AlignedWindowRequest(BaseModel):
+class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields):
     """Request body for ``POST /api/analysis/consensus/aligned-window``.
 
     POST rather than GET for two reasons that are not style: N dump paths plus
@@ -126,7 +182,7 @@ class AlignedWindowRequest(BaseModel):
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
-class ConsensusRegionsRequest(BaseModel):
+class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields):
     """Request body for ``POST /api/analysis/consensus/regions``.
 
     Every occurrence of a consensus class, paginated and JUMPABLE — the list
@@ -174,7 +230,7 @@ class ConsensusRegionsRequest(BaseModel):
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
-class AnalysisCandidatesRequest(KeyMaterialFields):
+class AnalysisCandidatesRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields):
     """Request body for the exploratory candidate search (no oracle, no pcap).
 
     Mirrors ``app.tools_pipeline.analyze_candidates`` 1:1 so the web surface
@@ -287,7 +343,7 @@ class AnalyzeFileRequest(KeyMaterialFields):
     custom_patterns: list[dict] | None = None
 
 
-class ConvergenceRequest(BaseModel):
+class ConvergenceRequest(MemoryOverrideFields):
     """Request body for convergence sweep analysis."""
 
     dump_paths: list[str]
@@ -308,9 +364,12 @@ class VerifyKeyRequest(KeyMaterialFields):
     aad_hex: str | None = None
     tag_hex: str | None = None
     cipher: str = "AES-256-CBC"
+    # Byte view ``offset`` addresses ("raw" / "vas" / "va"); None = the dump's
+    # default view (the historical behaviour).
+    view: Literal["raw", "vas", "va"] | None = None
 
 
-class AutoExportRequest(KeyMaterialFields):
+class AutoExportRequest(KeyMaterialFields, MemoryOverrideFields):
     """Request body for auto-detect key region and export."""
 
     dump_paths: list[str]
@@ -423,3 +482,40 @@ class AnalysisRunResponse(BaseModel):
 
     task_id: str
     status: str
+
+
+class ImportProvenanceRecord(BaseModel):
+    """One IMPORT_PROVENANCE block (spec §11, 0x0030) with its note parsed.
+
+    ``note`` is the raw stored text; the remaining fields are what
+    ``msl.region_select.parse_provenance_note`` extracts from it and are
+    ``None`` / empty when the note does not record them.
+    """
+
+    source_format: int
+    source_format_name: str
+    tool_name: str
+    import_time_ns: int
+    orig_file_size: int
+    source_hash: str
+    note: str
+    base_note: str = ""
+    selected_categories: list[str] | None = None
+    selection_all: bool = False
+    writable_only: bool = False
+    module_globs: list[str] = Field(default_factory=list)
+    excluded_regions: int | None = None
+    excluded_bytes: int | None = None
+    fallback_all: bool = False
+    materialized: bool = False
+    orig_eoc_hash: str | None = None
+    dropped_key_hints: int | None = None
+    #: The note carries ``region_names=1``: the file's VAS_MAP mapping names
+    #: are trusted for name-based classification (e.g. ``runtime``).
+    region_names: bool = False
+
+
+class ImportProvenanceResponse(BaseModel):
+    """``GET /api/inspect/import-provenance`` body; empty for non-.msl dumps."""
+
+    provenance: list[ImportProvenanceRecord] = Field(default_factory=list)

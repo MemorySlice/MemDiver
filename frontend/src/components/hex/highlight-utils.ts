@@ -1,4 +1,4 @@
-import type { HighlightRegion } from "@/stores/hex-store";
+import type { HexViewMode, HighlightRegion } from "@/stores/hex-store";
 
 /** Sorted region index for binary search lookup */
 export interface RegionIndex {
@@ -11,6 +11,25 @@ export interface RegionIndex {
    * iterations per uncovered cell, 520,000 per rendered frame.
    */
   maxLength: number;
+}
+
+/**
+ * The regions that address bytes in the view on screen.
+ *
+ * A region tagged with a `view` (analysis hits carry the view their offsets
+ * were computed in) is dropped in any other view of a dump that has several
+ * DISTINCT views — there its offset names unrelated bytes. Untagged regions,
+ * and every region on a single-view dump (`availableViews` of length <= 1,
+ * including "not probed yet"), pass through unchanged.
+ */
+export function regionsForView(
+  regions: HighlightRegion[],
+  viewMode: HexViewMode,
+  availableViews: readonly HexViewMode[],
+): HighlightRegion[] {
+  if (availableViews.length <= 1) return regions;
+  if (!regions.some((r) => r.view !== undefined && r.view !== viewMode)) return regions;
+  return regions.filter((r) => r.view === undefined || r.view === viewMode);
 }
 
 export function buildRegionIndex(regions: HighlightRegion[]): RegionIndex {

@@ -132,6 +132,9 @@ def _golden_run_file(dump_path: Path, algorithms: List[str]) -> Dict[str, Any]:
             "algorithms": algorithms,
             "dump_path": str(dump_path),
             "algorithm_results": algorithm_metadata,
+            # Added with the hex-viewer view alignment: a flat dump's hits
+            # are raw offsets (gcore/.msl report "vas").
+            "offset_view": "raw",
         },
     }
     return {"libraries": [library_report], "metadata": {}}

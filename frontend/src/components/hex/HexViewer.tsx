@@ -10,7 +10,7 @@ import { HexLegend } from "./HexLegend";
 import { HexStatusBar } from "./HexStatusBar";
 import { SearchMinimap } from "./SearchMinimap";
 import { ConsensusVarianceMinimap } from "./ConsensusVarianceMinimap";
-import { buildRegionIndex } from "./highlight-utils";
+import { buildRegionIndex, regionsForView } from "./highlight-utils";
 import { windowCount, clampWindowStart } from "./window-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
@@ -48,6 +48,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
+  const availableViews = useHexStore((s) => s.availableViews);
   const searchOffsets = useHexStore((s) => s.searchOffsets);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
@@ -247,8 +248,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     : null;
 
   const regionIndex = useMemo(
-    () => buildRegionIndex(highlightedRegions),
-    [highlightedRegions]
+    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
+    [highlightedRegions, viewMode, availableViews]
   );
 
   const getByteAtStable = useCallback(

@@ -192,3 +192,128 @@ describe("FileUpload reaches the multi-dump workflow", () => {
     expect(screen.getByTestId("main-view-sideBySide")).toBeEnabled();
   });
 });
+
+/** Form fields of the n-th upload request (excluding the file itself). */
+function sentFields(fetchMock: ReturnType<typeof vi.fn>, n = 0): Record<string, string> {
+  const form = (fetchMock.mock.calls[n][1] as RequestInit).body as FormData;
+  const out: Record<string, string> = {};
+  form.forEach((value, key) => {
+    if (key !== "file") out[key] = String(value);
+  });
+  return out;
+}
+
+function selectiveResponse(output: string, extra: Record<string, unknown>) {
+  return {
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        source: "/tmp/source.core",
+        output,
+        regions_written: 3,
+        total_bytes: 2048,
+        ...extra,
+      }),
+  };
+}
+
+describe("FileUpload region selection", () => {
+  beforeEach(async () => {
+    const { useRegionSelectionStore } = await import("@/stores/region-selection-store");
+    useRegionSelectionStore.getState().reset();
+  });
+
+  it("defaults the batch selector to heap, stack and unclassified", () => {
+    render(<FileUpload />);
+    const selector = screen.getByTestId("upload-region-selector");
+    expect(selector).toBeInTheDocument();
+    expect(screen.getByTestId("region-category-heap")).toBeChecked();
+    expect(screen.getByTestId("region-category-stack")).toBeChecked();
+    expect(screen.getByTestId("region-category-unclassified")).toBeChecked();
+    expect(screen.getByTestId("region-category-image_data")).not.toBeChecked();
+    expect(screen.getByTestId("region-materialize")).not.toBeChecked();
+  });
+
+  it("sends the selection for a raw/ELF file and shows kept/excluded and warnings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      selectiveResponse("/tmp/a.msl", {
+        selection: "regions=heap,stack,unclassified",
+        excluded_region_count: 4,
+        excluded_bytes: 8192,
+        secrets_only_in_excluded: 1,
+        warnings: ["server warning"],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FileUpload />);
+    drop([file("a.core")]);
+
+    const outcome = await screen.findByTestId("upload-selection-outcome");
+    expect(sentFields(fetchMock)).toEqual({ regions: "heap,stack,unclassified" });
+    expect(outcome).toHaveTextContent("Kept 2.0 KiB");
+    expect(outcome).toHaveTextContent("Excluded 4 regions (8.0 KiB)");
+    expect(screen.getByTestId("import-warnings")).toHaveTextContent("1 known secret was found only in excluded regions");
+    expect(screen.getByTestId("import-warnings")).toHaveTextContent("server warning");
+  });
+
+  it("sends nothing extra when All is chosen (the old default)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(uploadResponse("/tmp/a.msl"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FileUpload />);
+    fireEvent.click(screen.getByTestId("region-all"));
+    drop([file("a.core")]);
+
+    await waitFor(() => expect(useDumpStore.getState().dumps).toHaveLength(1));
+    expect(sentFields(fetchMock)).toEqual({});
+    expect(screen.queryByTestId("import-warnings")).not.toBeInTheDocument();
+  });
+
+  it("stages an .msl verbatim and filters it at analysis time by default", async () => {
+    const { useRegionSelectionStore } = await import("@/stores/region-selection-store");
+    const fetchMock = vi.fn().mockResolvedValue(uploadResponse("/tmp/a.msl"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FileUpload />);
+    drop([file("a.msl")]);
+
+    expect(await screen.findByText(/applied at analysis time/)).toBeInTheDocument();
+    expect(sentFields(fetchMock)).toEqual({});
+    expect(useRegionSelectionStore.getState().regionFilter).toBe("heap,stack,unclassified");
+  });
+
+  it("writes a filtered .msl copy when materialize is ticked", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(selectiveResponse("/tmp/a.msl", { materialized: true, excluded_region_count: 1, excluded_bytes: 10 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FileUpload />);
+    fireEvent.click(screen.getByTestId("region-materialize"));
+    drop([file("a.msl")]);
+
+    expect(await screen.findByText("Filtered copy written.")).toBeInTheDocument();
+    expect(sentFields(fetchMock)).toEqual({ regions: "heap,stack,unclassified", materialize: "true" });
+  });
+
+  it("sends the encrypted-.msl key and decrypt opt-in in the upload form", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(selectiveResponse("/tmp/e.msl", { materialized: true, excluded_region_count: 1, excluded_bytes: 10 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<FileUpload />);
+    expect(screen.queryByTestId("encrypted-msl-options")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("region-materialize"));
+    expect(screen.queryByTestId("encrypted-unlock")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("encrypted-passphrase"), { target: { value: "s3cret" } });
+    fireEvent.click(screen.getByTestId("encrypted-decrypt-output"));
+    drop([file("e.msl")]);
+
+    expect(await screen.findByText("Filtered copy written.")).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/dumps/upload");
+    expect(sentFields(fetchMock)).toEqual({
+      regions: "heap,stack,unclassified",
+      materialize: "true",
+      passphrase: "s3cret",
+      decrypt_output: "true",
+    });
+  });
+});
+

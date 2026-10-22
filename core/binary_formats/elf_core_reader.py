@@ -5,7 +5,9 @@ Parses enough of an ``ET_CORE`` ELF64 file to drive the
 
 - Every ``PT_LOAD`` program header (for virtual-address -> file-offset).
 - ``PT_NOTE`` segments, with special treatment for ``NT_FILE`` (module
-  map) and ``NT_PRSTATUS`` (to extract the recorded PID).
+  map) and ``NT_PRSTATUS`` (the recorded PID plus one
+  :class:`ThreadInfo` per thread, carrying its stack pointer when the
+  architecture is known).
 
 The reader never slurps the whole file: all I/O goes through a single
 ``mmap`` view opened in :meth:`ElfCoreReader.open`. Byte order is
@@ -21,7 +23,10 @@ import mmap
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only (keeps core free of msl at import)
+    from memdiver.msl.enums import ArchType
 
 logger = logging.getLogger("memdiver.core.binary_formats.elf_core_reader")
 
@@ -45,6 +50,12 @@ NT_FILE = 0x46494C45
 PF_X = 0x1
 PF_W = 0x2
 PF_R = 0x4
+
+# e_machine values (subset) whose elf_prstatus register layout we decode.
+EM_386 = 3
+EM_ARM = 40
+EM_X86_64 = 62
+EM_AARCH64 = 183
 
 
 # Public data classes ---------------------------------------------------------
@@ -71,6 +82,18 @@ class NtFileEntry:
     path: str
 
 
+@dataclass(frozen=True)
+class ThreadInfo:
+    """One thread recorded by an ``NT_PRSTATUS`` note.
+
+    ``sp`` is the saved stack pointer, or ``None`` when the machine's
+    register layout is not decoded or the note is too short.
+    """
+
+    tid: int
+    sp: Optional[int]
+
+
 @dataclass
 class ElfCoreInfo:
     """Parsed summary of an ELF core dump."""
@@ -78,6 +101,8 @@ class ElfCoreInfo:
     pid: Optional[int] = None
     segments: List[PtLoadSegment] = field(default_factory=list)
     file_mappings: List[NtFileEntry] = field(default_factory=list)
+    machine: int = 0  # ELF e_machine (EM_*)
+    threads: List[ThreadInfo] = field(default_factory=list)
 
 
 # struct formats (ELF64 little-endian) ---------------------------------------
@@ -103,6 +128,19 @@ _NHDR_SIZE = struct.calcsize(_NHDR_FMT)
 # That puts pr_pid at 12 + 2 + 2 (pad) + 8 + 8 = 32. Validate by reading an int.
 _PRSTATUS_PR_PID_OFFSET = 32
 _PRSTATUS_PR_PID_SIZE = 4
+
+# pr_reg follows pr_pid/pr_ppid/pr_pgrp/pr_sid (4 * int = 16) and four
+# struct timevals (pr_utime/stime/cutime/cstime, 4 * 16 = 64):
+# 32 + 16 + 64 = 112 on 64-bit Linux (x86_64 and aarch64 alike).
+_PRSTATUS_PR_REG_OFFSET = 112
+_PRSTATUS_REG_SIZE = 8
+# Index of the stack pointer within pr_reg (array of u64), per machine:
+# x86_64 user_regs_struct: r15..rdi, orig_rax, rip, cs, eflags, rsp -> 19.
+# aarch64 user_pt_regs: regs[0..30], sp -> 31.
+_PRSTATUS_SP_REG_INDEX = {
+    EM_X86_64: 19,
+    EM_AARCH64: 31,
+}
 
 
 class ElfCoreReader:
@@ -213,7 +251,7 @@ class ElfCoreReader:
             raise ValueError("File too small for an ELF64 header")
         self._validate_ident(bytes(buf[:16]))
 
-        (_, e_type, _e_machine, _e_version, _e_entry, e_phoff, _e_shoff,
+        (_, e_type, e_machine, _e_version, _e_entry, e_phoff, _e_shoff,
          _e_flags, _e_ehsize, e_phentsize, e_phnum,
          _e_shentsize, _e_shnum, _e_shstrndx) = struct.unpack(
             _EHDR64_FMT, bytes(buf[:_EHDR64_SIZE]),
@@ -226,7 +264,7 @@ class ElfCoreReader:
                 f"Unexpected e_phentsize={e_phentsize} (want {_PHDR64_SIZE})",
             )
 
-        info = ElfCoreInfo()
+        info = ElfCoreInfo(machine=e_machine)
         for idx in range(e_phnum):
             phdr_off = e_phoff + idx * e_phentsize
             if phdr_off + _PHDR64_SIZE > len(buf):
@@ -288,12 +326,24 @@ class ElfCoreReader:
                 )
                 break
             desc_bytes = bytes(buf[desc_start:desc_end])
-            if n_type == NT_PRSTATUS and info.pid is None:
-                info.pid = _parse_prstatus_pid(desc_bytes)
+            if n_type == NT_PRSTATUS:
+                self._record_prstatus(desc_bytes, info)
             elif n_type == NT_FILE and not info.file_mappings:
                 info.file_mappings = _parse_nt_file(desc_bytes)
             # Advance past the desc with 4-byte alignment padding.
             cursor = desc_start + _align4(descsz)
+
+    @staticmethod
+    def _record_prstatus(desc: bytes, info: ElfCoreInfo) -> None:
+        """Record one ``NT_PRSTATUS`` note: first note's pid + every thread."""
+        tid = _parse_prstatus_pid(desc)
+        if info.pid is None:
+            info.pid = tid
+        if tid is None:
+            return
+        info.threads.append(ThreadInfo(
+            tid=tid, sp=_parse_prstatus_sp(desc, info.machine),
+        ))
 
 
 # Helper functions ------------------------------------------------------------
@@ -316,6 +366,29 @@ def _parse_prstatus_pid(desc: bytes) -> Optional[int]:
     if len(desc) < off + size:
         return None
     return int.from_bytes(desc[off:off + size], "little", signed=True)
+
+
+def _parse_prstatus_sp(desc: bytes, machine: int) -> Optional[int]:
+    """Extract the saved stack pointer from ``pr_reg`` (``None`` if unknown)."""
+    reg_index = _PRSTATUS_SP_REG_INDEX.get(machine)
+    if reg_index is None:
+        return None
+    off = _PRSTATUS_PR_REG_OFFSET + reg_index * _PRSTATUS_REG_SIZE
+    if len(desc) < off + _PRSTATUS_REG_SIZE:
+        return None
+    return int.from_bytes(desc[off:off + _PRSTATUS_REG_SIZE], "little")
+
+
+def machine_to_arch_type(machine: int) -> ArchType:
+    """Map an ELF ``e_machine`` value to :class:`msl.enums.ArchType`."""
+    from memdiver.msl.enums import ArchType
+
+    return {
+        EM_386: ArchType.X86,
+        EM_X86_64: ArchType.X86_64,
+        EM_ARM: ArchType.ARM32,
+        EM_AARCH64: ArchType.ARM64,
+    }.get(machine, ArchType.UNKNOWN)
 
 
 def _parse_nt_file(desc: bytes) -> List[NtFileEntry]:

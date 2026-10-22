@@ -55,6 +55,7 @@ from memdiver.app.tools_inspect import (
     handles_result,
     modules_result,
     module_index_result,
+    import_provenance_result,
     page_states_result,
     processes_result,
     read_hex_raw_result,
@@ -74,7 +75,7 @@ from memdiver.app.tools_xref import (
 )
 
 # --- pipeline stages + verify / experiment ----------------------------------
-from memdiver.app.experiment_orchestration import experiment_result
+from memdiver.app.experiment_orchestration import capture_result, experiment_result
 from memdiver.app.tools_pipeline import (
     analyze_candidates,
     auto_floor,
@@ -102,7 +103,15 @@ from memdiver.app.tools import (
     import_dump,
     list_phases,
     list_protocols,
+    preview_import,
     scan_dataset,
+)
+
+# --- import-time region selection (value types for import_dump/preview) ----
+from memdiver.msl.region_select import (
+    RegionCategory,
+    RegionSelection,
+    parse_selection,
 )
 
 # --- consensus: the aligned window (the N-dump differential viewer) --------
@@ -137,6 +146,7 @@ __all__ = [
     "handles_result",
     "connections_result",
     "module_index_result",
+    "import_provenance_result",
     "blocks_result",
     # xref / structure
     "get_cross_references_result",
@@ -181,15 +191,21 @@ __all__ = [
     # and each row carries the navigable offset to go there.
     "class_regions_result",
     "class_regions_from_vector",
-    # verify / experiment
+    # verify / experiment / capture
     "verify_key_result",
     "experiment_result",
+    "capture_result",
     # dataset / analysis
     "scan_dataset",
     "list_protocols",
     "list_phases",
     "analyze_library",
     "import_dump",
+    "preview_import",
+    # import-time region selection value types
+    "RegionSelection",
+    "RegionCategory",
+    "parse_selection",
     # frontend-serving producers
     "infer_fields_result",
     "algorithm_availability",

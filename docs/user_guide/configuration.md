@@ -30,6 +30,9 @@ changing a variable needs a restart. The exceptions are `upload_dir` and
 | `MEMDIVER_API_TOKEN` | unset | Opt-in token auth. When set, every `/api`, `/ws` and `/notebook` route needs `Authorization: Bearer <token>` or `X-API-Key: <token>` (WebSockets may also use `?token=<token>`). `/health`, `/docs`, `/redoc`, `/openapi.json` and the static frontend stay open. | `api/config.py`, `api/security.py` |
 | `MEMDIVER_ALLOW_INSECURE` | `false` | Lets `memdiver web` bind a non-loopback host **without** a token; logs a loud warning. | `api/config.py`, `api/security.py` |
 | `MEMDIVER_CORS_ORIGINS` | `["http://localhost:5173"]` | Allowed CORS origins (JSON array). A literal `"*"` is dropped; if nothing is left the default is used. The allowed methods are fixed at `GET`, `POST`, `PUT`, `DELETE` and `OPTIONS` (`PATCH` is refused). | `api/config.py`, `api/main.py` |
+| `MEMDIVER_FRONTEND_PORT` | unset (`FRONTEND_PORT`, else `5173`) | Port of the Vite dev server whose origins (`http://localhost:<port>`, `http://127.0.0.1:<port>`) the cross-site guard trusts in addition to `MEMDIVER_CORS_ORIGINS`. Not needed when going through the Vite proxy (that is same-origin). See [Security model](#security-model). | `api/security.py` |
+| `MEMDIVER_ALLOWED_HOSTS` | unset | Extra `Host` header names (comma-separated, no port) the API answers to, besides `127.0.0.1`, `localhost` and `::1`. Any other `Host` gets `421` — this defeats DNS rebinding. A non-loopback `MEMDIVER_HOST` that passed the bind guardrail is added automatically; set this when you reach the server by a different name (e.g. bound to `0.0.0.0`). `*` disables the check (not recommended). See [Security model](#security-model). | `api/config.py`, `api/security.py` |
+| `MEMDIVER_ALLOWED_ROOTS` | unset (unrestricted) | **Opt-in read-path sandbox.** `os.pathsep`-separated directories (`:` on macOS/Linux, `;` on Windows). When set, every client-supplied read path must resolve (symlinks followed) inside one of them, the upload dir, the dataset root, `<memdiver home>`, or a file-browser favourite; anything else gets `403`. The file browser's "up" stops at the boundary. | `api/config.py`, `api/path_policy.py` |
 | `MEMDIVER_WEB_GRACEFUL_TIMEOUT_S` | `10` | Seconds uvicorn may spend draining open connections on shutdown (`timeout_graceful_shutdown`). Without a bound, a parked progress WebSocket would make Ctrl-C hang. | `api/config.py`, `cli/dataset.py` |
 | `MEMDIVER_DATASET_ROOT` | `""` | Dataset loaded into the tool session at startup. When unset, `dataset_root` is read from the file named by `MEMDIVER_CONFIG_PATH`. An unusable root is logged and ignored. | `api/config.py`, `api/main.py` |
 | `MEMDIVER_CONFIG_PATH` | `config.json` (relative to the server's working directory) | The repo-level `config.json` that `dataset_root` falls back to. Not the user-local prefs file. | `api/config.py` |
@@ -44,9 +47,97 @@ changing a variable needs a restart. The exceptions are `upload_dir` and
 | `MEMDIVER_FRONTEND_DIST` | `<package>/frontend/dist` | Directory the prebuilt React bundle is served from, for packaged or relocated installs. Read directly from the environment (not via `.env`). | `api/frontend_build.py` |
 
 `Settings` also declares `max_workers` (default `min(4, cpu_count - 1)`, at least
-1), `max_rss_mb` (`4096`) and `db_path` (`<memdiver home>/project.duckdb`), so
-`MEMDIVER_MAX_WORKERS`, `MEMDIVER_MAX_RSS_MB` and `MEMDIVER_DB_PATH` are accepted,
-but no code currently reads those three fields. Setting them has no effect.
+1) and `db_path` (`<memdiver home>/project.duckdb`), so `MEMDIVER_MAX_WORKERS` and
+`MEMDIVER_DB_PATH` are accepted, but no code currently reads those two fields.
+Setting them has no effect.
+
+### Analysis memory budget
+
+`max_rss_mb` (`MEMDIVER_MAX_RSS_MB`, default `0` = no cap) is an **upper cap** on the
+analysis memory budget computed by `core/memory_budget.py`. The budget is
+
+    budget = min(available_memory × 0.7, max_rss_mb, MEMDIVER_MEMORY_BUDGET_MB)
+
+where the smallest configured cap wins and an unset or non-positive cap is
+ignored. Available memory is measured with `psutil` when it is installed
+(optional, not a dependency), otherwise `/proc/meminfo` `MemAvailable` on Linux
+(lowered to the cgroup v2 `memory.max` headroom inside containers),
+`vm_stat` free + inactive + speculative + purgeable pages on macOS, and as a last
+resort total physical RAM (reported as source `total`, which overestimates what
+is free). Operations whose estimated peak exceeds the budget are refused with a
+message giving the estimate, the budget and how it was measured (error code
+`memory_budget_exceeded`). Every interface has an explicit override that proceeds
+anyway (a warning is logged):
+
+| Interface | Override | Refusal surfaces as |
+|---|---|---|
+| CLI | `--force-memory` on `consensus`, `consensus-window`, `consensus-regions`, `analyze-candidates`, `analyze`, `batch`, `experiment`, `export --auto` | message + "Re-run with --force-memory", non-zero exit |
+| MCP | `force_memory=true` on every tool that builds a consensus | tool error with code `memory_budget_exceeded`, `estimate_bytes`, `budget_bytes` |
+| REST | `"force_memory": true` in the request body (consensus, aligned-window, regions, candidates, analysis/pipeline runs); `/api/consensus/begin` keeps `force` | HTTP 507 `{code, message, estimate_bytes, budget_bytes, ...}` |
+| Web UI | "Run anyway" in the memory-budget dialog (re-sends with `force_memory: true`) | dialog with estimate vs budget |
+| Python | `force=True` on the app/engine builders | `CapabilityError` (PRECONDITION) |
+
+Prefer narrowing the work first (a region filter such as `heap,stack`, fewer dumps)
+over forcing it.
+
+| Variable | Default | Effect | Source |
+|---|---|---|---|
+| `MEMDIVER_MAX_RSS_MB` | `0` (no cap) | Upper cap (MiB) on the analysis memory budget, read through `Settings` and passed in by the caller. | `api/config.py`, `core/memory_budget.py` |
+| `MEMDIVER_MEMORY_BUDGET_MB` | unset | Upper cap (MiB) on the analysis memory budget, read directly from the environment (applies to the CLI and library too, not via `.env`). Combined with `max_rss_mb` by taking the smaller. | `core/memory_budget.py` |
+
+## Security model
+
+`memdiver web` is a local single-user workbench. Its defences are layered:
+
+1. **Network.** Binds `127.0.0.1` by default. A non-loopback `MEMDIVER_HOST`
+   is refused unless `MEMDIVER_API_TOKEN` (or the loud
+   `MEMDIVER_ALLOW_INSECURE`) is set.
+2. **Browser — always on.** A loopback bind does not stop *web pages* you visit
+   from sending requests to `127.0.0.1`. So:
+   - **Host allow-list** (`HostAllowListMiddleware`): any `Host` header other
+     than loopback / `MEMDIVER_ALLOWED_HOSTS` is refused with `421`, for HTTP
+     and WebSocket alike. This blocks DNS-rebinding attacks.
+   - **Cross-site guard** (`CrossSiteRequestGuard`): every state-changing
+     request (`POST`/`PUT`/`PATCH`/`DELETE`) and every WebSocket handshake is
+     refused with `403` when `Sec-Fetch-Site: cross-site` is sent, or when its
+     `Origin` is neither the server's own origin nor listed in
+     `MEMDIVER_CORS_ORIGINS` (`Origin: null` is always refused). Requests
+     without an `Origin` (curl, scripts, the CLI) are not browser-originated
+     and pass.
+   - **JSON bodies only**: a state-changing request whose body has no
+     `Content-Type`, or `text/plain` / `application/x-www-form-urlencoded`
+     (the types a cross-site form can send without a CORS preflight), is
+     refused with `415`. `multipart/form-data` uploads are allowed and rely on
+     the `Origin` / `Sec-Fetch-Site` checks. The Marimo mount (`/notebook`)
+     is exempt from this one rule, not from the origin checks.
+   - **Trusted origins** are exactly: the request's own origin (`Origin`
+     scheme-less `host:port` equal to the `Host` header), the
+     `MEMDIVER_CORS_ORIGINS` list, and the Vite dev server as both
+     `http://localhost:<port>` and `http://127.0.0.1:<port>`, where `<port>`
+     is `MEMDIVER_FRONTEND_PORT`, else `FRONTEND_PORT`, else `5173`. A
+     loopback `Origin` on any **other** port is refused like a foreign site,
+     so another local web service (a notebook, a second dev server rendering
+     untrusted content) cannot drive MemDiver. The Vite dev proxy
+     (`frontend/vite.config.ts`) runs with `changeOrigin: false`, so `Host`
+     stays the dev server's and proxied requests are plain same-origin, on
+     whatever `--port` Vite got. If you serve the frontend from some other
+     origin that talks to the API directly, add it to `MEMDIVER_CORS_ORIGINS`.
+3. **Auth — opt-in.** `MEMDIVER_API_TOKEN`.
+4. **Writes — always contained.** A client-supplied write location
+   (`output_dir` on `/api/dumps/import-path` and `/api/analysis/key-pattern`,
+   `output_path` on `/api/analysis/export-keylog`) must resolve inside the
+   upload directory, and client-supplied file names (pattern `name`, `.ksy`
+   `meta.id`, session names) must be bare names. The CLI and MCP tools are
+   not restricted this way — they write wherever your shell can.
+5. **Reads — opt-in.** Read paths (dump paths, the file browser, dataset roots)
+   are unrestricted by default because pointing MemDiver at any local dump is
+   its core job. Set `MEMDIVER_ALLOWED_ROOTS` to sandbox them. The policy is
+   enforced once per router (`api/path_policy.enforce_request_read_paths`) on
+   the well-known path fields of the query string and JSON body.
+
+Changing the upload directory or favourites (`/api/settings/*`) widens what is
+writable/readable, so those endpoints are covered by the cross-site guard like
+every other mutation.
 
 ## Engine and other entry points
 

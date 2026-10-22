@@ -9,10 +9,16 @@ without knowing the ground-truth secrets.
 
 from array import array
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
 from memdiver.core.constants import UNKNOWN_KEY
+from memdiver.core.memory_budget import check_budget, resolve_memory_budget
+from memdiver.core.slab_variance import (
+    allocate_variance_output,
+    plan_slab_variance,
+    stream_variance,
+)
 from memdiver.core.variance import (
     ByteClass,
     compute_variance,
@@ -40,6 +46,27 @@ class DifferentialAlgorithm(BaseAlgorithm):
     LENGTH_TOLERANCE = 8       # Accept regions within +/- this many bytes
     MAX_GAP_BYTES = 4          # Bridge gaps of up to this many non-candidate bytes
 
+    def estimate_working_set(self, size: int,
+                             context: Optional[AnalysisContext] = None,
+                             sample: Optional[Sequence[bytes]] = None) -> int:
+        """The slab-variance plan's peak over ``context.extra["dump_paths"]``.
+
+        ``0`` with fewer than two existing paths (``run`` returns at once,
+        e.g. in single-dump ``run_file``). :meth:`run` also gates this same
+        plan itself via ``check_budget``.
+        """
+        dump_paths = self._resolve_dump_paths(context) if context is not None else []
+        if len(dump_paths) < 2:
+            return 0
+        min_size = min(p.stat().st_size for p in dump_paths)
+        if min_size == 0:
+            return 0
+        plan = plan_slab_variance(
+            len(dump_paths), min_size, budget=resolve_memory_budget(),
+            with_reference=False,
+            operation=f"differential variance ({len(dump_paths)} dumps)")
+        return int(plan.estimate.peak_bytes)
+
     def run(self, dump_data: bytes, context: AnalysisContext) -> AlgorithmResult:
         """Run differential analysis across multiple dumps at the same phase.
 
@@ -48,6 +75,8 @@ class DifferentialAlgorithm(BaseAlgorithm):
             context: Analysis context. ``context.extra["dump_paths"]`` must
                 contain a list of :class:`~pathlib.Path` objects pointing to
                 all N dumps for this phase (including the primary).
+                ``context.extra["force"]`` (optional, default False) overrides
+                the memory-budget guard.
 
         Returns:
             AlgorithmResult with matched key-candidate regions and per-category
@@ -62,7 +91,8 @@ class DifferentialAlgorithm(BaseAlgorithm):
                 metadata={"error": "need at least 2 dump paths for differential analysis"},
             )
 
-        variance = self._compute_variance(dump_paths)
+        variance = self._compute_variance(
+            dump_paths, force=bool(context.extra.get("force", False)))
         classifications = classify_variance(variance)
         matches = self._extract_key_regions(dump_data, variance, classifications)
 
@@ -97,13 +127,29 @@ class DifferentialAlgorithm(BaseAlgorithm):
         return paths
 
     @staticmethod
-    def _compute_variance(dump_paths: List[Path]) -> array:
-        """Compute per-byte-position variance across all dumps."""
+    def _compute_variance(dump_paths: List[Path], *, force: bool = False,
+                          budget: Any = None) -> array:
+        """Compute per-byte-position variance across all dumps.
+
+        Streams position slabs from each file (``core.slab_variance``) rather
+        than reading all N whole; bit-identical to
+        :meth:`_variance_from_buffers` on the same files. The predicted peak
+        is checked against the memory budget (raises unless ``force``).
+        """
         min_size = min(p.stat().st_size for p in dump_paths)
         if min_size == 0:
             return array("d")
-        buffers = [p.read_bytes()[:min_size] for p in dump_paths]
-        return DifferentialAlgorithm._variance_from_buffers(buffers)
+        if budget is None:
+            budget = resolve_memory_budget()
+        plan = plan_slab_variance(
+            len(dump_paths), min_size, budget=budget, with_reference=False,
+            operation=f"differential variance ({len(dump_paths)} dumps)")
+        check_budget(plan.estimate, force=force, budget=budget)
+        out = allocate_variance_output(min_size, in_ram=plan.variance_in_ram)
+        variance, _ = stream_variance(
+            list(dump_paths), min_size, out=out,
+            chunk_positions=plan.chunk_positions, with_reference=False)
+        return variance
 
     @staticmethod
     def _variance_from_buffers(buffers: List[bytes]) -> array:

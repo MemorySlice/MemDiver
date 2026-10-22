@@ -56,6 +56,7 @@ from .inspect import (
     _cmd_inspect_modules,
     _cmd_inspect_page_states,
     _cmd_inspect_processes,
+    _cmd_inspect_provenance,
     _cmd_inspect_region,
     _cmd_inspect_session_info,
     _cmd_inspect_strings,
@@ -165,6 +166,7 @@ __all__ = [
     "_cmd_inspect_processes",
     "_cmd_inspect_modules",
     "_cmd_inspect_handles",
+    "_cmd_inspect_provenance",
     "_cmd_inspect_xref",
     "_cmd_inspect_structure",
 ]

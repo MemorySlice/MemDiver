@@ -66,9 +66,12 @@ from memdiver.engine.vol3_subproc import VOL3_BIN_ENV, VOL3_PYTHON_ENV
 
 from ._shared import (
     _decrypt_parent_parser,
+    _region_selection_parent_parser,
     _setup_logging,
+    add_force_memory_argument,
     to_cli_exit,
 )
+from .import_keys import decrypt_output_parent_parser
 from .dataset import (
     _cmd_analyze,
     _cmd_batch,
@@ -85,7 +88,9 @@ from .consensus import (
     _cmd_consensus_finalize,
     _cmd_consensus_regions,
     _cmd_consensus_window,
+    add_region_filter_arguments,
 )
+from .capture import _cmd_capture, add_capture_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
     DEFAULT_AUTO_EXPORT_CONTEXT,
@@ -140,6 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     az.add_argument("--normalize", action="store_true")
     az.add_argument("--no-expand", action="store_true", help="Skip key expansion")
     az.add_argument("-o", "--output", help="Output JSON file")
+    add_force_memory_argument(az)
     az.add_argument("-v", "--verbose", action="store_true")
     # scan
     sc = sub.add_parser("scan", help="Scan dataset root")
@@ -162,6 +168,7 @@ def _build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--output-format", choices=["json", "jsonl"], default=None,
                     help="Output format (overrides config); default: from config or 'json'")
     bt.add_argument("-v", "--verbose", action="store_true")
+    add_force_memory_argument(bt)
     # web (FastAPI + React — also the default when no command given)
     wp = sub.add_parser("web", help="Launch FastAPI + React web application (included in the base install)")
     # default=None, not 8080: an explicit 8080 here would always beat
@@ -189,6 +196,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="FP target for convergence (default: 0)")
     cs.add_argument("-o", "--output", help="Output JSON file")
     cs.add_argument("-v", "--verbose", action="store_true")
+    add_region_filter_arguments(cs)
+    add_force_memory_argument(cs)
     # incremental consensus (Welford-backed, persisted state)
     cb = sub.add_parser(
         "consensus-begin",
@@ -241,6 +250,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Return coordinates and classes without the bytes")
     cw.add_argument("-o", "--output", help="Output JSON file")
     cw.add_argument("-v", "--verbose", action="store_true")
+    add_region_filter_arguments(cw)
+    add_force_memory_argument(cw)
     # consensus-regions — EVERY occurrence of a class, paginated and jumpable
     cr = sub.add_parser(
         "consensus-regions",
@@ -278,6 +289,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="ASLR-aware normalization for the build")
     cr.add_argument("-o", "--output", help="Output JSON file")
     cr.add_argument("-v", "--verbose", action="store_true")
+    add_region_filter_arguments(cr)
+    add_force_memory_argument(cr)
     # search-reduce
     sr = sub.add_parser(
         "search-reduce",
@@ -350,6 +363,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Project to file the stored comparison under")
     ac.add_argument("-o", "--output", help="Output JSON file")
     ac.add_argument("-v", "--verbose", action="store_true")
+    add_force_memory_argument(ac)
     # brute-force
     bf = sub.add_parser(
         "brute-force",
@@ -549,6 +563,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Use alignment-filtered candidates for auto-detection")
     ex.add_argument("-o", "--output", help="Output file path")
     ex.add_argument("-v", "--verbose", action="store_true")
+    add_force_memory_argument(ex)
     # locate-key (where ONE known secret sits across N dumps)
     # The epilog is the scripting contract (cli.pipeline._LOCATE_KEY_EXIT plus
     # the CapabilityError backstop below); Raw* keeps its table aligned.
@@ -963,16 +978,28 @@ def _build_parser() -> argparse.ArgumentParser:
     gk.add_argument("-v", "--verbose", action="store_true")
     # import
     im = sub.add_parser(
-        "import", help="Import a dump (raw .dump, ELF core, or minidump) to .msl")
+        "import", help="Import a dump (raw .dump, ELF core, or minidump) to .msl",
+        parents=[_region_selection_parent_parser(), _decrypt_parent_parser(),
+                 decrypt_output_parent_parser()])
     im.add_argument("dump_file", help="Dump file path (.dump/.core/.dmp)")
     im.add_argument("-o", "--output", help="Output .msl file path")
     im.add_argument("--pid", type=int, default=0, help="Process ID")
     im.add_argument("--keylog", help="Keylog file for key hints")
+    im.add_argument("--maps", metavar="PATH",
+                    help="/proc/<pid>/maps-style memory map of a raw dump "
+                         "(splits it into real regions; default: auto-detect "
+                         "a .maps sidecar with the same name)")
     im.add_argument("-v", "--verbose", action="store_true")
     # import-dir
     imd = sub.add_parser(
         "import-dir",
-        help="Import all dumps (.dump/.dmp/.core) in a directory to .msl")
+        help="Import all dumps (.dump/.dmp/.core, .bin with a .maps "
+             "sidecar) in a directory to .msl",
+        description="Import all dumps in a directory. Region flags apply to "
+                    "every dump; an interactive run prompts ONCE, using the "
+                    "first dump's regions, and applies that choice to all.",
+        parents=[_region_selection_parent_parser(), _decrypt_parent_parser(),
+                 decrypt_output_parent_parser()])
     imd.add_argument("run_dir", help="Run directory path")
     imd.add_argument("-o", "--output-dir", required=True, help="Output directory")
     imd.add_argument("--keylog-filename", default="keylog.csv")
@@ -990,6 +1017,9 @@ def _build_parser() -> argparse.ArgumentParser:
     vr.add_argument("--aad-hex", help="AEAD associated data (hex, optional)")
     vr.add_argument("--tag-hex", help="AEAD authentication tag (hex, for GCM/ChaCha20-Poly1305)")
     vr.add_argument("--cipher", default="AES-256-CBC", help="Cipher name")
+    vr.add_argument("--view", choices=["raw", "vas", "va"], default=None,
+                    help="Byte view --offset addresses (default: the format's "
+                         "own — 'vas' for .msl, the file for flat dumps)")
     vr.add_argument("-o", "--output", help="Output JSON file")
     vr.add_argument("-v", "--verbose", action="store_true")
     # experiment
@@ -1012,6 +1042,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Auto-export format (default: volatility3)")
     ep_exp.add_argument("-o", "--output", help="Output JSON results file")
     ep_exp.add_argument("-v", "--verbose", action="store_true")
+    add_force_memory_argument(ep_exp)
+    # capture — one dump of an existing process (pid/name, local/USB/remote)
+    add_capture_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1047,8 +1080,17 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Sliding window size (default: 32)")
     ie.add_argument("--step", type=int, default=16,
                     help="Window step (default: 16)")
-    ie.add_argument("--threshold", type=float, default=7.5,
-                    help="High-entropy region threshold (default: 7.5)")
+    ie.add_argument("--threshold", type=float, default=None,
+                    help="High-entropy region threshold in bits/byte (default: "
+                         "window-aware, 4.5 at --window 32; the maximum a "
+                         "window can reach is log2(min(window, 256)))")
+    ie.add_argument("--resolution", choices=("auto", "sampled", "full"),
+                    default="auto",
+                    help="full = every window (step 1, exact regions + min/max "
+                         "envelope); sampled = bounded --step; auto (default) = "
+                         "full up to 8 MiB, sampled above")
+    ie.add_argument("--buckets", type=int, default=None,
+                    help="Envelope buckets (default 1500, max 4096)")
     ie.add_argument("-o", "--output", help="Output JSON file")
     ie.add_argument("-v", "--verbose", action="store_true")
     # inspect region — the per-offset investigation view. Sibling of `entropy`
@@ -1136,6 +1178,16 @@ def _build_parser() -> argparse.ArgumentParser:
     ihn.add_argument("msl_path", help=".msl file path")
     ihn.add_argument("-o", "--output", help="Output JSON file")
     ihn.add_argument("-v", "--verbose", action="store_true")
+    # inspect provenance
+    ipv = insp_sub.add_parser("provenance", parents=[dp],
+                              help="Import provenance: source, kept/excluded "
+                                   "regions, materialized copy (empty for "
+                                   "non-.msl)")
+    ipv.add_argument("msl_path", help=".msl file path")
+    ipv.add_argument("--text", action="store_true",
+                     help="Print a human-readable summary instead of JSON")
+    ipv.add_argument("-o", "--output", help="Output JSON file")
+    ipv.add_argument("-v", "--verbose", action="store_true")
     # inspect xref
     ixr = insp_sub.add_parser("xref", parents=[dp],
                               help="Resolve cross-references (MSL only)")
@@ -1174,6 +1226,7 @@ def main():
         "mcp": _cmd_mcp, "import": _cmd_import, "import-dir": _cmd_import_dir,
         "consensus": _cmd_consensus, "export": _cmd_export,
         "verify": _cmd_verify, "experiment": _cmd_experiment,
+        "capture": _cmd_capture,
         "consensus-begin": _cmd_consensus_begin,
         "consensus-add": _cmd_consensus_add,
         "consensus-finalize": _cmd_consensus_finalize,

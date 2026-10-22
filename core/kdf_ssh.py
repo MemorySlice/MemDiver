@@ -16,6 +16,7 @@ import logging
 import struct
 from typing import List, Optional, Set
 
+from memdiver.core.buffer_ops import contains_bytes
 from memdiver.core.kdf_base import BaseKDF, KDFParams
 from memdiver.core.models import CryptoSecret
 
@@ -249,7 +250,9 @@ class SSH2KDFPlugin(BaseKDF):
                             shared_secret, exchange_hash, key_char,
                             session_id, target_len, hash_algo,
                         )
-                        if derived == other or derived in dump_data:
+                        # contains_bytes, not ``in``: ``x in mmap`` silently
+                        # returns False (dump_data may be an mmap).
+                        if derived == other or contains_bytes(dump_data, derived):
                             return self._CONFIDENCE
         return 0.0
 

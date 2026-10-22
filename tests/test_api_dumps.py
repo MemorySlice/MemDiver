@@ -428,3 +428,283 @@ def test_upload_creates_a_missing_caller_output_dir_private(client, isolated_env
     )
     assert resp.status_code == 200, resp.text
     assert stat.S_IMODE(fresh.stat().st_mode) == 0o700
+
+
+# ---------------------------------------------------------------------------
+# Region selection: POST /api/dumps/preview, upload fields, /import-path
+# ---------------------------------------------------------------------------
+
+
+def _write_elf_core(path: Path) -> Path:
+    from tests.fixtures.synth_elf_core import build_core_bytes
+
+    path.write_bytes(build_core_bytes())
+    return path
+
+
+def test_preview_elf_core_reports_categories_and_summary(client, tmp_path):
+    core = _write_elf_core(tmp_path / "gcore.core")
+    resp = client.post("/api/dumps/preview", json={"path": str(core), "regions": "heap"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["format"] == "elf_core"
+    assert body["is_msl"] is False
+    assert body["totals"]["heap"]["count"] == 10
+    assert body["totals"]["mapped_file"]["count"] == 2
+    assert body["summary"]["included_count"] == 10
+    assert body["summary"]["excluded_count"] == 2
+    assert {r["category"] for r in body["regions"]} == {"heap", "mapped_file"}
+
+
+def test_preview_raw_dump_without_selection_includes_everything(client, tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 8192)
+    resp = client.post("/api/dumps/preview", json={"path": str(raw)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["format"] == "raw"
+    assert body["summary"] == {
+        "included_count": 1, "included_bytes": 8192,
+        "excluded_count": 0, "excluded_bytes": 0,
+    }
+
+
+def test_preview_exclude_regions(client, tmp_path):
+    core = _write_elf_core(tmp_path / "gcore.core")
+    resp = client.post(
+        "/api/dumps/preview", json={"path": str(core), "exclude_regions": "mapped_file"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["summary"]["excluded_count"] == 2
+
+
+def test_preview_missing_path_is_404(client, tmp_path):
+    resp = client.post("/api/dumps/preview", json={"path": str(tmp_path / "nope.core")})
+    assert resp.status_code == 404
+
+
+def test_preview_directory_is_400(client, tmp_path):
+    resp = client.post("/api/dumps/preview", json={"path": str(tmp_path)})
+    assert resp.status_code == 400
+
+
+def test_preview_bad_category_is_422_and_lists_valid_names(client, tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    resp = client.post("/api/dumps/preview", json={"path": str(raw), "regions": "bogus"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "bogus" in detail and "heap" in detail and "stack" in detail
+
+
+def test_preview_admits_any_local_path_like_path_info(client, tmp_path):
+    """No allowed-roots sandbox, by design: ``/api/path/info`` has none either
+    (localhost trust model in api/main.py), so a dump outside the upload dir
+    is previewable exactly as it is browsable."""
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    raw = outside / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    info = client.get("/api/path/info", params={"path": str(raw)}).json()
+    assert info["is_file"] is True
+    assert client.post("/api/dumps/preview", json={"path": str(raw)}).status_code == 200
+
+
+def test_upload_elf_with_regions_reports_excluded_counts(client, tmp_path):
+    core_bytes = _write_elf_core(tmp_path / "gcore.core").read_bytes()
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("gcore.core", core_bytes, "application/octet-stream")},
+        data={"regions": "heap"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["regions_written"] == 10
+    assert body["excluded_region_count"] == 2
+    assert body["excluded_bytes"] == 8192
+    assert "warnings" in body and "selection" in body
+    assert Path(body["output"]).is_file()
+
+
+def test_upload_without_selection_keeps_old_response_shape(client):
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("t.dump", b"\xAA" * 4096, "application/octet-stream")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()) == {
+        "source", "output", "regions_written", "key_hints_written", "total_bytes",
+    }
+
+
+def test_upload_bad_category_is_422(client):
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("t.dump", b"\xAA" * 4096, "application/octet-stream")},
+        data={"regions": "heap,nonsense"},
+    )
+    assert resp.status_code == 422
+    assert "nonsense" in resp.json()["detail"]
+
+
+def test_upload_msl_without_fields_is_still_verbatim(client, tmp_path):
+    original = _write_msl(tmp_path / "a.msl", regions=3)
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("a.msl", original, "application/octet-stream")},
+        data={"regions": "", "exclude_regions": ""},
+    )
+    assert resp.status_code == 200, resp.text
+    assert Path(resp.json()["output"]).read_bytes() == original
+
+
+def _write_mixed_msl(path: Path) -> bytes:
+    """One heap region plus one file-backed (``image_data``) region."""
+    from memdiver.msl.enums import RegionType
+    from memdiver.msl.writer import MslWriter
+
+    w = MslWriter(path, pid=7)
+    w.add_memory_region(0x1000, b"\xA0" * 4096)
+    w.add_memory_region(0x2000, b"\xA1" * 4096, region_type=RegionType.MAPPED_FILE)
+    w.add_end_of_capture()
+    w.write()
+    return path.read_bytes()
+
+
+def test_upload_msl_materialize_writes_filtered_copy(client, tmp_path):
+    original = _write_mixed_msl(tmp_path / "a.msl")
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("a.msl", original, "application/octet-stream")},
+        data={"regions": "heap", "materialize": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("materialized") is True
+    assert body["excluded_region_count"] == 1
+    assert Path(body["output"]).read_bytes() != original
+
+
+def test_upload_msl_selection_without_materialize_stays_verbatim(client, tmp_path):
+    original = _write_mixed_msl(tmp_path / "a.msl")
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("a.msl", original, "application/octet-stream")},
+        data={"regions": "heap"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert Path(body["output"]).read_bytes() == original
+    assert "materialized" not in body
+    assert body["warnings"], "a selection on a verbatim .msl copy must warn"
+
+
+def test_upload_passes_selection_fields_to_import_dump(client, monkeypatch):
+    seen: dict = {}
+
+    def _fake_import(session, raw_path, output_path, pid=0, **kwargs):
+        seen.update(kwargs)
+        return {"output": output_path}
+
+    monkeypatch.setattr(tools, "import_dump", _fake_import)
+    resp = client.post(
+        "/api/dumps/upload",
+        files={"file": ("t.dump", b"\x00" * 16, "application/octet-stream")},
+        data={"regions": "heap,stack", "exclude_regions": "stack", "materialize": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert {c.value for c in seen["selection"].categories} == {"heap"}
+    assert seen["materialize"] is True
+
+
+def test_import_path_converts_server_side_file(client, tmp_path, isolated_env):
+    core = _write_elf_core(tmp_path / "gcore.core")
+    resp = client.post(
+        "/api/dumps/import-path", json={"path": str(core), "regions": "heap"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    out = Path(body["output"]).resolve()
+    assert out.parent == (isolated_env / "uploads" / "imports").resolve()
+    assert out.name.startswith("gcore-")
+    assert body["excluded_region_count"] == 2
+    assert core.is_file(), "the caller's source file must never be removed"
+
+
+def test_import_path_msl_default_is_verbatim(client, tmp_path):
+    src = tmp_path / "a.msl"
+    original = _write_msl(src, regions=2)
+    resp = client.post("/api/dumps/import-path", json={"path": str(src)})
+    assert resp.status_code == 200, resp.text
+    assert Path(resp.json()["output"]).read_bytes() == original
+
+
+def test_import_path_offloads_to_thread(client, tmp_path, monkeypatch):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    monkeypatch.setattr(
+        tools, "import_dump", lambda session, raw_path, out, pid=0: {"output": out},
+    )
+    calls: list[str] = []
+    real_to_thread = dumps_router.asyncio.to_thread
+
+    async def spy_to_thread(func, *args, **kwargs):
+        calls.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(dumps_router.asyncio, "to_thread", spy_to_thread)
+    resp = client.post("/api/dumps/import-path", json={"path": str(raw)})
+    assert resp.status_code == 200, resp.text
+    assert calls, "import must be offloaded via asyncio.to_thread"
+
+
+def test_import_path_missing_is_404(client, tmp_path):
+    resp = client.post("/api/dumps/import-path", json={"path": str(tmp_path / "x.dump")})
+    assert resp.status_code == 404
+
+
+def test_import_path_bad_category_is_422(client, tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    resp = client.post(
+        "/api/dumps/import-path", json={"path": str(raw), "exclude_regions": "nope"},
+    )
+    assert resp.status_code == 422
+
+
+def test_import_path_output_dir_outside_upload_dir_is_400(client, tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    resp = client.post(
+        "/api/dumps/import-path",
+        json={"path": str(raw), "output_dir": str(tmp_path / "outside")},
+    )
+    assert resp.status_code == 400
+
+
+_ANDROID_MSL = (Path(__file__).resolve().parent / "fixtures" / "android"
+                / "memslicer_android.msl")
+
+
+def test_preview_android_msl_reports_platform_runtime_and_names(client, tmp_path):
+    src = tmp_path / "android.msl"
+    src.write_bytes(_ANDROID_MSL.read_bytes())
+    resp = client.post("/api/dumps/preview", json={"path": str(src)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["platform"] == "android"
+    assert body["platform_source"] == "header"
+    runtime = [r for r in body["regions"] if r["category"] == "runtime"]
+    assert body["runtime_count"] == len(runtime) > 0
+    assert body["runtime_bytes"] == sum(r["captured_bytes"] for r in runtime)
+    assert body["totals"]["runtime"]["count"] == body["runtime_count"]
+    names = {r["name"] for r in body["regions"]}
+    assert "[anon:scudo:primary]" in names and "[vdso]" in names
+
+
+def test_preview_raw_dump_has_null_platform_fields(client, tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\xAA" * 4096)
+    body = client.post("/api/dumps/preview", json={"path": str(raw)}).json()
+    assert body["platform"] is None and body["runtime_count"] == 0
+    assert body["regions"][0]["name"] is None

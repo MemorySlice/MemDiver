@@ -14,6 +14,7 @@ All functions are stdlib-only (hmac, hashlib) with no external dependencies.
 from typing import Callable, Dict, List, Optional, Tuple
 
 from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
+from memdiver.core.buffer_ops import contains_bytes
 from memdiver.core.constants import UNKNOWN_KEY
 from memdiver.core.kdf import TLS12PRF, TLS13HKDF
 from memdiver.core.kdf_registry import get_kdf_registry
@@ -275,7 +276,8 @@ class ConstraintValidatorAlgorithm(BaseAlgorithm):
                 if derived_values is None:
                     derived_values = probe_derive(cand.data)
                     probe_cache[cand.data] = derived_values
-                if any(d in dump_data for d in derived_values):
+                # contains_bytes, not ``in``: ``d in mmap`` silently returns False.
+                if any(contains_bytes(dump_data, d) for d in derived_values):
                     seen_offsets.add(cand.offset)
                     links += 1
                     validated.append(Match(

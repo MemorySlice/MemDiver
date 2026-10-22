@@ -226,7 +226,10 @@ export default function PipelinePanel() {
   // Subscribe to the task progress stream whenever there's an active
   // taskId. The hook is a no-op when taskId is null.
   useTaskProgress(taskId, {
-    onEvent: (event: TaskProgressEvent) => ingestEvent(event),
+    onEvent: (event: TaskProgressEvent) => {
+      ingestEvent(event);
+      if (event.type === "error") void usePipelineStore.getState().offerForcedRerun(event);
+    },
     since: lastSeq,
   });
 
@@ -286,6 +289,8 @@ export default function PipelinePanel() {
           record.status === "failed" ||
           record.status === "cancelled";
         if (!isTerminal) return;
+        // A run that failed on the memory guard before the socket attached.
+        if (record.status === "failed") void usePipelineStore.getState().offerForcedRerun(record);
 
         // Replay stage history. Use a local seq cursor advanced past
         // the *current* lastSeq (read at run time, not from the stale

@@ -21,6 +21,7 @@ from tests.fixtures.generate_msl_fixtures import (
     _build_module_entry,
     _build_process_identity,
     _pad8,
+    chain_prev_hashes,
 )
 
 _RNG = random.Random(99)
@@ -127,7 +128,7 @@ def _build_single_run(run_num, module_base, heap_base, pad_byte,
     eoc_block, _ = _build_end_of_capture(timestamp_ns + 1_000_000_000)
     blob += eoc_block
 
-    return blob
+    return chain_prev_hashes(blob)
 
 
 def generate_aslr_msl_pair(extra_region: bool = False):

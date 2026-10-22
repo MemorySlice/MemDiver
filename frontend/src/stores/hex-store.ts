@@ -21,12 +21,25 @@ export interface HighlightRegion {
   type: "exact-match" | "entropy" | "change-point" | "pattern" | "structure" | "neighborhood" | "search" | "differential" | "constraint" | "strings";
   label: string;
   colorIndex?: number;
+  /**
+   * The byte view `offset` addresses. Unset = whatever view is on screen (the
+   * historical contract, still right for search hits and flat dumps). Set,
+   * on a dump with several distinct views, the region only paints in THAT
+   * view — in any other it would mark unrelated bytes.
+   */
+  view?: HexViewMode;
 }
 
 export interface Bookmark {
   offset: number;
   length: number;
   label: string;
+  /**
+   * The byte view `offset` addresses (the view the bookmark was taken in).
+   * Unset on bookmarks saved before views were recorded: those keep the
+   * historical behaviour of addressing whatever view is on screen.
+   */
+  view?: HexViewMode;
 }
 
 export interface NeighborhoodOverlay {
@@ -47,6 +60,8 @@ export interface StructureOverlay {
   structureName: string;
   baseOffset: number;
   totalSize: number;
+  /** The view `baseOffset`/field offsets address; unset = the view on screen. */
+  view?: HexViewMode;
   fields: Array<{
     name: string;
     offset: number;
@@ -84,6 +99,17 @@ interface HexState {
   rawSize: number;  // size of the .msl container
   vasSize: number;  // size of the flat VAS projection
   vaSize: number;   // size of the sparse full virtual-address view
+  // Views of the current dump that show DIFFERENT bytes, as the backend
+  // detected them (`/api/inspect/hex-raw` `distinct_views`); `[]` until the
+  // probe answers. More than one => the toolbar offers a view switch, for any
+  // format (.msl, gcore, gdb_raw/lldb_raw), not just a `.msl` extension.
+  availableViews: HexViewMode[];
+  // The backend's `format_name` for the dump ("msl", "gcore", "raw", …);
+  // "" until probed. Display-only: `format` stays the caller's key.
+  detectedFormat: string;
+  // A view asked for (by `showView`) before `availableViews` was known;
+  // applied when the probe lands if the dump has it.
+  requestedView: HexViewMode | null;
 
   // Page-state slice (three-state page model). Only fetched for .msl dumps,
   // lazily, the first time the "va" view is selected. `pageStateIntervals`
@@ -139,6 +165,13 @@ interface HexState {
   setDumpPath: (path: string, fileSize: number, format: string) => void;
   setViewSizes: (rawSize: number, vasSize: number, vaSize?: number) => void;
   setViewMode: (mode: HexViewMode) => void;
+  /** Record what the backend detected; clamps a view the dump lacks. */
+  setAvailableViews: (views: HexViewMode[], detectedFormat: string) => void;
+  /**
+   * Switch to `mode` because DATA lives there (e.g. analysis hits), without
+   * persisting it as the user's preference. No-op on a single-view dump.
+   */
+  showView: (mode: HexViewMode) => void;
   fetchPageStates: () => void;
   getPageStateAt: (offset: number) => PageState | undefined;
   reset: () => void;
@@ -175,6 +208,13 @@ interface HexState {
 
   addBookmark: (b: Bookmark) => void;
   removeBookmark: (offset: number, length: number) => void;
+  /** Remove exactly this bookmark (offset, length AND view). */
+  removeBookmarkEntry: (b: Bookmark) => void;
+  /**
+   * Scroll the cursor to a bookmark, first switching (non-persisted) to the
+   * view it was taken in so the same byte is shown.
+   */
+  jumpToBookmark: (b: Bookmark) => void;
   setActiveStructureOverlay: (overlay: StructureOverlay | null) => void;
   setActiveNeighborhoodOverlay: (overlay: NeighborhoodOverlay | null) => void;
   setActiveFieldOffset: (offset: number | null) => void;
@@ -260,11 +300,21 @@ function loadBookmarksFor(dumpPath: string | null): Bookmark[] {
         b &&
         typeof b.offset === "number" &&
         typeof b.length === "number" &&
-        typeof b.label === "string",
+        typeof b.label === "string" &&
+        (b.view === undefined || isHexViewMode(b.view)),
     );
   } catch {
     return [];
   }
+}
+
+function isHexViewMode(value: unknown): value is HexViewMode {
+  return value === "raw" || value === "vas" || value === "va";
+}
+
+/** Same bookmarked region: same offset, length and view. */
+function isSameBookmark(a: Bookmark, b: Bookmark): boolean {
+  return a.offset === b.offset && a.length === b.length && a.view === b.view;
 }
 
 function persistBookmarksFor(
@@ -287,6 +337,9 @@ export const useHexStore = create<HexState>((set, get) => ({
   rawSize: 0,
   vasSize: 0,
   vaSize: 0,
+  availableViews: [],
+  detectedFormat: "",
+  requestedView: null,
 
   pageStateIntervals: [],
   pageStatesLoaded: false,
@@ -348,6 +401,10 @@ export const useHexStore = create<HexState>((set, get) => ({
         rawSize: fileSize,
         vasSize: fileSize,
         vaSize: fileSize,
+        // Re-probed for the new dump (useMslViewSizes).
+        availableViews: [],
+        detectedFormat: "",
+        requestedView: null,
         // Page states belong to the previous dump — clear them so the
         // "va" view re-fetches for the new file.
         pageStateIntervals: [],
@@ -393,42 +450,29 @@ export const useHexStore = create<HexState>((set, get) => ({
       return { rawSize, vasSize, vaSize: nextVa, fileSize: size };
     }),
 
-  setViewMode: (mode) => {
-    const changed = get().viewMode !== mode;
-    set((state) => {
-      if (state.viewMode === mode) return {};
-      persistViewMode(mode);
-      const size =
-        mode === "vas"
-          ? state.vasSize
-          : mode === "va"
-            ? state.vaSize
-            : state.rawSize;
-      return {
-        viewMode: mode,
-        fileSize: size || state.fileSize,
-        // Flipping views changes what every byte means — nuke chunks.
-        //
-        // NOTE: clearing `chunks` here is only half the job. Nothing in the
-        // store re-fetches; the refill comes from HexViewer's visible-range
-        // effect, which therefore MUST list `viewMode` in its dependency
-        // array (see the comment there). Without it the viewer sits at
-        // scrollTop 0 with an empty chunk map and every cell renders "--".
-        chunks: new Map(),
-        pendingFetches: new Set(),
-        chunkVersion: state.chunkVersion + 1,
-        // The failure (if any) described bytes in the outgoing view.
-        chunkError: null,
-        cursorOffset: null,
-        selection: null,
-        scrollTarget: null,
-        windowStartRow: 0,
-      };
-    });
-    // Page-state coloring is only needed in the "va" view; fetch lazily the
-    // first time it is selected.
-    if (changed && mode === "va") {
-      get().fetchPageStates();
+  setViewMode: (mode) => applyViewMode(mode, true),
+
+  setAvailableViews: (views, detectedFormat) => {
+    const { requestedView, viewMode } = get();
+    set({ availableViews: views, detectedFormat, requestedView: null });
+    if (views.length <= 1) return;
+    if (requestedView && views.includes(requestedView)) {
+      applyViewMode(requestedView, false);
+    } else if (!views.includes(viewMode)) {
+      // e.g. a persisted "va" (an .msl-only view) on a gcore core: the
+      // backend would refuse every chunk. Fall back without persisting.
+      applyViewMode(views[0], false);
+    }
+  },
+
+  showView: (mode) => {
+    const { availableViews } = get();
+    if (availableViews.length === 0) {
+      set({ requestedView: mode });
+      return;
+    }
+    if (availableViews.length > 1 && availableViews.includes(mode)) {
+      applyViewMode(mode, false);
     }
   },
 
@@ -488,6 +532,9 @@ export const useHexStore = create<HexState>((set, get) => ({
       rawSize: 0,
       vasSize: 0,
       vaSize: 0,
+      availableViews: [],
+      detectedFormat: "",
+      requestedView: null,
       pageStateIntervals: [],
       pageStatesLoaded: false,
       vaSpanStart: 0,
@@ -655,15 +702,17 @@ export const useHexStore = create<HexState>((set, get) => ({
 
   setSearchOffsets: (offsets) => set({ searchOffsets: offsets }),
 
-  addBookmark: (b) =>
+  addBookmark: (input) =>
     set((state) => {
-      // Dedupe on (offset, length): a second bookmark at the same offset but
-      // a different length is a distinct region and must not be dropped. If an
+      // Record the view the offset addresses (the viewer's current view unless
+      // the caller said otherwise), so jumping back lands on the same byte.
+      const b: Bookmark = { ...input, view: input.view ?? state.viewMode };
+      // Dedupe on (offset, length, view): a second bookmark at the same offset
+      // but a different length — or in a different view, i.e. a different
+      // byte — is a distinct region and must not be dropped. If an
       // identical-region bookmark exists, update its label in place rather than
       // silently no-op'ing.
-      const existingIndex = state.bookmarks.findIndex(
-        (existing) => existing.offset === b.offset && existing.length === b.length,
-      );
+      const existingIndex = state.bookmarks.findIndex((existing) => isSameBookmark(existing, b));
       let bookmarks: Bookmark[];
       if (existingIndex >= 0) {
         if (state.bookmarks[existingIndex].label === b.label) return {};
@@ -686,6 +735,22 @@ export const useHexStore = create<HexState>((set, get) => ({
       return { bookmarks };
     }),
 
+  removeBookmarkEntry: (entry) =>
+    set((state) => {
+      const bookmarks = state.bookmarks.filter((b) => !isSameBookmark(b, entry));
+      if (bookmarks.length === state.bookmarks.length) return {};
+      persistBookmarksFor(state.dumpPath, bookmarks);
+      return { bookmarks };
+    }),
+
+  jumpToBookmark: (b) => {
+    // Switch first: a view switch clears the cursor and scroll target, so the
+    // scroll below must come after it. `showView` is a no-op on a
+    // single-view dump and does not overwrite the persisted preference.
+    if (b.view && b.view !== get().viewMode) get().showView(b.view);
+    get().scrollToOffset(b.offset);
+  },
+
   setActiveStructureOverlay: (overlay) =>
     set((state) => {
       // Remove old structure highlights, add new ones
@@ -704,6 +769,7 @@ export const useHexStore = create<HexState>((set, get) => ({
         type: "structure" as const,
         label: f.display || f.name,
         colorIndex: i,
+        ...(overlay.view ? { view: overlay.view } : {}),
       }));
       return {
         activeStructureOverlay: overlay,
@@ -749,3 +815,47 @@ export const useHexStore = create<HexState>((set, get) => ({
   setActiveFieldOffset: (offset) =>
     set((state) => (state.activeFieldOffset === offset ? {} : { activeFieldOffset: offset })),
 }));
+
+// Shared by setViewMode (user choice, persisted) and the data-driven
+// switches (showView / setAvailableViews), which must not overwrite the
+// user's remembered preference.
+function applyViewMode(mode: HexViewMode, persist: boolean): void {
+  const get = useHexStore.getState;
+  const set = useHexStore.setState;
+  const changed = get().viewMode !== mode;
+  set((state) => {
+    if (state.viewMode === mode) return {};
+    if (persist) persistViewMode(mode);
+    const size =
+      mode === "vas"
+        ? state.vasSize
+        : mode === "va"
+          ? state.vaSize
+          : state.rawSize;
+    return {
+      viewMode: mode,
+      fileSize: size || state.fileSize,
+      // Flipping views changes what every byte means — nuke chunks.
+      //
+      // NOTE: clearing `chunks` here is only half the job. Nothing in the
+      // store re-fetches; the refill comes from HexViewer's visible-range
+      // effect, which therefore MUST list `viewMode` in its dependency
+      // array (see the comment there). Without it the viewer sits at
+      // scrollTop 0 with an empty chunk map and every cell renders "--".
+      chunks: new Map(),
+      pendingFetches: new Set(),
+      chunkVersion: state.chunkVersion + 1,
+      // The failure (if any) described bytes in the outgoing view.
+      chunkError: null,
+      cursorOffset: null,
+      selection: null,
+      scrollTarget: null,
+      windowStartRow: 0,
+    };
+  });
+  // Page-state coloring is only needed in the "va" view; fetch lazily the
+  // first time it is selected.
+  if (changed && mode === "va") {
+    get().fetchPageStates();
+  }
+}

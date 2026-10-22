@@ -1,0 +1,60 @@
+12c00000-12c01000 rw-p 00000000 00:00 0                                   [anon:dalvik-main space (region space)]
+12c01000-12c02000 rw-p 00000000 00:00 0                                   [anon:dalvik-main space (region space) live bitmap]
+6f3a2000-6f3a3000 rw-p 00000000 00:00 0                                   [anon:dalvik-/system/framework/boot.art]
+6f3a3000-6f3a4000 rw-p 00000000 00:00 0                                   [anon:dalvik-/system/framework/boot-framework.art]
+6f3a4000-6f3a5000 r--p 00000000 fd:06 1234                                /system/framework/arm64/boot.oat
+6f3a5000-6f3a6000 r-xp 00001000 fd:06 1234                                /system/framework/arm64/boot.oat
+6f3a6000-6f3a7000 r--p 00000000 fd:06 1235                                /system/framework/arm64/boot-framework.vdex
+70100000-70101000 rw-p 00000000 00:00 0                                   [anon:dalvik-zygote space]
+70101000-70102000 rw-p 00000000 00:00 0                                   [anon:dalvik-non moving space]
+70102000-70103000 rw-p 00000000 00:00 0                                   [anon:dalvik-allocspace zygote / non moving space live-bitmap 0]
+70103000-70104000 rw-p 00000000 00:00 0                                   [anon:dalvik-large object space allocation]
+5f00000000-5f00001000 r--p 00000000 fd:06 500                             /system/bin/app_process64
+5f00001000-5f00002000 r-xp 00001000 fd:06 500                             /system/bin/app_process64
+5f00002000-5f00003000 rw-p 00002000 fd:06 500                             /system/bin/app_process64
+5f00003000-5f00004000 rw-p 00000000 00:00 0                               [anon:.bss]
+6f00000000-6f00001000 rw-p 00000000 00:00 0                               [anon:dalvik-card table]
+6f00001000-6f00002000 rw-p 00000000 00:00 0                               [anon:dalvik-LinearAlloc]
+6f00002000-6f00003000 rw-p 00000000 00:00 0                               [anon:dalvik-indirect ref table]
+6f00003000-6f00004000 r-xp 00000000 00:01 77                              /memfd:jit-cache (deleted)
+6f00004000-6f00005000 rw-p 00000000 00:00 0                               [anon:dalvik-data-code-cache]
+6f00005000-6f00006000 rw-p 00000000 00:00 0                               [anon:dalvik-concurrent copying gc mark stack]
+7000000000-7000001000 rw-p 00000000 00:00 0                               [anon:scudo:primary]
+7000001000-7000002000 rw-p 00000000 00:00 0                               [anon:scudo:primary]
+7000002000-7000003000 rw-p 00000000 00:00 0                               [anon:scudo:secondary]
+7000003000-7000004000 rw-p 00000000 00:00 0                               [anon:libc_malloc]
+7000004000-7000005000 rw-p 00000000 00:00 0                               [anon:GWP-ASan Metadata]
+7000005000-7000006000 rw-p 00000000 00:00 0
+7000006000-7000007000 rw-p 00000000 00:00 0                               [anon:cfi shadow]
+7000007000-7000008000 r--p 00000000 00:00 0                               [anon:linker_alloc]
+7000008000-7000009000 rw-p 00000000 00:00 0                               [anon:System property context nodes]
+7000009000-700000a000 r--s 00000000 00:16 300                             /dev/__properties__/u:object_r:default_prop:s0
+700000a000-700000b000 r--s 00000000 00:16 301                             /dev/__properties__/property_info
+700000b000-700000c000 rw-s 00000000 00:17 10                              /dev/kgsl-3d0
+700000c000-700000d000 r--p 00000000 00:18 11                              /dev/binderfs/binder
+700000d000-700000e000 rw-s 00000000 00:05 12                              /dev/ashmem/CursorWindow: /data/user/0/com.example.app/databases/app.db (deleted)
+700000e000-700000f000 r--p 00000000 fd:06 600                             /system/usr/icu/icudt66l.dat
+700000f000-7000010000 r--p 00000000 fd:06 601                             /system/framework/framework.jar
+7100000000-7100001000 r--p 00000000 fd:21 900                             /data/app/~~Zx1==/com.example.app-Ab2==/base.apk
+7100001000-7100002000 r--p 00000000 fd:21 901                             /data/app/~~Zx1==/com.example.app-Ab2==/oat/arm64/base.odex
+7100002000-7100003000 rw-p 00000000 00:00 0                               [anon:dalvik-/data/app/~~Zx1==/com.example.app-Ab2==/oat/arm64/base.art]
+7100003000-7100004000 r--p 00000000 fd:21 902                             /data/app/~~Zx1==/com.example.app-Ab2==/lib/arm64/libnative.so
+7100004000-7100005000 r-xp 00001000 fd:21 902                             /data/app/~~Zx1==/com.example.app-Ab2==/lib/arm64/libnative.so
+7100005000-7100006000 rw-p 00002000 fd:21 902                             /data/app/~~Zx1==/com.example.app-Ab2==/lib/arm64/libnative.so
+7100006000-7100007000 rw-p 00000000 00:00 0                               [anon:.bss]
+7200000000-7200001000 r--p 00000000 07:30 40                              /apex/com.android.runtime/lib64/bionic/libc.so
+7200001000-7200002000 r-xp 00001000 07:30 40                              /apex/com.android.runtime/lib64/bionic/libc.so
+7200002000-7200003000 rw-p 00002000 07:30 40                              /apex/com.android.runtime/lib64/bionic/libc.so
+7200003000-7200004000 r--p 00000000 fd:06 41                              /system/lib64/libssl.so
+7200004000-7200005000 r-xp 00001000 fd:06 41                              /system/lib64/libssl.so
+7200005000-7200006000 rw-p 00002000 fd:06 41                              /system/lib64/libssl.so
+7300000000-7300001000 ---p 00000000 00:00 0                               [anon:stack_and_tls:12345]
+7300001000-7300002000 rw-p 00000000 00:00 0                               [anon:stack_and_tls:12345]
+7300002000-7300003000 rw-p 00000000 00:00 0                               [anon:thread signal stack]
+7300003000-7300004000 rw-p 00000000 00:00 0                               [anon:bionic TLS]
+7400000000-7400001000 r--p 00000000 fd:06 50                              /system/bin/linker64
+7400001000-7400002000 r-xp 00001000 fd:06 50                              /system/bin/linker64
+7400002000-7400003000 rw-p 00002000 fd:06 50                              /system/bin/linker64
+7fc0000000-7fc0001000 rw-p 00000000 00:00 0                               [stack]
+7fc0001000-7fc0002000 r--p 00000000 00:00 0                               [vvar]
+7fc0002000-7fc0003000 r-xp 00000000 00:00 0                               [vdso]

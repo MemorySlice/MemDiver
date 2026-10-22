@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Query
 
+from memdiver.api.path_policy import clamp_parent, default_browse_root
 from memdiver.core.discovery import RunDiscovery
 
 logger = logging.getLogger("memdiver.api.routers.path")
@@ -107,7 +108,11 @@ def browse_directory(path: str | None = None, all_files: bool = False):
     an oracle's sample ciphertext may carry no extension at all, which the
     ``_DUMP_EXTENSIONS`` filter can never surface.
     """
-    p = Path(path) if path else Path.home()
+    # Without a path the browser opens on $HOME -- or, when the opt-in
+    # read-path sandbox is on and $HOME is outside it, on the first allowed
+    # root (see api/path_policy.py). An explicit ``path`` has already been
+    # admitted by the router-level policy dependency.
+    p = Path(path) if path else default_browse_root()
 
     if not p.exists():
         return {"error": "Path does not exist", "entries": []}
@@ -116,8 +121,9 @@ def browse_directory(path: str | None = None, all_files: bool = False):
         return {"error": "Path is not a directory", "entries": []}
 
     current = str(p.resolve())
-    parent_path = p.resolve().parent
-    parent = str(parent_path) if parent_path != p.resolve() else None
+    # ``parent`` is null at the filesystem root AND at a sandbox boundary, so
+    # the FileBrowser's "up" control stops where the policy would refuse.
+    parent = clamp_parent(p)
 
     dirs: list[dict] = []
     files: list[dict] = []
@@ -299,7 +305,7 @@ def discover_dumps(
     """
     empty = {"dumps": [], "total": 0, "truncated": False, "counts_by_kind": {}}
 
-    p = Path(path) if path else Path.home()
+    p = Path(path) if path else default_browse_root()
     if not p.exists():
         return {"error": "Path does not exist", **empty}
     if not p.is_dir():

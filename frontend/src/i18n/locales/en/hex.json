@@ -29,6 +29,8 @@
     "mslViewModeLabel": "MSL view mode",
     "mslViewModeTitle": "Raw: .msl container bytes. Memory: flattened captured VAS.",
     "mslViewModeVaTitle": "VA: full virtual-address space with per-page state coloring (captured / failed / unmapped).",
+    "viewModeLabel": "Dump view mode",
+    "viewModeTitle": "Raw: the file's bytes. Memory: the captured memory regions, concatenated.",
     "rawFile": "Raw file",
     "memoryVas": "Memory (VAS)",
     "virtualAddress": "VA",

@@ -76,7 +76,8 @@ individual secret (its ``client_random`` pins the pcap session and its length
 derives ``key_sizes``) and it needs the FIRST DUMP IN THE RUN that carries it.
 The shapes do not fit, so :func:`locate_secret` here makes the same calls under
 the same rules — :func:`core.dump_source.find_first_in`, never ``read_all()``
-(absent from the ``DumpSource`` contract on gcore and the regioned sources) and
+(not in the ``DumpSource`` contract; on gcore and the regioned sources it
+materialises the ``"vas"`` view, not the ``"raw"`` one searched here) and
 never :class:`core.dump_io.DumpReader` directly (``mmap.find`` defaults its
 start to the CURRENT FILE POSITION).
 """
@@ -844,10 +845,13 @@ def locate_secret(
     :mod:`engine.survival_scan` documents at length):
 
     * ``find_first_in``, never ``source.read_all().find(...)``. ``read_all`` is
-      NOT part of the :class:`core.dump_source.DumpSource` contract — the gcore
-      and regioned-raw sources omit it deliberately — so a ``read_all``-based
-      locator crashes on exactly the sources a mixed corpus would introduce,
-      and materialises up to 85 MB per dump on the ones where it works.
+      NOT part of the :class:`core.dump_source.DumpSource` contract — a
+      duck-typed source may lack it, and where it exists (gcore and the
+      regioned-raw sources now serve one) it defaults to the ``"vas"`` view
+      while ``find_first`` / ``find_all`` default to ``"raw"`` — so a
+      ``read_all``-based locator crashes on duck-typed sources, reports
+      offsets in a different view from every other locator, and materialises
+      up to 85 MB per dump.
     * Never :class:`core.dump_io.DumpReader` directly: ``mmap.find(sub)``
       defaults its start to the mapping's CURRENT FILE POSITION, which reports
       a present secret as absent (measured on a real corpus dump at offset

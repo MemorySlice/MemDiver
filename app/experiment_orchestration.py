@@ -61,12 +61,18 @@ def _experiment_consensus_phase(
     key_material: Optional[Dict[str, Any]],
     on_source: Optional[Callable[[Any], None]],
     on_progress: Optional[Callable[..., None]],
+    region_filter: Optional[str] = None,
+    *,
+    force: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Fold each tool's dumps into a MEMORY-relative consensus vector.
 
     Uses :func:`engine.consensus_service.build_consensus` (the ``open_dump``
     projection) — NOT the raw-bytes ``ConsensusVector.build`` the API runner
     used to call — so downstream offsets stay in the projection space (A5).
+    ``region_filter`` (``.msl`` only) analyses each tool's dumps through the
+    region view filter; downstream offsets are then filtered-view offsets.
+    ``force`` bypasses the consensus memory-budget guard.
     """
     from memdiver.engine.consensus_service import build_consensus
 
@@ -84,7 +90,8 @@ def _experiment_consensus_phase(
                   extra={"tool": tool_name, "skipped": True})
             continue
         cm = build_consensus(
-            dumps, key_material=key_material or {}, on_source=on_source
+            dumps, key_material=key_material or {}, on_source=on_source,
+            region_filter=region_filter, force=force,
         )
         aligned = cm.get_aligned_candidates()
         volatile = cm.get_volatile_regions()
@@ -95,7 +102,10 @@ def _experiment_consensus_phase(
         _emit(on_progress, "progress", stage="consensus", pct=pct,
               msg=f"{tool_name}: {len(aligned)} aligned, {len(volatile)} volatile regions",
               extra={"tool": tool_name, "aligned_regions": len(aligned),
-                     "volatile_regions": len(volatile), "num_dumps": len(dumps)})
+                     "volatile_regions": len(volatile), "num_dumps": len(dumps),
+                     # Structured alignment notes for this tool's build
+                     # (e.g. ``classification_basis_mixed``); usually [].
+                     "diagnostics": cm.alignment_report.diagnostic_dicts})
     _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
           msg=f"consensus ready for {len(per_tool)} tools",
           extra={"tools": list(per_tool.keys())})
@@ -204,8 +214,12 @@ def _experiment_verify_phase(
     convergence: bool,
     max_fp: int,
     on_progress: Optional[Callable[..., None]],
+    force: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
-    """Run decryption verification + plugin emission per tool."""
+    """Run decryption verification + plugin emission per tool.
+
+    ``force`` is forwarded to the convergence sweep's memory-budget guard.
+    """
     from memdiver.engine.verification import (
         AesCbcVerifier,
         VERIFICATION_IV,
@@ -241,7 +255,8 @@ def _experiment_verify_phase(
         if convergence:
             from memdiver.engine.convergence import run_convergence_sweep
             from memdiver.engine.serializer import serialize_convergence_result
-            sweep = run_convergence_sweep(dumps, max_fp=max_fp)
+            sweep = run_convergence_sweep(dumps, max_fp=max_fp,
+                                          force=force)
             tool_result["convergence"] = serialize_convergence_result(sweep)
         results[tool_name] = tool_result
         _emit(on_progress, "progress", stage="verify",
@@ -268,6 +283,8 @@ def experiment_result(
     on_source: Optional[Callable[[Any], None]] = None,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Own the full experiment once: spawn -> dump N x per tool -> consensus ->
     decryption-verify -> emit plugin.
@@ -283,7 +300,23 @@ def experiment_result(
     A missing/unusable backend raises ``CapabilityError`` with
     ``code="missing_backend"`` so a surface can degrade gracefully; a missing
     target raises ``FileNotFoundServiceError``.
+
+    ``region_filter`` (``"heap,stack"`` / ``to_note()``; ``.msl`` only) is the
+    analysis-time region view filter for the consensus phase. When set, the
+    result carries it as ``region_filter`` because every reported offset is
+    then a filtered-view offset. ``None`` keeps the result byte-identical.
+
+    ``force`` bypasses the consensus memory-budget guard (``CapabilityError``
+    ``code="memory_budget_exceeded"`` otherwise).
     """
+    from memdiver.core.region_view_filter import region_filter_note
+
+    try:
+        region_filter = region_filter_note(region_filter)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT,
+        ) from exc
     try:
         from memdiver.core.dump_driver import DumpOrchestrator
     except ImportError as exc:  # pragma: no cover - environmental
@@ -317,13 +350,85 @@ def experiment_result(
         orch, target_path, num_runs, Path(output_dir), on_progress)
     _experiment_check_cancelled(is_cancelled, on_progress)
     per_tool = _experiment_consensus_phase(
-        exp.tool_dirs, key_material, on_source, on_progress)
+        exp.tool_dirs, key_material, on_source, on_progress,
+        region_filter=region_filter, force=force)
     tool_results = _experiment_verify_phase(
         per_tool, exp.metadata, Path(output_dir),
-        export_format, convergence, max_fp, on_progress)
-    return {
+        export_format, convergence, max_fp, on_progress, force=force)
+    result = {
         "tool_results": tool_results,
         "tools_used": list(per_tool.keys()),
         "target": str(target_path),
         "num_runs": num_runs,
     }
+    capture_warnings = _experiment_capture_warnings(exp.metadata)
+    if capture_warnings:
+        result["capture_warnings"] = capture_warnings
+    if region_filter is not None:
+        result["region_filter"] = region_filter
+    return result
+
+
+def _experiment_capture_warnings(metadata: Any) -> list:
+    """``run N [tool]: <warning>`` for every capture that skipped regions."""
+    warnings = []
+    runs = metadata.get("runs", []) if isinstance(metadata, dict) else []
+    for run in runs:
+        for tool, report in (run.get("capture_reports") or {}).items():
+            for line in report.get("summary_warnings") or []:
+                warnings.append(f"run {run.get('run')} [{tool}]: {line}")
+    return warnings
+
+
+#: Dump tools :func:`capture_result` accepts.
+CAPTURE_TOOLS = ("memslicer", "lldb", "fridump")
+
+
+def capture_result(
+    target: Any,
+    output: str,
+    tool: str = "memslicer",
+    device: Optional[str] = None,
+    max_region_size: Optional[int] = None,
+    include_large_readonly: bool = False,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Capture ONE dump of an existing process (by pid or name, on a device).
+
+    The single producer behind CLI ``memdiver capture``, REST
+    ``POST /api/experiment/capture`` and MCP ``capture_dump``. ``target`` is
+    a pid (int or digits) or a process / Android package name; ``device`` is
+    ``local`` (default), ``usb``, ``usb:<frida-device-id>`` or
+    ``remote:<host>[:<port>]`` (see :mod:`core.capture_target`). Returns the
+    :class:`core.capture_manifest.CaptureReport` as a dict -- every region
+    that was not captured is listed under ``skipped`` (base/size/reason) and
+    digested in ``summary_warnings``. A backend that is not installed raises
+    ``CapabilityError`` ``code="missing_backend"``; a backend that cannot
+    reach the target/device fails with ``ok: false`` and ``error``.
+    """
+    from memdiver.core.capture_target import parse_target
+    from memdiver.core.dump_driver import CaptureOptions, DumpOrchestrator
+
+    try:
+        if tool not in CAPTURE_TOOLS:
+            raise ValueError(f"unknown tool {tool!r} (expected one of "
+                             f"{', '.join(CAPTURE_TOOLS)})")
+        capture_target = parse_target(target, device)
+        if max_region_size is not None and max_region_size <= 0:
+            raise ValueError("max_region_size must be positive")
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive")
+    except ValueError as exc:
+        raise CapabilityError(f"Invalid input: {exc}",
+                              category=ErrorCategory.INVALID_INPUT) from exc
+    orch = DumpOrchestrator(tools=[tool])
+    if not orch.available_tools:
+        raise CapabilityError(
+            f"dump tool {tool!r} is not available. {CAPTURE_BACKEND_HINT}",
+            category=ErrorCategory.PRECONDITION, code="missing_backend")
+    output_path = Path(output).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report = orch.capture(capture_target, output_path, tool, CaptureOptions(
+        max_region_size=max_region_size,
+        include_large_readonly=include_large_readonly, timeout=timeout))
+    return report.to_dict()

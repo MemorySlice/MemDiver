@@ -135,6 +135,11 @@ class SourceFormat(IntEnum):
     RAW_DUMP = 0x01    # opaque raw memory .dump (fritap-style)
     ELF_CORE = 0x02    # ELF ET_CORE process core dump
     MINIDUMP = 0x03    # Windows Minidump (.dmp)
+    MSL = 0x04         # an existing .msl (region-filtered materialize copy)
+    # flat .bin + /proc/<pid>/maps sidecar (gdb_raw / lldb_raw / fridump):
+    # region types come from the maps paths, i.e. real observations, so the
+    # raw "unclassified" rule does not apply to it.
+    REGIONED_RAW = 0x05
 
 
 class MslKeyType(IntEnum):

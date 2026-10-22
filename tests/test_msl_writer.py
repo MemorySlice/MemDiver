@@ -141,8 +141,9 @@ def test_block_chaining(tmp_path):
     with MslReader(out) as reader:
         blocks = list(reader.iter_blocks())
         assert len(blocks) == 3
-        # First block has zero prev_hash
-        assert blocks[0][0].prev_hash == b"\x00" * 32
+        # First block chains from the file header (spec §4.4)
+        from memdiver.msl.hashing import hash_bytes
+        assert blocks[0][0].prev_hash == hash_bytes(out.read_bytes()[:64])
         # Second block has non-zero prev_hash
         assert blocks[1][0].prev_hash != b"\x00" * 32
 

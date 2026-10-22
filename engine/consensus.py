@@ -40,10 +40,71 @@ from memdiver.core.variance import (
     count_classifications,
     WelfordVariance,
 )
+from memdiver.core.memory_budget import (
+    MemoryBudget,
+    MemoryEstimate,
+    check_budget,
+    resolve_memory_budget,
+)
+from memdiver.core.slab_variance import (
+    allocate_variance_output,
+    as_slab_reader,
+    plan_slab_variance,
+    stream_variance,
+    whole_read_bytes,
+)
 from .consensus_va import supports_va_alignment
 from .results import StaticRegion
 
 logger = logging.getLogger("memdiver.engine.consensus")
+
+MemoryBudgetLike = Union[MemoryBudget, int, None]
+
+
+#: Resident bytes per position of an incremental (Welford) build: float32
+#: mean + m2 (8), reference bytes (1) and one in-flight dump (1).
+INCREMENTAL_BYTES_PER_POSITION = {
+    "welford_state": 8, "reference_bytes": 1, "dump_in_flight": 1,
+}
+
+
+def incremental_build_estimate(size: int) -> MemoryEstimate:
+    """Predicted peak of ``build_incremental(size)`` + folds + live stats.
+
+    Live stats run slab by slab over one reusable float32 buffer of at most
+    ``PAIRWISE_LEAF`` positions, so they add a constant, not a per-position
+    cost.
+    """
+    from memdiver.core.variance import PAIRWISE_LEAF
+
+    breakdown = {k: v * size for k, v in INCREMENTAL_BYTES_PER_POSITION.items()}
+    breakdown["live_stats_slab"] = 4 * min(size, PAIRWISE_LEAF)
+    return MemoryEstimate(sum(breakdown.values()),
+                          f"incremental consensus ({size} bytes)", breakdown)
+
+
+def _stream_flat_variance(
+    sources: List, size: int, *, force: bool, budget: MemoryBudgetLike,
+    resident_bytes: int = 0,
+) -> Tuple[np.ndarray, bytes]:
+    """Budget-checked slab-streamed flat variance + reference bytes.
+
+    The variance vector stays in RAM when the whole estimate fits the budget
+    and is otherwise placed in a disk-backed memmap; the remaining estimate
+    is then gated by :func:`check_budget` (raises unless ``force``).
+    ``resident_bytes`` counts sources already read whole by the caller.
+    """
+    if budget is None:
+        budget = resolve_memory_budget()
+    resident = resident_bytes + sum(whole_read_bytes(s) for s in sources)
+    plan = plan_slab_variance(len(sources), size, budget=budget,
+                              resident_sources=resident,
+                              operation=f"consensus build ({len(sources)} dumps)")
+    check_budget(plan.estimate, force=force, budget=budget)
+    out = allocate_variance_output(size, in_ram=plan.variance_in_ram)
+    variance, reference = stream_variance(
+        sources, size, out=out, chunk_positions=plan.chunk_positions)
+    return variance, reference or b""
 
 # Re-export thresholds for backward compatibility
 __all__ = [
@@ -122,6 +183,16 @@ class AlignmentReport:
     sizes_differed: bool = False
     n_sources: int = 0
     warnings: Tuple[str, ...] = ()
+    #: Structured ``core.service_result.Diagnostic`` notes with a stable
+    #: ``code`` (e.g. ``classification_basis_mixed``), so a surface can
+    #: localize or act on them instead of echoing ``warnings`` prose. Kept
+    #: separate from ``warnings`` so existing string banners are unchanged.
+    diagnostics: Tuple[Any, ...] = ()
+
+    @property
+    def diagnostic_dicts(self) -> List[Dict[str, Any]]:
+        """``diagnostics`` in their JSON-ready ``{code, message, ...}`` form."""
+        return [d.to_dict() for d in self.diagnostics]
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-ready form for the CLI / API / MCP surfaces."""
@@ -132,6 +203,7 @@ class AlignmentReport:
             "sizes_differed": self.sizes_differed,
             "n_sources": self.n_sources,
             "warnings": list(self.warnings),
+            "diagnostics": self.diagnostic_dicts,
         }
 
 
@@ -283,6 +355,7 @@ def _build_report(method: str, coverage: AlignmentCoverage) -> AlignmentReport:
         sizes_differed=coverage.sizes_differed,
         n_sources=coverage.n_sources,
         warnings=warnings,
+        diagnostics=tuple(coverage.diagnostics),
     )
 
 
@@ -372,6 +445,14 @@ class ConsensusVector:
         # Input sizes seen by an incremental build, so `finalize` can report
         # the same coverage a one-shot build would have.
         self._incremental_sizes: List[int] = []
+        # Analysis-time region view filter the build read its sources through
+        # (``RegionSelection.to_note()`` string), or None for an unfiltered
+        # build. A filtered ``vas`` view is a DENSE concatenation of the
+        # included runs, so every offset this vector reports is a FILTERED-
+        # VIEW offset: any consumer that re-opens the dumps to read bytes back
+        # (aligned windows, class-region jump offsets) must open them with
+        # this same filter or it reads the wrong bytes.
+        self.region_filter: Union[str, None] = None
 
     @property
     def classifications(self) -> array:
@@ -410,12 +491,15 @@ class ConsensusVector:
         self._classifications = value
         self._class_runs_cache = {}
 
-    def build(self, dump_paths: List[Path]) -> None:
+    def build(self, dump_paths: List[Path], *, force: bool = False,
+              budget: MemoryBudgetLike = None) -> None:
         """Compute per-byte variance across all dump files.
 
-        Applies a chunked two-pass estimator via ``core.variance.compute_variance``;
-        numerically stable and peak-memory-bounded by ``CHUNK_BYTES`` regardless
-        of dump size.
+        Streams position slabs from every file (``core.slab_variance``) with the
+        same two-pass estimator as ``core.variance.compute_variance``, so the
+        result is bit-identical while only one slab per file is resident.
+        The predicted peak is checked against the memory budget first
+        (``CapabilityError`` code ``memory_budget_exceeded`` unless ``force``).
         """
         if len(dump_paths) < 2:
             logger.warning("Need at least 2 dumps for consensus, got %d", len(dump_paths))
@@ -429,15 +513,15 @@ class ConsensusVector:
             return
 
         self.size = min_size
-        buffers = [p.read_bytes()[:min_size] for p in dump_paths]
-        self.variance = compute_variance(buffers, min_size)
+        self.variance, self.reference_bytes = _stream_flat_variance(
+            list(dump_paths), min_size, force=force, budget=budget)
         self._set_classifications(classify_variance(self.variance, self.thresholds))
-        self.reference_bytes = buffers[0] if buffers else b""
         self.alignment_report = _flat_report(sizes, min_size)
         logger.info("Consensus built: %d bytes, %d dumps", min_size, self.num_dumps)
 
     def build_from_sources(
-        self, sources: List, normalize: bool = False,
+        self, sources: List, normalize: bool = False, *,
+        force: bool = False, budget: MemoryBudgetLike = None,
     ) -> None:
         """Build consensus from DumpSource objects.
 
@@ -454,6 +538,10 @@ class ConsensusVector:
         and says so in the report; it does not silently retry flat, because
         "these dumps share no mapped page" and "these dumps agree byte for
         byte from offset 0" are different answers.
+
+        ``force`` / ``budget`` gate the memory estimate of whichever path
+        runs (see :meth:`build`): the flat fallback and both aligned paths
+        stream position slabs and check their predicted peak first.
         """
         if len(sources) < 2:
             logger.warning("Need >= 2 dumps for consensus, got %d", len(sources))
@@ -462,20 +550,22 @@ class ConsensusVector:
         # Record the source order + reset any prior VA index so the overlay can
         # map a viewed dump's path -> index -> VA layout for this build.
         self.dump_paths = [str(getattr(s, "path", "") or "") for s in sources]
+        self.region_filter = sources_region_filter_note(sources)
         self._va_index_cache = {}
         self._va_starts_cache = {}
         self._slab_starts_cache = None
         if all(_is_native_msl(s) for s in sources):
             from .consensus_msl import build_msl_consensus_result
-            result = build_msl_consensus_result(sources)
+            result = build_msl_consensus_result(sources, force=force,
+                                                budget=budget)
             self._adopt_aligned(result, ALIGNMENT_MODULE_OFFSET)
         elif all(supports_va_alignment(s) for s in sources):
             from .consensus_va import build_va_consensus
-            result = build_va_consensus(sources)
+            result = build_va_consensus(sources, force=force, budget=budget)
             self._adopt_aligned(result, ALIGNMENT_VIRTUAL_ADDRESS)
         else:
             self.msl_layout = None
-            self._build_raw(sources)
+            self._build_raw(sources, force=force, budget=budget)
         self._set_classifications(classify_variance(self.variance, self.thresholds))
 
     def _adopt_aligned(self, result, method: str) -> None:
@@ -490,18 +580,25 @@ class ConsensusVector:
         self.msl_layout = result.layout
         self.alignment_report = _build_report(method, result.coverage)
 
-    def _build_raw(self, sources: List) -> None:
-        """Flat-bytes consensus from DumpSource objects (fallback)."""
-        buffers = [s.read_all() for s in sources]
-        sizes = [len(b) for b in buffers]
+    def _build_raw(self, sources: List, *, force: bool = False,
+                   budget: MemoryBudgetLike = None) -> None:
+        """Flat-bytes consensus from DumpSource objects (fallback).
+
+        Reads each source's flat view slab by slab (``core.slab_variance``)
+        instead of ``read_all()``-ing all N; sources whose view cannot be
+        sliced equivalently are still read whole, and counted in the estimate.
+        """
+        resident = sum(whole_read_bytes(s) for s in sources)
+        readers = [as_slab_reader(s) for s in sources]
+        sizes = [r.size for r in readers]
         min_size = min(sizes)
         if min_size == 0:
             logger.warning("Empty dump data detected")
             return
         self.size = min_size
-        truncated = [b[:min_size] for b in buffers]
-        self.variance = compute_variance(truncated, min_size)
-        self.reference_bytes = truncated[0]
+        self.variance, self.reference_bytes = _stream_flat_variance(
+            readers, min_size, force=force, budget=budget,
+            resident_bytes=resident)
         self.alignment_report = _flat_report(sizes, min_size)
 
     # ------------------------------------------------------------------
@@ -979,7 +1076,10 @@ class ConsensusVector:
         self.num_dumps = 0
         self._incremental_sizes = []
         self.reference_bytes = b""
-        self.variance = np.zeros(size, dtype=np.float32)
+        # Materialized by ``finalize``; until then the live view is
+        # ``get_live_variance``. (A size-wide zero vector used to be allocated
+        # here and was overwritten unread.)
+        self.variance = np.array([], dtype=np.float32)
         self._set_classifications(np.array([], dtype=np.uint8))
 
     def add_source(self, source) -> Tuple[int, float, float]:
@@ -997,7 +1097,7 @@ class ConsensusVector:
             raise ValueError(
                 f"dump shorter than consensus size ({len(raw)} < {self.size})"
             )
-        data = raw[: self.size]
+        data = memoryview(raw)[: self.size]  # no truncation copy
         self._welford.add_dump(data)
         # The pre-truncation length, so `finalize` can report the same
         # discarded-byte count a one-shot flat build would have reported.
@@ -1005,8 +1105,10 @@ class ConsensusVector:
         self.num_dumps = self._welford.num_dumps
         if not self.reference_bytes:
             self.reference_bytes = bytes(data)
-        current = self._welford.variance()
-        return self.num_dumps, float(current.mean()), float(current.max())
+        # Stats walk m2/n slab by slab; the full variance vector is only
+        # materialized when asked for (get_live_variance / finalize).
+        mean_var, max_var = self._welford.variance_summary()
+        return self.num_dumps, mean_var, max_var
 
     def get_live_variance(self) -> np.ndarray:
         """Return the current variance vector.
@@ -1323,6 +1425,21 @@ class ConsensusVector:
 
 # Backward-compatible alias (same pattern as TLSSecret = CryptoSecret)
 ConsensusMatrix = ConsensusVector
+
+
+def sources_region_filter_note(sources: List) -> Union[str, None]:
+    """The view filter *sources* were opened with, as a ``to_note()`` string.
+
+    Only ``.msl`` sources carry one (``MslDumpSource.region_filter``); the
+    first active filter wins — :func:`~memdiver.core.dump_source.open_dump`
+    hands every source of one build the same filter. ``None`` when no source
+    is filtered, which is exactly "the offsets are unfiltered".
+    """
+    for source in sources:
+        selection = getattr(source, "region_filter", None)
+        if selection is not None and hasattr(selection, "to_note"):
+            return selection.to_note()
+    return None
 
 
 def _is_native_msl(source) -> bool:

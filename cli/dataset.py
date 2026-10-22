@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ._shared import _print_missing_package, _write_output, to_cli_exit
+from ._shared import (_print_missing_package, _write_output,
+                      force_memory_requested, to_cli_exit)
 
 logger = logging.getLogger("memdiver.cli")
 
@@ -127,6 +128,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             max_runs=args.max_runs,
             normalize=args.normalize,
             expand_keys=not args.no_expand,
+            force=force_memory_requested(args),
         )
     except ValueError as exc:
         logger.error("Invalid request: %s", exc)
@@ -199,6 +201,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 max_runs=job_cfg.get("max_runs", 10),
                 normalize=job_cfg.get("normalize", False),
                 expand_keys=job_cfg.get("expand_keys", True),
+                force=force_memory_requested(args),
             ))
         except (ValueError, KeyError) as exc:
             logger.error("Invalid job config: %s", exc)
@@ -231,19 +234,53 @@ def _cmd_import(args: argparse.Namespace) -> int:
     """Import a dump file (raw .dump, ELF core, or minidump) to .msl format."""
     from memdiver.msl.importer import import_dump
 
+    from .import_keys import import_key_material, print_import_error
+    from .import_selection import (
+        SelectionError, choice_from_args, list_regions, report_results,
+        safe_preview,
+    )
+
     raw = Path(args.dump_file)
+    maps_path = Path(args.maps) if getattr(args, "maps", None) else None
+    key_material = import_key_material(args, [raw])
+    try:
+        if args.list_regions:
+            return list_regions(args, [raw], key_material=key_material,
+                                maps_path=maps_path)
+    except ValueError as exc:
+        return print_import_error(exc)
+    try:
+        choice = choice_from_args(
+            args, lambda: safe_preview(raw, key_material=key_material,
+                                       maps_path=maps_path))
+    except SelectionError as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.exit_code
     out = Path(args.output) if args.output else raw.with_suffix(".msl")
     secrets = None
     if args.keylog:
         from memdiver.core.keylog import KeylogParser
         secrets = KeylogParser().parse(Path(args.keylog))
 
-    result = import_dump(raw, out, pid=args.pid, secrets=secrets)
-    print(json.dumps({
+    try:
+        result = import_dump(raw, out, pid=args.pid, secrets=secrets,
+                             selection=choice.selection,
+                             materialize=choice.materialize,
+                             key_material=key_material,
+                             decrypt_output=getattr(args, "decrypt_output",
+                                                    False),
+                             maps_path=maps_path)
+    except ValueError as exc:
+        return print_import_error(exc)
+    report_results([result])
+    summary = {
         "source": str(result.source_path),
         "output": str(result.output_path),
         "regions": result.regions_written,
         "key_hints": result.key_hints_written,
         "bytes": result.total_bytes,
-    }, indent=2))
+    }
+    if result.has_selection_info:  # shape unchanged when nothing selected
+        summary.update(result.selection_summary())
+    print(json.dumps(summary, indent=2))
     return 0

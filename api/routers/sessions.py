@@ -99,6 +99,16 @@ class SessionPayload(BaseModel):
     excluded_dump_paths: List[str] = []
     solo_dump_path: str = ""
     rail_collapsed: bool = False
+    #: Analysis-time region view filter: ``"heap,stack"`` / ``to_note()``
+    #: string / ``null``. Validated with ``parse_selection`` and normalised to
+    #: the persisted ``to_note()`` form (``"all"`` -> ``null``).
+    region_filter: Optional[str] = None
+
+    @field_validator("region_filter", mode="before")
+    @classmethod
+    def _check_region_filter(cls, value: Any) -> Any:
+        from memdiver.api.models import validate_region_filter
+        return validate_region_filter(value)
 
     @field_validator(
         "session_name",

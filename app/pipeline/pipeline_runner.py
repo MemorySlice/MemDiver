@@ -188,6 +188,7 @@ def _persist_welford_state(
     m2_arr,
     total: int,
     n_welford: int,
+    region_filter: Optional[str] = None,
 ) -> Path:
     """Persist the Welford accumulators + a state.json pointer, register it.
 
@@ -203,12 +204,16 @@ def _persist_welford_state(
     state_json_path = artifact_dir / "consensus" / "state.json"
     np.save(mean_path, mean_arr)
     np.save(m2_path, m2_arr)
-    state_json_path.write_text(json.dumps({
+    state = {
         "size": int(total),
         "num_dumps": int(n_welford),
         "mean_path": str(mean_path),
         "m2_path": str(m2_path),
-    }, indent=2))
+    }
+    if region_filter is not None:
+        # ``/refine`` must fold later dumps through the same view filter.
+        state["region_filter"] = region_filter
+    state_json_path.write_text(json.dumps(state, indent=2))
     register_artifact(
         artifacts, artifact_dir,
         name="consensus_state",
@@ -224,8 +229,13 @@ def _build_consensus(
     ctx,
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
+    region_filter: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Fold N sources into a variance matrix + reference slab.
+
+    ``region_filter`` (``RegionSelection`` / spec / note; ``.msl`` only) folds
+    through the region view filter; ``None`` uses whatever filter the sources
+    were opened with. An active filter is recorded in ``state.json``.
 
     Emits progress per-fold so the UI sees the matrix accumulating.
 
@@ -251,9 +261,22 @@ def _build_consensus(
     ctx.emit("stage_start", stage="consensus", pct=0.0,
              msg=f"folding {n} dumps")
 
+    from memdiver.core.region_view_filter import (
+        coerce_region_filter,
+        region_filter_note,
+    )
+    from memdiver.engine.consensus import sources_region_filter_note
+
+    selection = coerce_region_filter(region_filter)
     if all(_is_msl(s) for s in sources):
         # ASLR-aware incremental path for native MSL sources.
-        builder = MslIncrementalBuilder.from_sources(sources)
+        # ``builder.diagnostics`` (e.g. ``classification_basis_mixed``) is
+        # logged by the builder but not threaded into this legacy helper's
+        # return: it is off the production path (see the docstring), and the
+        # producer it was replaced by, ``tools_pipeline._consensus_incremental``,
+        # does surface it.
+        builder = MslIncrementalBuilder.from_sources(
+            sources, region_filter=selection)
         for i in range(n):
             if ctx.is_cancelled():
                 raise _CancelledByContext()
@@ -320,6 +343,8 @@ def _build_consensus(
     state_json_path = _persist_welford_state(
         artifact_dir, artifacts,
         mean_arr=mean_arr, m2_arr=m2_arr, total=total, n_welford=n_welford,
+        region_filter=(region_filter_note(selection)
+                       or sources_region_filter_note(sources)),
     )
     ctx.emit(
         "stage_end", stage="consensus", pct=1.0,
@@ -457,8 +482,12 @@ def _run_nsweep(
     ctx,
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the N-sweep harness and persist report.{json,md,html}.
+
+    ``region_filter`` is the run's region view filter, so the sweep folds the
+    same filtered view the consensus stage did.
 
     Delegates to :func:`memdiver.app.tools_pipeline.n_sweep`, which opens the
     sources itself from ``source_paths`` — the harness re-folds a fresh
@@ -504,6 +533,7 @@ def _run_nsweep(
         exhaustive=nsweep_params.get("exhaustive", True),
         on_progress=_producer_sink(ctx),
         is_cancelled=ctx.is_cancelled,
+        region_filter=region_filter,
     )
     # Register in the same order the pre-refactor write_nsweep_artifacts dict
     # yielded (json, html, md); the filenames are fixed by the writer.
@@ -626,6 +656,7 @@ def run_auto_floor_stage(
     positive_control: Optional[bytes] = None,
     key_material: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable] = None,
+    region_filter: Optional[str] = None,
 ) -> "AutoFloorResult":
     """Ground-truth-free variance-floor selection for the pipeline / API.
 
@@ -639,16 +670,21 @@ def run_auto_floor_stage(
     for the oracle-arbitrated sweep.
 
     ``reference_data`` is truncated to the variance length so the two arrays
-    are index-aligned, exactly as the CLI does.
+    are index-aligned, exactly as the CLI does. ``region_filter`` reads an
+    ``.msl`` reference through the region view filter; ``None`` reuses the one
+    the consensus stage recorded beside ``variance_path`` (if any).
     """
     import numpy as np
 
     from memdiver.app.composition import open_dump
+    from memdiver.app.tools_pipeline import _consensus_region_filter
     from memdiver.engine.auto_floor import run_auto_floor
     from memdiver.engine.oracle import load_oracle
 
     variance = np.load(variance_path)
-    with open_dump(Path(reference_path), **(key_material or {})) as source:
+    region_filter = _consensus_region_filter(variance_path, region_filter)
+    with open_dump(Path(reference_path), region_filter=region_filter,
+                   **(key_material or {})) as source:
         reference_data = source.read_all()[: len(variance)]
 
     oracle = load_oracle(Path(oracle_path), config=oracle_config or {})
@@ -737,6 +773,13 @@ class PipelineState:
     # Dump paths the path-taking producers (consensus / n_sweep) open + close
     # themselves; stages consume ``source_paths``, never a shared open handle.
     source_paths: List[str] = field(default_factory=list)
+    # Analysis-time region view filter (``RegionSelection.to_note()`` string
+    # or ``"heap,stack"`` spec) forwarded to the consensus stage; ``None``
+    # analyses every region. Honoured by ``.msl`` sources only.
+    region_filter: Optional[str] = None
+    # Memory-guard override (params key ``force_memory``) forwarded to the
+    # budget-gated consensus stage as ``force=``.
+    force_memory: bool = False
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
     # Opt-in escalation (floor-free fall-through when brute-force finds no hit).
@@ -813,6 +856,8 @@ def _stage_consensus(state: "PipelineState") -> None:
         persist_welford=True,
         on_progress=_producer_sink(state.ctx),
         is_cancelled=state.ctx.is_cancelled,
+        region_filter=state.region_filter,
+        force=state.force_memory,
     )
     register_artifact(
         state.artifacts, state.artifact_dir,
@@ -881,6 +926,7 @@ def _stage_nsweep(state: "PipelineState") -> None:
         ctx=state.ctx,
         artifact_dir=state.artifact_dir,
         artifacts=state.artifacts,
+        region_filter=state.region_filter,
     )
 
 
@@ -1125,6 +1171,10 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
       top-level ``oracle_config`` above.
     * ``emit`` (dict, optional): ``name``, ``description``, ``hit_index``,
       ``min_static_ratio``.
+    * ``force_memory`` (bool, default False): bypass the consensus
+      memory-budget guard (forwarded to the consensus stage as ``force=``).
+      Without it an over-budget fold raises ``CapabilityError``
+      ``code="memory_budget_exceeded"``, which propagates unchanged.
 
     Returns a dict with:
 
@@ -1190,6 +1240,8 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         # the task record at completion. See app.pipeline.artifact_events.
         artifacts=EmittingArtifactList(ctx),
         source_paths=source_paths,
+        region_filter=params.get("region_filter"),
+        force_memory=bool(params.get("force_memory", False)),
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,
         oracle_config=oracle_config,

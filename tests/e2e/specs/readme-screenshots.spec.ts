@@ -14,6 +14,7 @@ import type { Page } from "@playwright/test";
 import { MSL, datasetAvailable } from "../fixtures/dataset";
 import {
   enterWorkspaceWithMsl,
+  passRegionsStep,
   switchToExplorationMode,
 } from "../fixtures/workspace";
 import { tab } from "../fixtures/selectors";
@@ -92,6 +93,7 @@ test.describe("README screenshots", { tag: "@requires-dataset" }, () => {
     await expect(pathInput).toBeVisible({ timeout: 15_000 });
     await pathInput.fill(MSL);
     await page.getByRole("button", { name: /^Next$/ }).click();
+    await passRegionsStep(page);
     // Step shows "Start Analysis" at the end — we want to capture before clicking.
     await expect(
       page.getByRole("button", { name: /Start Analysis/i }),

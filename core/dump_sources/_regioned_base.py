@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from memdiver.core.dump_io import DumpReader
 from memdiver.core.proc_maps_parser import MapRegion, parse_maps_file
+from memdiver.core.regioned_layout import (compute_regioned_layout,
+                                          sidecar_candidates)
 
 logger = logging.getLogger("memdiver.core.dump_sources.regioned")
 
@@ -46,6 +48,13 @@ class _RegionedRawSource:
     #: ``iter_ranges`` -> ``(start_va, end_va, file_offset)``, which is the
     #: whole contract the VA path needs.
     supports_va_alignment: bool = True
+
+    #: The ``"vas"`` view is byte-identical to the first ``size_for("vas")``
+    #: bytes of the ``.bin`` (only trailing padding differs), so single-dump
+    #: analysis may map that file prefix instead of copying or spilling it
+    #: (:mod:`memdiver.app.pipeline.analysis_buffer`). A gcore core is NOT
+    #: like this (ELF headers/notes precede the PT_LOAD bodies).
+    vas_is_file_prefix: bool = True
 
     def __init__(self, bin_path: Path, maps_path: "Path | None" = None):
         self._bin_path = Path(bin_path)
@@ -115,12 +124,11 @@ class _RegionedRawSource:
         """Pick the sidecar ``.maps`` path, with a graceful fallback."""
         if self._maps_path is not None and self._maps_path.exists():
             return self._maps_path
-        # Primary: ``foo.<flavour>_raw.bin`` -> ``foo.<flavour>_raw.maps``
-        primary = self._bin_path.with_suffix(".maps")  # .bin -> .maps
+        # Primary: ``foo.<flavour>_raw.bin`` -> ``foo.<flavour>_raw.maps``;
+        # legacy fallback: drop both suffixes -> ``foo.maps``.
+        primary, fallback = sidecar_candidates(self._bin_path)
         if primary.exists():
             return primary
-        # Legacy fallback: drop both suffixes -> ``foo.maps``
-        fallback = self._bin_path.with_suffix("").with_suffix(".maps")
         if fallback.exists():
             return fallback
         raise FileNotFoundError(
@@ -129,30 +137,21 @@ class _RegionedRawSource:
         )
 
     def _rebuild_offset_table(self) -> None:
-        """Compute cumulative bin offsets for each region; clamp to bin size."""
-        bin_size = self._raw_file_size()
-        cum: List[int] = [0]
-        usable = 0
-        running = 0
-        for region in self._regions:
-            if running >= bin_size:
-                break
-            region_size = region.end - region.start
-            # If this region would overflow the bin, clamp — the raw writer may
-            # have truncated here. Still counts as "usable" because the partial
-            # bytes are legitimately present.
-            if running + region_size > bin_size:
-                region_size = bin_size - running
-            running += region_size
-            cum.append(running)
-            usable += 1
-        self._cum_offsets = cum
-        self._usable_region_count = usable
-        padding = bin_size - running
-        if padding and self.format_name == "lldb_raw":
+        """Compute cumulative bin offsets for each region; clamp to bin size.
+
+        The math lives in :func:`core.regioned_layout.compute_regioned_layout`
+        (shared with the MSL importer).
+        """
+        layout = compute_regioned_layout(
+            [region.end - region.start for region in self._regions],
+            self._raw_file_size(),
+        )
+        self._cum_offsets = list(layout.offsets)
+        self._usable_region_count = layout.usable_count
+        if layout.padding and self.format_name == "lldb_raw":
             logger.info(
                 "lldb_raw: %d padding bytes beyond last captured region in %s",
-                padding, self._bin_path.name,
+                layout.padding, self._bin_path.name,
             )
 
     # -- Size queries -------------------------------------------------------
@@ -197,6 +196,17 @@ class _RegionedRawSource:
         if view != "vas":
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
         return self._read_vas_range(offset, length)
+
+    def read_all(self, view: str = "vas") -> bytes:
+        """The whole *view* as ``bytes`` (one heap copy).
+
+        Same contract as :meth:`core.dump_source.MslDumpSource.read_all`. The
+        ``"vas"`` view is the captured-region prefix of the bin (see
+        :meth:`_find_all_vas`), so both views are a single slice of the
+        mapping; ``"vas"`` only drops trailing padding.
+        """
+        self._ensure_open()
+        return self._reader.read_range(0, self.size_for(view))
 
     def _read_vas_range(self, vas_offset: int, length: int) -> bytes:
         """Map a flat VAS offset through the region table into the bin."""

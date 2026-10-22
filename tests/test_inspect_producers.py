@@ -197,7 +197,8 @@ def test_vas_regions_result_emits_full_five_field_entries(session, msl_with_vas)
     assert payload["region_count"] == len(entries)
     assert payload["total_region_size"] == sum(e["region_size"] for e in entries)
     for entry in entries:
-        assert set(entry) == {
+        # ``captured`` is the optional sixth field (see test_inspect_vas_captured).
+        assert set(entry) - {"captured"} == {
             "base_addr", "region_size", "region_type", "protection", "mapped_path",
         }
     # The fixture seeds a libssl mapping at the canonical base (base/size/type/prot).

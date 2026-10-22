@@ -134,6 +134,7 @@ def test_analyze_run_params_shape_and_types():
         "normalize": False,
         "expand_keys": True,
         "algorithms": ["entropy_scan"],
+        "force_memory": False,
     }
     # Dict-based on purpose: no early validation of the bogus library_dir.
     assert isinstance(params["library_dirs"], list)
@@ -150,7 +151,11 @@ def test_analyze_run_params_keys_track_core_dataclass():
         library_dirs=["x"], phase="p", protocol_version="12"
     )
     param_keys = set(analyze_run_params(model, task_root="/t")) - {"task_root"}
-    core_keys = {f.name for f in fields(AnalyzeRequest)} - {"template"}
+    # Pool param ``force_memory`` is the wire spelling of core ``force``.
+    renames = {"force": "force_memory"}
+    core_keys = {
+        renames.get(f.name, f.name) for f in fields(AnalyzeRequest)
+    } - {"template"}
     assert param_keys == core_keys
 
 

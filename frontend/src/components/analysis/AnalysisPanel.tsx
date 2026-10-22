@@ -3,7 +3,8 @@ import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
 import { runAnalysis, runFileAnalysis, listPhases, listProtocols, listPatterns } from "@/api/client";
 import { fetchAnalysisResult } from "@/api/analysis";
-import type { PatternInfo } from "@/api/types";
+import { offerForcedResubmit, withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
+import type { AnalyzeRequest, PatternInfo } from "@/api/types";
 import { useAppStore, ALL_ALGORITHMS, SINGLE_FILE_ALGORITHMS, VERIFICATION_ALGORITHMS } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
@@ -176,29 +177,41 @@ export function AnalysisPanel() {
   // final result arrive over ``/ws/tasks/{taskId}`` (see useTaskProgress
   // wiring below). The GIL-bound algorithm work runs on the backend
   // TaskManager ProcessPool instead of blocking the request.
-  const handleRun = useCallback(async () => {
-    if (!selectedLibraries.length || !selectedPhase || !protocolVersion) return;
+  // The unforced body of the last library run, re-sent with `force_memory`
+  // when its background task fails on the server memory guard.
+  const lastRunRequestRef = useRef<AnalyzeRequest | null>(null);
+
+  const submitLibraryRun = useCallback(async (body: AnalyzeRequest, forceMemory: boolean) => {
     useResultsStore.getState().clearResults();
     startAnalysis();
     try {
-      const dirs = selectedLibraries.map((lib) =>
-        datasetRoot ? `${datasetRoot}/${lib}` : lib
+      const { task_id } = await withMemoryBudgetOverride((force) =>
+        runAnalysis(withForceMemory(body, force || forceMemory)),
       );
-      const { task_id } = await runAnalysis({
-        library_dirs: dirs,
-        phase: selectedPhase,
-        protocol_version: protocolVersion,
-        keylog_filename: keylogFilename,
-        algorithms: selectedAlgorithms,
-      });
+      lastRunRequestRef.current = body;
       setTaskId(task_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("panel.analysisFailed"));
     }
-  }, [selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename, selectedAlgorithms, startAnalysis, setTaskId, setError]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [startAnalysis, setTaskId, setError]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleRun = useCallback(async () => {
+    if (!selectedLibraries.length || !selectedPhase || !protocolVersion) return;
+    const dirs = selectedLibraries.map((lib) =>
+      datasetRoot ? `${datasetRoot}/${lib}` : lib
+    );
+    await submitLibraryRun({
+      library_dirs: dirs,
+      phase: selectedPhase,
+      protocol_version: protocolVersion,
+      keylog_filename: keylogFilename,
+      algorithms: selectedAlgorithms,
+    }, false);
+  }, [selectedLibraries, selectedPhase, protocolVersion, datasetRoot, keylogFilename, selectedAlgorithms, submitLibraryRun]);
 
   const handleRunFile = useCallback(async () => {
     if (!inputPath) return;
+    lastRunRequestRef.current = null; // a file run has no library body to re-send
     useResultsStore.getState().clearResults();
     startAnalysis();
     try {
@@ -243,7 +256,13 @@ export function AnalysisPanel() {
         }
       })();
     },
-    onError: (err) => setError(err || t("panel.analysisFailed")),
+    onError: (err, event) => {
+      setError(err || t("panel.analysisFailed"));
+      const body = lastRunRequestRef.current;
+      if (taskId && body) {
+        void offerForcedResubmit(taskId, event, () => submitLibraryRun(body, true));
+      }
+    },
   });
 
   // Auto-run analysis when wizard completes with "auto" approach

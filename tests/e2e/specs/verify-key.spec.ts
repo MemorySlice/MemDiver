@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { tab } from "../fixtures/selectors";
 import {
   datasetAvailable,
@@ -48,29 +48,50 @@ const VERIFY_FIXTURE = JSON.parse(
   key_hex: string;
 };
 
+function hexViewTabs(page: Page) {
+  // "Dump view mode" (gcore et al.) or "MSL view mode" (.msl).
+  return page.getByRole("tablist", { name: /^(Dump|MSL) view mode$/ });
+}
+
+/** Fill the fixture's AEAD record with a TYPED offset and submit; returns the sent view. */
+async function verifyTypedFixtureOffset(page: Page): Promise<string | null> {
+  // The offset input parses a bare numeric string as DECIMAL (parseOffset in
+  // KeyVerificationPanel); offset 0 is unambiguous either way.
+  await page.getByTestId("verify-offset-input").fill(String(VERIFY_FIXTURE.offset));
+  await page.getByTestId("verify-length-input").fill(String(VERIFY_FIXTURE.length));
+  await page.getByTestId("verify-cipher-select").selectOption(VERIFY_FIXTURE.cipher);
+  await page.getByTestId("verify-ciphertext-input").fill(VERIFY_FIXTURE.ciphertext_hex);
+  await page.getByTestId("verify-nonce-input").fill(VERIFY_FIXTURE.nonce_hex);
+  await page.getByTestId("verify-tag-input").fill(VERIFY_FIXTURE.tag_hex);
+
+  const submit = page.getByTestId("verify-submit-btn");
+  await expect(submit).toBeEnabled();
+  const request = page.waitForRequest(
+    (r) => r.url().includes("/api/analysis/verify-key") && r.method() === "POST",
+  );
+  await submit.click();
+  const body = JSON.parse((await request).postData() ?? "{}") as { view?: string };
+  return body.view ?? null;
+}
+
 test.describe("Verify-key tab — AEAD verification (synthetic MSL)", () => {
   test.skip(!syntheticMslAvailable, "synthetic MSL fixture missing");
 
-  test("verifies a known AES-256-GCM key at offset 0 and echoes the recovered key", async ({
+  test("verifies a known AES-256-GCM key at typed VAS offset 0 and echoes the recovered key", async ({
     page,
   }) => {
     const guards = installErrorGuards(page);
     await enterWorkspaceWithMsl(page, syntheticMslPath, { autoAnalyze: false });
 
+    // A typed offset follows the hex viewer's view: the key sits at VAS 0.
+    const views = hexViewTabs(page);
+    await expect(views).toBeVisible({ timeout: 15_000 });
+    await views.getByRole("tab", { name: "Memory (VAS)" }).click();
+
     await page.locator(tab("verify-key")).first().click();
+    await expect(page.getByTestId("verify-offset-view")).toHaveText("in VAS view");
 
-    // The offset input parses a bare numeric string as DECIMAL (parseOffset in
-    // KeyVerificationPanel); offset 0 is unambiguous either way.
-    await page.getByTestId("verify-offset-input").fill(String(VERIFY_FIXTURE.offset));
-    await page.getByTestId("verify-length-input").fill(String(VERIFY_FIXTURE.length));
-    await page.getByTestId("verify-cipher-select").selectOption(VERIFY_FIXTURE.cipher);
-    await page.getByTestId("verify-ciphertext-input").fill(VERIFY_FIXTURE.ciphertext_hex);
-    await page.getByTestId("verify-nonce-input").fill(VERIFY_FIXTURE.nonce_hex);
-    await page.getByTestId("verify-tag-input").fill(VERIFY_FIXTURE.tag_hex);
-
-    const submit = page.getByTestId("verify-submit-btn");
-    await expect(submit).toBeEnabled();
-    await submit.click();
+    expect(await verifyTypedFixtureOffset(page)).toBe("vas");
 
     // Success line + the recovered key echoed back verbatim.
     await expect(page.getByTestId("verify-result-verified")).toBeVisible({
@@ -80,6 +101,27 @@ test.describe("Verify-key tab — AEAD verification (synthetic MSL)", () => {
       VERIFY_FIXTURE.key_hex,
       { timeout: 15_000 },
     );
+
+    guards.assertClean();
+  });
+
+  test("typed offset 0 in the raw view reads the container header, so nothing matches", async ({
+    page,
+  }) => {
+    const guards = installErrorGuards(page);
+    await enterWorkspaceWithMsl(page, syntheticMslPath, { autoAnalyze: false });
+
+    const views = hexViewTabs(page);
+    await expect(views).toBeVisible({ timeout: 15_000 });
+    await views.getByRole("tab", { name: "Raw file" }).click();
+
+    await page.locator(tab("verify-key")).first().click();
+    await expect(page.getByTestId("verify-offset-view")).toHaveText("in raw view");
+
+    expect(await verifyTypedFixtureOffset(page)).toBe("raw");
+
+    await expect(page.getByTestId("verify-result-no-match")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("verify-result-verified")).toHaveCount(0);
 
     guards.assertClean();
   });

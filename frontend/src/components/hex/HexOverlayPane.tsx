@@ -29,7 +29,7 @@ import { HexStatusBar } from "./HexStatusBar";
 import { HexToolbar } from "./HexToolbar";
 import { NoConsensusPrompt } from "./NoConsensusPrompt";
 import { WindowErrorBanner } from "./WindowErrorBanner";
-import { buildRegionIndex } from "./highlight-utils";
+import { buildRegionIndex, regionsForView } from "./highlight-utils";
 import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
 
 /**
@@ -73,6 +73,7 @@ export function HexOverlayPane() {
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
+  const availableViews = useHexStore((s) => s.availableViews);
   const pageStateVersion = useHexStore((s) => s.pageStateVersion);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
@@ -140,8 +141,8 @@ export function HexOverlayPane() {
   const selectionEnd = selection ? Math.max(selection.anchor, selection.active) : null;
 
   const regionIndex = useMemo(
-    () => buildRegionIndex(highlightedRegions),
-    [highlightedRegions],
+    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
+    [highlightedRegions, viewMode, availableViews],
   );
 
   // The anchor's version alone rotates these getters: this pane paints exactly

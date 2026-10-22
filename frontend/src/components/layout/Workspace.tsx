@@ -12,7 +12,14 @@ import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
 import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
 import { EntropyChart } from "@/components/charts/EntropyChart";
-import { getEntropy, getVasRegions, getNotebookStatus, listDatasetRuns } from "@/api/client";
+import { preloadEntropyChart } from "@/components/charts/entropy-chart-loaders";
+import {
+  ENTROPY_ENVELOPE_BUCKETS,
+  getEntropy,
+  getVasRegions,
+  getNotebookStatus,
+  listDatasetRuns,
+} from "@/api/client";
 import type { EntropyData, DatasetRun } from "@/api/types";
 import type { VasEntry } from "@/components/charts/types";
 import { BookmarkList } from "@/components/investigation/BookmarkList";
@@ -146,11 +153,13 @@ function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
-  const { bookmarks, addBookmark, removeBookmark } = useHexStore(
+  const { bookmarks, addBookmark, removeBookmarkEntry, jumpToBookmark, multiView } = useHexStore(
     useShallow((s) => ({
       bookmarks: s.bookmarks,
       addBookmark: s.addBookmark,
-      removeBookmark: s.removeBookmark,
+      removeBookmarkEntry: s.removeBookmarkEntry,
+      jumpToBookmark: s.jumpToBookmark,
+      multiView: s.format === "msl" || s.availableViews.length > 1,
     })),
   );
   const cursorOffset = useHexStore((s) => s.cursorOffset);
@@ -178,8 +187,11 @@ function Sidebar() {
             <BookmarkList
               bookmarks={bookmarks}
               onAdd={addBookmark}
-              onRemove={removeBookmark}
-              onSelect={(off) => useHexStore.getState().scrollToOffset(off)}
+              // Exact entry + its recorded view: the same offset in another
+              // view is a different byte (and a different bookmark).
+              onRemove={(_off, _len, b) => removeBookmarkEntry(b)}
+              onSelect={(_off, b) => jumpToBookmark(b)}
+              showViews={multiView}
             />
             {cursorOffset !== null && dumpPath && (
               <InvestigationPanel dumpPath={dumpPath} offset={cursorOffset} />
@@ -647,6 +659,10 @@ function BottomTabs() {
   const [entropyLoading, setEntropyLoading] = useState(false);
   // The dump path whose entropy was last requested; fetched at most once per path.
   const [entropyPath, setEntropyPath] = useState("");
+  // Progressive loading: a sampled profile renders first, then a follow-up
+  // full-resolution request replaces it ("refining"); "refineFailed" keeps
+  // the sampled chart and says so.
+  const [entropyRefine, setEntropyRefine] = useState<"idle" | "refining" | "refineFailed">("idle");
   // VAS entries are tagged with the dump path they were fetched for, so the
   // chart never briefly renders a previous dump's regions while the new
   // dump's fetch is still in flight (there is no VAS loading placeholder).
@@ -700,13 +716,37 @@ function BottomTabs() {
   if (tab === "entropy" && dumpPath && entropyPath !== dumpPath) {
     setEntropyPath(dumpPath);
     setEntropyLoading(true);
+    setEntropyRefine("idle");
   }
 
   useEffect(() => {
     if (!entropyPath) return;
     let cancelled = false;
-    getEntropy(entropyPath, 0, 0, useDumpStore.getState().getKeyMaterialByPath(entropyPath))
-      .then((d) => { if (!cancelled) setEntropyData(d); })
+    // Aborts an in-flight full-resolution refinement once the dump changes.
+    const refineAbort = new AbortController();
+    const key = useDumpStore.getState().getKeyMaterialByPath(entropyPath);
+    const refine = () => {
+      setEntropyRefine("refining");
+      getEntropy(entropyPath, 0, 0, key, {
+        resolution: "full",
+        buckets: ENTROPY_ENVELOPE_BUCKETS,
+        signal: refineAbort.signal,
+      })
+        .then((full) => {
+          if (cancelled) return;
+          setEntropyData(full);
+          setEntropyRefine("idle");
+        })
+        .catch(() => { if (!cancelled) setEntropyRefine("refineFailed"); });
+    };
+    // Fetch the chart code in parallel with the data, not after it.
+    void preloadEntropyChart();
+    getEntropy(entropyPath, 0, 0, key, { buckets: ENTROPY_ENVELOPE_BUCKETS })
+      .then((d) => {
+        if (cancelled) return;
+        setEntropyData(d);
+        if (d?.full_resolution_available && d.resolution !== "full") refine();
+      })
       .catch((err) => {
         if (!cancelled) setEntropyData(null);
         notifyError(
@@ -716,8 +756,18 @@ function BottomTabs() {
         );
       })
       .finally(() => { if (!cancelled) setEntropyLoading(false); });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      refineAbort.abort();
+    };
   }, [entropyPath, t]);
+
+  // The entropy panel stays mounted (hidden) once shown, so returning to the
+  // tab does not rebuild the chart. Plotly's responsive handler skips hidden
+  // plots, so nudge it to re-measure in case the layout changed meanwhile.
+  useEffect(() => {
+    if (tab === "entropy") window.dispatchEvent(new Event("resize"));
+  }, [tab]);
 
   useEffect(() => {
     if (tab !== "vas" || !dumpPath) return;
@@ -772,17 +822,36 @@ function BottomTabs() {
           </button>
         ))}
       </div>
-      <div className="flex-1 overflow-auto">
+      {/* Focusable + labelled so keyboard users can scroll panels whose
+          content has no focusable child (e.g. the entropy chart). */}
+      <div
+        className="flex-1 overflow-auto"
+        tabIndex={0}
+        role="region"
+        aria-label={translate("bottomPanelContentAria")}
+      >
         {tab === "analysis" && <AnalysisPanel />}
         {tab === "results" && <ScanResultsPanel />}
-        {tab === "entropy" && (
-          <div aria-live="polite">
+        {(tab === "entropy" || entropyPath) && (
+          <div aria-live="polite" hidden={tab !== "entropy"} data-testid="entropy-panel">
             {!dumpPath ? (
               <p className="p-3 text-sm md-text-muted">{t("loadDumpForEntropy")}</p>
             ) : entropyLoading ? (
               <p className="p-3 text-sm md-text-muted">{t("loadingEntropy")}</p>
             ) : entropyData ? (
-              <EntropyChart data={entropyData} />
+              <>
+                {entropyRefine === "refining" && (
+                  <p role="status" data-testid="entropy-refining" className="px-3 pt-2 text-xs md-text-muted">
+                    {t("entropyRefining")}
+                  </p>
+                )}
+                {entropyRefine === "refineFailed" && (
+                  <p role="status" data-testid="entropy-refine-failed" className="px-3 pt-2 text-xs md-text-warning">
+                    {t("entropyRefineFailed")}
+                  </p>
+                )}
+                <EntropyChart data={entropyData} />
+              </>
             ) : (
               <p className="p-3 text-sm md-text-muted">{t("entropyLoadFailed")}</p>
             )}

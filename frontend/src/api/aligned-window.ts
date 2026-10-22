@@ -29,6 +29,7 @@
  */
 
 import { request } from "./client";
+import type { Diagnostic } from "./diagnostics";
 import { useDumpStore } from "@/stores/dump-store";
 
 /** Which coordinate space the caller is navigating in. */
@@ -98,6 +99,8 @@ export interface AlignedWindowRequest {
   dumps?: string[];
   include_bytes?: boolean;
   keys?: AlignedWindowKey[];
+  /** Re-send past the server memory guard (see `@/api/memory-budget`). */
+  force_memory?: boolean;
 }
 
 export interface AlignedWindowAlignment {
@@ -107,6 +110,8 @@ export interface AlignedWindowAlignment {
   sizes_differed: boolean;
   n_sources: number;
   warnings: string[];
+  /** Structured counterpart of `warnings`; absent on older servers. */
+  diagnostics?: Diagnostic[];
 }
 
 export interface AlignedWindowAnchor {

@@ -152,6 +152,7 @@ def test_to_dict_is_json_ready_and_uses_the_closed_vocabulary():
         "sizes_differed": True,
         "n_sources": 2,
         "warnings": ["careful"],
+        "diagnostics": [],
     }
     assert report.method in ALIGNMENT_METHODS
 
@@ -364,11 +365,12 @@ def test_a_mixed_set_falls_back_to_the_flat_path(tmp_path):
     core = _gcore_sources(tmp_path, [(0x400000, b"\x42" * 64)])[0]
     cm = ConsensusVector()
     try:
-        # The flat path reads whole sources; gcore deliberately has no
-        # read_all (its views can be multi-GB), so a mixed set cannot be
-        # flattened. Pre-existing behaviour, unchanged by this item.
-        with pytest.raises(AttributeError):
-            cm.build_from_sources([raw, core])
+        # The flat path reads whole sources. gcore used to have no read_all,
+        # so a mixed set raised AttributeError; it now has one (its "vas"
+        # view, added for single-dump analysis), so the set is compared at
+        # flat offsets: the raw file against the gcore's PT_LOAD bytes.
+        cm.build_from_sources([raw, core])
+        assert cm.size == 64
     finally:
         raw.close()
         core.close()
@@ -433,6 +435,7 @@ def test_real_openssl_run_keeps_its_measured_histogram():
         "sizes_differed": False,
         "n_sources": 8,
         "warnings": [],
+        "diagnostics": [],
     }
     assert cm.classification_counts() == {
         "invariant": 11_216_911,

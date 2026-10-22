@@ -197,3 +197,15 @@ describe("buildSessionSnapshot secret redaction", () => {
     expect(serialized).not.toContain("tagStatus");
   });
 });
+
+describe("buildSessionSnapshot region filter", () => {
+  it("persists the session region filter, null meaning every region", async () => {
+    const { useRegionSelectionStore } = await import("@/stores/region-selection-store");
+    useRegionSelectionStore.getState().reset();
+    expect(buildSessionSnapshot("s").region_filter).toBeNull();
+
+    useRegionSelectionStore.getState().setRegionFilter("heap,stack");
+    expect(buildSessionSnapshot("s").region_filter).toBe("heap,stack");
+    useRegionSelectionStore.getState().reset();
+  });
+});

@@ -107,6 +107,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "web", "mcp")),
     _cap("inspect.blocks", "memdiver.app.tools_inspect.blocks_result",
          ("library", "web", "mcp")),
+    # IMPORT_PROVENANCE (0x0030) with its note parsed: which region categories
+    # an import kept, what it excluded, and whether the file is a materialized
+    # copy (plus the original EoC hash). Wired on all four surfaces at once.
+    _cap("inspect.import_provenance",
+         "memdiver.app.tools_inspect.import_provenance_result",
+         ("library", "cli", "web", "mcp")),
     # "What is at this offset?" — the per-offset investigation view (byte
     # value, local entropy band, printable strings in the neighbourhood). It
     # was a complete, tested producer reachable from NOWHERE, parked in the
@@ -193,6 +199,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("verify", "memdiver.app.tools_pipeline.verify_key_result",
          ("library", "cli", "web", "mcp")),
     _cap("experiment", "memdiver.app.experiment_orchestration.experiment_result",
+         ("library", "cli", "web", "mcp")),
+    # One dump of an existing process (pid or name; local / USB / remote device).
+    _cap("capture", "memdiver.app.experiment_orchestration.capture_result",
          ("library", "cli", "web", "mcp")),
     # -- dataset / analysis (app.tools) -------------------------------------
     # CLI scan/analyze are separate (non-producer) implementations

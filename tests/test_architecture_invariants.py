@@ -805,7 +805,10 @@ _EXPLICIT_FLAG_TOKENS = ("--key-file", "--passphrase", "--kem-key-file")
 # would flag them for exactly the thing the module exists to do. The explicit
 # MemDiver-flag tokens below are still enforced there, which is the part of the
 # invariant that actually guards against presentation text leaking into core.
-_CLI_FLAG_EXEMPT_MODULES = frozenset({"core/install_hints.py"})
+# ``core/capture_target.py`` is the same case for the dump backends: it builds
+# memslicer's / fridump's own argv (``--max-region-size`` is memslicer's flag).
+_CLI_FLAG_EXEMPT_MODULES = frozenset({"core/install_hints.py",
+                                      "core/capture_target.py"})
 
 
 def test_no_cli_flag_strings_in_core():
@@ -1088,6 +1091,13 @@ _MCP_ALLOWED_OMISSIONS: dict = {
     "consensus": {"persist_welford"},
 }
 
+#: Producer param -> the name the MCP tool surfaces it under. ``force`` is the
+#: memory-budget override; on the agent surface it is spelled ``force_memory``
+#: (as on CLI/REST) so it cannot be mistaken for a generic "force" flag. Applied
+#: to the producer params before comparing, so parity is still enforced under
+#: the surface name.
+_MCP_PARAM_RENAMES = {"force": "force_memory"}
+
 
 def test_mcp_pipeline_tools_expose_all_producer_params():
     """Signature parity: every MCP pipeline tool forwards every parameter of its
@@ -1124,7 +1134,8 @@ def test_mcp_pipeline_tools_expose_all_producer_params():
         producer = getattr(source, producer_attr)
         tool_params = set(inspect.signature(tools[tool_name].fn).parameters)
         producer_params = {
-            name for name, p in inspect.signature(producer).parameters.items()
+            _MCP_PARAM_RENAMES.get(name, name)
+            for name, p in inspect.signature(producer).parameters.items()
             if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
         }
         expected = (producer_params - _INTERNAL_PRODUCER_PARAMS

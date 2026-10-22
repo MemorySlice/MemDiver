@@ -92,6 +92,10 @@ def create_server():
     )
     _session = build_tool_session()
 
+    def _session_region_filter(region_filter: Optional[str]) -> Optional[str]:
+        """Explicit ``region_filter`` wins (``"all"`` = none); else the session's."""
+        return _session.region_filter if region_filter is None else region_filter
+
     @mcp.tool()
     @mcp_error_funnel
     def scan_dataset(
@@ -116,6 +120,26 @@ def create_server():
 
     @mcp.tool()
     @mcp_error_funnel
+    def set_region_filter(region_filter: Optional[str] = None) -> str:
+        """Set the session's analysis-time region view filter.
+
+        ``region_filter`` is a comma list of region categories (``"heap,stack"``;
+        categories as for ``import_raw_dump``'s ``region_types``) or a
+        ``"regions=..."`` note; ``"all"`` or omitting it clears the filter.
+        Tools that take ``region_filter`` use this value when their own is
+        omitted (``.msl`` inputs only). Returns the normalised
+        ``region_filter`` (``null`` = every region) and ``active``.
+        """
+        return json.dumps(tools.set_region_filter(_session, region_filter))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def get_region_filter() -> str:
+        """Return the session's region view filter (``null`` = every region)."""
+        return json.dumps(tools.get_region_filter(_session))
+
+    @mcp.tool()
+    @mcp_error_funnel
     def analyze_library(
         library_dirs: List[str],
         phase: str,
@@ -126,12 +150,19 @@ def create_server():
         normalize: bool = False,
         expand_keys: bool = True,
         algorithms: Optional[List[str]] = None,
+        force_memory: bool = False,
     ) -> str:
-        """Run the full analysis pipeline on library directories at a specific phase."""
+        """Run the full analysis pipeline on library directories at a specific phase.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
+        """
         return json.dumps(tools.analyze_library(
             _session, library_dirs, phase, protocol_version,
             keylog_filename, template_name, max_runs, normalize, expand_keys,
-            algorithms,
+            algorithms, force=force_memory,
         ))
 
     @mcp.tool()
@@ -139,30 +170,45 @@ def create_server():
         dump_path: str, offset: int = 0, length: int = 256, view: str = "raw",
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        region_filter: Optional[str] = None,
     ) -> str:
         """Read raw bytes from a dump file. Returns hex + ASCII representation.
 
         For ``.msl`` files, ``view="raw"`` (default) reads the container
         bytes; ``view="vas"`` reads the flattened captured-memory projection.
         Encrypted ``.msl`` inputs are decrypted when key material is supplied.
+
+        ``region_filter`` (``.msl`` only; e.g. ``"heap,stack"``) reads through
+        the region VIEW filter, so ``offset`` is a filtered-view offset;
+        omitted, the session's filter applies and ``"all"`` disables it.
         """
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.read_hex_result(
             _session, dump_path, offset, length, view,
             key_file, passphrase, kem_key_file,
+            region_filter=_session_region_filter(region_filter),
         )))
 
     @mcp.tool()
     @mcp_error_funnel
     def get_entropy(
         dump_path: str, offset: int = 0, length: int = 0,
-        window: int = 32, step: int = 16, threshold: float = 7.5,
+        window: int = 32, step: int = 16, threshold: Optional[float] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
-        kem_key_file: Optional[str] = None,
+        kem_key_file: Optional[str] = None, view: Optional[str] = None,
+        resolution: str = "auto", buckets: Optional[int] = None,
     ) -> str:
-        """Compute sliding-window entropy profile for a dump file region."""
+        """Compute sliding-window entropy profile for a dump file region.
+
+        ``view`` ("raw" / "vas" / "va") profiles that byte view; omitted = the
+        dump's flat view. The response's ``view`` names the view used.
+        ``threshold`` omitted = window-aware default (4.5 at window 32).
+        ``resolution``: "full" (every window, exact regions + min/max envelope),
+        "sampled" (bounded step), "auto" (full for inputs up to 8 MiB).
+        """
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.entropy_result(
             _session, dump_path, offset, length, window, step, threshold,
-            key_file, passphrase, kem_key_file,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+            view=view, buckets=buckets, resolution=resolution,
         )))
 
     @mcp.tool()
@@ -274,6 +320,21 @@ def create_server():
         )))
 
     @mcp.tool()
+    def get_import_provenance(
+        msl_path: str, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """List IMPORT_PROVENANCE records of an MSL file with the note parsed.
+
+        Each record has source format/tool/size/hash, the raw note, the kept
+        region categories, excluded region/byte totals and, for a materialized
+        copy, materialized=true plus the original EoC hash. Empty for non-.msl.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.import_provenance_result(
+            _session, msl_path, key_file, passphrase, kem_key_file,
+        )))
+
+    @mcp.tool()
     def get_blocks(
         msl_path: str, key_file: Optional[str] = None,
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
@@ -313,9 +374,91 @@ def create_server():
     @mcp_error_funnel
     def import_raw_dump(
         raw_path: str, output_path: str, pid: int = 0,
+        region_types: Optional[str] = None,
+        exclude_region_types: Optional[str] = None,
+        materialize: bool = False,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None, decrypt_output: bool = False,
+        maps_path: Optional[str] = None,
     ) -> str:
-        """Import a raw .dump file to .msl format."""
-        return json.dumps(tools.import_raw_dump(_session, raw_path, output_path, pid))
+        """Import a dump (raw .dump, ELF core, minidump, or .msl) to .msl.
+
+        Without ``region_types`` / ``exclude_region_types`` EVERY region is
+        imported (unchanged behaviour). ``region_types`` is a comma list of
+        categories or ``"all"``: heap, stack, image_code, image_data,
+        mapped_file, shared, unclassified, runtime (alias ``image``).
+        ``runtime`` holds maps classified by mapping name (Android
+        zygote/boot-image/ART metadata, JIT caches, kernel/device maps such
+        as ``[vdso]``/``[vvar]``); it is NOT in the interactive default
+        (heap, stack, unclassified), so name it or use ``"all"`` to keep it.
+        Call ``preview_import`` first to see per-category counts/bytes. For
+        ``.msl`` input the file is copied verbatim (selection applies at
+        analysis time) unless ``materialize`` is true, which writes a filtered
+        copy. When a selection is given the result adds ``selection``,
+        ``excluded_region_count``, ``excluded_bytes``,
+        ``secrets_only_in_excluded`` and ``warnings``.
+
+        Encrypted ``.msl`` (spec §10): supply ``key_file`` (32-byte raw key
+        file), ``passphrase`` (Argon2id) or ``kem_key_file`` (X25519/ML-KEM
+        private key file) to materialize it. The filtered copy is
+        RE-ENCRYPTED with the same key wrapping and a fresh nonce (the same
+        material opens it; result ``reencrypted: true``). ``decrypt_output``
+        writes a PLAINTEXT copy instead (``decrypted_output: true`` plus a
+        warning). Missing/wrong key on materialize -> error, nothing written.
+        Key material is never cached or logged.
+
+        Raw dumps have no memory layout (one unclassified region) unless a
+        ``/proc/<pid>/maps``-style memory map describes them: ``maps_path``
+        names it, else a ``.maps`` sidecar with the same name is used
+        (``foo.gdb_raw.bin`` -> ``foo.gdb_raw.maps``, else ``foo.maps``).
+        Then every maps entry becomes a region at its real address with a
+        real category. A map that does not match the dump size is ignored
+        with a warning.
+        """
+        return json.dumps(tools.import_raw_dump(
+            _session, raw_path, output_path, pid,
+            selection=region_types, materialize=materialize,
+            exclude=exclude_region_types, key_file=key_file,
+            passphrase=passphrase, kem_key_file=kem_key_file,
+            decrypt_output=decrypt_output, maps_path=maps_path))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def preview_import(
+        path: str, region_types: Optional[str] = None,
+        exclude_region_types: Optional[str] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None, maps_path: Optional[str] = None,
+    ) -> str:
+        """Preview the regions an import of ``path`` would emit (writes nothing).
+
+        Returns ``format``, ``is_msl``, every region with its ``category``,
+        per-category ``totals`` (count, bytes) and a ``summary`` of what
+        ``region_types`` / ``exclude_region_types`` would keep and exclude.
+        Use it to choose ``import_raw_dump``'s region selection.
+
+        ``encrypted`` / ``decrypted`` flag an AEAD-encrypted ``.msl``; pass
+        ``key_file`` / ``passphrase`` / ``kem_key_file`` to list its regions.
+
+        ``layout`` is ``native`` (format records it), ``maps`` (raw dump +
+        memory map; ``maps_path`` or an auto-detected ``.maps`` sidecar) or
+        ``none`` (raw dump: one unclassified region, categories cannot be
+        separated).
+
+        ``platform`` is the target platform (``android``, ``linux``,
+        ``windows``, ...; null when unknown) and ``platform_source`` how it
+        was determined (``mapping_names``, ``header`` or ``format``). Each
+        region carries its mapping ``name`` (null when the source has none).
+        ``runtime_count`` / ``runtime_bytes`` total the ``runtime`` regions
+        (Android zygote/boot-image/ART metadata, JIT, kernel/device maps);
+        they are dropped by the default selection, and a ``notes`` entry
+        says so when any exist.
+        """
+        return json.dumps(tools.preview_import(
+            _session, path, selection=region_types,
+            exclude=exclude_region_types, key_file=key_file,
+            passphrase=passphrase, kem_key_file=kem_key_file,
+            maps_path=maps_path))
 
     # ------------------------------------------------------------------
     # Phase 25 pipeline stage tools
@@ -335,8 +478,10 @@ def create_server():
         max_returned: int = tools_pipeline.DEFAULT_MAX_RETURNED_REGIONS,
         normalize: bool = False,
         project_id: str = "",
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        force_memory: bool = False,
     ) -> str:
         """Rank candidate regions across N dumps — NO oracle, NO capture needed.
 
@@ -364,6 +509,16 @@ def create_server():
         ``regions`` list is a legitimate answer and always says which gate
         emptied it. Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` for
         encrypted ``.msl`` inputs.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
         """
         return json.dumps(tools_pipeline.analyze_candidates(
             dump_paths=dump_paths,
@@ -380,9 +535,11 @@ def create_server():
             max_returned=max_returned,
             normalize=normalize,
             project_id=project_id,
+            region_filter=_session_region_filter(region_filter),
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
+            force=force_memory,
         ))
 
     @mcp.tool()
@@ -397,6 +554,7 @@ def create_server():
         classes: Optional[List[str]] = None,
         order: str = "offset",
         max_returned: int = tools_pipeline.DEFAULT_MAX_RETURNED_REGIONS,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -417,6 +575,10 @@ def create_server():
 
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` when the
         reference is an encrypted ``.msl``.
+
+        ``region_filter`` (``.msl`` only) overrides the view filter the
+        upstream stage recorded in its artifact; omitted, the recorded filter
+        is reused so offsets stay consistent, and ``"all"`` disables it.
         """
         return json.dumps(tools_pipeline.search_reduce(
             variance_path=variance_path,
@@ -434,6 +596,7 @@ def create_server():
             classes=classes,
             order=order,
             max_returned=max_returned,
+            region_filter=region_filter,
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -457,6 +620,7 @@ def create_server():
         state_path: Optional[str] = None, top_k: int = 10,
         neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
         variance_threshold: Optional[float] = None,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -491,6 +655,10 @@ def create_server():
         attached to each hit and therefore baked into every emitted vol3/YARA
         artifact — leave it at the default unless you mean to change what the
         tool emits.
+
+        ``region_filter`` (``.msl`` only) overrides the view filter the
+        upstream stage recorded in its artifact; omitted, the recorded filter
+        is reused so offsets stay consistent, and ``"all"`` disables it.
         """
         return json.dumps(tools_pipeline.brute_force(
             candidates_path=candidates_path,
@@ -513,6 +681,7 @@ def create_server():
             top_k=top_k,
             neighborhood_pad=neighborhood_pad,
             variance_threshold=variance_threshold,
+            region_filter=region_filter,
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -536,6 +705,7 @@ def create_server():
         oracle_config: Optional[Dict[str, Any]] = None,
         escalate: bool = False,
         escalate_oracle_budget: Optional[int] = None,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -559,6 +729,11 @@ def create_server():
         checkpoint found a hit; its verdict surfaces under ``escalation``.
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` for encrypted
         ``.msl`` sources.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
         """
         return json.dumps(tools_pipeline.n_sweep(
             source_paths=source_paths,
@@ -578,6 +753,7 @@ def create_server():
             oracle_config=oracle_config,
             escalate=escalate,
             escalate_oracle_budget=escalate_oracle_budget,
+            region_filter=_session_region_filter(region_filter),
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -589,6 +765,7 @@ def create_server():
         hits_path: str, reference_path: str, name: str, output_dir: str,
         description: Optional[str] = None, hit_index: int = 0,
         variance_threshold: Optional[float] = None,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -596,6 +773,10 @@ def create_server():
 
         Supply ``key_file`` / ``passphrase`` / ``kem_key_file`` when the
         reference is an encrypted ``.msl``.
+
+        ``region_filter`` (``.msl`` only) overrides the view filter the
+        upstream stage recorded in its artifact; omitted, the recorded filter
+        is reused so offsets stay consistent, and ``"all"`` disables it.
         """
         return json.dumps(tools_pipeline.emit_plugin(
             hits_path=hits_path,
@@ -605,6 +786,7 @@ def create_server():
             description=description,
             hit_index=hit_index,
             variance_threshold=variance_threshold,
+            region_filter=region_filter,
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
@@ -619,11 +801,18 @@ def create_server():
         dump_path: str, offset: int = 0, length: int = 8192, view: str = "raw",
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        region_filter: Optional[str] = None,
     ) -> str:
-        """Read raw bytes from a dump file, returned base64-encoded."""
+        """Read raw bytes from a dump file, returned base64-encoded.
+
+        ``region_filter`` (``.msl`` only; e.g. ``"heap,stack"``) reads through
+        the region VIEW filter, so ``offset`` is a filtered-view offset;
+        omitted, the session's filter applies and ``"all"`` disables it.
+        """
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.read_hex_raw_result(
             _session, dump_path, offset, length, view,
             key_file, passphrase, kem_key_file,
+            region_filter=_session_region_filter(region_filter),
         )))
 
     @mcp.tool()
@@ -678,17 +867,31 @@ def create_server():
     @mcp_error_funnel
     def consensus(
         dump_paths: List[str], output_dir: str, normalize: bool = False,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        force_memory: bool = False,
     ) -> str:
         """Build a per-byte consensus variance vector; writes variance.npy.
 
         Originates the MCP pipeline: the returned ``variance_path`` +
         ``num_dumps`` + ``reference_path`` feed straight into ``search_reduce``.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
         """
         return json.dumps(tools_pipeline.consensus(
             dump_paths=dump_paths, output_dir=output_dir, normalize=normalize,
+            region_filter=_session_region_filter(region_filter),
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+            force=force_memory,
         ))
 
     @mcp.tool()
@@ -703,7 +906,9 @@ def create_server():
         normalize: bool = False,
         classify: bool = True,
         include_bytes: bool = True,
+        region_filter: Optional[str] = None,
         key_material_by_path: Optional[dict] = None,
+        force_memory: bool = False,
     ) -> str:
         """Read ONE window in EVERY dump at the address the consensus aligned.
 
@@ -719,13 +924,25 @@ def create_server():
         ``key_material_by_path`` is ``{dump_path: {key_file|passphrase|
         kem_key_file}}`` — per dump, because a corpus routinely mixes plaintext
         captures with containers encrypted under different keys.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
         """
         return json.dumps(tools_consensus.aligned_window_result(
             _session, dump_paths=dump_paths, anchor_path=anchor_path,
             anchor_view=anchor_view, offset=offset, slab_offset=slab_offset,
             length=length, normalize=normalize, classify=classify,
             include_bytes=include_bytes,
+            region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
+            force=force_memory,
         ).payload)
 
     @mcp.tool()
@@ -742,7 +959,9 @@ def create_server():
         anchor_view: str = "va",
         include_anchor_offsets: bool = True,
         normalize: bool = False,
+        region_filter: Optional[str] = None,
         key_material_by_path: Optional[dict] = None,
+        force_memory: bool = False,
     ) -> str:
         """List EVERY occurrence of a consensus class, paginated and jumpable.
 
@@ -775,13 +994,25 @@ def create_server():
         ``key_material_by_path`` is ``{dump_path: {key_file|passphrase|
         kem_key_file}}`` — per dump, because a corpus routinely mixes plaintext
         captures with containers encrypted under different keys.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
         """
         return json.dumps(tools_consensus.class_regions_result(
             _session, dump_paths=dump_paths, classes=classes,
             min_length=min_length, max_length=max_length, sort=sort, after=after,
             limit=limit, anchor_path=anchor_path, anchor_view=anchor_view,
             include_anchor_offsets=include_anchor_offsets, normalize=normalize,
+            region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
+            force=force_memory,
         ).payload)
 
     @mcp.tool()
@@ -801,6 +1032,7 @@ def create_server():
         alignment_quality: Optional[float] = None, min_alignment: float = 0.5,
         managed_region: bool = False,
         neighborhood_pad: int = DEFAULT_NEIGHBORHOOD_PAD,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
@@ -812,6 +1044,10 @@ def create_server():
 
         ``neighborhood_pad`` (default 64 bytes per side) is the context width
         attached to a recovered hit; it reaches every emitted artifact.
+
+        ``region_filter`` (``.msl`` only) overrides the view filter the
+        upstream stage recorded in its artifact; omitted, the recorded filter
+        is reused so offsets stay consistent, and ``"all"`` disables it.
         """
         return json.dumps(tools_pipeline.auto_floor(
             variance_path=variance_path, reference_path=reference_path,
@@ -826,6 +1062,7 @@ def create_server():
             self_test_trials=self_test_trials, oracle_budget=oracle_budget,
             alignment_quality=alignment_quality, min_alignment=min_alignment,
             managed_region=managed_region, neighborhood_pad=neighborhood_pad,
+            region_filter=region_filter,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
         ))
 
@@ -837,12 +1074,20 @@ def create_server():
         align: bool = True, context: int = 32, min_static_ratio: float = 0.3,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        force_memory: bool = False,
     ) -> str:
-        """Auto-detect a volatile region and export a YARA/JSON/Vol3 pattern."""
+        """Auto-detect a volatile region and export a YARA/JSON/Vol3 pattern.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
+        """
         return json.dumps(tools_pipeline.export_pattern(
             dump_paths=dump_paths, output_dir=output_dir, fmt=fmt, name=name,
             align=align, context=context, min_static_ratio=min_static_ratio,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+            force=force_memory,
         ))
 
     @mcp.tool()
@@ -1485,13 +1730,15 @@ def create_server():
         cipher: str = "AES-256-CBC", iv_hex: Optional[str] = None,
         nonce_hex: Optional[str] = None, aad_hex: Optional[str] = None,
         tag_hex: Optional[str] = None,
+        view: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Verify a candidate key read at an offset decrypts a known ciphertext.
 
         The offset is read through the dump's memory projection (VAS for
-        ``.msl``); encrypted containers are decrypted with the key material.
+        ``.msl``) unless ``view`` ("raw" / "vas" / "va") names the view it
+        addresses; encrypted containers are decrypted with the key material.
         AEAD ciphers (GCM, ChaCha20-Poly1305) authenticate a real record via the
         optional ``nonce_hex`` / ``aad_hex`` / ``tag_hex`` parameters.
         """
@@ -1499,7 +1746,7 @@ def create_server():
         return json.dumps(tools_pipeline.verify_key_result(
             dump_path=dump_path, offset=offset, length=length,
             ciphertext_hex=ciphertext_hex, cipher=cipher, iv_hex=iv_hex,
-            nonce_hex=nonce_hex, aad_hex=aad_hex, tag_hex=tag_hex,
+            nonce_hex=nonce_hex, aad_hex=aad_hex, tag_hex=tag_hex, view=view,
             key_material=key_material_kwargs(key_file, passphrase, kem_key_file),
         ))
 
@@ -1509,8 +1756,10 @@ def create_server():
         target: str, output_dir: str, num_runs: int = 10,
         tools: Optional[List[str]] = None, export_format: str = "volatility3",
         convergence: bool = False, max_fp: int = 0,
+        region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        force_memory: bool = False,
     ) -> str:
         """Run the full spawn→dump→consensus→verify→emit experiment.
 
@@ -1518,13 +1767,50 @@ def create_server():
         the base install; LLDB comes from the OS. Returns a
         ``missing_backend`` CapabilityError, carrying the per-tool remedy,
         when none are available.
+
+        ``region_filter`` (``.msl`` only; a comma list of region categories
+        such as ``"heap,stack"``, or a ``"regions=..."`` note) analyses through the region VIEW filter, so offsets are
+        filtered-view offsets; omitted, the session's filter applies and
+        ``"all"`` explicitly disables it.
+
+        ``force_memory`` overrides the memory-budget guard: an over-budget
+        consensus build is refused with code ``memory_budget_exceeded``
+        (``estimate_bytes`` / ``budget_bytes`` in the error) unless
+        ``force_memory=true``.
         """
         from memdiver.app.key_material import key_material_kwargs
         return json.dumps(experiment_orchestration.experiment_result(
             target=target, output_dir=output_dir, num_runs=num_runs,
             tools=tools, export_format=export_format,
             convergence=convergence, max_fp=max_fp,
+            region_filter=_session_region_filter(region_filter),
             key_material=key_material_kwargs(key_file, passphrase, kem_key_file),
+            force=force_memory,
+        ))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def capture_dump(
+        target: str, output: str, tool: str = "memslicer",
+        device: str = "local", max_region_size: Optional[int] = None,
+        include_large_readonly: bool = False, timeout: Optional[float] = None,
+    ) -> str:
+        """Capture ONE dump of a running process and return the capture report.
+
+        ``target`` is a pid or a process / Android package name. ``device``:
+        ``local`` (default), ``usb`` (first USB device), ``usb:<frida-id>``
+        (e.g. ``usb:emulator-5554``) or ``remote:<host>[:<port>]``; lldb is
+        local-only, fridump supports local and ``usb``. ``tool``: memslicer
+        (``.msl``), lldb or fridump (raw bin + ``.maps`` sidecar). Every region
+        not captured is listed under ``skipped`` (base/size/reason) and in
+        ``summary_warnings``; ``max_region_size`` is an explicit cap (skipped
+        regions are reported), ``include_large_readonly`` makes lldb also take
+        the >= 100 MiB read-only regions (macOS shared cache).
+        """
+        return json.dumps(experiment_orchestration.capture_result(
+            target=target, output=output, tool=tool, device=device,
+            max_region_size=max_region_size,
+            include_large_readonly=include_large_readonly, timeout=timeout,
         ))
 
     return mcp

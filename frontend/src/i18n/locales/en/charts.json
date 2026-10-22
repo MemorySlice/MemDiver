@@ -81,7 +81,22 @@
     "axis": {
       "offset": "Offset (bytes)",
       "entropy": "Entropy (bits/byte)"
-    }
+    },
+    "series": {
+      "band": "Min–max envelope",
+      "max": "Max",
+      "mean": "Mean"
+    },
+    "resolution": {
+      "full": "Full resolution · every window",
+      "sampled": "Sampled · step {{step}}"
+    },
+    "regions_one": "{{count}} high-entropy region",
+    "regions_other": "{{count}} high-entropy regions",
+    "regionsTruncated": "Showing {{shown}} of {{total}} high-entropy regions (+ more)",
+    "thresholdUnreachable": "Threshold {{threshold}} bits/byte is above the achievable maximum of {{max}} bits/byte for this window size, so no region can be flagged.",
+    "thresholdLabel": "threshold {{value}}",
+    "maxEntropyLabel": "achievable max {{value}}"
   },
   "variance": {
     "defaultTitle": "Variance Map",
@@ -96,6 +111,10 @@
   "vas": {
     "defaultTitle": "Virtual Address Space",
     "empty": "No VAS data.",
+    "notCaptured": "Not captured: excluded at import, layout only (no bytes)",
+    "legend": {
+      "notCaptured": "Not captured (excluded at import)"
+    },
     "axis": {
       "size": "Size (bytes)"
     },

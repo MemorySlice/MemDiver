@@ -51,7 +51,13 @@ from memdiver.msl.importer import (
     import_minidump,
     import_run_directory,
 )
+from memdiver.msl.import_preview import ImportPreview, preview_import
 from memdiver.msl.reader import MslReader
+from memdiver.msl.region_select import (
+    RegionCategory,
+    RegionSelection,
+    parse_selection,
+)
 from memdiver.msl.writer import MslWriter
 
 # --- Analysis engine --------------------------------------------------------
@@ -95,6 +101,7 @@ from memdiver.services import (
     handles_result,
     modules_result,
     module_index_result,
+    import_provenance_result,
     page_states_result,
     processes_result,
     read_hex_raw_result,
@@ -123,7 +130,8 @@ from memdiver.services import (
     score_detector_matches,
     search_reduce,
     verify_vol3_plugin,
-    # verify / experiment
+    # verify / experiment / capture
+    capture_result,
     experiment_result,
     verify_key_result,
     # dataset / analysis
@@ -149,6 +157,12 @@ __all__ = [
     "import_minidump",
     "import_run_directory",
     "ImportResult",
+    # import-time region selection
+    "preview_import",
+    "ImportPreview",
+    "RegionSelection",
+    "RegionCategory",
+    "parse_selection",
     # analysis
     "run_auto_floor",
     "AutoFloorResult",
@@ -187,6 +201,7 @@ __all__ = [
     "handles_result",
     "connections_result",
     "module_index_result",
+    "import_provenance_result",
     "blocks_result",
     # xref / structure producers
     "get_cross_references_result",
@@ -216,6 +231,7 @@ __all__ = [
     # verify / experiment producers
     "verify_key_result",
     "experiment_result",
+    "capture_result",
     # dataset / analysis producers
     "scan_dataset",
     "list_protocols",

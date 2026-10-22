@@ -11,9 +11,12 @@ import {
   type CandidateFilterState,
 } from "@/api/candidates";
 import { useDumpStore } from "@/stores/dump-store";
+import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
 import { CandidateAlignmentBanner } from "./CandidateAlignmentBanner";
+import { ClassificationBasisBanner } from "@/components/analysis/ClassificationBasisBanner";
+import { CLASSIFICATION_BASIS_MIXED, mergeDiagnostics } from "@/api/diagnostics";
 import { CandidateFilters } from "./CandidateFilters";
 import { CandidateTable } from "./CandidateTable";
 
@@ -70,7 +73,11 @@ export function CandidatePanel() {
       setError(null);
       try {
         const body = buildCandidatesRequest(dumpPaths, next, { normalize });
-        setResult(await analyzeCandidates(body));
+        setResult(
+          await withMemoryBudgetOverride((force) =>
+            analyzeCandidates(withForceMemory(body, force)),
+          ),
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         setResult(null);
@@ -157,6 +164,10 @@ function CandidateResult({
   return (
     <div className="space-y-2" aria-live="polite">
       <CandidateAlignmentBanner report={result.alignment} />
+      <ClassificationBasisBanner
+        diagnostics={mergeDiagnostics(result.diagnostics, result.alignment.diagnostics)}
+        scope="candidates"
+      />
 
       <p className="md-text-muted" data-testid="candidate-summary">
         {t("summary", {
@@ -184,11 +195,14 @@ function CandidateResult({
         <div data-testid="candidate-empty" className="space-y-1">
           <p className="font-medium">{t("empty.title")}</p>
           <p className="md-text-muted">{t("empty.description")}</p>
-          {result.diagnostics.map((d) => (
-            <p key={d.code} className="md-text-muted" data-testid="candidate-diagnostic">
-              {d.message}
-            </p>
-          ))}
+          {/* Codes with their own localized banner above are not repeated raw. */}
+          {result.diagnostics
+            .filter((d) => d.code !== CLASSIFICATION_BASIS_MIXED)
+            .map((d) => (
+              <p key={d.code} className="md-text-muted" data-testid="candidate-diagnostic">
+                {d.message}
+              </p>
+            ))}
         </div>
       ) : (
         <CandidateTable

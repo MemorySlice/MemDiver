@@ -7,6 +7,7 @@
     "exploration": "exploration"
   },
   "analysisRunningAria": "Analysis running",
+  "bottomPanelContentAria": "Bottom panel content",
   "tabs": {
     "bookmarks": "bookmarks",
     "dumps": "dumps",
@@ -59,5 +60,7 @@
   "vasFetchFailed": "VAS fetch failed: {{error}}",
   "loadDumpForStrings": "Load a dump file to extract strings.",
   "noVarianceData": "Select a hit or neighborhood overlay in the hex viewer to inspect its variance profile.",
-  "newSessionTitle": "Start a new session (prompts to save unsaved work)"
+  "newSessionTitle": "Start a new session (prompts to save unsaved work)",
+  "entropyRefining": "Refining at full resolution…",
+  "entropyRefineFailed": "Full-resolution refinement failed; showing the sampled profile."
 }

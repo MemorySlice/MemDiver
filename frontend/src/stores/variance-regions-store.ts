@@ -52,6 +52,7 @@ import {
 import { keysForPaths } from "@/api/aligned-window";
 import { BYTE_CLASSES, type ByteClassName } from "@/api/candidates";
 import { readableFailure } from "@/api/client";
+import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import { CHUNK_SIZE, offsetToChunkStart } from "@/components/hex/multi-window-utils";
 import { selectionKey, useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore, type HexViewMode } from "@/stores/hex-store";
@@ -661,8 +662,10 @@ export const useVarianceRegionsStore = create<VarianceRegionsState>((set, get) =
     };
 
     try {
-      const response = await fetchConsensusRegions(
-        buildConsensusRegionsRequest(source, query),
+      const response = await withMemoryBudgetOverride((force) =>
+        fetchConsensusRegions(
+          withForceMemory(buildConsensusRegionsRequest(source, query), force),
+        ),
       );
       // Stale-response guard, mirroring `multi-hex-store.fetchChunks`: if the
       // view, the anchor, the build or the query changed while this was in

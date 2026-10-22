@@ -69,6 +69,9 @@ def to_analyze_request(model: AnalyzeLike) -> AnalyzeRequest:
         normalize=model.normalize,
         expand_keys=model.expand_keys,
         algorithms=model.algorithms,
+        # Wire ``force_memory`` -> core ``force`` (BatchJobDTO has no such
+        # field, hence the getattr default).
+        force=bool(getattr(model, "force_memory", False)),
     )
 
 
@@ -121,6 +124,9 @@ def analyze_run_params(model: AnalyzeRequestAPI, *, task_root: str) -> Dict[str,
         "normalize": model.normalize,
         "expand_keys": model.expand_keys,
         "algorithms": model.algorithms,
+        # Task-param key is ``force_memory`` (the runner maps it to the core
+        # ``AnalyzeRequest.force``); see the drift test's rename map.
+        "force_memory": model.force_memory,
     }
 
 

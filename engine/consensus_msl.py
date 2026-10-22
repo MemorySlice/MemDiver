@@ -13,13 +13,30 @@ from typing import List, NamedTuple, Optional, Tuple
 import numpy as np
 
 from memdiver.core.region_align import (
+    AlignedLayout,
     AlignmentCoverage,
+    alignment_diagnostics,
+    alignment_index_bytes,
     build_dump_region_map,
     captured_byte_count,
+    read_aligned_range,
+    stream_aligned_variance,
 )
 from memdiver.core.variance import WelfordVariance
 
 logger = logging.getLogger("memdiver.engine.consensus_msl")
+
+
+def _source_filter(src, region_filter):
+    """The view filter to apply to *src*: explicit beats the source's own.
+
+    An ``MslDumpSource`` opened with ``region_filter=`` carries it, so the
+    consensus paths honour a filter set at ``open_dump`` time without every
+    caller threading it through again.
+    """
+    if region_filter is not None:
+        return region_filter
+    return getattr(src, "region_filter", None)
 
 
 class MslConsensusResult(NamedTuple):
@@ -39,19 +56,38 @@ class MslConsensusResult(NamedTuple):
     coverage: AlignmentCoverage
 
 
-def build_msl_consensus_result(sources: List) -> MslConsensusResult:
+def build_msl_consensus_result(
+    sources: List, region_filter=None, *,
+    force: bool = False, budget=None, chunk_positions: Optional[int] = None,
+) -> MslConsensusResult:
     """Build the ASLR-aligned consensus and report its coverage.
 
     Same computation as :func:`build_msl_consensus` (which delegates here);
     this is the shape that also carries :class:`AlignmentCoverage`, so a
     caller can say how much of each dump the variance figure actually covers.
+
+    *region_filter* (a ``RegionSelection``) restricts alignment to the
+    included region categories; when ``None`` each source's own
+    ``region_filter`` (set via ``open_dump(region_filter=...)``) is used.
+
+    Lazy and slab-streamed: the region maps hold page REFERENCES (no page data
+    is read to build or intersect them), the peak memory is estimated and
+    checked against *budget* (``CapabilityError`` code
+    ``memory_budget_exceeded`` unless *force*), and the variance is reduced
+    one position slab at a time with each dump's slab read on demand. The
+    estimator is the old per-page one (``np.var(axis=0)`` over a stacked
+    float32 ``(N, w)`` matrix, ``w >= 2``); variance is column-local, so the
+    result is bit-identical. *chunk_positions* forces the slab width (tests).
     """
     from memdiver.core.region_align import align_dumps
 
     num_dumps = len(sources)
     region_maps = []
     for i, src in enumerate(sources):
-        rmap = build_dump_region_map(i, src.get_reader())
+        rmap = build_dump_region_map(
+            i, src.get_reader(),
+            region_filter=_source_filter(src, region_filter),
+        )
         region_maps.append(rmap)
 
     slices = align_dumps(region_maps)
@@ -63,30 +99,19 @@ def build_msl_consensus_result(sources: List) -> MslConsensusResult:
             np.array([], dtype=np.float32), 0, b"", [], coverage,
         )
 
-    total_bytes = sum(s.page_size for s in slices)
-    variance = np.zeros(total_bytes, dtype=np.float32)
-    reference = bytearray(total_bytes)
-    n = num_dumps
-    offset = 0
-    layout: List[Tuple[int, int, List[int]]] = []
-
-    for aslice in slices:
-        data_mat = np.stack([
-            np.frombuffer(aslice.data[d], dtype=np.uint8)
-            for d in range(n)
-        ]).astype(np.float32)
-        chunk_var = np.var(data_mat, axis=0)
-        variance[offset:offset + aslice.page_size] = chunk_var
-        # Retain the first source's aligned bytes as the reference slab
-        # for downstream static-mask + pattern derivation. Index 0 is
-        # arbitrary but stable across callers.
-        reference[offset:offset + aslice.page_size] = aslice.data[0]
-        layout.append((offset, aslice.page_size, list(aslice.source_vaddrs)))
-        offset += aslice.page_size
+    layout = AlignedLayout.from_slices(slices)
+    total_bytes = layout.size
+    variance, reference = stream_aligned_variance(
+        region_maps, layout, force=force, budget=budget,
+        chunk_positions=chunk_positions, legacy_chunk=None,
+        index_bytes=alignment_index_bytes(region_maps, len(slices)),
+        operation=f"aligned .msl consensus build ({num_dumps} dumps)",
+    )
+    va_layout = layout.va_layout(slices)
 
     logger.info("MSL consensus: %d bytes across %d aligned slices", total_bytes, len(slices))
     return MslConsensusResult(
-        variance, total_bytes, bytes(reference), layout, coverage,
+        variance, total_bytes, reference, va_layout, coverage,
     )
 
 
@@ -95,6 +120,9 @@ def build_msl_consensus(
     num_dumps: int,
     *,
     return_layout: bool = False,
+    region_filter=None,
+    force: bool = False,
+    budget=None,
 ):
     """Build variance array from MSL sources with ASLR alignment.
 
@@ -114,9 +142,11 @@ def build_msl_consensus(
     The tuple shape is retained for those callers; new code wanting the
     alignment coverage as well calls :func:`build_msl_consensus_result`, which
     this is a projection of. ``num_dumps`` is accepted (and must equal
-    ``len(sources)``) for signature compatibility.
+    ``len(sources)``) for signature compatibility. ``force`` / ``budget``
+    gate the memory estimate (see :func:`build_msl_consensus_result`).
     """
-    result = build_msl_consensus_result(sources)
+    result = build_msl_consensus_result(sources, region_filter=region_filter,
+                                        force=force, budget=budget)
     if return_layout:
         return (result.variance, result.total_bytes,
                 result.reference_bytes, result.layout)
@@ -146,20 +176,34 @@ class MslIncrementalBuilder:
     _layout: List[_LayoutEntry] = field(default_factory=list)
     _welford: Optional[WelfordVariance] = None
     _reference: Optional[bytes] = None
+    #: Explicit view filter (``RegionSelection``); ``None`` defers to each
+    #: source's own ``region_filter``. Kept so ``fold_next`` re-derives the
+    #: same keys the layout pass intersected.
+    _region_filter: Optional[object] = None
     total_bytes: int = 0
     #: What the metadata-only intersection kept versus what each dump offered,
     #: so a caller folding through this builder can report the same alignment
     #: provenance a one-shot ``build_msl_consensus_result`` would have.
     coverage: AlignmentCoverage = AlignmentCoverage(0, ())
+    #: ``_layout`` as an :class:`AlignedLayout` (built on first fold).
+    _aligned: Optional[AlignedLayout] = None
 
     @classmethod
-    def from_sources(cls, sources: List) -> "MslIncrementalBuilder":
-        """Open layout across all N sources without reading page data."""
+    def from_sources(
+        cls, sources: List, region_filter=None,
+    ) -> "MslIncrementalBuilder":
+        """Open layout across all N sources without reading page data.
+
+        *region_filter*: see :func:`build_msl_consensus_result`.
+        """
         if not sources:
             return cls()
 
         dump_layouts = [
-            build_dump_region_map(i, src.get_reader(), metadata_only=True)
+            build_dump_region_map(
+                i, src.get_reader(), metadata_only=True,
+                region_filter=_source_filter(src, region_filter),
+            )
             for i, src in enumerate(sources)
         ]
         common_keys = set(dump_layouts[0].regions.keys())
@@ -183,6 +227,9 @@ class MslIncrementalBuilder:
                 slab_offset += ps
 
         total = slab_offset
+        diagnostics = alignment_diagnostics(dump_layouts)
+        for diagnostic in diagnostics:
+            logger.warning("%s", diagnostic.message)
         logger.info(
             "MslIncrementalBuilder layout: %d bytes across %d slices (%d common keys)",
             total, len(layout), len(common_keys),
@@ -190,28 +237,42 @@ class MslIncrementalBuilder:
         return cls(
             _sources=list(sources),
             _layout=layout,
+            _region_filter=region_filter,
             _welford=WelfordVariance(total) if total > 0 else None,
             total_bytes=total,
             coverage=AlignmentCoverage(
                 bytes_compared=total,
                 bytes_available=tuple(captured_byte_count(dl) for dl in dump_layouts),
+                diagnostics=diagnostics,
             ),
         )
 
-    def _materialize_slab(self, dump_index: int) -> bytes:
-        """Read one source's aligned slab by re-decoding its page data.
+    def _aligned_layout(self) -> AlignedLayout:
+        if self._aligned is None:
+            self._aligned = AlignedLayout([
+                (e.slab_offset, e.page_size, e.key, e.page_offset)
+                for e in self._layout
+            ])
+        return self._aligned
+
+    def _materialize_slab(self, dump_index: int) -> bytearray:
+        """Read one source's aligned slab straight from its page references.
 
         Re-reads are intentional: MSL sources are mmap-backed, so the
-        kernel pages in on demand and cached reads are cheap. Caching
-        full DumpRegionMaps across folds would pin ~dump_size bytes per
-        source in RAM, defeating the incremental design.
+        kernel pages in on demand and cached reads are cheap. The region map
+        rebuilt per fold holds references only (metadata), and the slab is
+        filled page by page from zero-copy views -- no per-fold page dict and
+        no second copy of the slab. Pages a truncated container cannot
+        supply are zero-filled (see :func:`read_aligned_range`).
         """
-        rmap = build_dump_region_map(dump_index, self._sources[dump_index].get_reader())
+        src = self._sources[dump_index]
+        rmap = build_dump_region_map(
+            dump_index, src.get_reader(),
+            region_filter=_source_filter(src, self._region_filter),
+        )
         slab = bytearray(self.total_bytes)
-        for entry in self._layout:
-            page = rmap.regions[entry.key].captured_pages[entry.page_offset]
-            slab[entry.slab_offset:entry.slab_offset + entry.page_size] = page
-        return bytes(slab)
+        read_aligned_range(rmap, self._aligned_layout(), 0, self.total_bytes, into=slab)
+        return slab
 
     def fold_next(self, dump_index: int) -> None:
         """Fold one source (identified by index into the ``sources`` list)."""
@@ -220,7 +281,7 @@ class MslIncrementalBuilder:
         slab = self._materialize_slab(dump_index)
         self._welford.add_dump(slab)
         if self._reference is None:
-            self._reference = slab
+            self._reference = bytes(slab)
 
     def get_live_variance(self) -> np.ndarray:
         """Materialize the current variance without destroying the accumulator."""
@@ -238,10 +299,20 @@ class MslIncrementalBuilder:
         return self._welford.state_arrays()
 
     @property
+    def diagnostics(self) -> Tuple:
+        """Structured alignment diagnostics of the layout pass.
+
+        The same ``Diagnostic`` records a one-shot build reports on its
+        ``AlignmentReport`` (e.g. ``classification_basis_mixed``), so a caller
+        folding through this builder can surface them too.
+        """
+        return tuple(self.coverage.diagnostics)
+
+    @property
     def num_dumps(self) -> int:
         return self._welford.num_dumps if self._welford is not None else 0
 
 
-def build_msl_incremental(sources: List) -> MslIncrementalBuilder:
+def build_msl_incremental(sources: List, region_filter=None) -> MslIncrementalBuilder:
     """Convenience factory matching the plan's ``build_msl_incremental`` name."""
-    return MslIncrementalBuilder.from_sources(sources)
+    return MslIncrementalBuilder.from_sources(sources, region_filter=region_filter)

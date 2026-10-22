@@ -64,7 +64,7 @@ Reference pages for the eight detection algorithms and nine visualization views 
 | Detection algorithms | **8** | `algorithms/` |
 | CLI subcommands | **33** | `cli/` |
 | FastAPI routers | **18** + WebSocket | `api/routers/` |
-| MCP tools | **45** | `mcp_server/` |
+| MCP tools | **48** | `mcp_server/` |
 | Exporters | YARA · JSON · Volatility3 | `architect/` |
 | Dump backends | `memslicer` · `lldb` · `fridump` | `core/dump_driver.py` |
 | Visualization views | 4 SPA + 5 research-mode (Marimo) | `frontend/` + `ui/` |
@@ -99,6 +99,14 @@ user_guide/configuration
 :hidden:
 
 architecture/index
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Design notes
+:hidden:
+
+design/large_dumps_and_memory
 ```
 
 ```{toctree}

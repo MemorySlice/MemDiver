@@ -1177,3 +1177,189 @@ def test_export_auto_forwards_an_explicit_context(tmp_path, monkeypatch, capsys)
     assert rc == 0
     assert seen["context"] == 8
     assert "context=8B" in capsys.readouterr().err
+
+
+# --- import / import-dir region selection ----------------------------------
+
+
+def _synth_core(path):
+    from tests.fixtures import synth_elf_core
+    from tests.test_region_select import _STACK_SP
+    path.write_bytes(synth_elf_core.build_core_bytes(
+        threads=[(101, _STACK_SP), (102, 0xDEAD0000)]))
+    return path
+
+
+def _run_import(argv, capsys):
+    from memdiver.cli import _cmd_import, _cmd_import_dir
+    args = _build_parser().parse_args(argv)
+    handler = _cmd_import if args.command == "import" else _cmd_import_dir
+    rc = handler(args)
+    return rc, capsys.readouterr()
+
+
+def test_parser_import_region_flags():
+    args = _build_parser().parse_args([
+        "import", "x.core", "--regions", "heap,stack", "--exclude-regions",
+        "stack", "--list-regions", "--json", "--materialize", "-y"])
+    assert (args.regions, args.exclude_regions) == ("heap,stack", "stack")
+    assert args.list_regions and args.json and args.materialize and args.yes
+
+
+def test_parser_import_region_flag_defaults():
+    for argv in (["import", "x.core"], ["import-dir", "d", "-o", "o"]):
+        args = _build_parser().parse_args(argv)
+        assert args.regions is None and args.exclude_regions is None
+        assert not (args.list_regions or args.json or args.materialize
+                    or args.yes)
+
+
+def test_import_non_tty_imports_everything(tmp_path, capsys):
+    core = _synth_core(tmp_path / "t.core")
+    rc, cap = _run_import(["import", str(core), "-o",
+                           str(tmp_path / "o.msl")], capsys)
+    assert rc == 0
+    summary = json.loads(cap.out)
+    assert summary["regions"] == 12
+    assert "selection" not in summary  # unchanged shape
+    assert cap.err == ""
+
+
+def test_import_regions_heap_stack(tmp_path, capsys):
+    core = _synth_core(tmp_path / "t.core")
+    rc, cap = _run_import(["import", str(core), "-o", str(tmp_path / "o.msl"),
+                           "--regions", "heap,stack"], capsys)
+    assert rc == 0
+    summary = json.loads(cap.out)
+    assert summary["selection"] == "regions=heap,stack"
+    assert summary["regions"] == 10
+    assert summary["excluded_region_count"] == 2
+    assert summary["excluded_bytes"] == 8192
+    assert "excluded 2 region(s)" in cap.err
+
+
+def test_import_bad_region_spec_exit_2(tmp_path, capsys):
+    core = _synth_core(tmp_path / "t.core")
+    rc, cap = _run_import(["import", str(core), "--regions", "bogus"], capsys)
+    assert rc == 2
+    assert "unknown region category" in cap.err
+    assert not (tmp_path / "t.msl").exists()
+
+
+def test_import_list_regions_table(tmp_path, capsys):
+    core = _synth_core(tmp_path / "t.core")
+    rc, cap = _run_import(["import", str(core), "--list-regions",
+                           "--regions", "heap"], capsys)
+    assert rc == 0
+    assert "heap" in cap.out and "9 regions" in cap.out
+    assert "excludes 3 region(s)" in cap.out
+    assert "0x0000000000400000" not in cap.out  # region list needs -v
+    assert not (tmp_path / "t.msl").exists()
+
+
+def test_import_list_regions_verbose_and_json(tmp_path, capsys):
+    core = _synth_core(tmp_path / "t.core")
+    rc, cap = _run_import(["import", str(core), "--list-regions", "-v"],
+                          capsys)
+    assert rc == 0 and "0x0000000000400000" in cap.out
+    rc, cap = _run_import(["import", str(core), "--list-regions", "--json",
+                           "--regions", "heap,stack"], capsys)
+    payload = json.loads(cap.out)
+    assert payload["format"] == "elf_core"
+    assert payload["totals"]["heap"]["count"] == 9
+    assert payload["summary"]["excluded_count"] == 2
+
+
+def test_import_interactive_prompt_used(tmp_path, capsys, monkeypatch):
+    import memdiver.cli.import_selection as sel
+    core = _synth_core(tmp_path / "t.core")
+    monkeypatch.setattr(sel, "is_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda: "")
+    rc, cap = _run_import(["import", str(core), "-o", str(tmp_path / "o.msl")],
+                          capsys)
+    assert rc == 0
+    summary = json.loads(cap.out)  # prompt text stays off stdout
+    assert summary["selection"] == "regions=heap,stack,unclassified"
+    assert "[x]" in cap.err
+
+
+def test_import_yes_skips_prompt(tmp_path, capsys, monkeypatch):
+    import memdiver.cli.import_selection as sel
+    core = _synth_core(tmp_path / "t.core")
+    monkeypatch.setattr(sel, "is_interactive", lambda: True)
+
+    def _no_input():
+        raise AssertionError("prompted despite --yes")
+    monkeypatch.setattr("builtins.input", _no_input)
+    rc, cap = _run_import(["import", str(core), "-o", str(tmp_path / "o.msl"),
+                           "-y"], capsys)
+    assert rc == 0 and json.loads(cap.out)["regions"] == 12
+
+
+def test_import_interactive_cancel(tmp_path, capsys, monkeypatch):
+    import memdiver.cli.import_selection as sel
+    core = _synth_core(tmp_path / "t.core")
+    monkeypatch.setattr(sel, "is_interactive", lambda: True)
+
+    def _eof():
+        raise EOFError
+    monkeypatch.setattr("builtins.input", _eof)
+    rc, cap = _run_import(["import", str(core), "-o", str(tmp_path / "o.msl")],
+                          capsys)
+    assert rc == 1 and "cancelled" in cap.err
+    assert not (tmp_path / "o.msl").exists()
+
+
+def test_import_dir_regions(tmp_path, capsys):
+    run = tmp_path / "run"
+    run.mkdir()
+    _synth_core(run / "a.core")
+    _synth_core(run / "b.core")
+    out = tmp_path / "out"
+    rc, cap = _run_import(["import-dir", str(run), "-o", str(out),
+                           "--regions", "heap,stack"], capsys)
+    assert rc == 0
+    rows = json.loads(cap.out)
+    assert len(rows) == 2
+    assert all(r["selection"] == "regions=heap,stack" for r in rows)
+    assert all(r["excluded_region_count"] == 2 for r in rows)
+    assert cap.err.count("excluded 2 region(s)") == 2
+
+
+def test_import_dir_default_shape_unchanged(tmp_path, capsys):
+    run = tmp_path / "run"
+    run.mkdir()
+    _synth_core(run / "a.core")
+    rc, cap = _run_import(["import-dir", str(run), "-o",
+                           str(tmp_path / "out")], capsys)
+    assert rc == 0
+    (row,) = json.loads(cap.out)
+    assert set(row) == {"source", "output", "key_hints"}
+
+
+def test_import_dir_interactive_prompts_once(tmp_path, capsys, monkeypatch):
+    import memdiver.cli.import_selection as sel
+    run = tmp_path / "run"
+    run.mkdir()
+    _synth_core(run / "a.core")
+    _synth_core(run / "b.core")
+    calls = []
+    monkeypatch.setattr(sel, "is_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda: calls.append(1) or "heap")
+    rc, cap = _run_import(["import-dir", str(run), "-o",
+                           str(tmp_path / "out")], capsys)
+    assert rc == 0 and len(calls) == 1
+    assert "applied to all 2 dump(s)" in cap.err
+    assert all(r["selection"] == "regions=heap" for r in json.loads(cap.out))
+
+
+def test_import_dir_list_regions_json(tmp_path, capsys):
+    run = tmp_path / "run"
+    run.mkdir()
+    _synth_core(run / "a.core")
+    rc, cap = _run_import(["import-dir", str(run), "-o", str(tmp_path / "o"),
+                           "--list-regions", "--json"], capsys)
+    assert rc == 0
+    (entry,) = json.loads(cap.out)
+    assert entry["source"].endswith("a.core") and "totals" in entry
+    assert not (tmp_path / "o").exists()

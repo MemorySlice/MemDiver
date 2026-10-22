@@ -33,11 +33,12 @@ Design notes:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
 
@@ -109,6 +110,8 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     * ``normalize`` (bool, default False)
     * ``expand_keys`` (bool, default True)
     * ``algorithms`` (list[str] | None)
+    * ``force_memory`` (bool, default False) — bypass the consensus
+      memory-budget guard (forwarded as ``analyze_library(force=)``).
     * ``task_root`` / ``artifact_dir`` — per-task output location.
 
     Reuses :func:`app.tools.analyze_library` (which itself drives
@@ -154,9 +157,15 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
             normalize=bool(params.get("normalize", False)),
             expand_keys=bool(params.get("expand_keys", True)),
             algorithms=params.get("algorithms"),
+            force=bool(params.get("force_memory", False)),
         )
     except CapabilityError as exc:
         ctx.emit("error", error=exc.message)
+        # A memory-budget refusal propagates unchanged so the task record keeps
+        # its ``code`` / ``estimate_bytes`` / ``budget_bytes`` (the surface
+        # re-submits with ``force_memory``); other input errors stay ValueError.
+        if exc.code == "memory_budget_exceeded":
+            raise
         raise ValueError(exc.message) from exc
 
     artifacts = _write_result_artifact(result, artifact_dir)
@@ -174,73 +183,21 @@ def run_analysis(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     return {"artifacts": artifacts, "summary": summary}
 
 
-def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
-    """Top-level worker entry for ``POST /api/analysis/run-file``.
+def _run_algorithms(
+    dump_data,
+    algorithms: List[str],
+    context,
+    dump_path: str,
+    filename: str,
+    ctx,
+) -> Tuple[List[dict], dict]:
+    """Run each requested algorithm on ``dump_data``; return (hits, metadata).
 
-    ``params`` keys (mirror :class:`api.models.AnalyzeFileRequest`):
-
-    * ``dump_path`` (str, required)
-    * ``algorithms`` (list[str], required)
-    * ``user_regex`` (str | None)
-    * ``custom_patterns`` (list[dict] | None)
-    * ``passphrase`` / ``key_hex`` / ``kem_key_hex`` — optional decryption
-      material for encrypted ``.msl`` inputs (spec §10).
-    * ``task_root`` / ``artifact_dir`` — per-task output location.
-
-    Runs every requested single-file algorithm sequentially, emitting one
-    ``progress`` event per algorithm. This body was lifted verbatim from
-    the former synchronous ``api.routers.analysis.run_file_analysis`` so
-    behavior is preserved exactly; only the transport (inline -> task)
-    changed.
+    ``dump_data`` is ``bytes`` or a read-only ``mmap`` (see
+    :mod:`app.pipeline.analysis_buffer`). Body lifted unchanged from
+    :func:`run_file`.
     """
-    from memdiver.algorithms.base import AnalysisContext
     from memdiver.algorithms.registry import get_registry
-    from memdiver.app.composition import open_dump
-    from memdiver.core.key_material import from_hex
-
-    artifact_dir = _resolve_artifact_dir(params, ctx)
-
-    dump_path = params["dump_path"]
-    path = Path(dump_path)
-    if not path.is_file():
-        ctx.emit("error", error=f"File not found: {dump_path}")
-        raise FileNotFoundError(f"File not found: {dump_path}")
-
-    filename = path.name
-    algorithms: List[str] = list(params.get("algorithms", []))
-
-    ctx.emit(
-        "stage_start",
-        stage=STAGE,
-        pct=0.0,
-        msg=f"loading {filename} for {len(algorithms)} algorithm(s)",
-    )
-
-    # Read dump data via DumpSource (key material decrypts encrypted .msl).
-    km = from_hex(
-        params.get("passphrase"),
-        params.get("key_hex"),
-        params.get("kem_key_hex"),
-    ) or {}
-    source = open_dump(path, **km)
-    with source:
-        dump_data = source.read_all()
-
-    # Build context for algorithms.
-    extra: dict = {}
-    if params.get("user_regex"):
-        extra["user_patterns"] = [
-            {"name": "user_regex", "regex": params["user_regex"]}
-        ]
-    if params.get("custom_patterns"):
-        extra["custom_patterns"] = params["custom_patterns"]
-
-    context = AnalysisContext(
-        library=filename,
-        protocol_version="unknown",
-        phase="file",
-        extra=extra,
-    )
 
     # Run algorithms sequentially. A prior implementation used
     # ThreadPoolExecutor here, but every single-file algorithm (entropy_scan,
@@ -326,6 +283,161 @@ def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
             },
         )
 
+    return hits, algorithm_metadata
+
+
+def _build_file_context(params: Dict[str, Any], filename: str):
+    """The :class:`AnalysisContext` every ``run_file`` algorithm receives."""
+    from memdiver.algorithms.base import AnalysisContext
+
+    extra: dict = {}
+    if params.get("user_regex"):
+        extra["user_patterns"] = [
+            {"name": "user_regex", "regex": params["user_regex"]}
+        ]
+    if params.get("custom_patterns"):
+        extra["custom_patterns"] = params["custom_patterns"]
+
+    return AnalysisContext(
+        library=filename,
+        protocol_version="unknown",
+        phase="file",
+        extra=extra,
+    )
+
+
+def _algorithm_working_sets(
+    algorithms: List[str],
+    size: int,
+    context,
+    sample,
+) -> Dict[str, int]:
+    """Each requested algorithm's predicted working set (name -> bytes).
+
+    Uses :meth:`BaseAlgorithm.estimate_working_set`. Unknown algorithms are
+    skipped (``_run_algorithms`` reports them); an estimator that raises
+    counts as ``0`` so a broken hook never blocks the analysis.
+    """
+    from memdiver.algorithms.registry import get_registry
+
+    registry = get_registry()
+    working_sets: Dict[str, int] = {}
+    for name in dict.fromkeys(algorithms):
+        try:
+            algorithm = registry.get(name)
+        except KeyError:
+            continue
+        try:
+            working_sets[name] = max(int(algorithm.estimate_working_set(
+                size, context, sample)), 0)
+        except Exception:  # noqa: BLE001
+            logger.warning("working-set estimate for %s failed", name,
+                           exc_info=True)
+            working_sets[name] = 0
+    return working_sets
+
+
+def _offset_view(source) -> str:
+    """The byte view ``run_file`` hit offsets are in, named for the SPA.
+
+    The flat (``read_all``) view — ``"vas"`` for ``.msl``, gcore and
+    gdb_raw/lldb_raw — except where every view aliases one byte stream (a
+    flat raw dump), which reports ``"raw"`` so nothing changes for it.
+    """
+    from memdiver.app.pipeline.analysis_buffer import flat_view
+    from memdiver.core.dump_source import distinct_views
+
+    view = flat_view(source)
+    if view is None or len(distinct_views(source)) <= 1:
+        return "raw"
+    return view
+
+
+def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
+    """Top-level worker entry for ``POST /api/analysis/run-file``.
+
+    ``params`` keys (mirror :class:`api.models.AnalyzeFileRequest`):
+
+    * ``dump_path`` (str, required)
+    * ``algorithms`` (list[str], required)
+    * ``user_regex`` (str | None)
+    * ``custom_patterns`` (list[dict] | None)
+    * ``passphrase`` / ``key_hex`` / ``kem_key_hex`` — optional decryption
+      material for encrypted ``.msl`` inputs (spec §10).
+    * ``force_memory`` (bool, default False) — proceed even when the only
+      possible dump read (``read_all``, e.g. an encrypted ``.msl``) exceeds
+      the memory budget (see :mod:`app.pipeline.analysis_buffer`).
+    * ``task_root`` / ``artifact_dir`` — per-task output location.
+
+    Runs every requested single-file algorithm sequentially, emitting one
+    ``progress`` event per algorithm. This body was lifted verbatim from
+    the former synchronous ``api.routers.analysis.run_file_analysis`` so
+    behavior is preserved exactly; only the transport (inline -> task)
+    changed.
+    """
+    from memdiver.app.composition import open_dump
+    from memdiver.app.pipeline.analysis_buffer import (
+        flat_view_size,
+        open_analysis_buffer,
+        read_estimate_sample,
+    )
+    from memdiver.core.service_errors import CapabilityError
+    from memdiver.core.key_material import from_hex
+
+    artifact_dir = _resolve_artifact_dir(params, ctx)
+
+    dump_path = params["dump_path"]
+    path = Path(dump_path)
+    if not path.is_file():
+        ctx.emit("error", error=f"File not found: {dump_path}")
+        raise FileNotFoundError(f"File not found: {dump_path}")
+
+    filename = path.name
+    algorithms: List[str] = list(params.get("algorithms", []))
+
+    ctx.emit(
+        "stage_start",
+        stage=STAGE,
+        pct=0.0,
+        msg=f"loading {filename} for {len(algorithms)} algorithm(s)",
+    )
+
+    # Read dump data via DumpSource (key material decrypts encrypted .msl).
+    # The flat view comes from open_analysis_buffer: today's read_all() bytes
+    # when it fits the memory budget, otherwise a read-only mmap (a raw file
+    # or a gdb_raw/lldb_raw .bin mapped directly, or a plaintext .msl /
+    # gcore core spilled to a temp file under the artifact dir). Hit offsets
+    # are in the read_all() view: "vas" for .msl, gcore and gdb_raw/lldb_raw.
+    # An encrypted .msl over budget is refused unless ``force_memory`` (never
+    # spilled as plaintext). See analysis_buffer.py.
+    km = from_hex(
+        params.get("passphrase"),
+        params.get("key_hex"),
+        params.get("kem_key_hex"),
+    ) or {}
+    context = _build_file_context(params, filename)
+    source = open_dump(path, **km)
+    with contextlib.ExitStack() as buffers:
+        try:
+            with source:
+                offset_view = _offset_view(source)
+                working_sets = _algorithm_working_sets(
+                    algorithms, flat_view_size(source), context,
+                    read_estimate_sample(source))
+                dump_data = buffers.enter_context(open_analysis_buffer(
+                    source,
+                    force=bool(params.get("force_memory", False)),
+                    spill_dir=artifact_dir / "analysis" / "spill",
+                    working_sets=working_sets,
+                ))
+        except CapabilityError as exc:
+            ctx.emit("error", error=exc.message)
+            raise
+
+        hits, algorithm_metadata = _run_algorithms(
+            dump_data, algorithms, context, dump_path, filename, ctx,
+        )
+
     library_report = {
         "library": filename,
         "protocol_version": "unknown",
@@ -337,6 +449,9 @@ def run_file(params: Dict[str, Any], ctx) -> Dict[str, Any]:
             "algorithms": algorithms,
             "dump_path": dump_path,
             "algorithm_results": algorithm_metadata,
+            # Which view of dump_path every hit offset addresses ("vas" /
+            # "raw"); the hex viewer switches to it before highlighting.
+            "offset_view": offset_view,
         },
     }
     result_payload = {"libraries": [library_report], "metadata": {}}

@@ -6,6 +6,8 @@ import { useMultiHexStore } from "@/stores/multi-hex-store";
 // The identity behind this denominator is subtle enough that `DumpRail` and
 // this chip must not each own a copy — see `./alignment-stats`.
 import { discardedFraction } from "./alignment-stats";
+import { warningsNotCoveredBy } from "@/api/diagnostics";
+import { ClassificationBasisBanner } from "@/components/analysis/ClassificationBasisBanner";
 
 /**
  * Says, permanently and in words, WHAT put these bytes side by side.
@@ -47,7 +49,8 @@ export function HexAlignmentChip({ paths, hasMsl }: HexAlignmentChipProps) {
 
   const method = alignment?.method;
   const label = method ? t(METHOD_KEY[method]) : t("alignment.pending");
-  const warnings = alignment?.warnings ?? [];
+  // A warning a diagnostic already says (localized, below) is not repeated raw.
+  const warnings = warningsNotCoveredBy(alignment?.warnings ?? [], alignment?.diagnostics);
   const offerRerun = method === "file_offset" && hasMsl && paths.length > 1;
   // Absence is the NORMAL case here, not an incident — so the note is offered
   // whenever anything at all was dropped, and folded away by default.
@@ -89,6 +92,15 @@ export function HexAlignmentChip({ paths, hasMsl }: HexAlignmentChipProps) {
           {warning}
         </span>
       ))}
+
+      {alignment?.diagnostics && (
+        <div className="w-full">
+          <ClassificationBasisBanner
+            diagnostics={alignment.diagnostics}
+            scope="aligned-window"
+          />
+        </div>
+      )}
 
       {truncated && (
         <span

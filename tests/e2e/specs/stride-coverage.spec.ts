@@ -8,7 +8,7 @@ import {
   pcapMatchedMslPath,
   pcapCapturePath,
 } from "../fixtures/dataset";
-import { enterWorkspaceWithMsl, installErrorGuards } from "../fixtures/workspace";
+import { enterWorkspaceWithMsl, installErrorGuards, revealPcapDropzone } from "../fixtures/workspace";
 
 /**
  * Regression: a partial-coverage run used to be silent.
@@ -83,9 +83,10 @@ test.describe("Brute-force coverage diagnostics", { tag: "@requires-pcap" }, () 
     // Arm the real capture so the run has a genuine oracle to fail against —
     // the point is that the key IS present and IS confirmable, and the only
     // reason it is not found is that its offset is off the stride grid.
+    const pcapDropzone = await revealPcapDropzone(page);
     const [chooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByTestId("pcap-upload-dropzone").click(),
+      pcapDropzone.click(),
     ]);
     await chooser.setFiles(pcapCapturePath);
 

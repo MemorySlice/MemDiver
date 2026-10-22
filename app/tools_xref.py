@@ -4,9 +4,12 @@ get_cross_references, identify_structure.
 """
 
 import logging
+from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 
 from memdiver.app.reader_cache import cached_dump_source, cached_msl_reader
+from memdiver.core.dump_source import ViewMode
 from memdiver.core.service_errors import (
     CapabilityError,
     ErrorCategory,
@@ -97,13 +100,30 @@ def get_cross_references_result(session: ToolSession, msl_path: str) -> ServiceR
     })
 
 
+def _view_kwargs(source, view: Optional[ViewMode]) -> dict:
+    """``{"view": view}`` for an explicit view (refused if the source lacks
+    it), ``{}`` for ``None`` = the source's own default byte view (the
+    historical behaviour: VAS on .msl/gcore, the file itself on a flat dump)."""
+    if view is None:
+        return {}
+    from memdiver.app.tools_inspect import _require_supported_view
+
+    _require_supported_view(source, view)
+    return {"view": view}
+
+
 def identify_structure_result(
     session: ToolSession,
     dump_path: str,
     offset: int = 0,
     protocol: str = "",
+    view: Optional[ViewMode] = None,
 ) -> ServiceResult:
-    """ServiceResult producer for :func:`identify_structure`."""
+    """ServiceResult producer for :func:`identify_structure`.
+
+    ``view`` names the byte view ``offset`` addresses (a hex-viewer cursor is
+    in the viewer's current view); ``None`` keeps the source default.
+    """
     from memdiver.core.structure_library import get_structure_library
     from memdiver.core.structure_overlay import (
         best_match_structure,
@@ -119,7 +139,8 @@ def identify_structure_result(
 
     try:
         with cached_dump_source(Path(dump_path)) as source:
-            file_size = source.size_for()
+            view_kwargs = _view_kwargs(source, view)
+            file_size = source.size_for(**view_kwargs)
             # Reject an out-of-range offset with a clean error instead of
             # overlaying structures onto an empty/short read.
             if offset < 0 or offset >= file_size:
@@ -127,15 +148,20 @@ def identify_structure_result(
                     "offset out of range",
                     details={"offset": offset, "file_size": file_size},
                 )
-            data = source.read_range(0, offset + max_struct_size)
+            # Only the window the largest candidate can span is needed. (This
+            # used to read [0, offset + max) — the whole prefix — which on the
+            # sparse multi-GB "va" view is unbounded.)
+            window = source.read_range(offset, max_struct_size, **view_kwargs)
     except FileNotFoundError:
         raise FileNotFoundServiceError(f"File not found: {dump_path}")
 
-    result = best_match_structure(data, offset, library, protocol)
+    result = best_match_structure(window, 0, library, protocol)
     if result is None:
         return ServiceResult.ok({"match": None, "reason": "No matching structure found"})
 
-    struct_def, overlays, confidence = result
+    struct_def, window_overlays, confidence = result
+    # Matched at window position 0; report absolute offsets as before.
+    overlays = [replace(o, offset=o.offset + offset) for o in window_overlays]
     if struct_def.auto_offsets:
         total_size = sum(o.length for o in overlays)
     else:
@@ -151,8 +177,11 @@ def apply_structure_result(
     dump_path: str,
     offset: int = 0,
     structure_name: str = "",
+    view: Optional[ViewMode] = None,
 ) -> ServiceResult:
     """ServiceResult producer for applying a named structure at an offset.
+
+    ``view``: see :func:`identify_structure_result` (``None`` = source default).
 
     Overlays a caller-named structure definition onto the bytes at ``offset``
     and returns the serialized overlay wrapped as ``{"structure": {...}}`` (the
@@ -184,13 +213,14 @@ def apply_structure_result(
             # Mirror identify_structure_result: reject a negative offset (a
             # negative read start would otherwise slice from the tail) and use
             # the view-aware size_for().
-            file_size = source.size_for()
+            view_kwargs = _view_kwargs(source, view)
+            file_size = source.size_for(**view_kwargs)
             if offset < 0 or offset + max_size > file_size:
                 raise OffsetOutOfRangeError(
                     "Structure extends beyond file boundary",
                     category=ErrorCategory.PRECONDITION,
                 )
-            data = source.read_range(offset, max_size)
+            data = source.read_range(offset, max_size, **view_kwargs)
     except FileNotFoundError:
         raise FileNotFoundServiceError(f"File not found: {dump_path}")
 

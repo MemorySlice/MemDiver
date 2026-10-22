@@ -28,6 +28,12 @@ export interface VasEntry {
   region_type: number;
   protection: number;
   mapped_path?: string;
+  /**
+   * Whether the range has captured bytes (a MEMORY_REGION block). `false` =
+   * layout-only VAS_MAP entry, excluded at import, no bytes. Absent when the
+   * backend cannot tell (e.g. encrypted dump without key).
+   */
+  captured?: boolean;
 }
 
 export interface VasChartProps {

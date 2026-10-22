@@ -1,11 +1,19 @@
 """Entropy change-point detection using CUSUM for finding key-material plateaus."""
 
 from bisect import bisect_left, bisect_right
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
+from memdiver.algorithms import working_set
 from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
 from memdiver.core.constants import UNKNOWN_KEY
-from memdiver.core.entropy import compute_entropy_profile
+from memdiver.core.entropy import (
+    REFERENCE_ENTROPY_THRESHOLD,
+    compute_entropy_profile,
+    default_entropy_threshold,
+)
+from memdiver.core.entropy_profile import EntropyProfile
 
 
 class ChangePointAlgorithm(BaseAlgorithm):
@@ -23,7 +31,10 @@ class ChangePointAlgorithm(BaseAlgorithm):
     mode = UNKNOWN_KEY
 
     DEFAULT_WINDOW = 32
-    DEFAULT_ENTROPY_THRESHOLD = 4.5
+    # Calibrated for DEFAULT_WINDOW (shared with entropy_scan / the Entropy
+    # tab); a caller-chosen window without a threshold gets the window-aware
+    # default instead (4.5 is unreachable below 23-byte windows).
+    DEFAULT_ENTROPY_THRESHOLD = REFERENCE_ENTROPY_THRESHOLD
     DEFAULT_CUSUM_THRESHOLD = 0.8
     DEFAULT_DRIFT = 0.05
     DEFAULT_STEP = 16
@@ -50,12 +61,16 @@ class ChangePointAlgorithm(BaseAlgorithm):
 
         # Track where the current accumulation run started so we can
         # report the onset offset rather than the detection offset.
-        run_start_high = profile[0][0]
-        run_start_low = profile[0][0]
+        # Iterate (rather than index) so an EntropyProfile is boxed in C-level
+        # batches; the arithmetic is unchanged: gradient = e[i] - e[i-1].
+        points = iter(profile)
+        first_offset, previous_entropy = next(points)
+        run_start_high = first_offset
+        run_start_low = first_offset
 
-        for i in range(1, len(profile)):
-            offset = profile[i][0]
-            gradient = profile[i][1] - profile[i - 1][1]
+        for offset, entropy in points:
+            gradient = entropy - previous_entropy
+            previous_entropy = entropy
 
             # Track run-start: reset when the statistic was at zero.
             prev_s_high = s_high
@@ -79,6 +94,23 @@ class ChangePointAlgorithm(BaseAlgorithm):
 
         return change_points
 
+    @staticmethod
+    def _sorted_profile_columns(profile) -> Tuple[Sequence[int], Sequence[float]]:
+        """Ascending unique offsets and their entropies, for bisect slicing.
+
+        An EntropyProfile already has strictly ascending unique offsets, so its
+        arrays are used directly (bisect works on any sequence) instead of
+        building an offset->entropy dict of boxed Python objects. Any other
+        sequence keeps the original dict semantics (last value wins on a
+        duplicate offset).
+        """
+        if isinstance(profile, EntropyProfile):
+            offsets, values = profile.as_arrays()
+            return offsets, values
+        entropy_lookup: Dict[int, float] = {off: ent for off, ent in profile}
+        sorted_offsets = sorted(entropy_lookup.keys())
+        return sorted_offsets, [entropy_lookup[off] for off in sorted_offsets]
+
     def _extract_plateaus(
         self,
         dump_data: bytes,
@@ -93,9 +125,7 @@ class ChangePointAlgorithm(BaseAlgorithm):
         Accepts pairs whose span matches a target key width (adjusted for
         window smearing) and whose mean entropy exceeds the threshold.
         """
-        # Build an offset -> entropy lookup for fast slicing.
-        entropy_lookup: Dict[int, float] = {off: ent for off, ent in profile}
-        sorted_offsets = sorted(entropy_lookup.keys())
+        sorted_offsets, sorted_entropies = self._sorted_profile_columns(profile)
 
         # Pair consecutive up -> down transitions.
         pairs: List[Tuple[int, int, float, float]] = []
@@ -134,11 +164,14 @@ class ChangePointAlgorithm(BaseAlgorithm):
             # Compute mean entropy over the plateau region (binary search).
             lo = bisect_left(sorted_offsets, start_off)
             hi = bisect_right(sorted_offsets, end_off)
-            segment_offsets = sorted_offsets[lo:hi]
-            if not segment_offsets:
+            if hi <= lo:
                 continue
 
-            segment_entropies = [entropy_lookup[off] for off in segment_offsets]
+            segment = sorted_entropies[lo:hi]
+            # ndarray.tolist() yields the same Python floats the dict held.
+            segment_entropies = (
+                segment.tolist() if isinstance(segment, np.ndarray) else list(segment)
+            )
             mean_entropy = sum(segment_entropies) / len(segment_entropies)
 
             if mean_entropy < entropy_threshold:
@@ -174,12 +207,23 @@ class ChangePointAlgorithm(BaseAlgorithm):
 
         return matches
 
+    def estimate_working_set(self, size: int,
+                             context: Optional[AnalysisContext] = None,
+                             sample: Optional[Sequence[bytes]] = None) -> int:
+        """Entropy profile (16 B/position) + one profile slab of temporaries."""
+        extra = context.extra if context is not None else {}
+        return working_set.entropy_profile_bytes(
+            size, extra.get("window", self.DEFAULT_WINDOW),
+            extra.get("step", self.DEFAULT_STEP))
+
     def run(self, dump_data: bytes, context: AnalysisContext) -> AlgorithmResult:
         """Run CUSUM change-point detection. Parameters from context.extra."""
         window = context.extra.get("window", self.DEFAULT_WINDOW)
         step = context.extra.get("step", self.DEFAULT_STEP)
         entropy_threshold = context.extra.get(
-            "entropy_threshold", self.DEFAULT_ENTROPY_THRESHOLD
+            "entropy_threshold",
+            self.DEFAULT_ENTROPY_THRESHOLD if window == self.DEFAULT_WINDOW
+            else default_entropy_threshold(window),
         )
         cusum_threshold = context.extra.get(
             "cusum_threshold", self.DEFAULT_CUSUM_THRESHOLD

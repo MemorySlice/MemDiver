@@ -31,6 +31,7 @@ _INSPECT_PRODUCERS = [
     "session_info_result", "page_states_result",
     "processes_result", "modules_result", "handles_result",
     "connections_result", "module_index_result", "blocks_result",
+    "import_provenance_result",
 ]
 _XREF_PRODUCERS = [
     "get_cross_references_result", "identify_structure_result",
@@ -55,7 +56,7 @@ _PIPELINE_PRODUCERS = [
 ]
 _DATASET_PRODUCERS = [
     "scan_dataset", "list_protocols", "list_phases", "analyze_library",
-    "import_dump",
+    "import_dump", "preview_import",
 ]
 _ALL_PRODUCERS = (
     _INSPECT_PRODUCERS + _XREF_PRODUCERS + _PIPELINE_PRODUCERS + _DATASET_PRODUCERS
@@ -82,7 +83,8 @@ def test_producer_reachable_via_services(name):
 def test_key_producers_lifted_to_top_level():
     """The most-used producers are lifted onto the ``memdiver`` top level and are
     the SAME objects as on the facade (single source of truth)."""
-    lifted = [n for n in _ALL_PRODUCERS if n != "import_dump"]
+    lifted = [n for n in _ALL_PRODUCERS
+              if n not in ("import_dump", "preview_import")]
     for name in lifted:
         assert name in memdiver.__all__, f"{name} not lifted to memdiver.__all__"
         assert getattr(memdiver, name) is getattr(memdiver.services, name)
@@ -191,3 +193,54 @@ def test_services_covers_every_registry_capability_producer():
         "registry marks these capabilities library-wired but they are NOT on the "
         "public memdiver.services facade:\n" + "\n".join(missing)
     )
+
+
+# --- import-time region selection surface ----------------------------------
+
+
+_SELECTION_NAMES = ["preview_import", "RegionSelection", "RegionCategory",
+                    "parse_selection"]
+
+
+@pytest.mark.parametrize("name", _SELECTION_NAMES)
+def test_region_selection_names_exported(name):
+    """Selection types + preview are public on both memdiver and services."""
+    assert name in memdiver.__all__
+    assert name in memdiver.services.__all__
+    assert getattr(memdiver, name) is not None
+
+
+def test_top_level_preview_import_is_the_primitive():
+    """Like import_dump: top level = msl primitive, services = session tool."""
+    assert memdiver.preview_import.__module__ == "memdiver.msl.import_preview"
+    assert memdiver.services.preview_import.__module__ == "memdiver.app.tools"
+    assert memdiver.RegionSelection is memdiver.services.RegionSelection
+
+
+def test_services_import_dump_accepts_selection(tmp_path):
+    from tests.fixtures import synth_elf_core
+    core = tmp_path / "t.core"
+    core.write_bytes(synth_elf_core.build_core_bytes())
+    session = memdiver.ToolSession()
+    preview = memdiver.services.preview_import(session, str(core),
+                                               selection="heap")
+    assert preview["format"] == "elf_core"
+    by_str = memdiver.services.import_dump(
+        session, str(core), str(tmp_path / "a.msl"), selection="heap,stack")
+    by_obj = memdiver.services.import_dump(
+        session, str(core), str(tmp_path / "b.msl"),
+        selection=memdiver.parse_selection("heap,stack"))
+    assert by_str["selection"] == by_obj["selection"] == "regions=heap,stack"
+    assert by_str["regions_written"] == by_obj["regions_written"]
+    plain = memdiver.services.import_dump(session, str(core),
+                                          str(tmp_path / "c.msl"))
+    assert "selection" not in plain
+
+
+def test_services_import_dump_bad_selection_is_capability_error(tmp_path):
+    raw = tmp_path / "r.dump"
+    raw.write_bytes(b"\x00" * 64)
+    with pytest.raises(CapabilityError):
+        memdiver.services.import_dump(memdiver.ToolSession(), str(raw),
+                                      str(tmp_path / "r.msl"),
+                                      selection="nope")

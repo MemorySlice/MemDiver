@@ -5,6 +5,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`capture`: one dump of a running process, locally, on a USB/Android
+  device, or on a remote server.** CLI `memdiver capture <pid|name> <out>
+  --tool --device local|usb|usb:<id>|remote:<host>[:<port>]`, REST
+  `POST /api/experiment/capture`, MCP `capture_dump`, a web-UI form in the
+  Experiment panel and `memdiver.capture_result()`. All of them use the same
+  producer, which returns a capture report listing every region that was not
+  captured (base, size, reason). The memslicer backend now calls
+  `memslicer acquire … -o` with `-U` / `-D` / `-R`; the old `memslicer capture`
+  call was not a valid memslicer command.
+- **lldb captures large regions.** Readable regions are streamed in 8 MiB
+  chunks instead of being dropped silently at 100 MB, and unreadable pages are
+  isolated page by page. Non-writable regions of 100 MiB or more (the macOS
+  shared cache) are skipped by default but reported (use
+  `--include-large-readonly` to capture them). Skips, read failures and
+  timeouts go into the report and into a `<dump>.capture.json` manifest,
+  which `import` and the import preview turn into warnings.
+- **fridump `.maps` sidecars carry real names and permissions** where they
+  can be found: the target's `/proc/<pid>/maps`, read locally or through a
+  short Frida session, else Frida's `enumerateRanges`. A sidecar without
+  names is marked in the manifest, and the import preview warns about it.
+- **`classification_basis_mixed` alignment warning on every consensus
+  surface.** A region-filtered alignment that mixes dumps classified by
+  mapping names (new imports / live captures with a named VAS map) with
+  dumps classified by stored region type only can mis-pair `anon:` regions.
+  This used to be only logged; it is now a structured diagnostic
+  (`{code, message, severity, details}`, the `core.service_result.Diagnostic`
+  shape) on `AlignmentReport.diagnostics` / `AlignmentCoverage.diagnostics` /
+  `MslIncrementalBuilder.diagnostics`, in `alignment.diagnostics` of every
+  aligned payload, hoisted as `diagnostics` on `POST /api/analysis/consensus`,
+  the CLI `consensus` JSON (plus a stderr warning and hint on `consensus`,
+  `consensus-window`, `consensus-regions`), the MCP `consensus` /
+  `aligned_window` / `consensus_regions` / `analyze_candidates` outputs, and a
+  localized web-UI banner suggesting the older dumps be re-imported.
+- **Android-aware region classification by mapping name.** When a region's
+  full mapping name is known (`/proc/<pid>/maps` path column, ELF `NT_FILE`
+  path, or a trusted `.msl` VAS map entry), `msl/region_names.py` refines its
+  category: Android native heaps (`[anon:scudo:*]`, `jemalloc`, `GWP-ASan`,
+  ART heap spaces such as `[anon:dalvik-main space]`) → `heap`, bionic thread
+  stacks (`[anon:stack_and_tls:*]`) → `stack`. A heap name on a shared mapping
+  stays `shared`. The stored region type is unchanged, so alignment keys do
+  not change. The rules and their deliberate exclusions (`[anon:.bss]`,
+  binder, `/dev/shm`, app files) are specified in
+  `docs/file_formats/msl_v1_0_0.md`; `tests/fixtures/region_name_vectors.json`
+  holds the normative test vectors, shared byte-identical with memslicer.
+- **New `runtime` region category, excluded by default.** It holds regions
+  classified by name as runtime / system memory rather than app data: zygote
+  and boot-image ART spaces, ART GC metadata, JIT caches, `linker_alloc`,
+  `cfi shadow`, property areas, boot `.art/.oat/.vdex/.odex` and ICU data, and
+  kernel / device mappings. It is accepted by `--regions` /
+  `--exclude-regions`, MCP `region_types` / `region_filter` and REST
+  `regions`, but it is not in the interactive default (`heap`, `stack`,
+  `unclassified`) and is prompt number `8`. A selection naming the seven older
+  categories means "all but `runtime`".
+- **Import preview fields** `platform` (`android` / `linux` / `windows` / …),
+  `platform_source` (`mapping_names` / `header` / `format`), `runtime_count`,
+  `runtime_bytes` and `regions[].name`, plus a note on what the default
+  selection drops. `--list-regions` prints a `platform:` line and a `runtime`
+  row.
+- **Mapping names persisted in the `.msl` VAS map.** ELF-core and
+  regioned-raw imports now always write a `VAS_MAP` (0x1001) with every
+  region's full mapping name as `mapped_path` and mark it with a
+  `region_names=1` provenance note segment (`ProvenanceNoteFields.region_names`).
+  Materialize copies the names and the marker. Readers trust the names only
+  with that marker, or for a live memslicer capture (no provenance, `IMPORTED`
+  clear) that has a VAS map, so older files classify exactly as before.
+  ELF-core and regioned-raw imports whose names look Android write
+  `os_type = ANDROID` in the header (previously always `LINUX`).
+- **Alignment classification-basis warning.** A filtered alignment that mixes
+  dumps classified by mapping names with dumps classified by stored type only
+  logs a warning, since the same filter can keep a region in one dump and drop
+  it in another. Live memslicer captures with name-based stored types are
+  folded back to the legacy alignment key class, so old and new captures keep
+  identical keys.
+
+### Changed
+- **`[vdso]`, `[vvar]` and device mappings now classify as `runtime` on new
+  Linux imports too.** The kernel / device name rules are not Android-specific:
+  ELF cores and maps-sidecar raw dumps imported from now on (and live
+  memslicer captures with a VAS map) put `[vdso]`, `[vvar]`, `[vsyscall]`,
+  `/dev/*` (except binder, `/dev/shm`, `/dev/zero`), `/dmabuf*` and
+  `anon_inode:*` mappings into `runtime`, which the default selection
+  excludes. Pass `--regions …,runtime` or `all` to keep them.
+
 ## [0.9.5] — 2026-10-21
 
 ### Changed

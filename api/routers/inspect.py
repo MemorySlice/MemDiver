@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from memdiver.api.dependencies import get_tool_session
+from memdiver.api.models import ImportProvenanceResponse
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.app.composition import key_material_scope
 from memdiver.app.session import ToolSession
@@ -50,6 +52,7 @@ def read_hex(
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
+    region_filter: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Read raw bytes from a dump file as hex + ASCII.
@@ -65,7 +68,8 @@ def read_hex(
         # status-carrying producer always builds the payload, and
         # present_inspect_http drops the status block on the way out.
         return _http_inspect(lambda: tools_inspect.read_hex_result(
-            session, dump_path, offset, length, view=view))
+            session, dump_path, offset, length, view=view,
+            region_filter=region_filter))
 
 
 @router.get("/hex-raw")
@@ -77,12 +81,19 @@ def read_hex_raw(
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
+    region_filter: str | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Read raw bytes from a dump file as base64."""
+    """Read raw bytes from a dump file as base64.
+
+    ``region_filter`` (``"heap,stack"`` / ``to_note()``) reads an ``.msl``
+    through the same view filter a filtered consensus used, so its offsets
+    address the same bytes here.
+    """
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         return _http_inspect(lambda: tools_inspect.read_hex_raw_result(
-            session, dump_path, offset, length, view=view))
+            session, dump_path, offset, length, view=view,
+            region_filter=region_filter))
 
 
 @router.get("/resolve-va")
@@ -107,10 +118,18 @@ def get_entropy(
     length: int = 0,
     window: int = 32,
     step: int = 16,
-    threshold: float = 7.5,
+    # Omitted = the window-aware default (4.5 at window 32); see entropy_result.
+    threshold: float | None = None,
     # A client saying how much resolution it will actually use. It can only ask
     # for less than the server's own ceiling, never more.
     max_positions: int | None = None,
+    # Byte view to profile ("raw" / "vas" / "va"); omitted = the flat view.
+    view: ViewMode | None = None,
+    # Envelope buckets (~chart pixel width); clamped to [1, 4096].
+    buckets: int | None = None,
+    # "full" = every window (step 1), "sampled" = bounded step, "auto" = full
+    # for small inputs, sampled (+ full_resolution_available) above.
+    resolution: Literal["auto", "sampled", "full"] = "auto",
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
@@ -120,7 +139,7 @@ def get_entropy(
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         return _http_inspect(lambda: tools_inspect.entropy_result(
             session, dump_path, offset, length, window, step, threshold,
-            max_positions,
+            max_positions, view=view, buckets=buckets, resolution=resolution,
         ))
 
 
@@ -230,11 +249,16 @@ def identify_structure(
     dump_path: str,
     offset: int = 0,
     protocol: str = "",
+    view: ViewMode | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """Identify a data structure at the given offset."""
+    """Identify a data structure at the given offset.
+
+    ``view`` is the byte view ``offset`` addresses (the hex viewer's current
+    view); omitted = the dump's default byte source, as before.
+    """
     return _http_inspect(lambda: tools_xref.identify_structure_result(
-        session, dump_path, offset, protocol))
+        session, dump_path, offset, protocol, view=view))
 
 
 @router.get("/structure-apply")
@@ -245,9 +269,12 @@ def apply_structure(
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
+    view: ViewMode | None = None,
     session: ToolSession = Depends(get_tool_session),
 ):
     """Apply a named structure definition at the given offset.
+
+    ``view``: see :func:`identify_structure` (omitted = dump default).
 
     Routes through the shared ``apply_structure_result`` producer (single
     source of truth); the producer's transport-agnostic ``CapabilityError`` is
@@ -258,7 +285,7 @@ def apply_structure(
     try:
         with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
             result = tools_xref.apply_structure_result(
-                session, dump_path, offset, structure_name)
+                session, dump_path, offset, structure_name, view=view)
     except CapabilityError as e:
         raise HTTPException(status_code=e.status, detail=e.message)
     return result.payload
@@ -302,7 +329,8 @@ def get_vas_regions(
     """Extract the per-dump VAS region layout from an MSL file.
 
     Emits the full five-field VAS entries the VasChart frontend consumes
-    (base_addr / region_size / region_type / protection / mapped_path).
+    (base_addr / region_size / region_type / protection / mapped_path), plus
+    an optional ``captured`` flag (False = layout-only, excluded at import).
     Optional ``passphrase`` / ``key_hex`` / ``kem_key_hex`` unlock an
     encrypted container (spec §10); without them an encrypted dump reads
     back empty (no captured regions).
@@ -361,6 +389,29 @@ def list_modules(
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
         result = tools_inspect.modules_result(session, msl_path)
     return result.payload.get("modules", [])
+
+
+@router.get("/import-provenance", response_model=ImportProvenanceResponse)
+def get_import_provenance(
+    msl_path: str,
+    passphrase: str | None = None,
+    key_hex: str | None = None,
+    kem_key_hex: str | None = None,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """List IMPORT_PROVENANCE blocks with their notes parsed (spec §11).
+
+    Routes through the shared ``import_provenance_result`` producer. A dump
+    that is not an ``.msl`` carries no provenance and yields an empty list;
+    a missing file is a 404.
+    """
+    from pathlib import Path
+
+    if not Path(msl_path).is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {msl_path}")
+    with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
+        result = tools_inspect.import_provenance_result(session, msl_path)
+    return {"provenance": result.payload.get("provenance", [])}
 
 
 # -- MSL table-block endpoints (Phase MSL-Decoders-02) ------------------

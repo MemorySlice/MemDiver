@@ -69,6 +69,8 @@ def test_parser_inspect_all_actions_build():
         "hex", "entropy", "region", "strings", "byte-search",
         "page-states", "session-info", "vas", "processes", "modules", "handles",
         "xref", "structure",
+        # Import provenance (kept/excluded regions, materialized copy).
+        "provenance",
     }
 
 
@@ -118,7 +120,7 @@ def test_cmd_inspect_vas(tmp_path, msl_fixture):
     entries = data["vas_entries"]
     assert len(entries) >= 1
     # The full five-field VAS entry shape the VasChart frontend consumes.
-    assert set(entries[0]) == {
+    assert set(entries[0]) - {"captured"} == {
         "base_addr", "region_size", "region_type", "protection", "mapped_path",
     }
     # The fixture seeds a libssl mapping at the canonical base.

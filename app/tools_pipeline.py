@@ -121,10 +121,81 @@ def _dump_json(payload: Dict[str, Any], path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
+def _note_or_invalid(region_filter: Any) -> Optional[str]:
+    """Normalise a region filter to its ``to_note()`` form (``None`` = none).
+
+    An unknown category name is the caller's mistake, so it surfaces as
+    ``INVALID_INPUT`` rather than a bare ``ValueError``.
+    """
+    from memdiver.core.region_view_filter import region_filter_note
+
+    try:
+        return region_filter_note(region_filter)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
+
+
+def _recorded_region_filter(*artifact_paths: Path) -> Optional[str]:
+    """The ``region_filter`` an upstream stage recorded in its JSON artifact.
+
+    The pipeline stages hand each other OFFSETS through files (``variance.npy``
+    -> ``candidates.json`` -> ``hits.json``). A consensus built through a
+    region view filter has filtered-view offsets, so every later stage that
+    re-reads a dump must open it with that same filter. The first artifact
+    that exists, parses and names a filter wins; an artifact without the field
+    (an unfiltered or older run) yields ``None`` — the historical behaviour.
+    """
+    for artifact in artifact_paths:
+        try:
+            recorded = json.loads(Path(artifact).read_text()).get("region_filter")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if recorded:
+            return str(recorded)
+    return None
+
+
+def _resolve_stage_region_filter(
+    explicit: Any, *artifact_paths: Path,
+) -> Optional[str]:
+    """Explicit filter wins; otherwise the one the upstream artifact recorded."""
+    if explicit is not None:
+        return _note_or_invalid(explicit)
+    return _recorded_region_filter(*artifact_paths)
+
+
+def _coerce_selection(region_filter: Optional[str]) -> Any:
+    """``to_note()`` string -> ``RegionSelection`` (``None`` stays ``None``)."""
+    from memdiver.core.region_view_filter import coerce_region_filter
+
+    return coerce_region_filter(region_filter)
+
+
+def _consensus_artifacts(variance_path: str) -> Tuple[Path, Path]:
+    """The two JSON files a consensus stage writes beside ``variance.npy``."""
+    parent = Path(variance_path).parent
+    return parent / "consensus.json", parent / "state.json"
+
+
+def _consensus_region_filter(
+    variance_path: str, explicit: Any = None,
+) -> Optional[str]:
+    """The view filter a stage reading against ``variance_path`` must use.
+
+    ``explicit`` wins; otherwise the filter the consensus stage recorded beside
+    the variance (``consensus.json`` / ``state.json``), else ``None``.
+    """
+    return _resolve_stage_region_filter(
+        explicit, *_consensus_artifacts(variance_path))
+
+
 def _read_reference_bytes(
     reference_path: str,
     key_material: Dict[str, Any],
     on_source: Optional[Callable[[Any], None]] = None,
+    region_filter: Optional[str] = None,
 ) -> bytes:
     """Read a reference dump's bytes through the key-aware ``open_dump`` path.
 
@@ -138,11 +209,17 @@ def _read_reference_bytes(
     ``on_source`` — when given — is invoked on the opened source before the
     read, letting a surface report AEAD/tag status (the CLI passes its
     ``_warn_tag_status``) without the producer importing any presentation code.
+
+    ``region_filter`` reads an ``.msl`` reference through the region view
+    filter its consensus used (the offsets are filtered-view offsets). A
+    filtered read bypasses the shared reference cache, which is keyed by path
+    alone; ``None`` keeps the historical (cached) read.
     """
     from memdiver.app.composition import open_dump
 
     def _load() -> bytes:
-        with open_dump(Path(reference_path), **key_material) as source:
+        with open_dump(Path(reference_path), region_filter=region_filter,
+                       **key_material) as source:
             source.open()
             if on_source is not None:
                 on_source(source)
@@ -153,7 +230,8 @@ def _read_reference_bytes(
     # real open on every call (a cache hit would skip it). Both bypass to a
     # direct load. With no active reference_cache_scope, cache_reference_bytes
     # is a no-op wrapper over _load, so the CLI/MCP path stays byte-identical.
-    if on_source is not None or has_key_material(key_material):
+    if (on_source is not None or has_key_material(key_material)
+            or region_filter is not None):
         return _load()
     return cache_reference_bytes(reference_path, _load)
 
@@ -236,8 +314,16 @@ def search_reduce(
     on_source: Optional[Callable[[Any], None]] = None,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Reduce consensus variance to a region list via the Phase 25 filter chain.
+
+    ``region_filter``: the region view filter the reference is read through.
+    ``None`` reuses the one the consensus stage recorded beside
+    ``variance_path`` (``consensus.json`` / ``state.json``), so a filtered
+    consensus is never reduced against an unfiltered reference. When active it
+    is recorded in ``candidates.json`` and the result, because every region
+    offset is then a filtered-view offset.
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw (byte-identical to the previous
@@ -277,6 +363,8 @@ def search_reduce(
     )
 
     wanted_classes = resolve_byte_classes(classes) if classes else None
+    region_filter = _resolve_stage_region_filter(
+        region_filter, *_consensus_artifacts(variance_path))
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with ExitStack() as _vstack:
@@ -284,7 +372,8 @@ def search_reduce(
             # enter_context runs np.load(mmap_mode="r"); its FileNotFound /
             # OSError / ValueError stay translated exactly as the old np.load.
             variance = _vstack.enter_context(mmapped_variance(variance_path))
-            reference = _read_reference_bytes(reference_path, km, on_source)
+            reference = _read_reference_bytes(
+                reference_path, km, on_source, region_filter)
         except FileNotFoundError as exc:
             raise FileNotFoundServiceError(f"File not found: {exc.filename or exc}") from exc
         except (OSError, ValueError) as exc:
@@ -319,6 +408,9 @@ def search_reduce(
     candidates_path = out / "candidates.json"
     payload = result.to_dict()
     payload["recommended_floor"] = recommended
+    if region_filter is not None:
+        # Downstream stages (brute_force) read it back from here.
+        payload["region_filter"] = region_filter
     _dump_json(payload, candidates_path)
     _emit(on_progress, "stage_end", stage="search_reduce", pct=1.0,
           msg=f"{len(result.regions)} regions",
@@ -326,7 +418,7 @@ def search_reduce(
                  "stages": result.stages.to_dict(),
                  "fallback_entropy_only": result.fallback_entropy_only})
     inline, truncated = _bounded_regions(payload["regions"], max_returned)
-    return {
+    reduced = {
         "candidates_path": str(candidates_path),
         "num_regions": len(result.regions),
         "stages": result.stages.to_dict(),
@@ -338,6 +430,9 @@ def search_reduce(
         "max_returned": int(max_returned),
         "order": order,
     }
+    if region_filter is not None:
+        reduced["region_filter"] = region_filter
+    return reduced
 
 
 # ----------------------------------------------------------------------
@@ -659,6 +754,8 @@ def analyze_candidates(
     kem_key_file: Optional[str] = None,
     key_material: Optional[Dict[str, Any]] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    region_filter: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """N dumps in, a ranked candidate list out — with no oracle and no pcap.
 
@@ -712,6 +809,11 @@ def analyze_candidates(
     ``warnings`` / ``diagnostics``. ``regions`` is capped at ``max_returned``
     best-ranked rows (0 = uncapped) exactly as :func:`search_reduce` caps its
     own; ``num_regions`` is always the true total.
+
+    ``region_filter`` (``"heap,stack"`` / ``to_note()``; ``.msl`` only)
+    builds the consensus through the region view filter. The result always
+    echoes ``region_filter`` (``None`` = unfiltered) because every region
+    offset is then a filtered-view offset.
     """
     from memdiver.engine.candidate_pipeline import (
         ORDERS,
@@ -755,11 +857,13 @@ def analyze_candidates(
         if on_source is not None:
             on_source(source)
 
+    region_filter = _note_or_invalid(region_filter)
     km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
     try:
         cm = build_consensus(
             [str(p) for p in paths], normalize=normalize,
-            key_material=km, on_source=_observe,
+            key_material=km, on_source=_observe, region_filter=region_filter,
+            force=force,
         )
     except (OSError, ValueError) as exc:
         raise CapabilityError(
@@ -794,7 +898,9 @@ def analyze_candidates(
     alignment_report = cm.alignment_report.to_dict()
     stages = result.stages.to_dict()
 
-    diagnostics: List[Diagnostic] = []
+    # Alignment-level notes first (e.g. ``classification_basis_mixed``): they
+    # qualify every region below, not just some.
+    diagnostics: List[Diagnostic] = list(cm.alignment_report.diagnostics)
     if not all_regions:
         diagnostics.append(_empty_result_diagnostic(
             stages, class_counts, min_region=min_region, max_region=max_region))
@@ -849,6 +955,8 @@ def analyze_candidates(
         # exactly when the result is questionable.
         "warnings": list(alignment_report["warnings"]),
         "diagnostics": [d.to_dict() for d in diagnostics],
+        # Offsets above are in this filter's view (None = unfiltered).
+        "region_filter": cm.region_filter,
     }
 
 
@@ -1269,8 +1377,13 @@ def brute_force(
     on_source: Optional[Callable[[Any], None]] = None,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Iterate surviving candidates through an oracle and persist hits.json.
+
+    ``region_filter``: the region view filter the reference is read through;
+    ``None`` reuses the one ``candidates.json`` recorded. When active it is
+    recorded in ``hits.json`` (hit offsets are filtered-view offsets).
 
     Two oracle sources are supported, mutually exclusive:
       * ``oracle_path`` — a user-supplied BYO decryption oracle script (sandboxed).
@@ -1369,9 +1482,12 @@ def brute_force(
         if oracle_config is not None:
             bf_oracle_kwargs["oracle_config"] = dict(oracle_config)
 
+    region_filter = _resolve_stage_region_filter(
+        region_filter, Path(candidates_path))
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
-        reference = _read_reference_bytes(reference_path, km, on_source)
+        reference = _read_reference_bytes(
+            reference_path, km, on_source, region_filter)
         _emit(on_progress, "stage_start", stage="brute_force", pct=0.0,
               msg=f"oracle={oracle_label}")
         _experiment_check_cancelled(is_cancelled, on_progress)
@@ -1440,6 +1556,8 @@ def brute_force(
     for hit in result_dict.get("hits", []):
         hit["verified"] = True
         hit["confirmed_by"] = hit_source
+    if region_filter is not None:
+        result_dict["region_filter"] = region_filter
     _dump_json(result_dict, hits_path)
     # Opt-in: file the oracle-confirmed hits into the ground-truth ledger. This
     # is the bridge from the oracle path (which owns confirmed hits but no DB
@@ -1530,8 +1648,13 @@ def n_sweep(
     on_source: Optional[Callable[[Any], None]] = None,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the N-scaling harness and emit report.{json,md,html}.
+
+    ``region_filter`` (``.msl`` only) folds every dump through the region view
+    filter; ``first_hit_offset`` is then a filtered-view offset, so the result
+    carries ``region_filter`` when one is active.
 
     The same two mutually-exclusive oracle sources :func:`brute_force` accepts:
       * ``oracle_path`` — a user-supplied BYO decryption oracle script
@@ -1588,11 +1711,12 @@ def n_sweep(
         else None
     )
 
+    region_filter = _note_or_invalid(region_filter)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     sources = []
     try:
         for path in source_paths:
-            src = open_dump(Path(path), **km)
+            src = open_dump(Path(path), region_filter=region_filter, **km)
             src.open()
             sources.append(src)
             if on_source is not None:
@@ -1686,6 +1810,8 @@ def n_sweep(
     }
     if result.escalation is not None:
         payload["escalation"] = result.escalation
+    if region_filter is not None:
+        payload["region_filter"] = region_filter
     return payload
 
 
@@ -1711,8 +1837,13 @@ def emit_plugin(
     write_fields: bool = False,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Emit a Volatility 3 plugin from a hit's neighborhood variance.
+
+    ``region_filter``: the region view filter the reference is read through;
+    ``None`` reuses the one ``hits.json`` recorded (hit offsets are
+    filtered-view offsets when brute_force ran on a filtered consensus).
 
     Encrypted ``.msl`` references are decrypted when key material is supplied;
     a plain ``reference.bin`` opens raw (byte-identical to the previous
@@ -1740,8 +1871,10 @@ def emit_plugin(
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     pcb = _progress_bridge(on_progress, "emit_plugin")
     fields: Optional[List[dict]] = None
+    region_filter = _resolve_stage_region_filter(region_filter, Path(hits_path))
     try:
-        reference = _read_reference_bytes(reference_path, km, on_source)
+        reference = _read_reference_bytes(
+            reference_path, km, on_source, region_filter)
         out = _ensure_dir(Path(output_dir))
         output_path = out / f"{name}.py"
         _emit(on_progress, "stage_start", stage="emit_plugin", pct=0.0,
@@ -1816,6 +1949,8 @@ def consensus(
     persist_welford: bool = False,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Build a per-byte consensus variance vector across N dumps.
 
@@ -1840,9 +1975,21 @@ def consensus(
     default (batch) path is unchanged, so existing CLI/MCP callers are
     byte-identical. ``on_progress`` / ``is_cancelled`` are the surface hooks
     (no-ops when unset).
+
+    ``region_filter`` (``"heap,stack"`` or a ``to_note()`` string) analyses
+    ``.msl`` inputs as if only those region categories existed (non-
+    destructive view filter); other formats ignore it. Echoed (normalised)
+    in the returned meta / ``consensus.json``.
     """
+    from memdiver.core.region_view_filter import region_filter_note
     from memdiver.engine.consensus_service import build_consensus
 
+    try:
+        region_filter = region_filter_note(region_filter)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
     paths = [Path(p) for p in dump_paths]
     missing = [str(p) for p in paths if not p.exists()]
     if missing:
@@ -1859,14 +2006,16 @@ def consensus(
     _experiment_check_cancelled(is_cancelled, on_progress)
     if persist_welford:
         return _consensus_incremental(
-            paths, Path(output_dir), km, normalize, on_progress, is_cancelled)
+            paths, Path(output_dir), km, normalize, on_progress, is_cancelled,
+            region_filter=region_filter)
     try:
         # The on_source hook runs per opened source before the vector is built,
         # so a locked (missing/wrong-key) dump surfaces as EncryptedDumpLockedError
         # instead of misattributing the resulting empty variance as
         # "empty or mismatched dumps" below.
         cm = build_consensus(
-            paths, normalize=normalize, key_material=km, on_source=_raise_if_locked
+            paths, normalize=normalize, key_material=km, on_source=_raise_if_locked,
+            region_filter=region_filter, force=force,
         )
     except (OSError, ValueError) as exc:
         raise CapabilityError(
@@ -1893,6 +2042,11 @@ def consensus(
         "reference_path": str(reference_path),
         "classification_counts": cm.classification_counts(),
         "normalize": normalize,
+        "region_filter": region_filter,
+        # Additive: how the dumps were aligned, and its structured notes
+        # (e.g. ``classification_basis_mixed``) hoisted for the surfaces.
+        "alignment": cm.alignment_report.to_dict(),
+        "diagnostics": cm.alignment_report.diagnostic_dicts,
     }
     _dump_json(meta, out / "consensus.json")
     _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
@@ -1908,6 +2062,7 @@ def _consensus_incremental(
     normalize: bool,
     on_progress: Optional[Callable[..., None]],
     is_cancelled: Optional[Callable[[], bool]],
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Incremental fold that mirrors ``pipeline_runner._build_consensus``.
 
@@ -1928,14 +2083,15 @@ def _consensus_incremental(
     sources: List[Any] = []
     try:
         for p in paths:
-            src = open_dump(p, **key_material)
+            src = open_dump(p, region_filter=region_filter, **key_material)
             src.open()
             sources.append(src)
             # Surface a locked encrypted source instead of folding empty pages.
             _raise_if_locked(src)
 
         if all(_is_msl_source(s) for s in sources):
-            builder = MslIncrementalBuilder.from_sources(sources)
+            builder = MslIncrementalBuilder.from_sources(
+                sources, region_filter=_coerce_selection(region_filter))
             for i in range(n):
                 _experiment_check_cancelled(is_cancelled, on_progress)
                 builder.fold_next(i)
@@ -1946,6 +2102,7 @@ def _consensus_incremental(
             reference = builder.get_reference()
             total = builder.total_bytes
             mean_arr, m2_arr, n_welford = builder.welford_state()
+            diagnostics = [d.to_dict() for d in builder.diagnostics]
         else:
             # Stream the fold: hand each source to add_source one at a time so
             # only ONE dump is resident at a time (peak ~O(dump size)) instead
@@ -1968,6 +2125,8 @@ def _consensus_incremental(
             variance = matrix.variance
             reference = matrix.reference_bytes
             total = min_size
+            # Flat fold: nothing is region-aligned, so no basis can mix.
+            diagnostics = []
     except (OSError, ValueError) as exc:
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
@@ -1989,12 +2148,17 @@ def _consensus_incremental(
     np.save(mean_path, mean_arr)
     np.save(m2_path, m2_arr)
     state_path = out / "state.json"
-    state_path.write_text(json.dumps({
+    state = {
         "size": int(total),
         "num_dumps": int(n_welford),
         "mean_path": str(mean_path),
         "m2_path": str(m2_path),
-    }, indent=2))
+    }
+    if region_filter is not None:
+        # ``/refine`` folds more dumps onto this state and must open them
+        # through the same filter; omitted when unfiltered (byte-identical).
+        state["region_filter"] = region_filter
+    state_path.write_text(json.dumps(state, indent=2))
 
     _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
           msg=f"variance ready ({total} bytes)",
@@ -2009,6 +2173,9 @@ def _consensus_incremental(
         "mean_path": str(mean_path),
         "m2_path": str(m2_path),
         "normalize": normalize,
+        "region_filter": region_filter,
+        # Structured alignment notes of the .msl layout pass (additive).
+        "diagnostics": diagnostics,
     }
 
 
@@ -2048,8 +2215,13 @@ def auto_floor(
     on_source: Optional[Callable[[Any], None]] = None,
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    region_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Automated oracle-arbitrated variance-floor selection → single verdict.
+
+    ``region_filter``: the region view filter the reference dump is read
+    through; ``None`` reuses the one recorded beside ``variance_path``. When
+    active the verdict carries it (hit offsets are filtered-view offsets).
 
     Mirrors ``cli._cmd_auto_floor`` but takes paths/params: a ``variance.npy``
     (as produced by ``consensus``), a reference dump/bytes file (opened via
@@ -2078,13 +2250,16 @@ def auto_floor(
     from memdiver.engine.oracle import load_oracle, load_oracle_config
 
     neighborhood_pad = _validate_neighborhood_pad(neighborhood_pad)
+    region_filter = _resolve_stage_region_filter(
+        region_filter, *_consensus_artifacts(variance_path))
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with ExitStack() as _vstack:
         try:
             # enter_context runs np.load(mmap_mode="r"); its FileNotFound /
             # OSError / ValueError stay translated exactly as the old np.load.
             variance = _vstack.enter_context(mmapped_variance(variance_path))
-            with open_dump(Path(reference_path), **km) as source:
+            with open_dump(Path(reference_path), region_filter=region_filter,
+                           **km) as source:
                 source.open()
                 if on_source is not None:
                     on_source(source)
@@ -2139,6 +2314,8 @@ def auto_floor(
     # the ``AutoFloorResult`` — the web pipeline's escalate stage relies on this.
     verdict["hit_tier"] = hit_tier(result)
     verdict["artifacts"] = {k: str(v) for k, v in paths.items()}
+    if region_filter is not None:
+        verdict["region_filter"] = region_filter
     _emit(on_progress, "stage_end", stage="escalate", pct=1.0,
           msg=f"{result.verdict} tier={hit_tier(result)}",
           extra={"verdict": result.verdict, "hit_tier": hit_tier(result),
@@ -2164,6 +2341,7 @@ def export_pattern(
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
     key_material: Optional[Dict[str, Any]] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Auto-detect a volatile region across N dumps and export a pattern.
 
@@ -2177,6 +2355,8 @@ def export_pattern(
     either as ``key_file`` / ``passphrase`` / ``kem_key_file`` (the MCP idiom,
     read from disk here) or as a pre-decoded ``key_material`` dict of
     ``open_dump`` kwargs (the web / CLI idiom, already decoded by that surface).
+
+    ``force`` bypasses the consensus memory-budget guard.
     """
     # AnalysisServiceError (raised by auto_export_pattern) is already a
     # CapabilityError subclass carrying its own accurate category/status
@@ -2199,7 +2379,7 @@ def export_pattern(
     km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
     result = auto_export_pattern(
         paths, fmt=fmt, name=name, align=align, context=context,
-        min_static_ratio=min_static_ratio, key_material=km,
+        min_static_ratio=min_static_ratio, key_material=km, force=force,
     )
     # Checked BEFORE the caller sees it (and before ``output_dir`` writes it):
     # an emitted pattern wider than libyara will verify matches nothing at all,
@@ -2376,6 +2556,22 @@ def _attach_scan_limit_diagnostic(
     return payload
 
 
+def _require_bare_name(name: str) -> None:
+    """Raise INVALID_INPUT unless *name* is a bare filename stem.
+
+    ``name`` is joined onto ``output_dir`` to form the written file, so a value
+    carrying a separator or ``..`` would land OUTSIDE the directory the caller
+    chose (``name="../../.bashrc"``). Enforced in the producer because every
+    surface (CLI, MCP, HTTP) shares this join.
+    """
+    if (not name or name in (".", "..") or "/" in name or "\\" in name
+            or "\x00" in name):
+        raise CapabilityError(
+            f"Invalid input: pattern name {name!r} must be a bare filename",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+
 def _export_payload(
     result: Dict[str, Any], *, name: str, output_dir: Optional[str],
 ) -> Dict[str, Any]:
@@ -2396,6 +2592,7 @@ def _export_payload(
     if output_dir:
         ext = {"yara": "yar", "json": "json", "volatility3": "py"}.get(
             result["format"], "txt")
+        _require_bare_name(name)
         out = _ensure_dir(Path(output_dir))
         pattern_path = out / f"{name}.{ext}"
         pattern_path.write_text(result["content"])
@@ -5793,10 +5990,16 @@ def verify_key_result(
     nonce_hex: Optional[str] = None,
     aad_hex: Optional[str] = None,
     tag_hex: Optional[str] = None,
+    view: Optional[str] = None,
     key_material: Optional[Dict[str, Any]] = None,
     on_source: Optional[Callable[[Any], None]] = None,
 ) -> Dict[str, Any]:
     """Verify a candidate key read at ``offset`` decrypts a known ciphertext.
+
+    ``view`` names the byte view ``offset`` addresses (``"raw"`` / ``"vas"`` /
+    ``"va"``) — e.g. the hex viewer's current view when the offset is its
+    cursor. ``None`` keeps the historical read (the source's default view).
+    A view the dump cannot serve is an UNSUPPORTED capability error.
 
     The single implementation behind the CLI ``verify`` command, the HTTP
     ``POST /api/analysis/verify-key`` route, and the MCP ``verify`` tool. The
@@ -5839,7 +6042,13 @@ def verify_key_result(
         if on_source is not None:
             on_source(source)
         _raise_if_locked(source)
-        candidate = source.read_range(offset, length)
+        if view is None:
+            candidate = source.read_range(offset, length)
+        else:
+            from memdiver.app.tools_inspect import _require_supported_view
+
+            _require_supported_view(source, view)
+            candidate = source.read_range(offset, length, view=view)
 
     if len(candidate) < length:
         raise CapabilityError(

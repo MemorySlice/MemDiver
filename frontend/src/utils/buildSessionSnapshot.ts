@@ -4,6 +4,7 @@ import { useAnalysisStore } from "@/stores/analysis-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useDumpRailStore } from "@/stores/dump-rail-store";
+import { useRegionSelectionStore } from "@/stores/region-selection-store";
 import { uiToApiInputMode, type UiInputMode } from "@/utils/input-mode";
 
 /**
@@ -124,5 +125,8 @@ export function buildSessionSnapshot(
     excluded_dump_paths: excludedDumpPaths,
     solo_dump_path: soloDumpPath,
     rail_collapsed: railState.collapsed,
+
+    // Region selection chosen in the wizard; `null` = every region.
+    region_filter: useRegionSelectionStore.getState().regionFilter,
   } as Partial<SessionSnapshot>;
 }

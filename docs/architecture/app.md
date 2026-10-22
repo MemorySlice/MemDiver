@@ -21,7 +21,7 @@ Modules:
   `entropy_result`, `strings_result`, `detect_format_result`,
   `session_info_result`, `page_states_result`, `processes_result`,
   `modules_result`, `handles_result`, `connections_result`,
-  `module_index_result`, `blocks_result`. (The legacy `read_hex` / `get_*`
+  `module_index_result`, `import_provenance_result`, `blocks_result`. (The legacy `read_hex` / `get_*`
   dict-returning siblings live in `tools_inspect_legacy.py` and are re-exported
   from `tools_inspect` only as deprecated backward-compat shims.)
 - `tools_xref.py` — `get_cross_references_result`, `identify_structure_result`,

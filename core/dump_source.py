@@ -52,20 +52,23 @@ class DumpSource(Protocol):
     any object exposing the members below (presence only — the check does not
     inspect signatures). All built-in sources satisfy it.
 
-    Note on ``read_all``: only :class:`RawDumpSource` and
-    :class:`MslDumpSource` provide a ``read_all(view)`` convenience that
-    materialises the whole view into ``bytes``. The regioned-raw and gcore
-    sources deliberately omit it (their views can be multi-GB and are meant to
-    be streamed via :meth:`iter_ranges` / sliced via :meth:`read_range`), so
-    ``read_all`` is NOT part of this universal structural contract. General
-    callers must feature-test with ``hasattr`` before calling.
+    Note on ``read_all``: every built-in source provides a ``read_all(view)``
+    convenience that materialises the whole view into ``bytes`` (its default
+    view: ``"raw"`` for :class:`RawDumpSource`, ``"vas"`` for
+    :class:`MslDumpSource`, gcore and the regioned-raw sources; the latter two
+    gained it for single-dump analysis, see
+    :mod:`memdiver.app.pipeline.analysis_buffer`). Views can be multi-GB, so
+    streaming via :meth:`iter_ranges` / slicing via :meth:`read_range` remains
+    preferred, and ``read_all`` is still NOT part of this universal structural
+    contract: duck-typed sources registered via :func:`register_dump_source`
+    may omit it, so general callers must feature-test with ``hasattr``.
 
     Caveat — some engine paths still assume ``read_all``: the raw (non-MSL)
     branch of the consensus builder (:func:`app.pipeline.pipeline_runner._build_consensus`)
-    calls ``read_all()`` on every source. A source lacking it (gcore / regioned
-    raw) therefore cannot currently be fed into that raw-consensus path. This is
-    a pre-existing engine assumption, not a guarantee of this Protocol; migrating
-    that path onto :meth:`iter_ranges` is a tracked follow-up.
+    calls ``read_all()`` on every source. A source lacking it therefore cannot
+    currently be fed into that raw-consensus path. This is a pre-existing engine
+    assumption, not a guarantee of this Protocol; migrating that path onto
+    :meth:`iter_ranges` is a tracked follow-up.
     """
 
     # -- Identity / metadata ------------------------------------------------
@@ -209,6 +212,20 @@ def supported_views(source: Any) -> Tuple[str, ...]:
     return tuple(declared) if declared else ("raw", "vas")
 
 
+def distinct_views(source: Any) -> Tuple[str, ...]:
+    """The views of *source* that show DIFFERENT bytes — what a UI should offer.
+
+    :func:`supported_views` answers "may I ask for this view?"; a flat
+    :class:`RawDumpSource` says yes to all three because they alias one byte
+    stream. A view switch over aliases is noise, so a source whose views all
+    coincide declares ``DISTINCT_VIEWS`` (``("raw",)``); every other source
+    falls back to :func:`supported_views`. Read via ``getattr`` for the same
+    ``runtime_checkable`` Protocol reason as :func:`supported_views`.
+    """
+    declared = getattr(source, "DISTINCT_VIEWS", None)
+    return tuple(declared) if declared else supported_views(source)
+
+
 def find_first_in(
     source: Any, needle: bytes, view: "str | None" = None,
 ) -> Optional[int]:
@@ -314,6 +331,9 @@ class RawDumpSource:
     #: :func:`core.dump_source.supported_views`, never off the Protocol —
     #: the Protocol is ``runtime_checkable`` and must not grow members.
     SUPPORTED_VIEWS = ("raw", "vas", "va")
+    #: ...and they all alias the same bytes, so only one is worth offering.
+    #: Read through :func:`core.dump_source.distinct_views`.
+    DISTINCT_VIEWS = ("raw",)
 
     def __init__(self, path: Path):
         self._path = path
@@ -425,6 +445,25 @@ class MslDumpSource:
     captured, so a search for a run of zeroes can never come back with
     padding offsets dressed up as findings. Offsets are VA-span-relative,
     not absolute VAs.
+
+    REGION VIEW FILTER. ``region_filter`` (a
+    :class:`memdiver.msl.region_select.RegionSelection`, or a spec / note
+    string) makes the source behave as if only the included region
+    categories existed — non-destructively, the file is never rewritten.
+    Classification is :func:`memdiver.core.region_view_filter.
+    stored_region_infos`. With a filter active:
+
+    * ``"vas"`` (``read_all``, ``read_range``, ``iter_ranges``, ``find_*``,
+      ``size_for``, ``captured_runs``, ``va_to_vas_offset``) is the
+      CONCATENATION OF THE INCLUDED CAPTURED RUNS ONLY, in the usual
+      base-address order. Flat offsets are therefore re-numbered densely:
+      an offset in a filtered stream is NOT the same byte as that offset in
+      the unfiltered stream of the same file.
+    * ``"va"`` keeps its span (derived from every region, so VA-relative
+      offsets stay stable), but excluded regions read as uncaptured ``0x00``
+      filler and are never searched.
+    * ``"raw"`` (container bytes) and :meth:`get_reader` are unfiltered;
+      :meth:`included_regions` is the filtered region listing.
     """
 
     #: Views this source can serve. Read through
@@ -435,7 +474,8 @@ class MslDumpSource:
     def __init__(self, path: Path, *,
                  key: "bytes | None" = None,
                  passphrase: "bytes | None" = None,
-                 kem_private_key: "bytes | None" = None):
+                 kem_private_key: "bytes | None" = None,
+                 region_filter: Any = None):
         self._path = path
         self._reader = None
         self._size: int = -1
@@ -451,6 +491,39 @@ class MslDumpSource:
         self._key = key
         self._passphrase = passphrase
         self._kem_private_key = kem_private_key
+        self._region_filter = None
+        # (reader index identity, filtered index) — see _run_index.
+        self._filtered_index_cache: "Tuple[Any, CapturedRunIndex] | None" = None
+        self.set_region_filter(region_filter)
+
+    @property
+    def region_filter(self):
+        """Active view filter (``RegionSelection``) or ``None`` (see class doc)."""
+        return self._region_filter
+
+    def set_region_filter(self, region_filter: Any) -> None:
+        """Set (or clear with ``None``) the analysis-time view filter.
+
+        Accepts a ``RegionSelection``, a spec (``"heap,stack"``) or a
+        ``to_note()`` string. An all-category selection is stored as ``None``.
+        """
+        from .region_view_filter import coerce_region_filter, is_active
+        selection = coerce_region_filter(region_filter)
+        self._region_filter = selection if is_active(selection) else None
+        self._filtered_index_cache = None
+        self._size = -1
+
+    def included_regions(self) -> list:
+        """The reader's regions that the view filter includes (all if none).
+
+        Requires an open reader. Order is ``reader.collect_regions()`` order.
+        """
+        from .region_view_filter import region_filter_mask
+        regions = self.get_reader().collect_regions()
+        mask = region_filter_mask(self._reader, self._region_filter, regions)
+        if mask is None:
+            return list(regions)
+        return [r for r, keep in zip(regions, mask) if keep]
 
     @classmethod
     def borrow_reader(cls, path: Path, reader) -> "MslDumpSource":
@@ -519,7 +592,51 @@ class MslDumpSource:
         """
         if self._reader is None:
             return None
-        return self._reader.captured_run_index()
+        index = self._reader.captured_run_index()
+        if self._region_filter is None:
+            return index
+        cached = self._filtered_index_cache
+        if cached is not None and cached[0] is index:
+            return cached[1]
+        filtered = self._filter_run_index(index)
+        self._filtered_index_cache = (index, filtered)
+        return filtered
+
+    def _filter_run_index(self, index: "CapturedRunIndex") -> "CapturedRunIndex":
+        """Keep only included regions' runs, re-numbering ``vas_offset``.
+
+        Relies on :meth:`MslReader.captured_run_index` emitting runs region by
+        region in stable base-address order, ``_captured_page_runs(region)``
+        runs each — the same walk is replayed here to attribute every run to
+        its region exactly (no VA-overlap guessing).
+        """
+        from memdiver.msl.reader import CapturedRunIndex, _captured_page_runs
+        from .region_view_filter import region_filter_mask
+
+        regions = self._reader.collect_regions()
+        mask = region_filter_mask(self._reader, self._region_filter, regions)
+        order = sorted(range(len(regions)), key=lambda i: regions[i].base_addr)
+        kept = []
+        pos = 0
+        vas_offset = 0
+        for i in order:
+            count = len(_captured_page_runs(regions[i]))
+            if mask[i]:
+                for run in index.runs[pos:pos + count]:
+                    kept.append(run._replace(vas_offset=vas_offset))
+                    vas_offset += run.length
+            pos += count
+        if pos != len(index.runs):
+            raise RuntimeError(
+                f"region view filter: run attribution mismatch for "
+                f"{self._path} ({pos} != {len(index.runs)} runs)")
+        by_va = tuple(sorted(kept, key=lambda run: run.va_start))
+        return CapturedRunIndex(
+            runs=tuple(kept),
+            by_va=by_va,
+            va_starts=tuple(run.va_start for run in by_va),
+            vas_starts=tuple(run.vas_offset for run in kept),
+        )
 
     def captured_runs(self) -> Tuple[Tuple[int, int, int], ...]:
         """``(va_start, run_length, vas_offset)`` for every captured run.
@@ -606,6 +723,7 @@ class MslDumpSource:
         self._reader.open()
         self._size = -1
         self._va_span_cache = None
+        self._filtered_index_cache = None
 
     @property
     def tag_status(self):
@@ -644,6 +762,8 @@ class MslDumpSource:
         self.close()
 
     def read_all(self, view: ViewMode = "vas") -> bytes:
+        """Whole *view*. With a view filter, ``"vas"`` is the concatenation of
+        the included captured runs only (see class docstring)."""
         if view == "raw":
             return self._ensure_raw_reader().read_all()
         self._require_vas(view)
@@ -671,7 +791,7 @@ class MslDumpSource:
             stop = min(run.avail, end - run.vas_offset)
             if stop > begin:
                 result.extend(
-                    self._reader.read_view(run.buf_offset + begin, stop - begin),
+                    self._reader.run_view(run, begin, stop - begin),
                 )
         return bytes(result)
 
@@ -743,7 +863,7 @@ class MslDumpSource:
             if copied > 0:
                 dst = ov_start - req_start
                 buf[dst:dst + copied] = \
-                    self._reader.read_view(run.buf_offset + begin, copied)
+                    self._reader.run_view(run, begin, copied)
                 _append_merged_run(runs, dst, copied)
         return (bytes(buf), runs)
 
@@ -888,13 +1008,10 @@ class MslDumpSource:
         if self._reader is None:
             return []
         offsets: List[int] = []
-        flat_offset = 0
-        for _vaddr, _length, chunk in self.iter_ranges():
-            for idx in _find_all_in_bytes(chunk, needle):
-                offsets.append(flat_offset + idx)
-                if limit and len(offsets) >= limit:
-                    return offsets
-            flat_offset += len(chunk)
+        for flat_offset, _hit in self._iter_vas_hits(needle):
+            offsets.append(flat_offset)
+            if limit and len(offsets) >= limit:
+                return offsets
         return offsets
 
     def find_first(self, needle: bytes, view: ViewMode = "vas") -> Optional[int]:
@@ -920,13 +1037,45 @@ class MslDumpSource:
         self._require_vas(view)
         if self._reader is None:
             return None
-        flat_offset = 0
-        for _vaddr, _length, chunk in self.iter_ranges():
-            idx = _find_first_in_bytes(chunk, needle)
-            if idx is not None:
-                return flat_offset + idx
-            flat_offset += len(chunk)
+        for flat_offset, _hit in self._iter_vas_hits(needle):
+            return flat_offset
         return None
+
+    def _iter_vas_search_spans(self) -> Iterator[Tuple[int, Any]]:
+        """``(flat_offset, run)`` per captured run, in VAS order.
+
+        ``flat_offset`` accumulates :meth:`MslReader.run_span` — the byte
+        count :meth:`iter_ranges` hands back for each run (``run.avail``,
+        clamped as ``read_view`` clamps) — which are the coordinates the
+        copying ``"vas"`` search always used, so a hit offset is unchanged by
+        searching in place.
+        """
+        index = self._run_index()
+        if index is None:
+            return
+        run_span = self._reader.run_span
+        flat_offset = 0
+        for run in index.runs:
+            yield flat_offset, run
+            flat_offset += run_span(run)
+
+    def _iter_vas_hits(self, needle: bytes) -> Iterator[Tuple[int, int]]:
+        """``(flat_vas_offset, run_relative_offset)`` of every ``"vas"`` match.
+
+        Each captured run is searched ON ITS OWN and IN PLACE
+        (:meth:`MslReader.iter_find_run`): an mmap-backed run with bounded
+        ``mmap.find`` calls, an encrypted one in bounded decrypted windows,
+        a compressed one inside its (one-at-a-time cached) decompressed
+        block — so no run is ever copied whole. Per-run semantics are kept on
+        purpose: a needle straddling two runs is not a match in ``"vas"``
+        (see :meth:`find_first`).
+        """
+        if not needle:
+            return
+        find = self._reader.iter_find_run
+        for flat_offset, run in self._iter_vas_search_spans():
+            for rel in find(run, needle):
+                yield flat_offset + rel, rel
 
     def va_to_vas_offset(self, va: int) -> "int | None":
         """Translate a virtual address to a flat VAS offset.
@@ -971,14 +1120,16 @@ class MslDumpSource:
         (and its PageStateMaps expanded) ONCE per reader rather than once per
         call, and each run's bytes are copied exactly once — the old path read
         a region's whole page data and then copied the slice out of it again.
+
+        Honours the view filter: excluded regions' runs are not yielded.
         """
         index = self._run_index()
         if index is None:
             return
-        read_view = self._reader.read_view
+        run_view = self._reader.run_view
         for run in index.runs:
             yield (run.va_start, run.length,
-                   bytes(read_view(run.buf_offset, run.avail)))
+                   bytes(run_view(run, 0, run.avail)))
 
     def metadata(self) -> Dict[str, Any]:
         if self._reader is None:
@@ -1003,6 +1154,8 @@ class MslDumpSource:
             # UI can map a "va" offset back to an absolute virtual address.
             "va_size": self.size_for("va"),
             "va_span_start": self._va_span()[0],
+            "region_filter": (self._region_filter.to_note()
+                              if self._region_filter is not None else None),
         }
 
     def _get_region_page_data(self, region) -> bytes:
@@ -1195,10 +1348,23 @@ _register_builtin_sources()
 _load_entry_point_sources_once()
 
 
+def _apply_region_filter(source: Any, region_filter: Any) -> Any:
+    """Hand *region_filter* to sources that support one; others ignore it."""
+    if region_filter is not None:
+        setter = getattr(source, "set_region_filter", None)
+        if callable(setter):
+            setter(region_filter)
+        else:
+            logger.debug("%s ignores the region view filter",
+                         type(source).__name__)
+    return source
+
+
 def open_dump(path: Path, *,
               key: "bytes | None" = None,
               passphrase: "bytes | None" = None,
-              kem_private_key: "bytes | None" = None) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource | DumpSource":  # noqa: F821
+              kem_private_key: "bytes | None" = None,
+              region_filter: Any = None) -> "RawDumpSource | MslDumpSource | GdbRawDumpSource | LldbRawDumpSource | GCoreDumpSource | DumpSource":  # noqa: F821
     """Auto-detect dump format and return appropriate DumpSource.
 
     Detection runs through the extensible detector registry (see
@@ -1218,7 +1384,16 @@ def open_dump(path: Path, *,
 
     Key material (key / passphrase / kem_private_key) is forwarded to
     encrypted .msl containers (spec §10); it is ignored for other formats.
+
+    ``region_filter`` (``RegionSelection`` / spec / note string, see
+    :mod:`memdiver.core.region_view_filter`) is applied to any source that
+    exposes ``set_region_filter`` — today only :class:`MslDumpSource`. Raw,
+    ELF-core and regioned-raw sources carry no stored region classification
+    and IGNORE it (their full bytes are served). Invalid specs raise
+    ``ValueError`` before any file is opened.
     """
+    from .region_view_filter import coerce_region_filter
+    region_filter = coerce_region_filter(region_filter)
     path = Path(path)
     name = path.name
 
@@ -1248,10 +1423,11 @@ def open_dump(path: Path, *,
             )
             continue
         if matched:
-            return entry.factory(
+            source = entry.factory(
                 path, key=key, passphrase=passphrase,
                 kem_private_key=kem_private_key,
             )
+            return _apply_region_filter(source, region_filter)
 
     # The raw fallback always matches, so this is unreachable in practice; kept
     # for defensive parity with the pre-registry behaviour.

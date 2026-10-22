@@ -26,6 +26,7 @@ import { useTranslation } from "react-i18next";
 
 import type { EmitParams, NSweepParams, PipelineRunRequest } from "@/api/pipeline";
 import { runPipeline } from "@/api/pipeline";
+import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { defaultNValues, parseNValues } from "@/utils/n-values";
@@ -230,8 +231,12 @@ export function StageThresholds({ onAdvance }: Props) {
             }
           : { oracle_id: form.oracleId }),
       };
-      const resp = await runPipeline(body);
+      const resp = await withMemoryBudgetOverride((force) =>
+        runPipeline(withForceMemory(body, force)),
+      );
       setTaskId(resp.task_id);
+      // Kept so a memory-guard failure of the background run can be re-sent forced.
+      usePipelineStore.getState().setLastRunRequest(body);
       onAdvance("running");
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));

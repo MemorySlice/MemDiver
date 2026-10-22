@@ -35,19 +35,26 @@ def has_key_material(km: dict) -> bool:
 
 
 @contextmanager
-def open_dump_source(path: str, km: dict) -> Iterator[object]:
+def open_dump_source(path: str, km: dict,
+                     region_filter: object = None) -> Iterator[object]:
     """Yield an opened DumpSource, honouring decryption key material.
 
     With key material we open the container directly (the reader cache
     cannot carry keys); without it we keep the cached fast path used by
     the unkeyed inspect tools. Both branches yield an already-opened
     source and close it on exit.
+
+    ``region_filter`` (``RegionSelection`` / spec / ``to_note()`` string)
+    applies the analysis-time region view filter to sources that support
+    one (``.msl``); ``None`` leaves the source unfiltered, exactly as before.
+    The cached branch yields a fresh per-call proxy around the pooled
+    reader, so filtering it never leaks into another caller's view.
     """
     from memdiver.app.reader_cache import cached_dump_source
     from memdiver.core.dump_source import open_dump
 
     if has_key_material(km):
-        source = open_dump(Path(path), **km)
+        source = open_dump(Path(path), region_filter=region_filter, **km)
         source.open()
         try:
             yield source
@@ -55,7 +62,17 @@ def open_dump_source(path: str, km: dict) -> Iterator[object]:
             source.close()
     else:
         with cached_dump_source(Path(path)) as source:
+            _apply_view_filter(source, region_filter)
             yield source
+
+
+def _apply_view_filter(source: object, region_filter: object) -> None:
+    """Set *region_filter* on *source* when given and supported."""
+    if region_filter is None:
+        return
+    setter = getattr(source, "set_region_filter", None)
+    if callable(setter):
+        setter(region_filter)
 
 
 @contextmanager

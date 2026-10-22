@@ -5,7 +5,8 @@ import sys
 
 from memdiver.core.service_errors import CapabilityError
 
-from ._shared import _key_material_from_args, _warn_tag_status, _write_output
+from ._shared import (_key_material_from_args, _warn_tag_status, _write_output,
+                      force_memory_requested, print_cli_error)
 
 
 def _experiment_cli_progress(event: str, **fields) -> None:
@@ -43,11 +44,14 @@ def _cmd_experiment(args: argparse.Namespace) -> int:
             key_material=_key_material_from_args(args),
             on_source=_warn_tag_status,
             on_progress=_experiment_cli_progress,
+            force=force_memory_requested(args),
         )
     except CapabilityError as exc:
-        print(f"memdiver: ERROR — {exc.message}", file=sys.stderr)
+        print_cli_error(exc)
         return 1
 
+    for line in result.get("capture_warnings") or []:
+        print(f"memdiver experiment: WARNING — {line}", file=sys.stderr)
     all_tool_results = result["tool_results"]
     _print_experiment_table(all_tool_results)
     if args.output:

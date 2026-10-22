@@ -116,6 +116,17 @@ def _parse_field(data: bytes, field_def: FieldDef) -> Any:
     return chunk
 
 
+def _equals(value: Any, expected: Any) -> bool:
+    """``equals`` check; a BYTES field's expected value may be a hex string
+    (e.g. the ELF magic ``"7f454c46"``, as JSON definitions store it)."""
+    if isinstance(value, (bytes, bytearray)) and isinstance(expected, str):
+        try:
+            return bytes(value) == bytes.fromhex(expected)
+        except ValueError:
+            return False
+    return value == expected
+
+
 def _check_constraints(value: Any, constraints: Dict[str, Any]) -> bool:
     """Check a parsed value against constraint rules."""
     if value is None:
@@ -130,7 +141,7 @@ def _check_constraints(value: Any, constraints: Dict[str, Any]) -> bool:
         if key == "max":
             if not isinstance(value, (int, float)) or value > expected:
                 return False
-        if key == "equals" and value != expected:
+        if key == "equals" and not _equals(value, expected):
             return False
         if key == "not_zero" and expected:
             if isinstance(value, (bytes, bytearray)):

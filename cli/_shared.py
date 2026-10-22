@@ -34,6 +34,41 @@ _CLI_EXIT = {
 }
 
 
+#: ``CapabilityError.code`` the memory-budget guard (``core.memory_budget``)
+#: raises when an operation's estimated working set exceeds the budget.
+MEMORY_BUDGET_EXCEEDED_CODE = "memory_budget_exceeded"
+
+#: Follow-up line printed under a memory-budget refusal.
+FORCE_MEMORY_HINT = "Re-run with --force-memory to proceed anyway."
+
+_FORCE_MEMORY_HELP = (
+    "Override the memory-budget refusal: run even when the estimated working "
+    "set exceeds the budget (MEMDIVER_MEMORY_BUDGET_MB). The run may exhaust "
+    "RAM or swap heavily"
+)
+
+
+def add_force_memory_argument(parser: argparse.ArgumentParser) -> None:
+    """Register the shared ``--force-memory`` flag (dest ``force_memory``)."""
+    parser.add_argument("--force-memory", dest="force_memory",
+                        action="store_true", help=_FORCE_MEMORY_HELP)
+
+
+def force_memory_requested(args: argparse.Namespace) -> bool:
+    """True when the operator passed ``--force-memory`` on this subcommand."""
+    return bool(getattr(args, "force_memory", False))
+
+
+def print_cli_error(err: CapabilityError, *, stream=None) -> None:
+    """Print ``memdiver: ERROR — <message>`` (plus the override hint for a
+    memory-budget refusal) to ``stream`` (``sys.stderr`` at call time)."""
+    if stream is None:
+        stream = sys.stderr
+    print(f"memdiver: ERROR — {err.message}", file=stream)
+    if err.code == MEMORY_BUDGET_EXCEEDED_CODE:
+        print(FORCE_MEMORY_HINT, file=stream)
+
+
 def to_cli_exit(err: CapabilityError, *, stream=None) -> int:
     """Translate a propagating ``CapabilityError`` into a CLI message + exit code.
 
@@ -45,9 +80,7 @@ def to_cli_exit(err: CapabilityError, *, stream=None) -> int:
     ``stream`` defaults to ``sys.stderr`` resolved AT CALL TIME (not bound once
     at definition), so it honours any active redirection of ``sys.stderr``.
     """
-    if stream is None:
-        stream = sys.stderr
-    print(f"memdiver: ERROR — {err.message}", file=stream)
+    print_cli_error(err, stream=stream)
     if err.category is ErrorCategory.INTERNAL:
         logging.getLogger("memdiver.cli").exception("internal error")
     return _CLI_EXIT[err.category]
@@ -292,3 +325,51 @@ def _print_missing_native_runtime(component: str, detail: str = "") -> None:
     behind it is not, and a pip hint would therefore be wrong.
     """
     print(native_runtime_message(component, detail), file=sys.stderr)
+
+
+def _region_selection_parent_parser() -> argparse.ArgumentParser:
+    """Shared parent parser for import-time region selection flags.
+
+    Attached to ``import`` and ``import-dir``. Without any of these flags a
+    non-interactive run imports EVERY region (unchanged behaviour); only an
+    interactive terminal is prompted.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    g = p.add_argument_group(
+        "region selection",
+        "Default without --regions/--exclude-regions: a non-interactive run "
+        "(pipe, script, CI, or --yes) imports EVERY region, exactly as "
+        "before; an interactive terminal shows the region categories and "
+        "prompts, with heap+stack+unclassified preselected. Categories: "
+        "heap, stack, image_code, image_data, mapped_file, shared, "
+        "unclassified, runtime (alias: image = image_code,image_data). "
+        "'runtime' is never preselected: it holds maps classified by name "
+        "(Android zygote/boot-image/ART metadata, JIT caches, kernel/device "
+        "maps such as [vdso]/[vvar]); add it with --regions ...,runtime "
+        "or --regions all.")
+    g.add_argument("--regions", metavar="LIST|all",
+                   help="Comma-separated region categories to import, or "
+                        "'all' (e.g. --regions heap,stack). Never prompts")
+    g.add_argument("--exclude-regions", metavar="LIST",
+                   help="Categories to drop (alone: everything except LIST; "
+                        "with --regions: LIST is removed from it). Never "
+                        "prompts")
+    g.add_argument("--list-regions", action="store_true",
+                   help="Dry run: print region counts/bytes per category "
+                        "(and every region with -v) for the input, honouring "
+                        "--regions/--exclude-regions, then exit without "
+                        "importing")
+    g.add_argument("--json", action="store_true",
+                   help="With --list-regions: print the preview as JSON "
+                        "instead of a table")
+    g.add_argument("--materialize", action="store_true",
+                   help="For .msl input only: write a FILTERED copy holding "
+                        "just the selected regions. Without it a .msl is "
+                        "copied verbatim and the selection is applied at "
+                        "analysis time. Ignored for other formats")
+    g.add_argument("-y", "--yes", action="store_true",
+                   help="Never prompt: behave like a non-interactive run, "
+                        "i.e. import every region unless --regions/"
+                        "--exclude-regions is given (it does NOT accept the "
+                        "interactive heap+stack+unclassified preselection)")
+    return p

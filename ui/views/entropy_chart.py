@@ -12,8 +12,9 @@ def render_entropy_chart(
     mo,
     profile: List[Tuple[int, float]],
     key_offsets: Optional[List[Tuple[int, int, str]]] = None,
-    threshold: float = 7.5,
+    threshold: Optional[float] = None,
     title: str = _("Entropy Profile"),
+    window: Optional[int] = None,
 ) -> Any:
     """Render an interactive entropy profile chart using Plotly.
 
@@ -21,8 +22,12 @@ def render_entropy_chart(
         mo: marimo module.
         profile: List of (offset, entropy) tuples.
         key_offsets: Optional list of (start, end, label) for key regions.
-        threshold: Entropy threshold line.
+        threshold: Entropy threshold line. ``None`` = the window-aware default
+            (4.5 at the 32-byte window; the former 7.5 was above the 5.0 a
+            32-byte window can reach, so the line sat off the data).
         title: Chart title.
+        window: Window size of *profile* (default 32); sets the default
+            threshold and the y-axis top (the achievable maximum).
 
     Returns:
         mo.ui.plotly chart or mo.md fallback.
@@ -35,6 +40,14 @@ def render_entropy_chart(
     if not profile:
         return mo.md(_("*No entropy data to display.*"))
 
+    from memdiver.core.entropy import (
+        DEFAULT_ENTROPY_WINDOW, default_entropy_threshold, max_window_entropy,
+    )
+
+    window = window or DEFAULT_ENTROPY_WINDOW
+    if threshold is None:
+        threshold = default_entropy_threshold(window)
+    y_top = max(max_window_entropy(window), threshold) + 0.5
     offsets = [p[0] for p in profile]
     entropies = [p[1] for p in profile]
 
@@ -73,7 +86,7 @@ def render_entropy_chart(
         title=title,
         xaxis_title=_("Offset (bytes)"),
         yaxis_title=_("Entropy (bits/byte)"),
-        yaxis_range=[0, 8.5],
+        yaxis_range=[0, y_top],
         template="plotly_dark",
         paper_bgcolor="#1e1e1e",
         plot_bgcolor="#252526",

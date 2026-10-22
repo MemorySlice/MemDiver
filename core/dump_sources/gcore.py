@@ -141,6 +141,28 @@ class GCoreDumpSource:
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
         return self._read_vas_range(offset, length)
 
+    def read_all(self, view: str = "vas") -> bytes:
+        """The whole *view* as ``bytes`` (``"vas"``: every PT_LOAD with content).
+
+        Same contract as :meth:`core.dump_source.MslDumpSource.read_all`:
+        equal to ``read_range(0, size_for(view), view)`` and to the
+        concatenation of the :meth:`iter_ranges` segments. Joined from
+        zero-copy ``memoryview`` slices of the mapping, so the peak heap is
+        one copy of the view. Materialises the view: prefer
+        :meth:`read_range` / :meth:`find_all` when a slice is enough.
+        """
+        self._ensure_open()
+        if view == "raw":
+            return self._reader.read_at(0, self.size_for("raw"))
+        if view != "vas":
+            raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
+        mm = self._reader._mmap  # noqa: SLF001 — controlled access
+        if mm is None or not self._vas_segments:
+            return b""
+        with memoryview(mm) as whole:
+            return b"".join(whole[seg.file_offset:seg.file_offset + seg.filesz]
+                            for seg in self._vas_segments)
+
     def _read_vas_range(self, vas_offset: int, length: int) -> bytes:
         """Serve a flat VAS slice from the PT_LOAD table."""
         if length <= 0 or not self._vas_segments:
@@ -173,8 +195,7 @@ class GCoreDumpSource:
             return _find_all_in_bytes(self._reader_raw_bytes(), needle, limit)
         if view != "vas":
             raise ValueError(f"Unknown view: {view!r} (expected 'raw' or 'vas')")
-        hits = self._find_all_vas(needle)
-        return hits[:limit] if limit else hits
+        return self._find_all_vas(needle, limit)
 
     def _reader_raw_bytes(self):
         """Return the live ``mmap`` object for the whole core file.
@@ -190,18 +211,19 @@ class GCoreDumpSource:
             return b""
         return mm
 
-    def _find_all_vas(self, needle: bytes) -> List[int]:
+    def _find_all_vas(self, needle: bytes, limit: int = 0) -> List[int]:
         """Locate ``needle`` in the flattened VAS stream (overlap-tolerant).
 
         PT_LOAD segments are concatenated contiguously in the ``view="vas"``
         stream (see :meth:`_read_vas_range`), so a needle may straddle the
-        boundary between two adjacent segments. To catch such hits without
-        materialising the whole VAS stream, each segment is scanned together
-        with a short overlap window stitched from the bytes that follow it in
-        the VAS stream (``len(needle) - 1`` bytes is the maximum a straddling
-        match can reach into the next segment). Only matches that *begin*
-        inside the current segment are recorded, which keeps results unique
-        and ordered.
+        boundary between two adjacent segments. Each segment is searched IN
+        PLACE with a bounded ``mmap.find(needle, lo, hi)`` and only its last
+        ``len(needle) - 1`` bytes are copied, stitched to the bytes that follow
+        it in the VAS stream, to catch a straddling match (see
+        :meth:`_iter_segment_hits`). Only matches that *begin* inside the
+        current segment are recorded, which keeps results unique and ordered.
+        ``limit`` (0 = all) stops the walk once that many hits are collected;
+        the result is the same prefix ``hits[:limit]`` always was.
         """
         hits: List[int] = []
         if not needle or not self._vas_segments:
@@ -209,30 +231,56 @@ class GCoreDumpSource:
         mm = self._reader._mmap  # noqa: SLF001
         if mm is None:
             return hits
-        overlap = len(needle) - 1
-        for idx, seg in enumerate(self._vas_segments):
-            seg_bytes = mm[seg.file_offset:seg.file_offset + seg.filesz]
-            vas_base = self._vas_cum[idx]
-            window = seg_bytes
-            if overlap > 0:
-                # Stitch up to ``overlap`` bytes from the following segment(s)
-                # so a needle crossing the boundary is detected here.
-                tail = self._read_vas_range(vas_base + seg.filesz, overlap)
-                if tail:
-                    # seg_bytes is already a fresh bytes from the mmap slice;
-                    # concatenation copies it, so bytes(seg_bytes) is redundant.
-                    window = seg_bytes + tail
-            seg_len = seg.filesz
-            start = 0
-            while True:
-                at = window.find(needle, start)
-                if at == -1 or at >= seg_len:
-                    # ``at >= seg_len`` means the match starts in the overlap
-                    # tail; it will be recorded by the segment that owns it.
-                    break
-                hits.append(vas_base + at)
-                start = at + 1
+        for idx in range(len(self._vas_segments)):
+            for hit in self._iter_segment_hits(mm, idx, needle):
+                hits.append(hit)
+                if limit and len(hits) >= limit:
+                    return hits
         return hits
+
+    def _iter_segment_hits(self, mm, idx: int, needle: bytes) -> Iterator[int]:
+        """VAS offsets of matches that BEGIN in segment *idx*, ascending.
+
+        Same answer as searching ``mm[lo:lo + filesz] + tail`` (``tail`` = the
+        next ``len(needle) - 1`` VAS bytes) and keeping matches that start
+        before ``filesz`` — the old implementation — without copying the
+        segment: matches wholly inside the mapped bytes come from
+        ``mm.find(needle, start, hi)``, and only the boundary window (the
+        segment's last ``len(needle) - 1`` bytes plus ``tail``) is copied to
+        find the ones that run past them. A match there that also fits inside
+        the segment was already reported by the in-place pass, so it is
+        skipped; every boundary match starts after every in-place one, so
+        the output stays ascending.
+        """
+        seg = self._vas_segments[idx]
+        vas_base = self._vas_cum[idx]
+        n = len(needle)
+        lo = seg.file_offset
+        hi = max(lo, min(lo + seg.filesz, len(mm)))
+        mapped = hi - lo  # < filesz only for a truncated core file
+        start = lo
+        while True:
+            at = mm.find(needle, start, hi)
+            if at == -1:
+                break
+            yield vas_base + (at - lo)
+            start = at + 1
+        overlap = n - 1
+        if overlap <= 0:
+            return
+        tail = self._read_vas_range(vas_base + seg.filesz, overlap)
+        if not tail:
+            return
+        edge = max(0, mapped - overlap)
+        window = mm[lo + edge:hi] + tail
+        at = window.find(needle, 0)
+        while at != -1:
+            pos = edge + at
+            if pos >= seg.filesz:
+                break  # starts in the tail: the owning segment reports it
+            if pos + n > mapped:
+                yield vas_base + pos
+            at = window.find(needle, at + 1)
 
     def find_first(self, needle: bytes, view: str = "raw") -> Optional[int]:
         """First offset of ``needle`` in the chosen view, or ``None``.
@@ -252,35 +300,22 @@ class GCoreDumpSource:
     def _find_first_vas(self, needle: bytes) -> Optional[int]:
         """First occurrence in the flattened VAS stream (overlap-tolerant).
 
-        Same segment walk and same boundary-stitching window as
-        :meth:`_find_all_vas` - each PT_LOAD is searched together with up to
-        ``len(needle) - 1`` following VAS bytes so a straddling needle is
-        found - but it returns as soon as a match *begins* inside a segment.
-        A first window match that starts in the stitched tail is skipped here
-        exactly as :meth:`_find_all_vas` skips it: the segment that owns those
-        bytes reports it on the next iteration.
+        Same segment walk and same boundary handling as
+        :meth:`_find_all_vas` (:meth:`_iter_segment_hits`) - each PT_LOAD is
+        searched in place, plus a ``len(needle) - 1`` byte window stitched
+        to the following VAS bytes so a straddling needle is found - but it
+        returns as soon as a match *begins* inside a segment. A match that
+        starts in the stitched tail is left to the segment that owns those
+        bytes, exactly as before.
         """
         if not needle or not self._vas_segments:
             return None
         mm = self._reader._mmap  # noqa: SLF001
         if mm is None:
             return None
-        overlap = len(needle) - 1
-        for idx, seg in enumerate(self._vas_segments):
-            seg_bytes = mm[seg.file_offset:seg.file_offset + seg.filesz]
-            vas_base = self._vas_cum[idx]
-            window = seg_bytes
-            if overlap > 0:
-                tail = self._read_vas_range(vas_base + seg.filesz, overlap)
-                if tail:
-                    window = seg_bytes + tail
-            # ``window`` is a bytes slice (or a concatenation), so it carries
-            # no position -- but the start is passed explicitly anyway so every
-            # ``find`` in this file reads the same way and none can regress into
-            # the mmap-position trap documented in ``_find_first_in_bytes``.
-            at = window.find(needle, 0)
-            if at != -1 and at < seg.filesz:
-                return vas_base + at
+        for idx in range(len(self._vas_segments)):
+            for hit in self._iter_segment_hits(mm, idx, needle):
+                return hit
         return None
 
     # -- VA translation -----------------------------------------------------

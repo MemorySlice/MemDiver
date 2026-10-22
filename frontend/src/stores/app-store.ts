@@ -15,6 +15,8 @@ import { useVarianceRegionsStore } from "@/stores/variance-regions-store";
 import { useVerificationStore } from "@/stores/verification-store";
 import { useOverlayRenderStore } from "@/stores/overlay-render-store";
 import { useOverlayDetailStore } from "@/stores/overlay-detail-store";
+import { useRegionSelectionStore } from "@/stores/region-selection-store";
+import { specToCategories } from "@/components/import/region-categories";
 
 /** All algorithms that can run on a single dump file. */
 export const SINGLE_FILE_ALGORITHMS = [
@@ -238,6 +240,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     // workspace that matched neither saved file.
     useDumpStore.getState().clearAll();
     useDumpRailStore.getState().reset();
+    // The saved region filter; an older session without one means "all".
+    const regionFilter = snap.region_filter ?? null;
+    useRegionSelectionStore.setState({
+      regionFilter,
+      wizardCategories: specToCategories(regionFilter),
+      wizardMaterialize: false,
+    });
 
     // Branch on the dump list, NEVER on `schema_version`: a v2 file saved from
     // the wizard before any dump was added carries an empty list and still
@@ -358,6 +367,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     useConsensusStore.getState().reset();
     useConsensusIncrementalStore.getState().reset();
     useVarianceRegionsStore.getState().reset();
+    useRegionSelectionStore.getState().reset();
     useDumpRailStore.getState().reset();
     useVerificationStore.getState().reset();
     useOverlayRenderStore.getState().reset();

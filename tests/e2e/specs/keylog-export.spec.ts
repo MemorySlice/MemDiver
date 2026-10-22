@@ -89,7 +89,15 @@ test.describe("Key-log composer export (synthetic MSL)", () => {
     page,
   }) => {
     const guards = installErrorGuards(page);
-    await openVerifyKeyTab(page);
+    await enterWorkspaceWithMsl(page, syntheticMslPath, { autoAnalyze: false });
+
+    // A typed offset follows the hex viewer's view: the fixture key sits at
+    // VAS offset 0 (in the raw view offset 0 is the MSL container header).
+    const views = page.getByRole("tablist", { name: /^(Dump|MSL) view mode$/ });
+    await expect(views).toBeVisible({ timeout: 15_000 });
+    await views.getByRole("tab", { name: "Memory (VAS)" }).click();
+    await page.locator(tab("verify-key")).first().click();
+    await expect(page.getByTestId("verify-offset-view")).toHaveText("in VAS view");
 
     // Recover the key first (same flow as C1).
     await page.getByTestId("verify-offset-input").fill(String(VERIFY_FIXTURE.offset));

@@ -9,6 +9,8 @@ import struct
 import uuid
 from pathlib import Path
 
+import blake3
+
 _RNG = random.Random(42)
 
 FILE_MAGIC = b"MEMSLICE"
@@ -48,6 +50,37 @@ def _build_block(block_type, payload, block_uuid=None, parent_uuid=None):
     )
     assert len(header) == BLOCK_HEADER_SIZE
     return header + payload, block_uuid
+
+
+_PREV_HASH_OFFSET = 0x30  # 32-byte PrevHash slot in the block header
+_EOC_BLOCK_TYPE = 0x0FFF
+
+
+def chain_prev_hashes(blob: bytes) -> bytes:
+    """Fill every block's PrevHash per spec §4.4 and return the new blob.
+
+    Block 0 PrevHash = BLAKE3(all HeaderSize file-header bytes); block i =
+    BLAKE3(block i-1 on-disk bytes). The builders above emit zero PrevHash
+    slots, so every top-level fixture assembler calls this last to produce
+    a chain that ``memdiver.msl.integrity.verify_chain`` accepts. Only the
+    32-byte PrevHash slots change: offsets, sizes and UUIDs are untouched.
+    Stops after End-of-Capture (anything later lives outside the chain).
+    """
+    out = bytearray(blob)
+    header_size = out[9]
+    prev_hash = blake3.blake3(bytes(out[:header_size])).digest()
+    offset = header_size
+    while offset + BLOCK_HEADER_SIZE <= len(out):
+        if out[offset:offset + 4] != BLOCK_MAGIC:
+            break
+        block_type, block_length = struct.unpack_from("<HxxI", out, offset + 4)
+        out[offset + _PREV_HASH_OFFSET:offset + _PREV_HASH_OFFSET + 32] = prev_hash
+        end = offset + block_length
+        prev_hash = blake3.blake3(bytes(out[offset:end])).digest()
+        offset = end
+        if block_type == _EOC_BLOCK_TYPE:
+            break
+    return bytes(out)
 
 
 def _build_file_header(dump_uuid, timestamp_ns, pid=1234):
@@ -619,7 +652,7 @@ def generate_msl_file() -> bytes:
     eoc_block, _ = _build_end_of_capture(timestamp_ns + 1_000_000_000)
     blob += eoc_block
 
-    return blob
+    return chain_prev_hashes(blob)
 
 
 def write_msl_fixture(path: Path) -> Path:
@@ -631,19 +664,36 @@ def write_msl_fixture(path: Path) -> Path:
 
 
 def ensure_msl_fixtures(root: Path) -> Path:
-    """Create MSL fixtures under root if they don't exist. Idempotent."""
+    """Create MSL fixtures under root if missing or stale. Idempotent.
+
+    The fixture is gitignored, so a copy left by an older generator (e.g. one
+    that wrote zero PrevHash fields) is replaced when its bytes differ from
+    what the deterministic generator writes today.
+    """
     root = Path(root)
     fixture_path = root / "msl" / "test_capture.msl"
-    if fixture_path.exists():
+    if fixture_path.exists() and not _fixture_is_stale(fixture_path):
         return root
     write_msl_fixture(fixture_path)
     return root
 
 
-def _build_compressed_block(block_type, payload, algo="zstd"):
+def _fixture_is_stale(fixture_path: Path) -> bool:
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        fresh = Path(tmp) / fixture_path.name
+        write_msl_fixture(fresh)
+        return fresh.read_bytes() != fixture_path.read_bytes()
+
+
+def _build_compressed_block(block_type, payload, algo="zstd", legacy=False):
     """Build an MSL block with compressed payload.
 
     algo: 'zstd' or 'lz4'. Returns None if compression lib unavailable.
+    By default the payload uses the spec §4.2.1 framing
+    (u64 UncompressedSize + zstd frame / size-prefixed lz4 block, as
+    memslicer writes it). ``legacy=True`` emits the pre-spec MemDiver
+    layout (bare zstd frame / lz4 frame) for backward-compat tests.
     """
     if algo == "zstd":
         try:
@@ -655,12 +705,16 @@ def _build_compressed_block(block_type, payload, algo="zstd"):
     elif algo == "lz4":
         try:
             import lz4.frame
-            compressed = lz4.frame.compress(payload)
+            import lz4.block
+            compressed = (lz4.frame.compress(payload) if legacy
+                          else lz4.block.compress(payload, store_size=True))
             flags = 0x01 | 0x04  # COMPRESSED | COMP_LZ4
         except ImportError:
             return None
     else:
         return None
+    if not legacy:
+        compressed = struct.pack("<Q", len(payload)) + compressed
 
     block_length = BLOCK_HEADER_SIZE + len(compressed)
     header = bytearray(BLOCK_HEADER_SIZE)
@@ -675,8 +729,10 @@ def _build_compressed_block(block_type, payload, algo="zstd"):
     return bytes(header) + compressed
 
 
-def write_compressed_msl_fixture(path, algo="zstd"):
+def write_compressed_msl_fixture(path, algo="zstd", legacy=False):
     """Write an MSL file with one compressed MEMORY_REGION block.
+
+    ``legacy=True`` writes the pre-spec bare-codec payload layout.
 
     Returns the path on success, or None if the compression lib is
     unavailable.
@@ -705,7 +761,7 @@ def write_compressed_msl_fixture(path, algo="zstd"):
     region_payload += page_map + page_data
 
     compressed_block = _build_compressed_block(
-        0x0001, region_payload, algo=algo,
+        0x0001, region_payload, algo=algo, legacy=legacy,
     )
     if compressed_block is None:
         return None
@@ -718,7 +774,7 @@ def write_compressed_msl_fixture(path, algo="zstd"):
     blob = _build_file_header(dump_uuid, timestamp_ns)
     blob += compressed_block
 
-    path.write_bytes(blob)
+    path.write_bytes(chain_prev_hashes(blob))
     return path
 
 
@@ -767,7 +823,7 @@ def write_aslr_fixture(
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(blob)
+    path.write_bytes(chain_prev_hashes(blob))
     return path
 
 

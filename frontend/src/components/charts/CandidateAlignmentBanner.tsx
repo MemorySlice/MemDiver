@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import type { AlignmentReport } from "@/api/candidates";
+import { warningsNotCoveredBy } from "@/api/diagnostics";
 
 /**
  * How the N dumps were compared, and what that cost.
@@ -20,7 +21,10 @@ export const CandidateAlignmentBanner = memo(function CandidateAlignmentBanner({
   report: AlignmentReport;
 }) {
   const { t } = useTranslation("candidates");
-  const hasWarnings = report.warnings.length > 0;
+  // A warning a diagnostic already says (localized, ClassificationBasisBanner)
+  // is not repeated as the backend's raw English sentence.
+  const warnings = warningsNotCoveredBy(report.warnings, report.diagnostics);
+  const hasWarnings = warnings.length > 0;
 
   return (
     <div
@@ -64,7 +68,7 @@ export const CandidateAlignmentBanner = memo(function CandidateAlignmentBanner({
             {t("alignmentBanner.warningsTitle")}
           </p>
           <ul className="mt-0.5 pl-4 list-disc space-y-0.5 md-text-warning">
-            {report.warnings.map((warning) => (
+            {warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>

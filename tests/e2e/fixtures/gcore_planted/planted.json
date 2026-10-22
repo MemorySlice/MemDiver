@@ -1,0 +1,8 @@
+{
+  "raw_offset": 432,
+  "vas_offset": 4352,
+  "raw_size": 8368,
+  "vas_size": 8192,
+  "secret": "secret=ABCDEF01",
+  "regex": "secret=[A-F0-9]{8}"
+}

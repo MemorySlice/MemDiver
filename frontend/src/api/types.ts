@@ -27,6 +27,8 @@ export interface AnalyzeRequest {
   normalize?: boolean;
   expand_keys?: boolean;
   algorithms?: string[];
+  /** Re-send past the server memory guard (see `@/api/memory-budget`). */
+  force_memory?: boolean;
 }
 
 export interface AnalyzeFileRequest {
@@ -88,6 +90,10 @@ export interface LibraryReport {
   num_runs: number;
   hits: SecretHit[];
   static_regions: StaticRegion[];
+  /**
+   * Free-form; `run_file` reports `offset_view` ("vas" / "raw") here: the
+   * byte view every hit offset addresses (read via `hitOffsetView`).
+   */
   metadata: Record<string, unknown>;
   canonical_phase?: string;
   library_version?: string;
@@ -135,7 +141,11 @@ export interface HexData {
 
 export interface EntropyData {
   overall_entropy: number;
-  high_entropy_regions: { start: number; end: number; mean_entropy: number }[];
+  /**
+   * `start`/`end` are in window-start space (`end` exclusive); `byte_end` is
+   * the exclusive end of the bytes the region's windows cover.
+   */
+  high_entropy_regions: { start: number; end: number; mean_entropy: number; byte_end?: number }[];
   profile_sample: { offset: number; entropy: number }[];
   stats: { min: number; max: number; mean: number };
   /**
@@ -145,6 +155,40 @@ export interface EntropyData {
    */
   step?: number;
   window?: number;
+  /** The byte view every offset above is in (the dump's flat view). */
+  view?: "raw" | "vas" | "va";
+  /** "full" = every window position visited (step 1); "sampled" otherwise. */
+  resolution?: "full" | "sampled";
+  /** A `resolution: "full"` request would return a finer profile than this one. */
+  full_resolution_available?: boolean;
+  /**
+   * Per-bucket summary of the profile, as column arrays: bucket `i` covers the
+   * window starts `[starts[i], stops[i])` and min/max/mean are over every
+   * window in it (over the sampled points when `resolution` is "sampled").
+   * Buckets without points are omitted.
+   */
+  envelope?: {
+    starts: number[];
+    stops: number[];
+    min: number[];
+    max: number[];
+    mean: number[];
+  };
+  /** The high-entropy threshold actually used, and where it came from. */
+  threshold?: number;
+  threshold_source?: "default" | "explicit";
+  /** Achievable maximum for this window: log2(min(window, 256)). */
+  max_entropy?: number;
+  /** Whether `threshold` can be reached at all with this window (<= max_entropy). */
+  threshold_reachable?: boolean;
+  /** Machine-readable warning codes, e.g. "threshold_unreachable". */
+  warnings?: string[];
+  /** Total number of high-entropy regions (the list may be capped). */
+  region_count?: number;
+  /** `high_entropy_regions` was capped and holds fewer than `region_count`. */
+  regions_truncated?: boolean;
+  /** Shortest region (in bytes) the server reports. */
+  min_region_bytes?: number;
 }
 
 export interface SessionInfo {
@@ -192,7 +236,7 @@ export interface SessionSnapshot {
   analysis_result: Record<string, unknown> | null;
 
   // Investigation state
-  bookmarks: Array<{ offset: number; length: number; label: string }>;
+  bookmarks: Array<{ offset: number; length: number; label: string; view?: "raw" | "vas" | "va" }>;
   investigation_offset: number | null;
 
   // --- Multi-dump workspace (schema_version 2) -----------------------------
@@ -225,6 +269,13 @@ export interface SessionSnapshot {
   /** "" means "no solo"; the wire contract has no null here. */
   solo_dump_path?: string;
   rail_collapsed?: boolean;
+
+  /**
+   * Analysis-time region view filter (`"regions=heap,stack"` as persisted,
+   * `"heap,stack"` accepted), or `null` for every region. Honoured for
+   * `.msl` dumps only; raw / ELF-core sources ignore it.
+   */
+  region_filter?: string | null;
 }
 
 /** The only dump fields that reach disk. See the security note above. */
@@ -441,6 +492,36 @@ export interface SessionInfoResponse {
   coverage: number;
 }
 
+// --- MSL import provenance (GET /api/inspect/import-provenance) ---
+/** One IMPORT_PROVENANCE block with its note parsed (api/models.py). */
+export interface ImportProvenanceRecord {
+  source_format: number;
+  source_format_name: string;
+  tool_name: string;
+  import_time_ns: number;
+  orig_file_size: number;
+  source_hash: string;
+  note: string;
+  base_note: string;
+  /** Kept region categories; null when the note records no selection. */
+  selected_categories: string[] | null;
+  selection_all: boolean;
+  writable_only: boolean;
+  module_globs: string[];
+  excluded_regions: number | null;
+  excluded_bytes: number | null;
+  fallback_all: boolean;
+  materialized: boolean;
+  orig_eoc_hash: string | null;
+  dropped_key_hints: number | null;
+  /** Regions were classified by their mapping names (`region_names=1`). Missing on older servers. */
+  region_names?: boolean;
+}
+
+export interface ImportProvenanceResponse {
+  provenance: ImportProvenanceRecord[];
+}
+
 // --- MSL virtual address space regions (GET /api/inspect/vas) ---
 export interface VasRegionsResponse {
   vas_entries: VasEntry[];
@@ -508,4 +589,120 @@ export interface ExportKeylogResult {
   keylog: string;
   count: number;
   output_path: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Dump import region selection (POST /api/dumps/preview, /upload, /import-path)
+// ---------------------------------------------------------------------------
+
+/** Selection category of a memory region (`msl/region_select.RegionCategory`). */
+export type RegionCategory =
+  | "heap"
+  | "stack"
+  | "image_code"
+  | "image_data"
+  | "mapped_file"
+  | "shared"
+  | "unclassified"
+  | "runtime";
+
+/**
+ * Spec names accepted by `regions` / `exclude_regions`: every category plus
+ * the aliases `image` (= image_code + image_data) and `all`. A comma-separated
+ * list of these, e.g. `"heap,stack"`, is the wire form.
+ */
+export type RegionSelectionName = RegionCategory | "image" | "all";
+
+/** One region an import would emit, as `ImportPreview.to_dict()` reports it. */
+export interface RegionInfo {
+  base_addr: number;
+  size: number;
+  protection: number;
+  region_type: number;
+  category: RegionCategory;
+  module_path: string | null;
+  captured_bytes: number;
+  /** Writable mapping (protection has the W bit). */
+  is_writable?: boolean;
+  /**
+   * Full mapping name (`[anon:scudo:primary]`, `/system/lib64/libc.so`);
+   * `null` when unknown or untrusted. Missing on older servers.
+   */
+  name?: string | null;
+}
+
+/** What a selection would keep and drop (counts + captured bytes). */
+export interface ImportSelectionCounts {
+  included_count: number;
+  included_bytes: number;
+  excluded_count: number;
+  excluded_bytes: number;
+}
+
+/** Shape returned by `POST /api/dumps/preview`. */
+export interface ImportPreview {
+  format: string;
+  is_msl: boolean;
+  regions: RegionInfo[];
+  totals: Partial<Record<RegionCategory, { count: number; bytes: number }>>;
+  summary: ImportSelectionCounts;
+  notes: string[];
+  /** `.msl` only: the container is AEAD-encrypted. */
+  encrypted?: boolean;
+  /** `.msl` only: it was opened (tag verified) with the supplied key material. */
+  decrypted?: boolean;
+  /**
+   * Where the region layout comes from: `"none"` = raw dump with no memory
+   * layout (one unclassified region), `"maps"` = raw dump split by a `.maps`
+   * sidecar, `"native"` = ELF core / minidump / `.msl`. Missing on older servers.
+   */
+  layout?: ImportLayout;
+  /** `layout === "maps"`: the memory map used (auto-detected sidecar or the one asked for). */
+  maps_path?: string | null;
+  /** Detected platform of the dumped process (`"android"`, `"linux"`, `"windows"`, ...), or `null`. */
+  platform?: string | null;
+  /** What the platform was detected from (e.g. mapping names, file header), or `null`. */
+  platform_source?: string | null;
+  /** Regions in the `runtime` category (excluded by the default selection). */
+  runtime_count?: number;
+  /** Captured bytes of the `runtime` regions. */
+  runtime_bytes?: number;
+}
+
+/** Source of an import preview's region layout (see `ImportPreview.layout`). */
+export type ImportLayout = "none" | "maps" | "native";
+
+/** Region-selection options shared by the upload and server-path imports. */
+export interface ImportSelectionOptions {
+  /** Comma-separated categories to keep, e.g. `"heap,stack"`. */
+  regions?: string;
+  /** Comma-separated categories to drop, e.g. `"image"`. */
+  excludeRegions?: string;
+  /** For `.msl` input: write a filtered copy instead of the verbatim default. */
+  materialize?: boolean;
+  /**
+   * Opens an encrypted `.msl` (needed to materialize it). Request-scoped
+   * secret: component state only, always sent in a POST body.
+   */
+  keyMaterial?: KeyMaterial;
+  /** Encrypted `.msl` + materialize: write the copy as PLAINTEXT (opt-in). */
+  decryptOutput?: boolean;
+}
+
+/**
+ * Selection outcome fields an import response carries ONLY when a selection
+ * was applied or a warning was raised (`ImportResult.selection_summary()`).
+ */
+export interface ImportSelectionResult {
+  selection?: string | null;
+  excluded_region_count?: number;
+  excluded_bytes?: number;
+  secrets_only_in_excluded?: number;
+  warnings?: string[];
+  materialized?: boolean;
+  dropped_key_hints?: number;
+  /** Encrypted source: the filtered copy was re-encrypted with the same key. */
+  reencrypted?: boolean;
+  /** Encrypted source: the filtered copy was written as plaintext (opt-in). */
+  decrypted_output?: boolean;
 }

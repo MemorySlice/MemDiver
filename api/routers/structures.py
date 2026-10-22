@@ -114,12 +114,17 @@ async def import_ksy(file: UploadFile = File(...)):
     if "seq" not in doc:
         raise HTTPException(status_code=400, detail="KSY file must contain a top-level 'seq' key")
 
-    meta_id: str = meta["id"]
+    meta_id = str(meta["id"])
     formats_dir = Path.home() / ".memdiver" / "formats"
     formats_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"{meta_id}.ksy"
-    dest = formats_dir / filename
+    # meta.id comes from the uploaded document, so it is a client-supplied
+    # filename: a value like "../../.bashrc" must not escape formats_dir.
+    try:
+        dest = safe_filename(formats_dir, meta_id, ".ksy")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="KSY meta.id must be a bare name")
     await asyncio.to_thread(dest.write_text, text, encoding="utf-8")
 
     return {"name": meta_id, "filename": filename, "message": "Imported successfully"}

@@ -5,6 +5,7 @@ and find_high_entropy_regions with edge cases and typical inputs.
 """
 import math
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -215,10 +216,11 @@ def test_widening_the_step_preserves_high_entropy_coverage():
     exceed log2(32) = 5.0 bits/byte, so the threshold here is one that is
     actually reachable (see `test_default_threshold_is_unreachable_for_window_32`).
     """
+    rng = random.Random(0x5EED)  # seeded: unseeded urandom made this flaky
     filler = bytearray(b"\x41\x42\x43\x44" * ((8 * 1024 * 1024) // 4))
     planted = [(1_000_000, 300_000), (5_000_000, 500_000)]
     for start, length in planted:
-        filler[start:start + length] = os.urandom(length)
+        filler[start:start + length] = rng.randbytes(length)
     data = bytes(filler)
 
     step = _bounded_entropy_step(len(data), 32, 16)

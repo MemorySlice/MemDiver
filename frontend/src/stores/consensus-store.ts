@@ -1,5 +1,9 @@
+import { withSessionRegionFilter } from "@/stores/region-selection-store";
 import { useCallback } from "react";
 import { create } from "zustand";
+import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
+import { ApiError } from "@/api/client";
+import { mergeDiagnostics, type Diagnostic } from "@/api/diagnostics";
 
 import i18n from "@/i18n";
 import { useDumpStore } from "./dump-store";
@@ -108,6 +112,12 @@ interface ConsensusState {
   thresholds: VarianceThresholds | null;
   staticRegions: StaticRegion[];
   volatileRegions: StaticRegion[];
+  /**
+   * Structured notes qualifying this build (`POST /consensus` top-level
+   * `diagnostics` merged with `alignment.diagnostics`, deduped by code).
+   * Empty when none were reported or the server predates them.
+   */
+  diagnostics: Diagnostic[];
   overlayEnabled: boolean;
 
   // Server-assigned id of the most recent consensus build. Range queries are
@@ -197,6 +207,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
   thresholds: null,
   staticRegions: [],
   volatileRegions: [],
+  diagnostics: [],
   overlayEnabled: false,
   consensusId: null,
   builtFrom: [],
@@ -212,16 +223,22 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
     const generation = ++runGeneration;
     set({ loading: true, error: null });
     try {
-      const res = await fetch("/api/analysis/consensus", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dump_paths: dumpPaths, normalize }),
+      const json = await withMemoryBudgetOverride(async (force) => {
+        const res = await fetch("/api/analysis/consensus", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // Session region filter (wizard Regions step), when one is set.
+          body: JSON.stringify(
+            withForceMemory(withSessionRegionFilter({ dump_paths: dumpPaths, normalize }), force),
+          ),
+        });
+        if (!res.ok) {
+          const detail = await res.text();
+          // ApiError keeps the raw body so the memory-budget refusal is detectable.
+          throw new ApiError(res.status, `Consensus failed: ${res.status} ${detail}`, detail);
+        }
+        return res.json();
       });
-      if (!res.ok) {
-        const detail = await res.text();
-        throw new Error(`Consensus failed: ${res.status} ${detail}`);
-      }
-      const json = await res.json();
       if (generation !== runGeneration) return;
       set({
         available: true,
@@ -236,6 +253,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
         thresholds: json.thresholds ?? null,
         staticRegions: json.static_regions ?? [],
         volatileRegions: json.volatile_regions ?? [],
+        diagnostics: mergeDiagnostics(json.diagnostics, json.alignment?.diagnostics),
         consensusId: json.consensus_id ?? null,
         // The server echoes the set it built over; fall back to the paths we
         // asked for rather than to `[]`, so an older backend that does not
@@ -291,6 +309,8 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       thresholds: null,
       staticRegions: [],
       volatileRegions: [],
+      // A flat fold applies no region filter, so it reports no diagnostics.
+      diagnostics: [],
       consensusId,
       // An incremental session CANNOT be selection-checked: it folds BYTES,
       // not files — `add-upload` hands it an uploaded blob that has no server
@@ -419,6 +439,7 @@ export const useConsensusStore = create<ConsensusState>((set, get) => ({
       thresholds: null,
       staticRegions: [],
       volatileRegions: [],
+      diagnostics: [],
       overlayEnabled: false,
       consensusId: null,
       builtFrom: [],

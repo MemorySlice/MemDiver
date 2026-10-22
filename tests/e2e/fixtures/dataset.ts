@@ -58,6 +58,14 @@ export const syntheticMslPath = path.join(
 );
 export const syntheticMslAvailable = existsSync(syntheticMslPath);
 
+// Committed live-capture .msl with exactly one heap and one stack region (and a
+// VAS_MAP listing both) for the materialize import spec: unticking "stack"
+// excludes exactly one 4 KiB region. Its dump UUID is fixed (HEAP_STACK_MSL_UUID).
+// Regenerate with: python tests/e2e/fixtures/heap_stack_msl/generate.py
+export const heapStackMslPath = path.join(__dirname, "heap_stack_msl", "sample.msl");
+export const heapStackMslAvailable = existsSync(heapStackMslPath);
+export const HEAP_STACK_MSL_UUID = "5eedc0de-0000-4000-8000-00000000beef";
+
 // Committed ASLR-shifted .msl PAIR for the multi-dump specs (side-by-side
 // panes + cross-dump overlay). Regenerate with:
 //   python tests/e2e/fixtures/aslr_msl/generate.py

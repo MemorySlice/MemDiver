@@ -111,6 +111,8 @@ def _cmd_inspect_entropy(args: argparse.Namespace) -> int:
     machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
         lambda: entropy_result(_new_tool_session(), args.dump_path, args.offset,
                                args.length, args.window, args.step, args.threshold,
+                               resolution=getattr(args, "resolution", "auto"),
+                               buckets=getattr(args, "buckets", None),
                                **_inspect_key_kwargs(args)))
     return _emit_inspect(machine_payload, args.output)
 
@@ -193,6 +195,23 @@ def _cmd_inspect_modules(args: argparse.Namespace) -> int:
     return _emit_inspect(machine_payload, args.output)
 
 
+def _cmd_inspect_provenance(args: argparse.Namespace) -> int:
+    """List IMPORT_PROVENANCE records with the note parsed (empty for non-.msl).
+
+    JSON by default like every inspect action; ``--text`` prints a
+    human-readable summary instead (errors still go out as JSON).
+    """
+    from memdiver.mcp_server.tools_inspect import import_provenance_result
+    machine_payload, exit_code, _stderr_msg = _present_inspect_cli_call(
+        lambda: import_provenance_result(_new_tool_session(), args.msl_path,
+                                         **_inspect_key_kwargs(args)))
+    if getattr(args, "text", False) and exit_code == 0:
+        from .region_report import provenance_lines
+        print("\n".join(provenance_lines(machine_payload["provenance"])))
+        return 0
+    return _emit_inspect(machine_payload, args.output)
+
+
 def _cmd_inspect_handles(args: argparse.Namespace) -> int:
     """List HANDLE_TABLE entries (MSL only)."""
     from memdiver.mcp_server.tools_inspect import handles_result
@@ -231,6 +250,7 @@ _INSPECT_HANDLERS = {
     "processes": _cmd_inspect_processes,
     "modules": _cmd_inspect_modules,
     "handles": _cmd_inspect_handles,
+    "provenance": _cmd_inspect_provenance,
     "xref": _cmd_inspect_xref,
     "structure": _cmd_inspect_structure,
 }

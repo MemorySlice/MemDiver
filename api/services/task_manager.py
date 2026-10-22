@@ -79,6 +79,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from memdiver.api.memory_budget_errors import (
+    is_memory_budget_error,
+    memory_budget_fields,
+)
 from memdiver.api.services.artifact_store import ArtifactSpec, ArtifactStore
 from memdiver.api.services.progress_bus import Event, ProgressBus
 from memdiver.core.artifact_util import atomic_write_text
@@ -166,6 +170,10 @@ class TaskRecord:
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
     error: Optional[str] = None
+    #: Machine-readable failure detail, or ``None``. Set for a memory-budget
+    #: refusal: ``{"code": "memory_budget_exceeded", "estimate_bytes",
+    #: "budget_bytes", "details"}`` (see ``api.memory_budget_errors``).
+    error_info: Optional[Dict[str, Any]] = None
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
@@ -181,6 +189,7 @@ class TaskRecord:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "error": self.error,
+            "error_info": self.error_info,
         }
 
     @classmethod
@@ -218,8 +227,21 @@ class TaskRecord:
             started_at=data.get("started_at"),
             ended_at=data.get("ended_at"),
             error=data.get("error"),
+            error_info=data.get("error_info"),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
         )
+
+
+def _task_failure(exc: BaseException) -> tuple[str, Optional[Dict[str, Any]]]:
+    """``(message, error_info)`` for a worker exception.
+
+    A memory-budget refusal keeps its human message (not ``repr``) plus its
+    code / estimate / budget; every other failure keeps the historical
+    ``repr(exc)`` with no structured info.
+    """
+    if is_memory_budget_error(exc):
+        return exc.message, memory_budget_fields(exc)  # type: ignore[attr-defined]
+    return repr(exc), None
 
 
 # The entry point a worker process runs. Declared at module scope so
@@ -630,7 +652,8 @@ class TaskManager:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     await self._drain_barrier(task_id)
-                    self._on_error(task_id, repr(exc))
+                    message, info = _task_failure(exc)
+                    self._on_error(task_id, message, info=info)
                 else:
                     # Let the progress stream catch up first: the terminal
                     # ``done`` closes the bus channel and ends every live
@@ -697,14 +720,22 @@ class TaskManager:
             mutate=_append_artifacts,
         )
 
-    def _on_error(self, task_id: str, message: str) -> None:
+    def _on_error(
+        self, task_id: str, message: str,
+        *, info: Optional[Dict[str, Any]] = None,
+    ) -> None:
         def _set_error(record: TaskRecord) -> None:
             record.error = message
+            record.error_info = info
 
         self._finalize(
             task_id,
             status=TaskStatus.FAILED,
-            publish=Event(task_id=task_id, type="error", error=message),
+            # ``extra`` carries the machine-readable failure (memory-budget
+            # refusal: code + estimate/budget) so a live client can offer a
+            # forced re-run; ``None`` is dropped from the wire payload.
+            publish=Event(task_id=task_id, type="error", error=message,
+                          extra=info),
             mutate=_set_error,
         )
 

@@ -3,6 +3,7 @@ import { getSessionInfo } from "@/api/client";
 import type { SessionInfoResponse } from "@/api/types";
 import { SessionView } from "./SessionView";
 import { CoverageMap } from "@/components/msl/CoverageMap";
+import { ImportProvenancePanel } from "./ImportProvenancePanel";
 import { useDumpStore } from "@/stores/dump-store";
 
 interface Props {
@@ -11,7 +12,8 @@ interface Props {
 
 /**
  * MSL session summary: fetches session metadata and renders the info panel
- * (with page-capture coverage) followed by the per-region CoverageMap.
+ * (with page-capture coverage), the import provenance (if any) and the
+ * per-region CoverageMap.
  */
 export function SessionInfoPanel({ mslPath }: Props) {
   const [info, setInfo] = useState<SessionInfoResponse | null>(null);
@@ -50,6 +52,7 @@ export function SessionInfoPanel({ mslPath }: Props) {
   return (
     <>
       <SessionView data={info} coverage={info.coverage} />
+      <ImportProvenancePanel mslPath={mslPath} />
       <CoverageMap mslPath={mslPath} />
     </>
   );

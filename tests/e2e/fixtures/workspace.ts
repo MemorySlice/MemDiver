@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 import { MSL } from "./dataset";
 
@@ -63,6 +63,33 @@ export async function dismissFtueIfPresent(page: Page): Promise<void> {
 }
 
 /**
+ * Pass the wizard's "Regions" step (shown after Select Data once the path
+ * validates).
+ *
+ * Defaults to choosing "All" categories: that applies no region filter, so
+ * every spec driving the wizard through this helper analyses exactly what it
+ * did before the step existed. Pass `"defaults"` to keep the heap + stack +
+ * unclassified preselection instead.
+ */
+export async function passRegionsStep(
+  page: Page,
+  choice: "all" | "defaults" = "all",
+): Promise<void> {
+  const step = page.getByTestId("region-select-step");
+  await expect(step).toBeVisible({ timeout: 20_000 });
+  // A raw dump without a layout disables the presets (selection is already
+  // "all") once its preview lands, so let the preview settle first and only
+  // click the preset when it is actionable.
+  await expect(page.getByTestId("region-preview-loading")).toBeHidden({ timeout: 60_000 });
+  const allPreset = page.getByTestId("region-all");
+  if (choice === "all" && (await allPreset.isEnabled())) {
+    await allPreset.click();
+  }
+  await page.getByRole("button", { name: /^Next$/ }).click();
+  await expect(step).toBeHidden({ timeout: 10_000 });
+}
+
+/**
  * Drive the landing+wizard UI until the workspace is active for a
  * single-file MSL session. Tests then have the full workspace mounted
  * and can click the data-testid-marked tabs.
@@ -98,6 +125,9 @@ export async function enterWorkspaceWithMsl(
   // to the Analysis step (MSL is a single file so Directory Type is
   // skipped).
   await page.getByRole("button", { name: /^Next$/ }).click();
+
+  // Step 2: Regions — "All" keeps the historical unfiltered analysis.
+  await passRegionsStep(page);
 
   // Wait for the final step. The wizard defaults to "Auto-Analyze", so the
   // button reads "Start Analysis" here whatever we go on to choose.
@@ -164,6 +194,9 @@ export async function enterWorkspaceWithDataset(
   await pathInput.fill(dirPath);
   await page.getByRole("button", { name: /^Next$/ }).click();
 
+  // Regions step ("All" = no filter, as before the step existed).
+  await passRegionsStep(page);
+
   // Directory Type step: choose "Dataset Directory" (also auto-detected), Next.
   await page.getByRole("button", { name: /Dataset Directory/i }).first().click();
   await page.getByRole("button", { name: /^Next$/ }).click();
@@ -195,6 +228,22 @@ export async function switchToExplorationMode(page: Page): Promise<void> {
     .getByRole("button", { name: /^exploration$/i })
     .first()
     .click();
+}
+
+/**
+ * The pipeline Oracle stage keeps the first-party pcap route inside a
+ * `<details>` disclosure that is collapsed by default (StageOracle.tsx), so
+ * the pcap dropzone has a zero-size box — "not visible" to Playwright — until
+ * the summary is clicked. Opens the disclosure (idempotently) and returns the
+ * dropzone, ready to be clicked for the detached filechooser.
+ */
+export async function revealPcapDropzone(page: Page): Promise<Locator> {
+  const disclosure = page.locator('details[data-tour-id="pipeline-oracle-pcap"]');
+  const isOpen = await disclosure.evaluate((el) => (el as HTMLDetailsElement).open);
+  if (!isOpen) await disclosure.locator("summary").click();
+  const dropzone = page.getByTestId("pcap-upload-dropzone");
+  await expect(dropzone).toBeVisible();
+  return dropzone;
 }
 
 /**

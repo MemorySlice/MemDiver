@@ -139,6 +139,30 @@ EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
         "registering it would invent a capability that does not exist.",
     ),
     (
+        "memdiver.app.tools.preview_import",
+        "Library + MCP only (memdiver.services re-export, MCP preview_import "
+        "tool). The CLI `import --list-regions` dry run calls msl."
+        "import_preview.preview_import directly (as `import` calls msl."
+        "importer.import_dump) and the web surface has no preview route yet, "
+        "so registering it would add KNOWN_PARITY_GAPS entries to a "
+        "shrink-only baseline. Same standing as app.tools.import_dump.",
+    ),
+    (
+        "memdiver.app.tools.set_region_filter",
+        "NOT A CAPABILITY: session plumbing. It sets ToolSession.region_filter, "
+        "the default view filter the MCP tools fall back to when a call omits "
+        "its own region_filter. MCP-only because only MCP keeps one long-lived "
+        "ToolSession: the web surface carries its default in the saved session "
+        "(api.region_filter_resolution), the CLI takes --regions per "
+        "command, and a library caller sets ToolSession.set_region_filter "
+        "directly. Registering it would GROW KNOWN_PARITY_GAPS.",
+    ),
+    (
+        "memdiver.app.tools.get_region_filter",
+        "NOT A CAPABILITY: the read side of set_region_filter (same session "
+        "plumbing, same MCP-only standing).",
+    ),
+    (
         "memdiver.app.tools.import_raw_dump",
         "Back-compat alias that just calls import_dump — same compute, not a "
         "distinct capability. The MCP import_raw_dump tool routes here.",
@@ -180,14 +204,6 @@ EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
         "above.",
     ),
     (
-        "experiment",
-        "POST /run is pure async dispatch: it validates the body and submits "
-        "runner_dotted='memdiver.app.pipeline.experiment_task_runner."
-        "run_experiment' to the TaskManager. The `experiment` capability IS "
-        "wired on web through that runner, but the hand-off is a STRING the "
-        "AST cannot follow, so the route reads as uncovered.",
-    ),
-    (
         "oracles",
         "Oracle file CRUD + arm/dry-run lifecycle (upload, list, arm, delete) "
         "— artifact management that feeds the pipeline capabilities, not a "
@@ -221,6 +237,15 @@ EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
 
 #: Individual routes in CAPABILITY-BEARING routers that are not covered.
 EXEMPT_ROUTES: FrozenSet[Tuple[str, str]] = frozenset({
+    # -- experiment router (POST /capture is covered: capture_result) ------
+    (
+        "experiment:POST /run",
+        "POST /run is pure async dispatch: it validates the body and submits "
+        "runner_dotted='memdiver.app.pipeline.experiment_task_runner."
+        "run_experiment' to the TaskManager. The `experiment` capability IS "
+        "wired on web through that runner, but the hand-off is a STRING the "
+        "AST cannot follow, so the route reads as uncovered.",
+    ),
     # -- analysis router ---------------------------------------------------
     (
         "analysis:POST /run",

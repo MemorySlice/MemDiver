@@ -24,6 +24,7 @@ class AnalyzeRequest:
     expand_keys: bool = True
     algorithms: Optional[List[str]] = None
     template: Any = None  # Resolved template object; None = resolve from template_name
+    force: bool = False  # Bypass the consensus memory-budget guard
 
     def __post_init__(self):
         if not self.library_dirs:

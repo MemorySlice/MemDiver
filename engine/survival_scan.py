@@ -169,9 +169,10 @@ WHY THESE PARTICULAR CALLS
   ``isinstance`` for every duck-typed source), and ``find_first_in`` is the
   sanctioned entry point that falls back to ``find_all`` for sources predating
   it.
-* Never ``read_all()``. It is NOT part of the ``DumpSource`` contract — gcore
-  and the regioned-raw sources omit it on purpose — and it materialises up to
-  85 MB per dump.
+* Never ``read_all()``. It is NOT part of the ``DumpSource`` contract (a
+  duck-typed source may lack it), on gcore and the regioned-raw sources it
+  returns the ``"vas"`` view while ``find_first`` defaults to ``"raw"``, and it
+  materialises up to 85 MB per dump.
 * Never :class:`core.dump_io.DumpReader` directly. ``mmap.find(sub)`` defaults
   its start to the mapping's CURRENT FILE POSITION, so a bare ``.find()`` after
   anything that advanced the mapping reports a present secret as absent

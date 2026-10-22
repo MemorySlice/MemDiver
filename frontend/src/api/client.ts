@@ -26,9 +26,12 @@ import type {
   PageStatesResponse,
   SessionInfoResponse,
   VasRegionsResponse,
+  ImportProvenanceResponse,
   DatasetRunsResponse,
   KeyMaterial,
+  ImportPreview,
 } from "./types";
+import { keyMaterialWire } from "./key-material-wire";
 
 const BASE = ""; // relative -- Vite proxy handles /api/* during dev
 
@@ -41,10 +44,18 @@ function appendKey(qs: URLSearchParams, key?: KeyMaterial) {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /**
+   * The raw response body. Equal to `message` for errors thrown by `request`;
+   * kept separately so a caller that prefixes its own message (e.g. the
+   * consensus store's "Consensus failed: ...") still exposes the structured
+   * envelope to `isMemoryBudgetError`.
+   */
+  body: string;
+  constructor(status: number, message: string, body: string = message) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -150,17 +161,32 @@ export const runFileAnalysis = (body: AnalyzeFileRequest & KeyMaterial) =>
   });
 
 // Inspect
+/** The byte views a dump can be read through (backend `ViewMode`). */
+export type DumpViewMode = "raw" | "vas" | "va";
+
+/** Optional addressing inputs of {@link readHex}. */
+export interface ReadHexOptions {
+  /**
+   * The view `offset` addresses. Omitted = the backend default ("raw"), the
+   * historical behaviour. Callers describing a hex-viewer cursor MUST pass the
+   * viewer's current view, or a VAS/VA offset is read as a container offset.
+   */
+  view?: DumpViewMode;
+}
+
 export const readHex = (
   dumpPath: string,
   offset = 0,
   length = 256,
   key?: KeyMaterial,
+  options: ReadHexOptions = {},
 ) => {
   const qs = new URLSearchParams({
     dump_path: dumpPath,
     offset: String(offset),
     length: String(length),
   });
+  if (options.view) qs.set("view", options.view);
   appendKey(qs, key);
   return request<HexData>(`/api/inspect/hex?${qs.toString()}`);
 };
@@ -177,21 +203,67 @@ export const readHex = (
  */
 export const ENTROPY_MAX_PROFILE_POSITIONS = 1 << 18;
 
+/**
+ * How many envelope buckets the entropy tab asks for: about one per pixel
+ * column of a wide chart, so a single-window spike survives as a peak of the
+ * bucket's max. The server clamps to [1, 4096].
+ */
+export const ENTROPY_ENVELOPE_BUCKETS = 1500;
+
+export interface EntropyOptions {
+  /** Same as the positional `maxPositions` (wins over it when both are given). */
+  maxPositions?: number;
+  /**
+   * The byte view `offset`/`length` address and the profile is computed in.
+   * Omitted = the dump's flat view (the historical behaviour). The response's
+   * `view` names the view actually used.
+   */
+  view?: DumpViewMode;
+  /** Envelope bucket count (server clamps to [1, 4096]; omitted = 1500). */
+  buckets?: number;
+  /**
+   * "auto" (server default) = full resolution for small inputs, sampled with
+   * `full_resolution_available` otherwise; "full" = every window position.
+   */
+  resolution?: "auto" | "sampled" | "full";
+  /** High-entropy threshold; omitted = the server's window-aware default. */
+  threshold?: number;
+  /** Aborts the request (e.g. a superseded full-resolution refinement). */
+  signal?: AbortSignal;
+}
+
+/**
+ * `getEntropy(path, offset, length, key, maxPositions?, options?)`; the fifth
+ * argument may also be the options object itself
+ * (`getEntropy(path, offset, length, key, { view })`).
+ */
 export const getEntropy = (
   dumpPath: string,
   offset = 0,
   length = 0,
   key?: KeyMaterial,
-  maxPositions = ENTROPY_MAX_PROFILE_POSITIONS,
+  maxPositionsOrOptions: number | EntropyOptions = ENTROPY_MAX_PROFILE_POSITIONS,
+  options: EntropyOptions = {},
 ) => {
+  const opts: EntropyOptions =
+    typeof maxPositionsOrOptions === "number"
+      ? { ...options, maxPositions: options.maxPositions ?? maxPositionsOrOptions }
+      : { ...maxPositionsOrOptions, ...options };
   const qs = new URLSearchParams({
     dump_path: dumpPath,
     offset: String(offset),
     length: String(length),
-    max_positions: String(maxPositions),
+    max_positions: String(opts.maxPositions ?? ENTROPY_MAX_PROFILE_POSITIONS),
   });
+  if (opts.view) qs.set("view", opts.view);
+  if (opts.buckets !== undefined) qs.set("buckets", String(opts.buckets));
+  if (opts.resolution) qs.set("resolution", opts.resolution);
+  if (opts.threshold !== undefined) qs.set("threshold", String(opts.threshold));
   appendKey(qs, key);
-  return request<EntropyData>(`/api/inspect/entropy?${qs.toString()}`);
+  const url = `/api/inspect/entropy?${qs.toString()}`;
+  return opts.signal
+    ? request<EntropyData>(url, { signal: opts.signal })
+    : request<EntropyData>(url);
 };
 
 export interface StringsOpts {
@@ -318,6 +390,9 @@ export const getSessionInfo = (mslPath: string, key?: KeyMaterial) =>
 export const getVasRegions = (mslPath: string, key?: KeyMaterial) =>
   getKeyedInspect<VasRegionsResponse>("vas", mslPath, key);
 
+export const getImportProvenance = (mslPath: string, key?: KeyMaterial) =>
+  getKeyedInspect<ImportProvenanceResponse>("import-provenance", mslPath, key);
+
 export const getTagStatus = (mslPath: string) =>
   request<{ tag_status: TagStatus }>(
     `/api/inspect/tag-status?msl_path=${encodeURIComponent(mslPath)}`,
@@ -333,9 +408,14 @@ export const probeTagStatusWithKey = (
   });
 
 // Structure inspection
-export const autoDetectStructure = (dumpPath: string, offset: number, protocol?: string) =>
+export const autoDetectStructure = (
+  dumpPath: string,
+  offset: number,
+  protocol?: string,
+  view?: DumpViewMode,
+) =>
   request<StructureMatchResult>(
-    `/api/inspect/structure?dump_path=${encodeURIComponent(dumpPath)}&offset=${offset}${protocol ? `&protocol=${encodeURIComponent(protocol)}` : ""}`,
+    `/api/inspect/structure?dump_path=${encodeURIComponent(dumpPath)}&offset=${offset}${protocol ? `&protocol=${encodeURIComponent(protocol)}` : ""}${view ? `&view=${view}` : ""}`,
   );
 
 // Analysis patterns
@@ -347,12 +427,15 @@ export const applyStructure = (
   offset: number,
   structureName: string,
   key?: KeyMaterial,
+  view?: DumpViewMode,
 ) => {
   const qs = new URLSearchParams({
     dump_path: dumpPath,
     offset: String(offset),
     structure_name: structureName,
   });
+  // The view `offset` addresses; omitted = the dump's default byte source.
+  if (view) qs.set("view", view);
   appendKey(qs, key);
   return request<StructureApplyResult>(`/api/inspect/structure-apply?${qs.toString()}`);
 };
@@ -421,6 +504,41 @@ export async function uploadFile<T>(url: string, file: File): Promise<T> {
 export const importKsy = (file: File) =>
   uploadFile<{ name: string; filename: string; message: string }>("/api/structures/import-ksy", file);
 
+/**
+ * Metadata-only preview of what importing a SERVER-SIDE dump would emit:
+ * per-region categories, per-category totals, and the included/excluded
+ * summary for the optional `regions` / `excludeRegions` specs. Writes nothing.
+ * A bad category name answers 422 with the valid names in the message.
+ */
+export const previewImport = (
+  path: string,
+  regions?: string,
+  excludeRegions?: string,
+  keyMaterial?: KeyMaterial,
+  options?: PreviewImportOptions,
+) =>
+  request<ImportPreview>("/api/dumps/preview", {
+    method: "POST",
+    // Key material rides in the POST body only — never in the URL.
+    body: JSON.stringify({
+      path,
+      ...(regions ? { regions } : {}),
+      ...(excludeRegions ? { exclude_regions: excludeRegions } : {}),
+      ...keyMaterialWire(keyMaterial),
+      ...(options?.mapsPath ? { maps_path: options.mapsPath } : {}),
+    }),
+  });
+
+/** Extra, optional inputs of {@link previewImport}. */
+export interface PreviewImportOptions {
+  /**
+   * `/proc/<pid>/maps`-style memory map splitting a raw dump into regions.
+   * Omitted = the server auto-detects a `.maps` sidecar next to the dump.
+   */
+  mapsPath?: string;
+}
+
+
 // Notebook
 export const getNotebookStatus = () =>
   request<{ available: boolean; error: string | null }>("/api/notebook/status");
@@ -448,6 +566,8 @@ export const verifyKey = (body: {
   aad_hex?: string;
   tag_hex?: string;
   cipher?: string;
+  /** View `offset` addresses; omitted = the dump's default view. */
+  view?: DumpViewMode;
 } & KeyMaterial) =>
   request<VerifyKeyResult>("/api/analysis/verify-key", {
     method: "POST",

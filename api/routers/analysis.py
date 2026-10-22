@@ -37,9 +37,11 @@ from memdiver.api.services.consensus_session import (
 )
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
-from memdiver.api.path_safety import ensure_within
+from memdiver.api.path_safety import ensure_within, safe_filename
+from memdiver.api.region_filter_resolution import request_region_filter
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
+from memdiver.api.memory_budget_errors import reraise_if_memory_budget
 from memdiver.core.variance import DEFAULT_THRESHOLDS
 from memdiver.engine.consensus import MAX_CONSENSUS_WINDOW
 from memdiver.engine.consensus_service import build_consensus
@@ -109,7 +111,10 @@ def run_consensus(
     # open+build is the shared skeleton; build_consensus opens each dump as a
     # context-managed source, builds the vector while they are all live, and
     # closes them once the vector holds its own copies. No disk writes here.
-    cm = build_consensus(req.dump_paths, normalize=req.normalize, key_material=km)
+    # Request value wins; otherwise the named session's persisted filter.
+    region_filter = request_region_filter(req)
+    cm = build_consensus(req.dump_paths, normalize=req.normalize, key_material=km,
+                         region_filter=region_filter, force=req.force_memory)
 
     # Register the build under its own id so range queries are isolated per
     # client — no shared mutable state on a process-wide singleton.
@@ -164,6 +169,16 @@ def run_consensus(
         # the caller can compare it against the selection it sent.
         "dump_paths": list(req.dump_paths),
         "normalize": req.normalize,
+        # Region offsets above are in this filter's view (None = unfiltered).
+        "region_filter": cm.region_filter or region_filter,
+        # HOW the dumps were put into correspondence, and what that cost --
+        # the same AlignmentReport the aligned-window / regions routes carry.
+        "alignment": cm.alignment_report.to_dict(),
+        # Its structured ``{code, message, severity, details}`` notes hoisted
+        # (e.g. ``classification_basis_mixed``), so a client renders its
+        # banner without reaching into ``alignment``. Empty when nothing is
+        # questionable. Same shape as POST /candidates' ``diagnostics``.
+        "diagnostics": cm.alignment_report.diagnostic_dicts,
     }
 
 
@@ -207,6 +222,8 @@ def analysis_candidates(req: AnalysisCandidatesRequest):
         normalize=req.normalize,
         project_id=req.project_id,
         key_material=km,
+        region_filter=request_region_filter(req),
+        force=req.force_memory,
     )
 
 
@@ -247,6 +264,33 @@ def analysis_locate_key(req: LocateKeyRequest):
     )
 
 
+def _contained_output_dir(output_dir: str | None, name: str) -> str | None:
+    """Contain a client-supplied export ``output_dir`` in the upload directory.
+
+    Same policy as ``output_path`` on ``/export-keylog`` below: a WRITE is
+    always contained at the HTTP boundary (the CLI / MCP producers keep writing
+    wherever the operator's shell can). ``name`` is joined onto the directory
+    by the producer, so it must also be a bare filename. ``None`` (the
+    frontend's inline-only flow) needs no upload directory at all.
+    """
+    if not output_dir:
+        return None
+    try:
+        resolved = ensure_within(upload_dir_or_409(), Path(output_dir))
+    except ValueError as exc:
+        # Do not echo the resolved upload_dir (server layout disclosure).
+        raise HTTPException(
+            status_code=400, detail="output_dir escapes the upload directory",
+        ) from exc
+    try:
+        safe_filename(resolved, name)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="name must be a bare filename",
+        ) from exc
+    return str(resolved)
+
+
 @router.post("/key-pattern")
 def analysis_key_pattern(req: KeyPatternRequest):
     """Export a scanning signature anchored on an already-known secret.
@@ -263,6 +307,7 @@ def analysis_key_pattern(req: KeyPatternRequest):
     """
     from memdiver.app.tools_pipeline import export_key_pattern
 
+    resolved_output_dir = _contained_output_dir(req.output_dir, req.name)
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
     return export_key_pattern(
         dump_paths=list(req.dump_paths),
@@ -274,7 +319,7 @@ def analysis_key_pattern(req: KeyPatternRequest):
         name=req.name,
         min_static_ratio=req.min_static_ratio,
         view=req.view,
-        output_dir=req.output_dir,
+        output_dir=resolved_output_dir,
         include_window_hex=req.include_window_hex,
         max_offsets=req.max_offsets,
         key_material=km,
@@ -593,6 +638,8 @@ def consensus_aligned_window(
             classify=req.classify,
             include_bytes=req.include_bytes,
             key_material_by_path=key_material_by_path,
+            region_filter=request_region_filter(req),
+            force=req.force_memory,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload
@@ -689,6 +736,8 @@ def consensus_regions(
             include_anchor_offsets=req.include_anchor_offsets,
             normalize=req.normalize,
             key_material_by_path=key_material_by_path,
+            region_filter=request_region_filter(req),
+            force=req.force_memory,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload
@@ -811,6 +860,7 @@ def run_convergence(req: ConvergenceRequest):
         paths,
         n_values=req.n_values,
         max_fp=req.max_fp,
+        force=req.force_memory,
     )
     return serialize_convergence_result(result)
 
@@ -841,9 +891,11 @@ def verify_key(req: VerifyKeyRequest):
             nonce_hex=req.nonce_hex,
             aad_hex=req.aad_hex,
             tag_hex=req.tag_hex,
+            view=req.view,
             key_material=km,
         )
     except CapabilityError as exc:
+        reraise_if_memory_budget(exc)
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
 
     return {
@@ -880,8 +932,10 @@ def auto_export(req: AutoExportRequest):
             align=req.align,
             context=req.context,
             key_material=km,
+            force=req.force_memory,
         )
     except CapabilityError as exc:
+        reraise_if_memory_budget(exc)
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
 
@@ -924,6 +978,7 @@ def manual_export(req: ManualExportRequest):
             key_material=km,
         )
     except CapabilityError as exc:
+        reraise_if_memory_budget(exc)
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
 
@@ -978,4 +1033,5 @@ def export_keylog(
             output_path=resolved_output,
         )
     except CapabilityError as exc:
+        reraise_if_memory_budget(exc)
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc

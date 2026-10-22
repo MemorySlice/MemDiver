@@ -8,7 +8,7 @@ import {
   pcapMatchedMslPath,
   pcapCapturePath,
 } from "../fixtures/dataset";
-import { enterWorkspaceWithMsl, installErrorGuards } from "../fixtures/workspace";
+import { enterWorkspaceWithMsl, installErrorGuards, revealPcapDropzone } from "../fixtures/workspace";
 
 /**
  * Regression: the emit stage was unreachable from the UI.
@@ -73,9 +73,10 @@ test.describe("Emitted Volatility 3 plugin", { tag: "@requires-pcap" }, () => {
     await page.getByRole("button", { name: "Add paths" }).click();
     await page.getByRole("button", { name: /Next: Oracle/i }).click();
 
+    const pcapDropzone = await revealPcapDropzone(page);
     const [chooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByTestId("pcap-upload-dropzone").click(),
+      pcapDropzone.click(),
     ]);
     await chooser.setFiles(pcapCapturePath);
 

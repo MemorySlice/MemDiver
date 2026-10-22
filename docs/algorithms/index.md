@@ -11,7 +11,7 @@ MemDiver ships **8 detection algorithms**, discovered automatically by `algorith
 | [`constraint_validator`](constraint_validator) | `unknown_key` | TLS KDF relationship verification for candidates. |
 | [`user_regex`](user_regex) | `unknown_key` | Custom regex patterns. |
 | [`pattern_match`](pattern_match) | `unknown_key` | Structural matching from JSON pattern definitions. |
-| [`structure_scan`](structure_scan) | `unknown_key` | Structure-library-backed overlay + best-match scoring. |
+| [`structure_scan`](structure_scan) | `unknown_key` | Structure-library matches for key-sized high-entropy regions (shape fit × constraints) and magic-bearing headers. |
 
 ## Contracts
 

@@ -8,6 +8,7 @@
  */
 
 import { request, uploadFile } from "./client";
+import { withSessionRegionFilter } from "@/stores/region-selection-store";
 // ``StageDiagnostic`` is the ONE diagnostic shape every producer emits, so
 // the paired-field result below reuses it rather than declaring a second.
 import type { StageDiagnostic } from "./progress-events";
@@ -67,6 +68,8 @@ export interface PipelineRunRequest {
   brute_force?: BruteForceParams;
   nsweep?: NSweepParams | null;
   emit?: EmitParams | null;
+  /** Re-send past the server memory guard (see `@/api/memory-budget`). */
+  force_memory?: boolean;
 }
 
 export interface PipelineRunResponse {
@@ -528,6 +531,8 @@ export interface TaskRecord {
   started_at: number | null;
   ended_at: number | null;
   error: string | null;
+  /** Structured failure, e.g. `{code: "memory_budget_exceeded", estimate_bytes, budget_bytes, details}`. */
+  error_info?: Record<string, unknown> | null;
   schema_version: number;
 }
 
@@ -536,7 +541,8 @@ export interface TaskRecord {
 export const runPipeline = (body: PipelineRunRequest) =>
   request<PipelineRunResponse>("/api/pipeline/run", {
     method: "POST",
-    body: JSON.stringify(body),
+    // Session region filter (wizard Regions step), unless the body sets one.
+    body: JSON.stringify(withSessionRegionFilter(body)),
   });
 
 /**

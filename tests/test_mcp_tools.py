@@ -112,6 +112,47 @@ class TestListProtocols:
         assert "13" in tls["versions"]
 
 
+# --- set_region_filter / get_region_filter ---
+
+class TestRegionFilter:
+    def test_default_is_unfiltered(self, session):
+        assert tools.get_region_filter(session) == {
+            "region_filter": None, "active": False}
+
+    def test_set_normalises_to_note(self, session):
+        from memdiver.core.region_view_filter import region_filter_note
+        result = tools.set_region_filter(session, "stack, heap")
+        assert result["active"] is True
+        assert result["region_filter"] == region_filter_note("heap,stack")
+        assert result["region_filter"].startswith("regions=")
+        assert session.region_filter == result["region_filter"]
+        assert tools.get_region_filter(session) == result
+
+    def test_note_round_trips(self, session):
+        note = tools.set_region_filter(session, "heap")["region_filter"]
+        assert tools.set_region_filter(session, note)["region_filter"] == note
+
+    @pytest.mark.parametrize("clear", [None, "all", ""])
+    def test_all_none_and_blank_clear(self, session, clear):
+        tools.set_region_filter(session, "heap")
+        result = tools.set_region_filter(session, clear)
+        assert result == {"region_filter": None, "active": False}
+        assert session.region_filter is None
+
+    def test_unknown_category_is_invalid_input_and_keeps_filter(self, session):
+        from memdiver.core.service_errors import CapabilityError, ErrorCategory
+        before = tools.set_region_filter(session, "heap")["region_filter"]
+        with pytest.raises(CapabilityError) as exc:
+            tools.set_region_filter(session, "heap,bogus")
+        assert exc.value.category is ErrorCategory.INVALID_INPUT
+        assert session.region_filter == before
+
+    def test_session_clear_resets_filter(self, session):
+        tools.set_region_filter(session, "heap")
+        session.clear()
+        assert tools.get_region_filter(session)["active"] is False
+
+
 # --- analyze_library ---
 
 class TestAnalyzeLibrary:
@@ -369,3 +410,43 @@ class TestImportRawDump:
         assert "error" not in result
         assert result["total_bytes"] == 256
         assert out.is_file()
+
+    def test_import_raw_dump_with_region_types(self, session, tmp_path):
+        from tests.fixtures import synth_elf_core
+        core = tmp_path / "t.core"
+        core.write_bytes(synth_elf_core.build_core_bytes())
+        result = tools.import_raw_dump(session, str(core),
+                                       str(tmp_path / "t.msl"),
+                                       selection="heap,stack",
+                                       exclude="stack")
+        assert result["selection"] == "regions=heap"
+        assert result["excluded_region_count"] > 0
+        assert "warnings" in result
+
+    def test_import_raw_dump_bad_region_types(self, session, tmp_path):
+        from memdiver.core.service_errors import CapabilityError
+        dump = tmp_path / "test.dump"
+        dump.write_bytes(b"\xaa" * 256)
+        with pytest.raises(CapabilityError):
+            tools.import_raw_dump(session, str(dump), str(tmp_path / "o.msl"),
+                                  selection="bogus")
+
+
+class TestPreviewImport:
+    def test_preview_import_raw(self, session, tmp_path):
+        dump = tmp_path / "test.dump"
+        dump.write_bytes(b"\xaa" * 256)
+        result = tools.preview_import(session, str(dump))
+        assert result["is_msl"] is False
+        assert result["totals"]["unclassified"]["count"] == 1
+        assert result["summary"]["excluded_count"] == 0
+
+    def test_preview_import_selection_summary(self, session, tmp_path):
+        dump = tmp_path / "test.dump"
+        dump.write_bytes(b"\xaa" * 256)
+        result = tools.preview_import(session, str(dump), selection="heap")
+        assert result["summary"]["excluded_count"] == 1
+
+    def test_preview_import_missing_file(self, session):
+        with pytest.raises(FileNotFoundServiceError):
+            tools.preview_import(session, "/nonexistent.dump")

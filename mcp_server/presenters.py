@@ -36,7 +36,9 @@ def mcp_error_funnel(fn):
     ``present_inspect_mcp_call``. A ``CapabilityError`` escaping the tool is
     rendered as ``json.dumps(err.to_dict())`` — the same structured
     ``{"error", "code", "category"}`` payload the other transports emit — so an
-    agent receives a machine-readable error instead of an MCP stack trace. The
+    agent receives a machine-readable error instead of an MCP stack trace. An
+    error carrying ``details`` adds them under ``details`` (and hoists
+    ``estimate_bytes`` / ``budget_bytes`` for ``memory_budget_exceeded``). The
     success path is untouched: ``fn``'s own ``json.dumps(...)`` return value
     passes straight through.
     """
@@ -46,9 +48,26 @@ def mcp_error_funnel(fn):
         try:
             return fn(*a, **k)
         except CapabilityError as e:
-            return json.dumps(e.to_dict())
+            return json.dumps(_funnel_payload(e), default=str)
 
     return wrapper
+
+
+#: Detail keys hoisted to the top level of the funnel payload so an agent can
+#: read them without digging (the memory-budget guard's estimate vs budget,
+#: mirroring the REST 507 body).
+_HOISTED_DETAIL_KEYS = ("estimate_bytes", "budget_bytes")
+
+
+def _funnel_payload(err: CapabilityError) -> dict:
+    """``err.to_dict()`` plus its ``details`` (only when it carries any)."""
+    payload = err.to_dict()
+    if err.details:
+        payload["details"] = dict(err.details)
+        for key in _HOISTED_DETAIL_KEYS:
+            if key in err.details:
+                payload[key] = err.details[key]
+    return payload
 
 
 def present_inspect_mcp(result) -> dict:

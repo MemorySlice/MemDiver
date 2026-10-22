@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/app-store";
 import { AddDumpButton } from "./AddDumpButton";
 import { TagStatusBadge } from "./TagStatusBadge";
 import { TagStatusUnlock } from "./TagStatusUnlock";
+import { ClassificationBasisBanner } from "@/components/analysis/ClassificationBasisBanner";
 
 const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -66,6 +67,7 @@ export function DumpList() {
   const consensusError = useConsensusStore((s) => s.error);
   const consensusAvailable = useConsensusStore((s) => s.available);
   const consensusCounts = useConsensusStore((s) => s.counts);
+  const consensusDiagnostics = useConsensusStore((s) => s.diagnostics);
   const overlayEnabled = useConsensusStore((s) => s.overlayEnabled);
   const toggleOverlay = useConsensusStore((s) => s.toggleOverlay);
   // The app's ONE way to start a build, shared with `HexAlignmentChip`,
@@ -323,6 +325,8 @@ export function DumpList() {
             {consensusError && (
               <p className="text-[var(--md-accent-red)]">{consensusError}</p>
             )}
+
+            <ClassificationBasisBanner diagnostics={consensusDiagnostics} scope="consensus" />
 
             {consensusAvailable && consensusCounts && (
               <div className="md-text-muted space-y-0.5">

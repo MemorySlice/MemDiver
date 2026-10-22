@@ -28,6 +28,7 @@ from memdiver.core.binary_formats.minidump_reader import (
     PAGE_READWRITE,
     PROCESSOR_ARCHITECTURE_AMD64,
     SYSTEM_INFO_STREAM,
+    THREAD_LIST_STREAM,
     MinidumpReader,
 )
 
@@ -43,10 +44,14 @@ _MEM64_DESC = struct.Struct("<QQ")            # 16 bytes (start, size)
 _MEMINFO_LIST_HDR = struct.Struct("<IIQ")     # 16 bytes
 _MEMINFO = struct.Struct("<QQIIQIIII")        # 48 bytes
 _MISC = struct.Struct("<III")                 # 12 bytes
+_THREAD = struct.Struct("<IIIIQQIIII")        # 48 bytes (MINIDUMP_THREAD)
 
 # A MINIDUMP_MEMORY_INFO tuple mirrors the reader's decode order:
 # (base, alloc_base, alloc_protect, region_size, state, protect, type).
 MemInfo = Tuple[int, int, int, int, int, int, int]
+
+# A MINIDUMP_THREAD spec: (thread_id, teb, stack_start, stack_size).
+ThreadSpec = Tuple[int, int, int, int]
 
 
 def _build_minidump(
@@ -61,6 +66,7 @@ def _build_minidump(
     include_system_info: bool = True,
     os_major: int = 10,
     os_minor: int = 0,
+    threads: Optional[Sequence[ThreadSpec]] = None,
 ) -> bytes:
     """Assemble a minimal minidump image and return its bytes.
 
@@ -85,6 +91,8 @@ def _build_minidump(
         streams.append((SYSTEM_INFO_STREAM, 24))
     if pid is not None:
         streams.append((MISC_INFO_STREAM, _MISC.size))
+    if threads is not None:
+        streams.append((THREAD_LIST_STREAM, 4 + len(threads) * _THREAD.size))
 
     num_streams = len(streams)
     dir_rva = _HEADER.size
@@ -107,7 +115,7 @@ def _build_minidump(
         directory += _DIRECTORY.pack(stream_type, size, cursor)
         bodies += _stream_body(stream_type, size, descriptors, blob_rvas,
                                blob_start, mem_infos, arch, os_major, os_minor,
-                               pid, use_memory64)
+                               pid, use_memory64, threads)
         cursor += size
     assert len(bodies) == total_body
 
@@ -116,7 +124,8 @@ def _build_minidump(
 
 
 def _stream_body(stream_type, size, descriptors, blob_rvas, blob_start,
-                 mem_infos, arch, os_major, os_minor, pid, use_memory64):
+                 mem_infos, arch, os_major, os_minor, pid, use_memory64,
+                 threads=None):
     """Serialize one stream body given the pre-computed blob RVAs."""
     if stream_type in (MEMORY_LIST_STREAM, MEMORY64_LIST_STREAM):
         if use_memory64:
@@ -143,6 +152,13 @@ def _stream_body(stream_type, size, descriptors, blob_rvas, blob_start,
                 + struct.pack("<III", os_major, os_minor, 19041) + b"\x00" * 4)
     if stream_type == MISC_INFO_STREAM:
         return _MISC.pack(_MISC.size, MINIDUMP_MISC1_PROCESS_ID, pid)
+    if stream_type == THREAD_LIST_STREAM:
+        out = bytearray(struct.pack("<I", len(threads)))
+        for tid, teb, stack_start, stack_size in threads:
+            # Stack.Memory.Rva / ThreadContext left zero: not decoded.
+            out += _THREAD.pack(tid, 0, 0, 0, teb, stack_start, stack_size,
+                                0, 0, 0)
+        return bytes(out)
     raise AssertionError(f"unhandled stream type {stream_type}")
 
 

@@ -3,11 +3,14 @@
 read_hex, get_entropy, extract_strings, get_session_info.
 """
 
+import bisect
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from memdiver.core.dump_source import ViewMode, find_all_in, supported_views
+from memdiver.core.dump_source import (
+    ViewMode, distinct_views, find_all_in, supported_views,
+)
 from memdiver.core.needle import detect_needle_format, parse_needle
 from memdiver.core.entropy import compute_entropy_profile, find_high_entropy_regions, shannon_entropy
 from memdiver.core.service_errors import (
@@ -258,6 +261,19 @@ def _require_supported_view(source: object, view: str) -> None:
     )
 
 
+def _checked_region_filter(region_filter: Optional[str]) -> Optional[str]:
+    """Normalise a view filter, turning an unknown name into INVALID_INPUT."""
+    from memdiver.core.region_view_filter import region_filter_note
+    from memdiver.core.service_errors import ErrorCategory
+
+    try:
+        return region_filter_note(region_filter)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid region filter: {exc}", category=ErrorCategory.INVALID_INPUT,
+        ) from exc
+
+
 def read_hex_result(
     session: ToolSession,
     dump_path: str,
@@ -267,12 +283,18 @@ def read_hex_result(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    region_filter: Optional[str] = None,
 ) -> "ServiceResult":
-    """ServiceResult producer for :func:`read_hex` (always carries status)."""
+    """ServiceResult producer for :func:`read_hex` (always carries status).
+
+    ``region_filter`` reads an ``.msl`` through the region view filter, so an
+    offset taken from a filtered consensus lands on the same byte here.
+    """
     length = min(length, MAX_HEX_LENGTH)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    region_filter = _checked_region_filter(region_filter)
     try:
-        with open_dump_source(dump_path, km) as source:
+        with open_dump_source(dump_path, km, region_filter=region_filter) as source:
             # BEFORE size_for(): that call raises a bare ValueError for a view
             # the source cannot serve, which is the 500 this guard replaces.
             _require_supported_view(source, view)
@@ -313,14 +335,19 @@ def read_hex_raw_result(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    region_filter: Optional[str] = None,
 ) -> "ServiceResult":
-    """ServiceResult producer for :func:`_read_hex_raw` (base64 payload)."""
+    """ServiceResult producer for :func:`_read_hex_raw` (base64 payload).
+
+    ``region_filter``: see :func:`read_hex_result`.
+    """
     import base64
 
     length = min(length, MAX_CONSENSUS_WINDOW)  # one shared 16 KiB window cap
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    region_filter = _checked_region_filter(region_filter)
     try:
-        with open_dump_source(dump_path, km) as source:
+        with open_dump_source(dump_path, km, region_filter=region_filter) as source:
             # BEFORE size_for(): that call raises a bare ValueError for a view
             # the source cannot serve, which is the 500 this guard replaces.
             _require_supported_view(source, view)
@@ -346,6 +373,10 @@ def read_hex_raw_result(
                 "file_size": file_size,
                 "format": format_name,
                 "view": view,
+                # The views that show different bytes, so the SPA offers a
+                # view switch from what the backend detected, not from the
+                # file extension (a gcore core has raw + vas; a flat dump one).
+                "distinct_views": list(distinct_views(source)),
                 "bytes": base64.b64encode(data).decode("ascii"),
             }
             return _finalize_inspect(payload, source, view=view)
@@ -520,8 +551,44 @@ def session_info_result(
             "string_count": report.string_count,
             "total_pages": total_pages,
             "coverage": coverage,
+            "import_provenance": [
+                _provenance_record(p) for p in reader.collect_import_provenance()
+            ],
         }
         return _finalize_inspect(payload, reader, view=None)
+
+
+class _CapturedIntervals:
+    """Sorted, merged [start, end) intervals of the captured MEMORY_REGIONs."""
+
+    def __init__(self, intervals: List[Tuple[int, int]]):
+        self._starts = [start for start, _ in intervals]
+        self._ends = [end for _, end in intervals]
+
+    @classmethod
+    def from_reader(cls, reader) -> Optional["_CapturedIntervals"]:
+        """Build from region headers; None when no region is readable."""
+        spans = sorted(
+            (r.base_addr, r.base_addr + r.region_size)
+            for r in reader.iter_region_headers()
+        )
+        if not spans:
+            return None
+        merged: List[Tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        return cls(merged)
+
+    def overlaps(self, base: int, size: int) -> bool:
+        """True when [base, base+size) intersects any captured interval."""
+        idx = bisect.bisect_right(self._starts, base) - 1
+        if idx >= 0 and self._ends[idx] > base:
+            return True
+        nxt = idx + 1
+        return nxt < len(self._starts) and self._starts[nxt] < base + size
 
 
 def vas_regions_result(
@@ -544,6 +611,11 @@ def vas_regions_result(
     ``region_count`` / ``total_region_size`` summary describes THESE VAS
     entries (so ``region_count == len(vas_entries)``), not the captured
     regions ``session_info_result`` counts.
+
+    Each entry also carries ``captured`` (bool): True when its address range
+    overlaps a MEMORY_REGION block (bytes present), False for a layout-only
+    VAS_MAP range excluded at import. The key is OMITTED when no region
+    headers are readable (encrypted without key, or no regions at all).
     """
     _require_msl_path(msl_path)
 
@@ -555,17 +627,22 @@ def vas_regions_result(
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with open_msl_reader(msl_path, km) as reader:
         entries = [e for vm in reader.collect_vas_map() for e in vm.entries]
+        captured_index = _CapturedIntervals.from_reader(reader)
+        vas_entries = []
+        for e in entries:
+            row = {
+                "base_addr": e.base_addr,
+                "region_size": e.region_size,
+                "region_type": e.region_type,
+                "protection": e.protection,
+                "mapped_path": e.mapped_path,
+            }
+            if captured_index is not None:
+                row["captured"] = captured_index.overlaps(
+                    e.base_addr, e.region_size)
+            vas_entries.append(row)
         payload = {
-            "vas_entries": [
-                {
-                    "base_addr": e.base_addr,
-                    "region_size": e.region_size,
-                    "region_type": e.region_type,
-                    "protection": e.protection,
-                    "mapped_path": e.mapped_path,
-                }
-                for e in entries
-            ],
+            "vas_entries": vas_entries,
             "region_count": len(entries),
             "total_region_size": sum(e.region_size for e in entries),
             "vas_coverage": dict(Counter(
@@ -794,6 +871,59 @@ def module_index_result(
         return _finalize_inspect({"module_index": entries}, reader, view=None)
 
 
+def _source_format_name(value: int) -> str:
+    from memdiver.msl.enums import SourceFormat
+
+    try:
+        return SourceFormat(value).name
+    except ValueError:
+        return "UNKNOWN"
+
+
+def _provenance_record(prov) -> dict:
+    """One IMPORT_PROVENANCE block as JSON, with its note parsed."""
+    from memdiver.msl.region_select import parse_provenance_note
+
+    return {
+        "source_format": prov.source_format,
+        "source_format_name": _source_format_name(prov.source_format),
+        "tool_name": prov.tool_name,
+        "import_time_ns": prov.import_time_ns,
+        "orig_file_size": prov.orig_file_size,
+        "source_hash": bytes(prov.source_hash).hex(),
+        "note": prov.note,
+        **parse_provenance_note(prov.note).to_dict(),
+    }
+
+
+def import_provenance_result(
+    session: ToolSession,
+    msl_path: str,
+    key_file: Optional[str] = None,
+    passphrase: Optional[str] = None,
+    kem_key_file: Optional[str] = None,
+) -> "ServiceResult":
+    """ServiceResult producer listing IMPORT_PROVENANCE blocks (spec §11, 0x0030).
+
+    Each record carries the raw ``note`` plus its parsed fields (kept region
+    categories, excluded region/byte totals, materialized flag, original EoC
+    hash). A dump that is not an ``.msl`` has no provenance block, so it
+    yields an empty list rather than an error; a missing file still raises.
+    """
+    from memdiver.core.service_result import ServiceResult
+
+    path = Path(msl_path)
+    if not path.is_file():
+        raise FileNotFoundServiceError(f"File not found: {msl_path}")
+    if path.suffix != ".msl":
+        return ServiceResult.ok({"provenance": []})
+
+    km = key_material_kwargs(key_file, passphrase, kem_key_file)
+    with open_msl_reader(msl_path, km) as reader:
+        records = [_provenance_record(p) for p in reader.collect_import_provenance()]
+        return _finalize_inspect({"provenance": records}, reader, view=None)
+
+
 def blocks_result(
     session: ToolSession,
     msl_path: str,
@@ -864,6 +994,27 @@ def _bounded_entropy_step(
     return (positions + cap - 1) // cap
 
 
+def _entropy_byte_view(source, view: Optional[ViewMode]):
+    """``(view name, size, read(offset, length))`` of the view to profile.
+
+    ``view=None``: ONE view for size, whole-dump read and windowed read -- the
+    flat (``read_all``) view. gcore and gdb_raw/lldb_raw default ``size_for`` /
+    ``read_all`` to "vas" but ``read_range`` to "raw", so the defaults alone
+    bounded a "vas" offset and then read "raw" bytes at it. An explicit view is
+    validated like :func:`read_hex_result` and then used for all three.
+    """
+    from memdiver.app.pipeline.analysis_buffer import (
+        flat_view, flat_view_size, read_flat_range,
+    )
+
+    if view is None:
+        return (flat_view(source) or "raw", flat_view_size(source),
+                lambda offset, length: read_flat_range(source, offset, length))
+    _require_supported_view(source, view)
+    return (view, int(source.size_for(view)),
+            lambda offset, length: source.read_range(offset, length, view=view))
+
+
 def entropy_result(
     session: ToolSession,
     dump_path: str,
@@ -871,22 +1022,44 @@ def entropy_result(
     length: int = 0,
     window: int = 32,
     step: int = 16,
-    threshold: float = 7.5,
+    threshold: Optional[float] = None,
     max_positions: Optional[int] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    view: Optional[ViewMode] = None,
+    buckets: Optional[int] = None,
+    resolution: str = "auto",
 ) -> "ServiceResult":
     """ServiceResult producer for :func:`get_entropy` (entropy profile).
 
     Opens a keyed dump source (``view=None``): the read is ALWAYS performed and
     the key/tag state is carried in ``status``. Missing file / out-of-range
     offset are RAISED as ``CapabilityError`` subclasses.
+
+    ``view`` (``"raw"`` / ``"vas"`` / ``"va"``) profiles that byte view: size,
+    offset bounds and every read use it, validated like :func:`read_hex_result`
+    (an unsupported view is a capability error). ``None`` (the default) keeps
+    the dump's flat ``read_all`` view. The response's ``view`` names the view
+    used.
+
+    ``threshold=None`` is the window-aware default
+    (:func:`memdiver.core.entropy.default_entropy_threshold`, 4.5 at
+    ``window=32``); an explicit threshold is used as given and flagged when no
+    window can reach it. ``resolution``: ``"full"`` visits every window
+    (step 1: exact regions + a min/max/mean ``envelope`` of ``buckets``
+    buckets), ``"sampled"`` the historical bounded-step profile, ``"auto"``
+    full up to :data:`~memdiver.app.entropy_payload.FULL_RESOLUTION_AUTO_BYTES`
+    and sampled above (with ``full_resolution_available``). See
+    :mod:`memdiver.app.entropy_payload` for the response fields.
     """
+    from memdiver.app import entropy_payload as ep
+
+    _check_entropy_resolution(resolution)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
-            file_size = source.size_for()
+            view_name, file_size, read_view_range = _entropy_byte_view(source, view)
             # Reject an out-of-range offset with a clean error instead of letting
             # read_range silently return an empty/tail slice that yields odd stats.
             if offset < 0 or offset > file_size:
@@ -894,62 +1067,73 @@ def entropy_result(
                     "offset out of range",
                     details={"offset": offset, "file_size": file_size},
                 )
-            data = (
-                source.read_all() if length == 0
-                else source.read_range(offset, length)
-            )
-
-            overall = shannon_entropy(data)
-            # Widen the step so the position count stays bounded. Deliberately
-            # NOT a cap on `data`: truncating the read would silently change
-            # `overall_entropy` from "this file" to "the first N bytes of it",
-            # which is a different answer wearing the same name.
-            effective_step = _bounded_entropy_step(
-                len(data), window, step, max_positions
-            )
-            profile = compute_entropy_profile(
-                data, window=window, step=effective_step
-            )
-            # `min_width` is in BYTES, so region semantics survive a wider step;
-            # only the granularity at which a region can be detected changes.
-            regions = find_high_entropy_regions(profile, threshold=threshold)
-
-            # Sample profile to keep response size reasonable. Use index-based
-            # even sampling that spans the whole profile (always including the
-            # last entry) so the plotted sample matches the full-profile stats.
-            sample = profile
-            if len(profile) > MAX_ENTROPY_SAMPLES:
-                n = len(profile)
-                sample = [
-                    profile[(i * (n - 1)) // (MAX_ENTROPY_SAMPLES - 1)]
-                    for i in range(MAX_ENTROPY_SAMPLES)
-                ]
-
-            entropies = [e for _, e in profile] if profile else [0.0]
-            payload = {
-                "overall_entropy": round(overall, 4),
-                "high_entropy_regions": [
-                    {"start": s, "end": e, "mean_entropy": round(m, 4)}
-                    for s, e, m in regions
-                ],
-                "profile_sample": [
-                    {"offset": o, "entropy": round(e, 4)} for o, e in sample
-                ],
-                "stats": {
-                    "min": round(min(entropies), 4),
-                    "max": round(max(entropies), 4),
-                    "mean": round(sum(entropies) / len(entropies), 4),
-                },
-                # What the profile was ACTUALLY computed at. Reported so a
-                # caller is never plotting at a resolution it cannot name, and
-                # so "why are my regions coarse on this dump" has an answer in
-                # the response rather than in this file.
-                "step": effective_step,
-                "window": window,
-            }
-            return _finalize_inspect(payload, source, view=None)
+            # The bytes profiled are the whole view (length == 0, which has
+            # always ignored `offset`) or `[offset, offset + length)` of it.
+            base = 0 if length == 0 else offset
+            data_len = file_size - base
+            if length > 0:
+                data_len = min(length, data_len)
+            threshold_info = ep.resolve_threshold(window, threshold)
+            read = lambda rel, n: read_view_range(base + rel, n)  # noqa: E731
+            if ep.wants_full_resolution(resolution, data_len):
+                payload = ep.compute_full_payload(
+                    read, data_len, window, threshold_info["threshold"], buckets)
+            else:
+                payload = _sampled_entropy_payload(
+                    read, data_len, window, step, max_positions,
+                    threshold_info["threshold"], buckets)
+                payload["full_resolution_available"] = True
+            payload.update(threshold_info)
+            # What the profile was ACTUALLY computed at (`step`), so a caller is
+            # never plotting at a resolution it cannot name; the byte view every
+            # offset above is in (`view`).
+            payload.setdefault("full_resolution_available", False)
+            payload["window"] = window
+            payload["view"] = view_name
+            return _finalize_inspect(payload, source, view=view)
     except FileNotFoundError:
         raise FileNotFoundServiceError(f"File not found: {dump_path}")
+
+
+def _check_entropy_resolution(resolution: str) -> None:
+    """Refuse an unknown ``resolution`` as INVALID_INPUT."""
+    from memdiver.app.entropy_payload import RESOLUTIONS
+    from memdiver.core.service_errors import ErrorCategory
+
+    if resolution not in RESOLUTIONS:
+        raise CapabilityError(
+            f"Invalid resolution {resolution!r}; expected one of {', '.join(RESOLUTIONS)}",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+
+
+def _sampled_entropy_payload(read, data_len: int, window: int, step: int,
+                             max_positions: Optional[int], threshold: float,
+                             buckets: Optional[int]) -> dict:
+    """The historical bounded-step profile of ``read(0, data_len)``.
+
+    The step is widened so the position count stays bounded -- deliberately
+    NOT a cap on the data: truncating the read would silently change
+    `overall_entropy` from "this file" to "the first N bytes of it". A small
+    range is read in one go; anything larger is STREAMED in bounded slabs
+    (`stream_entropy_profile`), so the request never holds a full copy of a
+    multi-GB dump. Both paths yield the same floats bit for bit.
+    """
+    from memdiver.app.entropy_payload import sampled_payload
+    from memdiver.core.entropy import STREAM_SLAB_BYTES, stream_entropy_profile
+
+    effective_step = _bounded_entropy_step(data_len, window, step, max_positions)
+    if data_len <= STREAM_SLAB_BYTES:
+        data = read(0, data_len)
+        overall = shannon_entropy(data)
+        profile = compute_entropy_profile(data, window=window, step=effective_step)
+    else:
+        overall, profile = stream_entropy_profile(
+            read, data_len, window=window, step=effective_step)
+    payload = sampled_payload(overall, profile, data_len, window, effective_step,
+                              threshold, buckets)
+    payload["step"] = effective_step
+    return payload
 
 
 def strings_result(

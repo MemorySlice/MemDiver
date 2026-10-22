@@ -301,3 +301,28 @@ describe("restoreSession: the bare-return regression", () => {
     expect(dumps().map((d) => d.path)).toEqual([A]);
   });
 });
+
+describe("restoreSession: region filter", () => {
+  it("restores the saved filter and the matching wizard selection", async () => {
+    const { useRegionSelectionStore } = await import("@/stores/region-selection-store");
+    mockedGetPathInfo.mockResolvedValue(pathInfo());
+    await useAppStore.getState().restoreSession(v1Snapshot({ region_filter: "regions=heap,stack" }));
+
+    const s = useRegionSelectionStore.getState();
+    expect(s.regionFilter).toBe("regions=heap,stack");
+    expect(s.wizardCategories).toEqual(["heap", "stack"]);
+  });
+
+  it("treats a session saved without a filter as every region, and resetWizard clears it", async () => {
+    const { useRegionSelectionStore } = await import("@/stores/region-selection-store");
+    useRegionSelectionStore.getState().setRegionFilter("heap");
+    mockedGetPathInfo.mockResolvedValue(pathInfo());
+    await useAppStore.getState().restoreSession(v1Snapshot());
+    expect(useRegionSelectionStore.getState().regionFilter).toBeNull();
+
+    useRegionSelectionStore.getState().setRegionFilter("heap");
+    useAppStore.getState().resetWizard();
+    expect(useRegionSelectionStore.getState().regionFilter).toBeNull();
+    expect(useRegionSelectionStore.getState().wizardCategories).toEqual(["heap", "stack", "unclassified"]);
+  });
+});

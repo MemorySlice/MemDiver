@@ -21,6 +21,10 @@ def get_region_page_data(reader, region) -> bytes:
     hdr = region.block_header
     ps = region.page_size
     map_bytes = ((region.num_pages + 3) // 4 + 7) & ~7
-    off = hdr.payload_offset + 0x20 + map_bytes
     captured = count_captured_pages(region.page_states)
+    if hdr.compressed:
+        # The on-disk bytes are codec output: slice the DECOMPRESSED payload.
+        start = 0x20 + map_bytes
+        return bytes(reader.read_block_payload(hdr)[start:start + captured * ps])
+    off = hdr.payload_offset + 0x20 + map_bytes
     return reader.read_bytes(off, captured * ps)

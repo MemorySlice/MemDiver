@@ -13,7 +13,11 @@ from math import ceil
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
+import pytest
+
 from memdiver.core.binary_formats.elf_core_reader import (
+    EM_AARCH64,
+    EM_X86_64,
     ELF_MAGIC,
     ELFCLASS64,
     ELFDATA2LSB,
@@ -28,13 +32,17 @@ from memdiver.core.binary_formats.elf_core_reader import (
     _PHDR64_FMT,
     _PHDR64_SIZE,
     _align4,
+    ElfCoreReader,
+    machine_to_arch_type,
 )
 from memdiver.core.dump_source import open_dump
-from memdiver.msl.enums import PageState, SourceFormat
+from memdiver.msl.enums import ArchType, PageState, SourceFormat
 from memdiver.msl.importer import import_elf_core
 from memdiver.msl.page_map import get_region_page_data
 from memdiver.msl.reader import MslReader
 from memdiver.msl.writer import CapBit
+
+from tests.fixtures import synth_elf_core
 
 PAGE = 4096
 
@@ -231,3 +239,27 @@ def test_import_elf_core_truncated_marks_tail_failed(tmp_path) -> None:
         # Only the one fully-captured page's real bytes are stored; the
         # half-page that was truncated is dropped, not zero-filled.
         assert get_region_page_data(reader, r) == body[:PAGE]
+
+
+# -- header arch_type from e_machine ------------------------------------------
+
+
+_EM_RISCV = 243  # a machine machine_to_arch_type does not map
+
+
+@pytest.mark.parametrize("machine, expected", [
+    (EM_X86_64, ArchType.X86_64),
+    (EM_AARCH64, ArchType.ARM64),
+    (_EM_RISCV, ArchType.UNKNOWN),
+])
+def test_import_records_arch_type_from_e_machine(tmp_path, machine, expected):
+    core = tmp_path / "m.core"
+    core.write_bytes(synth_elf_core.build_core_bytes(machine=machine))
+    out = tmp_path / "m.msl"
+    import_elf_core(core, out)
+
+    with ElfCoreReader(core) as reader:
+        assert reader.info.machine == machine
+        assert machine_to_arch_type(reader.info.machine) == expected
+    with MslReader(out) as reader:
+        assert reader.file_header.arch_type == expected

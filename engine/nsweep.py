@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from memdiver.core.slab_variance import sliceable_flat_size
 from memdiver.core.variance import WelfordVariance
 from memdiver.engine.progress import (
     ProgressEvent,
@@ -76,6 +77,9 @@ class NSweepResult:
     # Opt-in floor-free escalation verdict (auto_floor.to_dict + hit_tier),
     # populated only when escalate=True and no checkpoint found a hit.
     escalation: Optional[dict] = None
+    # Region view filter the sweep folded through (``to_note()`` string), or
+    # None. When set, every offset in the result is a filtered-view offset.
+    region_filter: Optional[str] = None
 
     def to_dict(self) -> dict:
         # Pure data only — the presentation ``headline`` is injected by the
@@ -91,7 +95,25 @@ class NSweepResult:
         # the default report stays byte-identical.
         if self.escalation is not None:
             d["escalation"] = self.escalation
+        if self.region_filter is not None:
+            d["region_filter"] = self.region_filter
         return d
+
+
+def _apply_sources_filter(sources: List, region_filter) -> Optional[str]:
+    """Set *region_filter* on filter-capable sources; return the active note."""
+    from memdiver.core.region_view_filter import region_filter_note
+    from memdiver.engine.consensus import sources_region_filter_note
+
+    if region_filter is not None:
+        for src in sources:
+            setter = getattr(src, "set_region_filter", None)
+            if callable(setter):
+                setter(region_filter)
+        note = region_filter_note(region_filter)
+        if note is not None:
+            return note
+    return sources_region_filter_note(sources)
 
 
 def _fold_until(
@@ -111,17 +133,32 @@ def _fold_until(
     return target_n
 
 
+def _source_flat_length(src) -> int:
+    """Length of ``src.read_all()`` without reading it, when provable.
+
+    ``size`` equals the ``read_all`` length for raw dumps and for ``.msl``
+    sources whose captured runs are all complete (see
+    ``core.slab_variance.as_slab_reader``). Anything else -- plain buffers,
+    plugin sources, truncated containers -- is measured the old way.
+    """
+    known = sliceable_flat_size(src)
+    if known is not None:
+        return known
+    data = src if isinstance(src, (bytes, bytearray, memoryview)) else src.read_all()
+    return len(data)
+
+
 def _probe_min_size(sources: List) -> int:
     """Return the minimum ``read_all`` length across all sources.
 
     n-sweep must pick a Welford width that every source can satisfy,
-    otherwise later folds raise. This costs one extra ``read_all`` per
-    source up front; on mmap-backed MSL/raw sources the kernel caches
-    the pages so the fold-time reads are free.
+    otherwise later folds raise. Uses each source's ``size`` where that is
+    provably the ``read_all`` length, so probing no longer reads every dump
+    whole up front.
     """
     min_size = None
     for src in sources:
-        length = len(src.read_all())
+        length = _source_flat_length(src)
         if min_size is None or length < min_size:
             min_size = length
     return int(min_size or 0)
@@ -140,6 +177,7 @@ def run_nsweep(
     escalate_oracle_budget: Optional[int] = None,
     progress_callback: ProgressFn = noop_progress,
     cancel_event: Optional[object] = None,
+    region_filter: Optional[object] = None,
 ) -> NSweepResult:
     """Drive consensus → reduce → oracle across increasing N values.
 
@@ -147,16 +185,30 @@ def run_nsweep(
     O(N_max) not O(sum(N)). The oracle is loaded once and invoked for
     every candidate at every checkpoint.
 
+    Memory: no budget guard here, deliberately. Dumps are folded one at a
+    time, so the resident set does not grow with N: float32 Welford mean+M2
+    (8 B/position), the reference dump (1 B), the per-checkpoint variance
+    (4 B) and one dump in flight. That is the same O(size) footprint as the
+    guarded incremental consensus (``consensus.incremental_build_estimate``),
+    not the O(N x size) one-shot build the guard exists to stop.
+
     When ``escalate`` is set and NO checkpoint found a hit, a floor-free
     descending-variance sweep runs once at the terminal (max-N) checkpoint,
     reusing that checkpoint's IN-MEMORY variance (no re-fold). The verdict +
     ``hit_tier`` land on ``NSweepResult.escalation``.
+
+    ``region_filter`` (``RegionSelection`` / spec / ``to_note()`` string) is
+    applied to every source that supports a view filter (``.msl``) before the
+    first read; ``None`` leaves the sources as opened (a source opened with
+    ``open_dump(region_filter=...)`` keeps its own filter). The active filter
+    is recorded on ``NSweepResult.region_filter``.
     """
     from memdiver.engine.brute_force import brute_force_with_oracle
     from memdiver.engine.candidate_pipeline import reduce_search_space
 
+    note = _apply_sources_filter(sources, region_filter)
     if not sources or not n_values:
-        return NSweepResult(total_dumps=len(sources))
+        return NSweepResult(total_dumps=len(sources), region_filter=note)
 
     max_n = min(max(n_values), len(sources))
     n_values = sorted({n for n in n_values if 1 <= n <= max_n})
@@ -167,7 +219,7 @@ def run_nsweep(
     reference = first
     folded = 1
 
-    result = NSweepResult(total_dumps=len(sources))
+    result = NSweepResult(total_dumps=len(sources), region_filter=note)
     safe_emit(
         progress_callback,
         ProgressEvent(

@@ -1,10 +1,22 @@
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDumpStore } from "@/stores/dump-store";
-import { importDumpFile } from "@/api/dump-import";
+import { importDumpFile, type ImportedDump } from "@/api/dump-import";
+import type { ImportSelectionOptions, KeyMaterial, RegionCategory } from "@/api/types";
 import { useAppStore } from "@/stores/app-store";
+import { useRegionSelectionStore } from "@/stores/region-selection-store";
 import { DumpSelectionStrip } from "@/components/dumps/DumpSelectionStrip";
 import { MainViewSwitcher } from "@/components/hex/MainViewSwitcher";
+import { RegionCategoryChecklist } from "@/components/import/RegionCategoryChecklist";
+import { MaterializeOption } from "@/components/import/MaterializeOption";
+import { EncryptedMslOptions } from "@/components/import/EncryptedMslOptions";
+import { ImportWarnings } from "@/components/import/ImportWarnings";
+import {
+  DEFAULT_REGION_CATEGORIES,
+  categoriesToSpec,
+  isMslPath,
+} from "@/components/import/region-categories";
+import { formatBytes } from "@/utils/format-bytes";
 
 type QueueStatus = "pending" | "uploading" | "done" | "failed";
 
@@ -15,6 +27,65 @@ interface QueueItem {
   regionsWritten?: number;
   totalBytes?: number;
   error?: string;
+  /** Selection outcome; present only when a selection was applied. */
+  excludedRegionCount?: number;
+  excludedBytes?: number;
+  secretsOnlyInExcluded?: number;
+  warnings?: string[];
+  materialized?: boolean;
+  /** `.msl` staged verbatim; the selection applies at analysis time instead. */
+  filterAtAnalysis?: boolean;
+}
+
+/** The batch's region choice, resolved for one file. */
+interface FilePlan {
+  opts?: ImportSelectionOptions;
+  filterAtAnalysis: boolean;
+}
+
+/**
+ * What to send for `file`. An all-category selection sends nothing (the old
+ * import-everything default); an `.msl` without the materialize opt-in is
+ * staged verbatim and filtered at analysis time via the session filter.
+ */
+function planFile(
+  file: File,
+  spec: string | null,
+  materialize: boolean,
+  decryption?: { keyMaterial: KeyMaterial; decryptOutput: boolean },
+): FilePlan {
+  if (spec === null) return { filterAtAnalysis: false };
+  if (isMslPath(file.name)) {
+    return materialize
+      ? {
+          opts: {
+            regions: spec,
+            materialize: true,
+            // Encrypted .msl: key + opt-in ride in the multipart form only.
+            ...(decryption ? { keyMaterial: decryption.keyMaterial } : {}),
+            ...(decryption?.decryptOutput ? { decryptOutput: true } : {}),
+          },
+          filterAtAnalysis: false,
+        }
+      : { filterAtAnalysis: true };
+  }
+  return { opts: { regions: spec }, filterAtAnalysis: false };
+}
+
+/** Queue-item fields describing a finished import. */
+function doneItem(dump: ImportedDump, filterAtAnalysis: boolean): Partial<QueueItem> {
+  return {
+    status: "done",
+    output: dump.path,
+    regionsWritten: dump.regionsWritten,
+    totalBytes: dump.size,
+    excludedRegionCount: dump.excludedRegionCount,
+    excludedBytes: dump.excludedBytes,
+    secretsOnlyInExcluded: dump.secretsOnlyInExcluded,
+    warnings: dump.warnings,
+    materialized: dump.materialized,
+    filterAtAnalysis,
+  };
 }
 
 /**
@@ -37,6 +108,11 @@ export function FileUpload() {
   const { t } = useTranslation("misc");
   const [uploading, setUploading] = useState(false);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [categories, setCategories] = useState<RegionCategory[]>([...DEFAULT_REGION_CATEGORIES]);
+  const [materialize, setMaterialize] = useState(false);
+  // Encrypted-.msl key inputs: component state only, never persisted.
+  const [keyMaterial, setKeyMaterial] = useState<KeyMaterial>({});
+  const [decryptOutput, setDecryptOutput] = useState(false);
   const dumpCount = useDumpStore((s) => s.dumps.length);
 
   const patchItem = useCallback((index: number, patch: Partial<QueueItem>) => {
@@ -54,6 +130,8 @@ export function FileUpload() {
       const hadActiveDump = useDumpStore.getState().activeDumpId !== null;
       let firstNewDumpId: string | null = null;
       let imported = 0;
+      let anyFilterAtAnalysis = false;
+      const spec = categoriesToSpec(categories);
 
       for (let i = 0; i < files.length; i++) {
         patchItem(i, { status: "uploading" });
@@ -63,16 +141,13 @@ export function FileUpload() {
           // joins the single dump set the session works from instead of living
           // in a private, unrelated inbox. `addDump` inside the helper also
           // puts it into `selectedDumpIds`, so it shows up as a pane at once.
-          const dump = await importDumpFile(files[i]);
+          const plan = planFile(files[i], spec, materialize, { keyMaterial, decryptOutput });
+          const dump = await importDumpFile(files[i], plan.opts);
 
           if (firstNewDumpId === null) firstNewDumpId = dump.id;
           imported += 1;
-          patchItem(i, {
-            status: "done",
-            output: dump.path,
-            regionsWritten: dump.regionsWritten,
-            totalBytes: dump.size,
-          });
+          anyFilterAtAnalysis ||= plan.filterAtAnalysis;
+          patchItem(i, doneItem(dump, plan.filterAtAnalysis));
         } catch (e) {
           patchItem(i, {
             status: "failed",
@@ -83,6 +158,8 @@ export function FileUpload() {
 
       if (imported > 0) {
         useAppStore.getState().setInputMode("file");
+        // Verbatim `.msl` uploads honour the selection at analysis time.
+        if (anyFilterAtAnalysis) useRegionSelectionStore.getState().setRegionFilter(spec);
         // Only claim focus when there was nothing to steal it from.
         if (!hadActiveDump && firstNewDumpId) {
           useDumpStore.getState().setActiveDump(firstNewDumpId);
@@ -90,7 +167,7 @@ export function FileUpload() {
       }
       setUploading(false);
     },
-    [patchItem, t],
+    [patchItem, t, categories, materialize, keyMaterial, decryptOutput],
   );
 
   const handleDrop = useCallback(
@@ -136,6 +213,17 @@ export function FileUpload() {
   return (
     <div className="p-3 space-y-3 text-xs">
       <h3 className="text-sm font-semibold md-text-accent">{t("upload.heading")}</h3>
+      <BatchRegionSelector
+        categories={categories}
+        onCategoriesChange={setCategories}
+        materialize={materialize}
+        onMaterializeChange={setMaterialize}
+        keyMaterial={keyMaterial}
+        onKeyMaterialChange={setKeyMaterial}
+        decryptOutput={decryptOutput}
+        onDecryptOutputChange={setDecryptOutput}
+        disabled={uploading}
+      />
       <div
         data-testid="upload-dropzone"
         onDrop={handleDrop}
@@ -205,6 +293,7 @@ export function FileUpload() {
                       size: ((item.totalBytes ?? 0) / 1024).toFixed(1),
                     })}
                   </p>
+                  <SelectionOutcome item={item} />
                 </>
               )}
 
@@ -235,6 +324,87 @@ export function FileUpload() {
           <MainViewSwitcher />
         </div>
       )}
+    </div>
+  );
+}
+
+/** Compact batch-level region choice; no preview, the files are not uploaded yet. */
+function BatchRegionSelector({
+  categories,
+  onCategoriesChange,
+  materialize,
+  onMaterializeChange,
+  keyMaterial,
+  onKeyMaterialChange,
+  decryptOutput,
+  onDecryptOutputChange,
+  disabled,
+}: {
+  categories: RegionCategory[];
+  onCategoriesChange: (next: RegionCategory[]) => void;
+  materialize: boolean;
+  onMaterializeChange: (next: boolean) => void;
+  keyMaterial: KeyMaterial;
+  onKeyMaterialChange: (next: KeyMaterial) => void;
+  decryptOutput: boolean;
+  onDecryptOutputChange: (next: boolean) => void;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation("import");
+  return (
+    <section
+      aria-label={t("upload.selectorHeading")}
+      className="md-panel p-2 space-y-2"
+      data-testid="upload-region-selector"
+    >
+      <p className="font-semibold">{t("upload.selectorHeading")}</p>
+      <p className="md-text-muted">{t("upload.selectorHint")}</p>
+      <RegionCategoryChecklist
+        selected={categories}
+        onChange={onCategoriesChange}
+        compact
+        disabled={disabled}
+      />
+      <MaterializeOption
+        checked={materialize}
+        onChange={onMaterializeChange}
+        hint={t("materialize.batchHint")}
+        disabled={disabled}
+      />
+      {materialize && (
+        <EncryptedMslOptions
+          keyMaterial={keyMaterial}
+          onKeyMaterialChange={onKeyMaterialChange}
+          decryptOutput={decryptOutput}
+          onDecryptOutputChange={onDecryptOutputChange}
+          disabled={disabled}
+        />
+      )}
+    </section>
+  );
+}
+
+/** Per-file "kept / excluded / warnings" lines after a selective import. */
+function SelectionOutcome({ item }: { item: QueueItem }) {
+  const { t } = useTranslation("import");
+  return (
+    <div className="space-y-1" data-testid="upload-selection-outcome">
+      {item.excludedRegionCount !== undefined && (
+        <p>
+          {t("upload.kept", { bytes: formatBytes(item.totalBytes ?? 0) })}
+          {" · "}
+          {t("upload.excluded", {
+            count: item.excludedRegionCount,
+            bytes: formatBytes(item.excludedBytes ?? 0),
+          })}
+        </p>
+      )}
+      {item.materialized && <p>{t("upload.materialized")}</p>}
+      {item.filterAtAnalysis && <p className="md-text-muted">{t("upload.filterAtAnalysis")}</p>}
+      <ImportWarnings
+        secretsOnlyInExcluded={item.secretsOnlyInExcluded}
+        warnings={item.warnings}
+      />
     </div>
   );
 }

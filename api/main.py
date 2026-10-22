@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -18,7 +18,18 @@ from memdiver.api.config import get_settings
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
-from memdiver.api.security import ApiTokenAuthMiddleware, guard_notebook_websocket
+from memdiver.api.memory_budget_errors import (
+    MEMORY_BUDGET_HTTP_STATUS,
+    is_memory_budget_error,
+    memory_budget_error_body,
+)
+from memdiver.api.path_policy import enforce_request_read_paths
+from memdiver.api.security import (
+    ApiTokenAuthMiddleware,
+    CrossSiteRequestGuard,
+    HostAllowListMiddleware,
+    guard_notebook_websocket,
+)
 from memdiver.api.services.artifact_store import ArtifactStore
 from memdiver.api.services.oracle_registry import (
     init_oracle_registry,
@@ -44,6 +55,13 @@ def _capability_error_handler(request: Request, exc: CapabilityError) -> JSONRes
     """
     if exc.category is ErrorCategory.INTERNAL:
         _logger.exception("unhandled internal capability error: %s", exc.message)
+    if is_memory_budget_error(exc):
+        # Memory-budget refusal: 507 + flat estimate/budget so the client can
+        # offer "Run anyway" (re-send with ``force_memory: true``).
+        return JSONResponse(
+            status_code=MEMORY_BUDGET_HTTP_STATUS,
+            content=memory_budget_error_body(exc),
+        )
     return JSONResponse(status_code=exc.status, content=exc.to_dict())
 
 
@@ -143,16 +161,29 @@ def create_app() -> FastAPI:
     # HTTP response here, so those layers never raise fastapi.HTTPException.
     app.add_exception_handler(CapabilityError, _capability_error_handler)
 
-    # --- Localhost trust model -------------------------------------------
+    # --- Layered localhost trust model -----------------------------------
     # MemDiver is a LOCAL forensic workbench: the API binds to 127.0.0.1 and
     # the operator deliberately points it at arbitrary local dump files. The
-    # free-form dump/browse path parameters (inspect, analysis, and the
-    # /api/path/browse + /api/path/info filesystem browser) are therefore NOT
-    # sandboxed on purpose — restricting a user's freely chosen dump path would
-    # break a core feature. The only path hardening applied is on filesystem
-    # paths CONSTRUCTED from a client-supplied identifier (session / structure /
-    # artifact names), which must stay inside their intended storage directory
-    # so an identifier like "../../etc/passwd" cannot escape it.
+    # defences are layered (see docs/user_guide/configuration.md#security):
+    #
+    # 1. Network: loopback bind by default; a non-loopback bind is refused
+    #    without MEMDIVER_API_TOKEN (security.enforce_bind_guardrail).
+    # 2. Browser (ALWAYS on): HostAllowListMiddleware refuses any Host header
+    #    that is not loopback / MEMDIVER_ALLOWED_HOSTS (defeats DNS
+    #    rebinding); CrossSiteRequestGuard refuses state-changing requests and
+    #    websocket handshakes whose Origin / Sec-Fetch-Site mark them cross-
+    #    site, and preflight-free JSON bodies (text/plain, form-urlencoded) —
+    #    i.e. CSRF from any web page the operator happens to visit.
+    # 3. Auth (opt-in): MEMDIVER_API_TOKEN (ApiTokenAuthMiddleware).
+    # 4. Writes (ALWAYS contained): every client-supplied WRITE path is held
+    #    inside the upload directory (path_safety.ensure_within) and every
+    #    client-supplied filename must be a bare name (safe_filename), as are
+    #    paths CONSTRUCTED from identifiers (session / structure / artifact).
+    # 5. Reads (OPT-IN): free-form read paths (inspect, analysis, the
+    #    /api/path/* file browser, ...) are unrestricted by default, because
+    #    restricting a user's freely chosen dump path would break a core
+    #    feature. Setting MEMDIVER_ALLOWED_ROOTS turns on the read-path
+    #    sandbox (api/path_policy.py), enforced once per router below.
     #
     # CORS: pairing a wildcard origin ("*") with allow_credentials=True is
     # rejected by browsers and unsafe (it would let any site make credentialed
@@ -181,6 +212,11 @@ def create_app() -> FastAPI:
     # See api/security.py for the exemption rules and WebSocket handling.
     app.add_middleware(ApiTokenAuthMiddleware, settings=settings)
 
+    # Added LAST so they run FIRST (Starlette wraps in reverse order): a
+    # rebinding/cross-site request is refused before CORS, auth or routing.
+    app.add_middleware(CrossSiteRequestGuard, cors_origins=cors_origins)
+    app.add_middleware(HostAllowListMiddleware, settings=settings)
+
     @app.get("/health")
     def health() -> dict:
         """Liveness/readiness check. Always reachable, even with a token set."""
@@ -207,26 +243,71 @@ def create_app() -> FastAPI:
         tasks,
     )
 
-    app.include_router(dataset.router, prefix="/api/dataset", tags=["dataset"])
-    app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
-    app.include_router(algorithms.router, prefix="/api/algorithms", tags=["algorithms"])
-    app.include_router(inspect.router, prefix="/api/inspect", tags=["inspect"])
+    # Opt-in read-path sandbox: a no-op unless MEMDIVER_ALLOWED_ROOTS is set.
+    # Attached to every router that accepts client-supplied READ paths;
+    # settings/sessions/tasks/structures/docs carry none (or, for settings,
+    # configure the roots themselves and are covered by the Origin guard).
+    _read_path_policy = [Depends(enforce_request_read_paths)]
+
+    app.include_router(
+        dataset.router, prefix="/api/dataset", tags=["dataset"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        analysis.router, prefix="/api/analysis", tags=["analysis"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        algorithms.router, prefix="/api/algorithms", tags=["algorithms"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        inspect.router, prefix="/api/inspect", tags=["inspect"],
+        dependencies=_read_path_policy,
+    )
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
     app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
-    app.include_router(dumps.router, prefix="/api/dumps", tags=["dumps"])
-    app.include_router(pcaps.router, prefix="/api/pcaps", tags=["pcaps"])
-    app.include_router(path.router, prefix="/api/path", tags=["path"])
+    app.include_router(
+        dumps.router, prefix="/api/dumps", tags=["dumps"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        pcaps.router, prefix="/api/pcaps", tags=["pcaps"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        path.router, prefix="/api/path", tags=["path"],
+        dependencies=_read_path_policy,
+    )
     app.include_router(structures.router, prefix="/api/structures", tags=["structures"])
-    app.include_router(architect.router, prefix="/api/architect", tags=["architect"])
-    app.include_router(consensus.router, prefix="/api/consensus", tags=["consensus"])
-    app.include_router(oracles.router, prefix="/api/oracles", tags=["oracles"])
-    app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
-    app.include_router(experiment.router, prefix="/api/experiment", tags=["experiment"])
+    app.include_router(
+        architect.router, prefix="/api/architect", tags=["architect"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        consensus.router, prefix="/api/consensus", tags=["consensus"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        oracles.router, prefix="/api/oracles", tags=["oracles"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        pipeline.router, prefix="/api/pipeline", tags=["pipeline"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        experiment.router, prefix="/api/experiment", tags=["experiment"],
+        dependencies=_read_path_policy,
+    )
     # D1 — running the rules MemDiver emits. A router of its own rather than a
     # route on ``architect`` (which is EXEMPT_ROUTERS'd as having no app-layer
     # producer) or on ``analysis`` (still on the legacy {"detail": ...} error
     # contract); see the note at the top of api/routers/scan.py.
-    app.include_router(scan.router, prefix="/api/scan", tags=["scan"])
+    app.include_router(
+        scan.router, prefix="/api/scan", tags=["scan"],
+        dependencies=_read_path_policy,
+    )
     app.include_router(
         settings_router.router, prefix="/api/settings", tags=["settings"]
     )

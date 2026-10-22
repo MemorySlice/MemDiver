@@ -21,17 +21,21 @@ only the keys differ (``va:`` instead of ``mod:``/``anon:``).
 from __future__ import annotations
 
 import logging
-from typing import Any, List, NamedTuple, Tuple
+from typing import Any, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
 from memdiver.core.region_align import (
+    VA_INDEX_BYTES_PER_PAGE,
+    AlignedLayout,
     AlignmentCoverage,
     align_dumps,
+    alignment_index_bytes,
     build_va_page_index,
-    read_va_slab,
+    read_va_slab,  # noqa: F401  (re-exported for callers of the old eager path)
+    stream_aligned_variance,
 )
-from memdiver.core.variance import compute_variance
+from memdiver.core.variance import CHUNK_BYTES, compute_variance  # noqa: F401
 
 logger = logging.getLogger("memdiver.engine.consensus_va")
 
@@ -64,7 +68,10 @@ def supports_va_alignment(source: Any) -> bool:
     return bool(getattr(source, "supports_va_alignment", False))
 
 
-def build_va_consensus(sources: List) -> VaConsensusResult:
+def build_va_consensus(
+    sources: List, region_filter=None, *,
+    force: bool = False, budget=None, chunk_positions: Optional[int] = None,
+) -> VaConsensusResult:
     """Align N VA-mapped dumps by virtual address and compute their variance.
 
     Each dump is indexed into absolute-VA pages, the pages present in *every*
@@ -72,12 +79,28 @@ def build_va_consensus(sources: List) -> VaConsensusResult:
     same routine the ``.msl`` path uses), and only those pages are read back
     and compared. The slab runs in ascending virtual address.
 
+    Slab-streamed: no dump's aligned bytes are ever held whole. The peak is
+    estimated and budget-checked first (``CapabilityError`` code
+    ``memory_budget_exceeded`` unless *force*); each position slab is then
+    read from every dump's RAW stream on demand and reduced with the same
+    ``np.var`` on the same 16 MiB-compatible grid ``compute_variance`` used
+    (:func:`~memdiver.core.slab_variance.plan_slabs`), so the variance is
+    bit-identical.
+
     :param sources: Opened dump sources, each satisfying
         :func:`supports_va_alignment`.
+    :param region_filter: Optional analysis-time view filter, forwarded to
+        :func:`~memdiver.core.region_align.build_va_page_index`. VA sources
+        carry no stored region classification, so it is a documented no-op
+        for them (see that function).
+    :param force: proceed even when the estimate exceeds the budget.
+    :param budget: ``MemoryBudget`` / byte count; ``None`` resolves the host.
+    :param chunk_positions: force the slab width (tests).
     :returns: The :class:`VaConsensusResult`; empty (with a warning logged and
         ``coverage`` still populated) when the dumps share no mapped page.
     """
-    indexes = [build_va_page_index(i, src) for i, src in enumerate(sources)]
+    indexes = [build_va_page_index(i, src, region_filter=region_filter)
+               for i, src in enumerate(sources)]
     region_maps = [ix.region_map for ix in indexes]
     slices = align_dumps(region_maps)
     coverage = AlignmentCoverage.from_alignment(region_maps, slices)
@@ -89,20 +112,19 @@ def build_va_consensus(sources: List) -> VaConsensusResult:
         )
         return VaConsensusResult(np.array([], dtype=np.float32), 0, b"", [], coverage)
 
-    slabs = [
-        read_va_slab(src, ix, slices) for src, ix in zip(sources, indexes)
-    ]
+    layout = AlignedLayout.from_slices(slices)
     total_bytes = coverage.bytes_compared
-    variance = compute_variance(slabs, total_bytes)
-
-    layout: List[Tuple[int, int, List[int]]] = []
-    offset = 0
-    for aslice in slices:
-        layout.append((offset, aslice.page_size, list(aslice.source_vaddrs)))
-        offset += aslice.page_size
+    variance, reference = stream_aligned_variance(
+        region_maps, layout, force=force, budget=budget,
+        chunk_positions=chunk_positions, legacy_chunk=CHUNK_BYTES,
+        index_bytes=alignment_index_bytes(
+            region_maps, len(slices), per_page=VA_INDEX_BYTES_PER_PAGE),
+        operation=f"virtual-address consensus build ({len(sources)} dumps)",
+    )
+    va_layout = layout.va_layout(slices)
 
     logger.info(
         "VA consensus: %d bytes across %d aligned pages (%d dumps)",
         total_bytes, len(slices), len(sources),
     )
-    return VaConsensusResult(variance, total_bytes, slabs[0], layout, coverage)
+    return VaConsensusResult(variance, total_bytes, reference, va_layout, coverage)

@@ -1,0 +1,12 @@
+{
+  "dialog": {
+    "title": "Memory budget exceeded",
+    "intro": "The server refused this request because it would likely use more memory than the configured budget.",
+    "estimate": "Estimated memory",
+    "budget": "Budget",
+    "unknown": "unknown",
+    "suggestion": "Consider applying a region filter (e.g. heap,stack) to reduce the amount of memory the analysis needs.",
+    "warning": "Running anyway may exhaust the server's memory and slow down or crash the machine.",
+    "runAnyway": "Run anyway"
+  }
+}

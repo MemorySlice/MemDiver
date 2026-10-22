@@ -23,6 +23,12 @@
 import { runAnalysis } from "./client";
 import { getPipelineRun, artifactDownloadUrl } from "./pipeline";
 import { request } from "./client";
+import {
+  MemoryBudgetTaskError,
+  memoryBudgetInfoFromTask,
+  withForceMemory,
+  withMemoryBudgetOverride,
+} from "./memory-budget";
 import type { AnalyzeRequest, AnalysisResult } from "./types";
 
 /** Name of the artifact the analysis runner registers (see app.pipeline.analysis_task_runner). */
@@ -60,6 +66,8 @@ export async function awaitAnalysisResult(
     const record = await getPipelineRun(taskId);
     if (TERMINAL_STATUSES.has(record.status)) {
       if (record.status !== "succeeded") {
+        const budget = memoryBudgetInfoFromTask(record);
+        if (budget) throw new MemoryBudgetTaskError(budget);
         throw new Error(record.error ?? `analysis ${record.status}`);
       }
       return fetchAnalysisResult(taskId);
@@ -76,6 +84,10 @@ export async function runAnalysisAndWait(
   body: AnalyzeRequest,
   options?: AwaitOptions,
 ): Promise<AnalysisResult> {
-  const { task_id } = await runAnalysis(body);
-  return awaitAnalysisResult(task_id, options);
+  // Submit + await as ONE unit, so a budget failure that only surfaces once
+  // the background task runs is re-submitted with `force_memory` too.
+  return withMemoryBudgetOverride(async (force) => {
+    const { task_id } = await runAnalysis(withForceMemory(body, force));
+    return awaitAnalysisResult(task_id, options);
+  });
 }

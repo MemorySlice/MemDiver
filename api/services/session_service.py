@@ -85,6 +85,10 @@ def payload_to_snapshot(
     fields = SessionSnapshot.__dataclass_fields__
     data = {k: v for k, v in payload.items() if k in fields}
     data["dumps"] = _sanitize_dumps(data.get("dumps"))
+    # Same normalisation the HTTP model applies, for direct callers; raises
+    # ValueError (-> 400 in the router) on an unknown category name.
+    from memdiver.core.region_view_filter import region_filter_note
+    data["region_filter"] = region_filter_note(data.get("region_filter"))
     data.setdefault("created_at", datetime.datetime.now().isoformat())
     data["memdiver_version"] = memdiver_version
     # Server stamps the schema version regardless of what the client sent.

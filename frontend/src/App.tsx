@@ -5,6 +5,7 @@ import { Workspace } from "@/components/layout/Workspace";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SessionLanding } from "@/components/landing/SessionLanding";
 import { TourProvider } from "@/ftue/TourProvider";
+import { MemoryBudgetDialog } from "@/components/common/MemoryBudgetDialog";
 
 function AppContent() {
   const appView = useAppStore((s) => s.appView);
@@ -19,6 +20,7 @@ export default function App() {
       <ErrorBoundary>
         <TourProvider>
           <AppContent />
+          <MemoryBudgetDialog />
         </TourProvider>
       </ErrorBoundary>
     </ThemeProvider>

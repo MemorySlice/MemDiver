@@ -126,7 +126,9 @@ class TestDump:
     @patch("memdiver.core.dump_driver.shutil.which", return_value="/usr/bin/fake")
     def test_dump_exception_returns_false(self, mock_which, tmp_path):
         orch = DumpOrchestrator(tools=["memslicer"])
-        with patch.object(orch, "_dump_memslicer", side_effect=OSError("fail")):
+        # dump() routes through capture() -> _capture_memslicer (never run the
+        # real tool against an arbitrary pid).
+        with patch.object(orch, "_capture_memslicer", side_effect=OSError("fail")):
             result = orch.dump(999, tmp_path / "out.msl", "memslicer")
             assert result is False
 
@@ -267,3 +269,404 @@ class TestKillTarget:
         orch = DumpOrchestrator()
         # Should not raise
         orch.kill_target(target)
+
+
+# ---------------------------------------------------------------------------
+# Layout-preserving producers: lldb + fridump .maps sidecars
+# ---------------------------------------------------------------------------
+
+import sys as _sys
+import types as _types
+from pathlib import Path
+
+from memdiver.core import dump_driver as _dd
+from memdiver.core.proc_maps_parser import parse_maps_text
+
+
+class _FakeRegionInfo:
+    """Minimal stand-in for ``lldb.SBMemoryRegionInfo``."""
+
+    def __init__(self):
+        self.base, self.end, self.perm, self.name = 0, 0, "---", None
+
+    def IsReadable(self): return "r" in self.perm
+    def IsWritable(self): return "w" in self.perm
+    def IsExecutable(self): return "x" in self.perm
+    def GetRegionBase(self): return self.base
+    def GetRegionEnd(self): return self.end
+    def GetName(self): return self.name
+
+
+class _FakeError:
+    def __init__(self): self.ok = True
+    def Success(self): return self.ok
+
+
+class _FakeRegionInfoList:
+    """Minimal stand-in for ``lldb.SBMemoryRegionInfoList``."""
+
+    def __init__(self, regions):
+        self.regions = regions
+
+    def GetSize(self): return len(self.regions)
+
+    def GetMemoryRegionAtIndex(self, i, info):
+        info.base, info.end, info.perm, info.name, _ = self.regions[i]
+        return True
+
+
+class _FakeFileSpec:
+    """Stand-in for ``lldb.SBFileSpec`` (``fullpath`` is a real SWIG property)."""
+
+    def __init__(self, fullpath): self.fullpath = fullpath
+
+
+class _FakeSection:
+    """Stand-in for ``lldb.SBSection``; ``load`` None means not loaded."""
+
+    def __init__(self, load, size, subsections=()):
+        self.load, self.size, self.subsections = load, size, list(subsections)
+
+    def GetLoadAddress(self, target):
+        return _dd.LLDB_INVALID_ADDRESS if self.load is None else self.load
+
+    def GetByteSize(self): return self.size
+    def GetNumSubSections(self): return len(self.subsections)
+    def GetSubSectionAtIndex(self, i): return self.subsections[i]
+
+
+class _FakeModule:
+    """Stand-in for ``lldb.SBModule``."""
+
+    def __init__(self, path, sections):
+        self.path, self.sections = path, sections
+
+    def GetFileSpec(self): return _FakeFileSpec(self.path)
+    def GetNumSections(self): return len(self.sections)
+    def GetSectionAtIndex(self, i): return self.sections[i]
+
+
+class _FakeTarget:
+    """Stand-in for ``lldb.SBTarget``."""
+
+    def __init__(self, modules=()): self.modules = list(modules)
+    def GetNumModules(self): return len(self.modules)
+    def GetModuleAtIndex(self, i): return self.modules[i]
+
+
+class _FakeFrame:
+    def __init__(self, sp): self.sp = sp
+    def GetSP(self): return self.sp
+
+
+class _FakeThread:
+    """Stand-in for ``lldb.SBThread``."""
+
+    def __init__(self, tid, sp): self.tid, self.sp = tid, sp
+    def GetThreadID(self): return self.tid
+    def GetFrameAtIndex(self, i): return _FakeFrame(self.sp)
+
+
+class _FakeProcess:
+    """Regions: list of (base, end, perm, name, data_or_None_for_failure).
+
+    Mirrors the real ``lldb.SBProcess`` surface: regions are only reachable
+    through ``GetMemoryRegions()`` (SBProcess has no GetNumMemoryRegions).
+    """
+
+    def __init__(self, regions, modules=(), threads=()):
+        self.regions = regions
+        self.target = _FakeTarget(modules)
+        self.threads = list(threads)
+
+    def GetMemoryRegions(self): return _FakeRegionInfoList(self.regions)
+    def GetTarget(self): return self.target
+    def GetNumThreads(self): return len(self.threads)
+    def GetThreadAtIndex(self, i): return self.threads[i]
+
+    def ReadMemory(self, base, size, err):
+        for b, _e, _p, _n, data in self.regions:
+            if b == base:
+                if data is None:
+                    err.ok = False
+                    return None
+                return data[:size]
+        err.ok = False
+        return None
+
+
+def _fake_lldb_module(process=None):
+    mod = _types.SimpleNamespace(SBMemoryRegionInfo=_FakeRegionInfo, SBError=_FakeError)
+    if process is not None:
+        target = MagicMock()
+        target.GetProcess.return_value = process
+        mod.debugger = MagicMock()
+        mod.debugger.GetSelectedTarget.return_value = target
+    return mod
+
+
+_LLDB_REGIONS = [
+    (0x1000, 0x1010, "r-x", "/usr/lib/libc.so.6", b"A" * 16),
+    (0x2000, 0x2008, "---", None, b"N" * 8),           # unreadable -> skipped
+    (0x3000, 0x3010, "rw-", "", b"B" * 8),               # short read: 8 of 16
+    (0x4000, 0x4010, "rw-", "[heap]", None),             # read failure -> skipped
+    (0x5000, 0x5000, "rw-", None, b""),                  # zero size -> skipped
+    (0x6000, 0x6004, "rwx", "[stack]", b"C" * 4),
+]
+
+
+class TestFormatMapsLine:
+    def test_without_path_parses(self):
+        line = _dd.format_maps_line(0x1000, 0x2000, "r--p")
+        assert line == "1000-2000 r--p 00000000 00:00 0"
+        (region,) = parse_maps_text(line)
+        assert (region.start, region.end, region.perm, region.path) == (0x1000, 0x2000, "r--p", "")
+
+    def test_with_path_parses(self):
+        line = _dd.format_maps_line(0x10, 0x20, "rw-p", "/opt/my lib.so")
+        (region,) = parse_maps_text(line)
+        assert region.path == "/opt/my lib.so"
+
+    def test_sidecar_path(self, tmp_path):
+        assert _dd.maps_sidecar_path(tmp_path / "x.lldb_raw.bin").name == "x.lldb_raw.maps"
+        assert _dd.maps_sidecar_path(tmp_path / "x_pre_snapshot.dump").name == "x_pre_snapshot.maps"
+
+
+class TestLldbRegionHelpers:
+    def test_perm(self):
+        info = _FakeRegionInfo()
+        info.perm = "r-x"
+        assert _dd.lldb_region_perm(info) == "r-xp"
+        info.perm = ""
+        assert _dd.lldb_region_perm(info) == "---p"
+
+    def test_name_empty_is_none(self):
+        info = _FakeRegionInfo()
+        info.name = ""
+        assert _dd.lldb_region_name(info) is None
+        info.name = "[heap]"
+        assert _dd.lldb_region_name(info) == "[heap]"
+
+
+class TestLldbWriteRegions:
+    def _run(self, tmp_path, max_size=_dd.LLDB_MAX_REGION_SIZE):
+        bin_path = tmp_path / "t.lldb_raw.bin"
+        maps_path = _dd.maps_sidecar_path(bin_path)
+        with open(bin_path, "wb") as b, open(maps_path, "w") as m:
+            n = _dd.lldb_write_regions(_fake_lldb_module(), _FakeProcess(_LLDB_REGIONS),
+                                       b, m, max_size)
+        return n, bin_path.read_bytes(), parse_maps_text(maps_path.read_text())
+
+    def test_maps_match_written_regions(self, tmp_path):
+        n, data, regions = self._run(tmp_path)
+        assert n == 3
+        assert [(r.start, r.end) for r in regions] == [
+            (0x1000, 0x1010), (0x3000, 0x3008), (0x6000, 0x6004)]
+        assert [r.perm for r in regions] == ["r-xp", "rw-p", "rwxp"]
+        assert [r.path for r in regions] == ["/usr/lib/libc.so.6", "", "[stack]"]
+        assert sum(r.size for r in regions) == len(data)
+        assert data == b"A" * 16 + b"B" * 8 + b"C" * 4
+
+    def test_oversized_regions_skipped(self, tmp_path):
+        _n, data, regions = self._run(tmp_path, max_size=16)
+        assert [r.start for r in regions] == [0x6000]
+        assert sum(r.size for r in regions) == len(data)
+
+    def test_uses_only_real_sb_api(self):
+        """Regression: SBProcess has no GetNumMemoryRegions; must use GetMemoryRegions()."""
+        src = _dd.inspect.getsource(_dd.lldb_write_regions)
+        assert "GetNumMemoryRegions" not in src
+        lldb = _real_lldb_module()
+        if lldb is None:
+            pytest.skip("lldb Python module not available")
+        assert hasattr(lldb.SBProcess, "GetMemoryRegions")
+        assert not hasattr(lldb.SBProcess, "GetNumMemoryRegions")
+        for name in ("GetSize", "GetMemoryRegionAtIndex"):
+            assert hasattr(lldb.SBMemoryRegionInfoList, name)
+
+    def test_every_sb_call_in_script_helpers_exists(self):
+        """Every ``.GetX(``/``.IsX(`` call the lldb script makes is a real SB method."""
+        import re as _re
+        src = "\n".join(_dd.inspect.getsource(f) for f in _dd._LLDB_SCRIPT_HELPERS)
+        called = set(_re.findall(r"\.((?:Get|Is)[A-Z]\w*)\(", src))
+        assert {"GetNumModules", "GetSectionAtIndex", "GetSP", "GetThreadAtIndex"} <= called
+        lldb = _real_lldb_module()
+        if lldb is None:
+            pytest.skip("lldb Python module not available")
+        sb_classes = (lldb.SBProcess, lldb.SBTarget, lldb.SBModule, lldb.SBSection,
+                      lldb.SBThread, lldb.SBFrame, lldb.SBMemoryRegionInfo,
+                      lldb.SBMemoryRegionInfoList, lldb.SBDebugger, lldb.SBError)
+        missing = {n for n in called if not any(hasattr(c, n) for c in sb_classes)}
+        assert not missing
+        for cls, name in ((lldb.SBProcess, "GetTarget"), (lldb.SBProcess, "GetNumThreads"),
+                          (lldb.SBTarget, "GetModuleAtIndex"), (lldb.SBModule, "GetFileSpec"),
+                          (lldb.SBModule, "GetNumSections"), (lldb.SBSection, "GetLoadAddress"),
+                          (lldb.SBSection, "GetNumSubSections"),
+                          (lldb.SBSection, "GetSubSectionAtIndex"),
+                          (lldb.SBThread, "GetFrameAtIndex"), (lldb.SBThread, "GetThreadID"),
+                          (lldb.SBFileSpec, "fullpath")):
+            assert hasattr(cls, name), f"{cls.__name__}.{name}"
+        assert lldb.LLDB_INVALID_ADDRESS == _dd.LLDB_INVALID_ADDRESS
+
+
+_UNNAMED_REGIONS = [  # macOS-style: lldb reports no region names
+    (0x10000, 0x14000, "r-x", None, b"T" * 0x4000),   # main binary __TEXT
+    (0x14000, 0x18000, "rw-", None, b"D" * 0x4000),   # main binary __DATA
+    (0x20000, 0x21000, "r--", None, b"L" * 0x1000),   # dylib, partly covered
+    (0x30000, 0x31000, "rw-", None, b"H" * 0x1000),   # malloc heap
+    (0x40000, 0x48000, "rw-", None, b"S" * 0x8000),   # main thread stack
+    (0x50000, 0x51000, "rw-", None, b"s" * 0x1000),   # secondary thread stack
+    (0x60000, 0x61000, "rw-", "[heap]", b"N" * 0x1000),  # lldb name wins
+]
+_MODULES = [
+    _FakeModule("/tmp/app/target", [
+        _FakeSection(None, 0x10000),                   # __PAGEZERO-like, not loaded
+        _FakeSection(0x10000, 0x4000, [_FakeSection(0x10100, 0x100)]),
+        _FakeSection(0x14000, 0x4000),
+    ]),
+    _FakeModule("/usr/lib/libSystem.B.dylib", [_FakeSection(0x20800, 0x2000)]),
+    _FakeModule("/usr/lib/heapshadow.dylib", [_FakeSection(0x60000, 0x1000)]),
+    _FakeModule(None, [_FakeSection(0x30000, 0x1000)]),  # pathless -> ignored
+]
+_THREADS = [_FakeThread(101, 0x47f00), _FakeThread(202, 0x50800), _FakeThread(303, 0)]
+
+
+class TestLldbRegionNaming:
+    def _paths(self, tmp_path):
+        bin_path = tmp_path / "n.bin"
+        process = _FakeProcess(_UNNAMED_REGIONS, _MODULES, _THREADS)
+        with open(bin_path, "wb") as b, open(_dd.maps_sidecar_path(bin_path), "w") as m:
+            _dd.lldb_write_regions(_fake_lldb_module(), process, b, m)
+        return [r.path for r in parse_maps_text(_dd.maps_sidecar_path(bin_path).read_text())]
+
+    def test_regions_named_from_modules_and_stacks(self, tmp_path):
+        assert self._paths(tmp_path) == [
+            "/tmp/app/target", "/tmp/app/target", "/usr/lib/libSystem.B.dylib",
+            "", "[stack]", "[stack:202]", "[heap]"]
+
+    def test_module_intervals_recurse_and_skip_unloaded(self):
+        intervals = _dd.lldb_module_intervals(_FakeTarget(_MODULES[:1]))
+        assert intervals == [(0x10000, 0x14000, "/tmp/app/target"),
+                             (0x10100, 0x10200, "/tmp/app/target"),
+                             (0x14000, 0x18000, "/tmp/app/target")]
+
+    def test_module_for_range_prefers_start_then_largest_overlap(self):
+        intervals = [(0x100, 0x180, "a"), (0x180, 0x200, "b"), (0x0, 0x110, "c")]
+        assert _dd.lldb_module_for_range(0x100, 0x200, intervals) == "a"
+        assert _dd.lldb_module_for_range(0x120, 0x200, intervals[1:]) == "b"
+        assert _dd.lldb_module_for_range(0x300, 0x400, intervals) is None
+
+    def test_stack_pointers_skip_threads_without_sp(self):
+        assert _dd.lldb_stack_pointers(_FakeProcess([], threads=_THREADS)) == [
+            (0x47f00, "[stack]"), (0x50800, "[stack:202]")]
+
+
+def _real_lldb_module():
+    """Import lldb's Python bindings via ``lldb -P``; None when unavailable."""
+    import shutil as _shutil
+    import subprocess as _subprocess
+    if _shutil.which("lldb") is None:
+        return None
+    try:
+        path = _subprocess.run(["lldb", "-P"], capture_output=True, text=True,
+                               timeout=10).stdout.strip()
+        if path and path not in _sys.path:
+            _sys.path.append(path)
+        import lldb  # noqa: WPS433
+        return lldb
+    except Exception:  # noqa: BLE001 - any import/ABI failure means "unavailable"
+        return None
+
+
+class TestLldbDumpScript:
+    def test_script_is_self_contained_and_writes_sidecar(self, tmp_path, monkeypatch):
+        out = tmp_path / "run_pre_snapshot.dump"
+        script = _dd.build_lldb_dump_script(out)
+        monkeypatch.setitem(_sys.modules, "lldb",
+                            _fake_lldb_module(_FakeProcess(_LLDB_REGIONS)))
+        exec(compile(script, "<lldb-script>", "exec"), {"__name__": "__lldb__"})
+        regions = parse_maps_text(_dd.maps_sidecar_path(out).read_text())
+        assert len(regions) == 3
+        assert sum(r.size for r in regions) == out.stat().st_size
+
+    @patch("memdiver.core.dump_driver.subprocess.run")
+    def test_dump_lldb_invokes_script_and_cleans_up(self, mock_run, tmp_path):
+        out = tmp_path / "run.dump"
+
+        def fake_run(cmd, **_kw):
+            script_cmd = cmd[cmd.index("-o") + 1]
+            assert script_cmd.startswith("script exec(open(")
+            out.write_bytes(b"x")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        assert _dd.DumpOrchestrator._dump_lldb(1234, out) is True
+        assert not out.with_suffix(".lldb_script.py").exists()
+
+
+class TestFridumpBaseAddress:
+    @pytest.mark.parametrize("name,expected", [
+        ("0x7f12a000_dump.data", 0x7f12a000),
+        ("0x00009000_dump.data", 0x9000),
+        ("7f12a000_dump.data", 0x7f12a000),
+        ("0X10000.data", None),  # uppercase prefix not a fridump convention
+        ("0x10000.data", 0x10000),
+        ("dump_foo.data", None),
+        ("strings.data", None),
+    ])
+    def test_parse(self, name, expected):
+        assert _dd.fridump_base_address(name) == expected
+
+
+def _write_chunks(directory, chunks):
+    directory.mkdir(exist_ok=True)
+    paths = []
+    for name, data in chunks:
+        p = directory / name
+        p.write_bytes(data)
+        paths.append(p)
+    return paths
+
+
+class TestAssembleFridumpOutput:
+    def test_numeric_order_and_maps(self, tmp_path):
+        files = _write_chunks(tmp_path / "chunks", [
+            ("0x10000_dump.data", b"\x02" * 32),
+            ("0x9000_dump.data", b"\x01" * 16),
+            ("0x7f0000000000_dump.data", b"\x03" * 8),
+        ])
+        out = tmp_path / "snap.dump"
+        assert _dd.assemble_fridump_output(files, out) is True
+        regions = parse_maps_text(_dd.maps_sidecar_path(out).read_text())
+        assert [(r.start, r.size) for r in regions] == [
+            (0x9000, 16), (0x10000, 32), (0x7f0000000000, 8)]
+        assert all(r.perm == _dd.FRIDUMP_DEFAULT_PERM and r.path == "" for r in regions)
+        assert sum(r.size for r in regions) == out.stat().st_size
+        assert out.read_bytes() == b"\x01" * 16 + b"\x02" * 32 + b"\x03" * 8
+
+    def test_unparsable_name_skips_maps(self, tmp_path):
+        files = _write_chunks(tmp_path / "chunks", [
+            ("region_dump.data", b"B"), ("0x9000_dump.data", b"A")])
+        out = tmp_path / "snap.dump"
+        assert _dd.assemble_fridump_output(files, out) is False
+        assert not _dd.maps_sidecar_path(out).exists()
+        assert out.read_bytes() == b"AB"  # lexicographic fallback ("0x9000" < "region")
+
+    @patch("memdiver.core.dump_driver.collect_target_spans",
+           return_value=([], "none"))  # no real Frida attach to pid 1
+    @patch("memdiver.core.dump_driver.subprocess.run")
+    def test_dump_fridump_end_to_end(self, mock_run, _mock_spans, tmp_path):
+        out = tmp_path / "snap.dump"
+
+        def fake_run(cmd, **_kw):
+            tmp_dir = Path(cmd[cmd.index("-o") + 1])
+            _write_chunks(tmp_dir, [("0x10000_dump.data", b"Y" * 4),
+                                    ("0x9000_dump.data", b"X" * 2)])
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        assert _dd.DumpOrchestrator._dump_fridump(1, out) is True
+        assert out.read_bytes() == b"XXYYYY"
+        regions = parse_maps_text(_dd.maps_sidecar_path(out).read_text())
+        assert [(r.start, r.end) for r in regions] == [(0x9000, 0x9002), (0x10000, 0x10004)]
+        assert not (tmp_path / "_fridump_tmp").exists()

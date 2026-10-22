@@ -38,6 +38,8 @@ from memdiver.api.services.oracle_registry import (
     OracleNotFound,
     OracleRegistryError,
 )
+from memdiver.api.models import MemoryOverrideFields, RegionFilterFields
+from memdiver.api.region_filter_resolution import request_region_filter
 from memdiver.api.services.task_manager import TERMINAL_STATUSES
 from memdiver.app.pipeline.pipeline_runner import get_pipeline_stages
 from memdiver.engine.brute_force import DEFAULT_NEIGHBORHOOD_PAD
@@ -117,7 +119,7 @@ class InferFieldsRequest(BaseModel):
     variance_threshold: Optional[float] = None
 
 
-class PipelineRunRequest(BaseModel):
+class PipelineRunRequest(RegionFilterFields, MemoryOverrideFields):
     source_paths: List[str] = Field(..., min_length=1)
     #: Exactly one oracle source must be supplied: an armed BYO oracle from the
     #: registry (``oracle_id``) OR a pcap/pcapng of the same TLS session
@@ -139,6 +141,11 @@ class PipelineRunRequest(BaseModel):
     emit: Optional[EmitParams] = None
     escalate: bool = False
     escalate_oracle_budget: Optional[int] = None
+    # ``region_filter`` / ``session_name`` come from ``RegionFilterFields``:
+    # the analysis-time region view filter for the consensus stage
+    # (``"heap,stack"``; ``.msl`` sources only), normalised to the
+    # ``RegionSelection.to_note()`` form; ``None`` analyses every region, and
+    # an unset field defaults to the named session's persisted filter.
 
 
 class AutoFloorRunRequest(BaseModel):
@@ -279,6 +286,8 @@ def _build_worker_params(
     worker: dict = {
         "task_root": str(task_root),
         "source_paths": list(request.source_paths),
+        # Request value wins; otherwise the named session's persisted filter.
+        "region_filter": request_region_filter(request),
         # ``oracle_path`` is ``None`` for a pcap-oracle run; the worker routes
         # the brute-force stage through the first-party trusted pcap oracle.
         "oracle_path": str(oracle_path) if oracle_path is not None else None,
@@ -304,6 +313,9 @@ def _build_worker_params(
         worker["emit"] = request.emit.model_dump()
     worker["escalate"] = request.escalate
     worker["escalate_oracle_budget"] = request.escalate_oracle_budget
+    # Memory-budget override for the consensus stage (runner reads
+    # ``params["force_memory"]`` and forwards it as the producer's ``force=``).
+    worker["force_memory"] = request.force_memory
     return worker
 
 
@@ -605,7 +617,9 @@ async def refine_consensus(task_id: str, body: RefineRequest):
             path = Path(p).expanduser()
             if not path.exists():
                 raise HTTPException(400, f"dump not found: {p}")
-            with open_dump(path) as src:
+            # A filtered consensus has filtered-view offsets: fold the new dump
+            # through the SAME view filter (absent key = unfiltered, as before).
+            with open_dump(path, region_filter=state.get("region_filter")) as src:
                 data = src.read_all()[: welford.size]
             if len(data) < welford.size:
                 continue  # skip short dumps

@@ -134,7 +134,7 @@ def get_entropy(
     length: int = 0,
     window: int = 32,
     step: int = 16,
-    threshold: float = 7.5,
+    threshold: Optional[float] = None,
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
@@ -146,9 +146,11 @@ def get_entropy(
     Thin adapter over :func:`entropy_result`; see it for the behavioral contract.
     """
     try:
+        # Keywords: entropy_result's 8th positional is `max_positions`, so the
+        # key material passed positionally landed there and was never used.
         result = entropy_result(
             session, dump_path, offset, length, window, step, threshold,
-            key_file, passphrase, kem_key_file,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
         )
     except CapabilityError as e:
         return e.to_error_body()

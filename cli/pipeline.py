@@ -17,6 +17,7 @@ from ._shared import (
     _scan_dump_inputs,
     _warn_tag_status,
     _write_output,
+    force_memory_requested,
 )
 from .consensus import _load_welford_session
 
@@ -150,6 +151,7 @@ def _cmd_analyze_candidates(args: argparse.Namespace) -> int:
         passphrase=args.passphrase,
         kem_key_file=args.kem_key_file,
         on_source=_warn_tag_status,
+        force=force_memory_requested(args),
     )
     for warning in payload["warnings"]:
         print(f"memdiver: WARNING — {warning}", file=sys.stderr)
@@ -462,6 +464,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 context=auto_context,
                 min_static_ratio=args.min_static_ratio,
                 key_material=key_material,
+                force=force_memory_requested(args),
             )
         else:
             if args.offset is None or args.length is None:
@@ -1138,19 +1141,65 @@ def _cmd_gen_kem_key(args: argparse.Namespace) -> int:
 
 
 def _cmd_import_dir(args: argparse.Namespace) -> int:
-    """Import all dumps (.dump/.dmp/.core) in a run directory to .msl format."""
-    from memdiver.msl.importer import import_run_directory
+    """Import all dumps in a run directory to .msl format.
 
-    results = import_run_directory(
-        Path(args.run_dir), Path(args.output_dir),
-        keylog_filename=args.keylog_filename,
+    Raw ``.bin`` / ``.dump`` files with a ``.maps`` sidecar (or the run
+    ``meta.json`` ``maps`` key) are split into real regions.
+    """
+    from memdiver.msl.importer import (
+        import_run_directory, run_directory_dump_files,
+        run_directory_maps_for,
     )
-    print(json.dumps([{
-        "source": str(r.source_path),
-        "output": str(r.output_path),
-        "key_hints": r.key_hints_written,
-    } for r in results], indent=2))
+
+    from .import_keys import import_key_material, print_import_error
+    from .import_selection import (
+        SelectionError, choice_from_args, list_regions, report_results,
+        safe_preview,
+    )
+
+    run_dir = Path(args.run_dir)
+    dumps = run_directory_dump_files(run_dir)
+    key_material = import_key_material(args, dumps)
+    if args.list_regions:
+        return list_regions(args, dumps, as_list=True,
+                            key_material=key_material)
+    try:
+        choice = choice_from_args(
+            args, lambda: (safe_preview(
+                dumps[0], key_material=key_material,
+                maps_path=run_directory_maps_for(run_dir, dumps[0]))
+                if dumps else None),
+            applies_to=(f"all {len(dumps)} dump(s) in {run_dir} "
+                        f"(previewing {dumps[0].name})" if dumps else None))
+    except SelectionError as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.exit_code
+    try:
+        results = import_run_directory(
+            run_dir, Path(args.output_dir),
+            keylog_filename=args.keylog_filename,
+            selection=choice.selection, materialize=choice.materialize,
+            key_material=key_material,
+            decrypt_output=getattr(args, "decrypt_output", False),
+        )
+    except ValueError as exc:
+        return print_import_error(exc)
+    report_results(results)
+    print(json.dumps([_import_dir_entry(r) for r in results], indent=2))
     return 0
+
+
+def _import_dir_entry(result) -> dict:
+    """One ``import-dir`` JSON row (selection fields only when relevant)."""
+    entry = {
+        "source": str(result.source_path),
+        "output": str(result.output_path),
+        "key_hints": result.key_hints_written,
+    }
+    if result.has_selection_info:  # shape unchanged when nothing selected
+        entry["regions"] = result.regions_written
+        entry.update(result.selection_summary())
+    return entry
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -1178,6 +1227,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             nonce_hex=getattr(args, "nonce_hex", None),
             aad_hex=getattr(args, "aad_hex", None),
             tag_hex=getattr(args, "tag_hex", None),
+            view=getattr(args, "view", None),
             key_material=_key_material_from_args(args),
             on_source=_warn_tag_status,
         )

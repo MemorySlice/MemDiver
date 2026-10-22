@@ -11,9 +11,71 @@ from ._shared import (
     _resolve_dump_paths,
     _warn_tag_status,
     _write_output,
+    force_memory_requested,
 )
 
 logger = logging.getLogger("memdiver.cli")
+
+
+def add_region_filter_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register ``--regions`` / ``--exclude-regions`` on a consensus parser.
+
+    The analysis-time region VIEW filter (non-destructive; ``.msl`` only): the
+    dumps are analysed as if only the selected region categories existed.
+    Offsets in the output are then FILTERED-VIEW offsets, and the output
+    carries ``region_filter`` so a reader knows it.
+    """
+    parser.add_argument(
+        "--regions", default=None,
+        help="Analyse only these region categories (e.g. 'heap,stack', "
+             "'all'); .msl inputs only. Offsets become filtered-view offsets.")
+    parser.add_argument(
+        "--exclude-regions", default=None,
+        help="Exclude these region categories (e.g. 'image'); combinable "
+             "with --regions.")
+
+
+def region_filter_from_args(args: argparse.Namespace) -> "str | None":
+    """``--regions`` / ``--exclude-regions`` -> ``to_note()`` string or None.
+
+    Read with ``getattr`` so a parser that never registered the flags (see
+    :func:`add_region_filter_arguments`) keeps the unfiltered behaviour.
+    Raises ``ValueError`` on an unknown category name.
+    """
+    from memdiver.core.region_view_filter import region_filter_note
+    from memdiver.msl.region_select import parse_selection
+
+    selection = parse_selection(
+        getattr(args, "regions", None), getattr(args, "exclude_regions", None))
+    return region_filter_note(selection)
+
+
+def _region_filter_or_exit(args: argparse.Namespace) -> "tuple[bool, str | None]":
+    """Parse the region flags; ``(False, None)`` after printing a bad spec."""
+    try:
+        return True, region_filter_from_args(args)
+    except ValueError as exc:
+        print(f"Invalid region selection: {exc}", file=sys.stderr)
+        return False, None
+
+
+def _warn_alignment_diagnostics(diagnostics) -> None:
+    """Print structured alignment diagnostics to stderr for a human reader.
+
+    The JSON on stdout carries them verbatim (``diagnostics`` /
+    ``alignment.diagnostics``); this is the line an operator actually sees.
+    """
+    for diagnostic in diagnostics or ():
+        print(f"warning [{diagnostic['code']}]: {diagnostic['message']}",
+              file=sys.stderr)
+        remedy = (diagnostic.get("details") or {}).get("remedy")
+        if remedy:
+            print(f"  hint: {remedy}", file=sys.stderr)
+
+
+def _payload_alignment_diagnostics(payload: dict) -> list:
+    """``alignment.diagnostics`` of a producer payload (``[]`` when absent)."""
+    return list((payload.get("alignment") or {}).get("diagnostics") or [])
 
 
 def _cmd_consensus(args: argparse.Namespace) -> int:
@@ -36,6 +98,9 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
         print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
         return 1
 
+    ok, region_filter = _region_filter_or_exit(args)
+    if not ok:
+        return 2
     logger.info("Building consensus from %d dumps", len(dump_paths))
     key_material = _key_material_from_args(args)
     # build_consensus opens each dump as a context-managed source, warns on
@@ -47,6 +112,8 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
         normalize=args.normalize,
         key_material=key_material,
         on_source=_warn_tag_status,
+        region_filter=region_filter,
+        force=force_memory_requested(args),
     )
 
     min_len = args.min_length
@@ -68,6 +135,15 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
             for r in static
         ],
     }
+    if cm.region_filter is not None:
+        # Offsets above are filtered-view offsets; say so (additive key, so
+        # an unfiltered report is byte-identical to before).
+        result["region_filter"] = cm.region_filter
+    # Additive: how the dumps were aligned plus its structured notes (e.g.
+    # ``classification_basis_mixed``), hoisted like POST /consensus does.
+    result["alignment"] = cm.alignment_report.to_dict()
+    result["diagnostics"] = cm.alignment_report.diagnostic_dicts
+    _warn_alignment_diagnostics(result["diagnostics"])
 
     # Alignment filtering
     if args.align:
@@ -89,6 +165,7 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
         sweep = run_convergence_sweep(
             dump_paths,
             max_fp=args.max_fp,
+            force=force_memory_requested(args),
         )
         result["convergence"] = serialize_convergence_result(sweep)
 
@@ -224,6 +301,9 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
         return 1
 
+    ok, region_filter = _region_filter_or_exit(args)
+    if not ok:
+        return 2
     key_material = _key_material_from_args(args)
     by_path = (
         {str(p): key_material for p in dump_paths}
@@ -242,7 +322,10 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         classify=args.classify,
         include_bytes=not args.no_bytes,
         key_material_by_path=by_path,
+        region_filter=region_filter,
+        force=force_memory_requested(args),
     )
+    _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
     _write_output(result.payload, args.output)
     return 0
 
@@ -272,6 +355,9 @@ def _cmd_consensus_regions(args: argparse.Namespace) -> int:
         print(f"Need at least 2 dumps, got {len(dump_paths)}", file=sys.stderr)
         return 1
 
+    ok, region_filter = _region_filter_or_exit(args)
+    if not ok:
+        return 2
     key_material = _key_material_from_args(args)
     by_path = (
         {str(p): key_material for p in dump_paths}
@@ -292,6 +378,9 @@ def _cmd_consensus_regions(args: argparse.Namespace) -> int:
         include_anchor_offsets=not args.no_anchor_offsets,
         normalize=args.normalize,
         key_material_by_path=by_path,
+        region_filter=region_filter,
+        force=force_memory_requested(args),
     )
+    _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
     _write_output(result.payload, args.output)
     return 0

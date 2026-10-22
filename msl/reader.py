@@ -8,8 +8,12 @@ from typing import Iterator, List, NamedTuple, Optional, Tuple
 from uuid import UUID
 
 from .block_iter import merge_continuations as _merge_cont
+from .aead_seek import (TAG_LEN, DecryptedView, FileGuard, FileIdentity,
+                        SeekableDecryptor, oneshot_requested,
+                        verify_tag_streaming)
 from .compress import decompress
-from .crypto import aead_decrypt, derive_cek_consumer, nonce_for_cipher
+from .crypto import (RewrapMaterial, aead_decrypt, derive_cek_consumer,
+                     nonce_for_cipher)
 from .decoders import (decode_connection_table, decode_connectivity_table,
                        decode_end_of_capture, decode_handle_table,
                        decode_import_provenance, decode_key_hint,
@@ -23,7 +27,7 @@ from .decoders_ext import (decode_environment_block, decode_file_descriptor,
                            decode_thread_context)
 from .enums import (BLOCK_HEADER_SIZE, BLOCK_MAGIC, ENC_EXT_OFFSET,
                     FILE_HEADER_ENC_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
-                    BlockType, EncAlgo, Endianness, KdfType, KeyEncap,
+                    BlockFlag, BlockType, EncAlgo, Endianness, KdfType, KeyEncap,
                     TagStatus)
 from .types import (MslAuthError, MslBlockHeader, MslConnectionTable,
                     MslConnectivityTable, MslCryptoError,
@@ -48,6 +52,14 @@ class CapturedRun(NamedTuple):
     how many of those bytes the buffer actually holds. The two differ only for
     a container truncated mid-payload, and keeping them apart is what lets a
     caller report the run's true extent while copying only real bytes.
+
+    ``block`` is ``None`` for an uncompressed region: ``buf_offset`` is then
+    an offset into the reader's block buffer (mmap / decrypted stream). For a
+    COMPRESSED region block it is that block's header, and ``buf_offset`` is
+    an offset into the block's DECOMPRESSED payload — the on-disk bytes are
+    codec output, not memory. Read run bytes through
+    :meth:`MslReader.run_view` / :meth:`MslReader.iter_find_run`, which
+    handle both cases.
     """
 
     va_start: int
@@ -55,6 +67,7 @@ class CapturedRun(NamedTuple):
     buf_offset: int
     avail: int
     vas_offset: int
+    block: Optional[MslBlockHeader] = None
 
 
 class CapturedRunIndex(NamedTuple):
@@ -111,6 +124,44 @@ def _captured_page_runs(region) -> List[Tuple[int, int]]:
     return runs
 
 
+#: Window for searching a buffer that has no ``find`` (the lazily decrypted
+#: view): the most plaintext one search step holds at a time.
+FIND_WINDOW = 8 * 1024 * 1024
+
+
+def _iter_find_windowed(read, needle: bytes, start: int, end: int,
+                        window: int = FIND_WINDOW) -> Iterator[int]:
+    """Yield offsets of *needle* in ``[start, end)`` via bounded ``read`` calls.
+
+    ``read(offset, length) -> bytes``. Consecutive windows overlap by
+    ``len(needle) - 1`` bytes, so every match that fits in the range fits
+    wholly inside some window; a match seen in two windows is reported once
+    (offsets are ascending, so anything below the last reported offset + 1
+    was already yielded). The window is never smaller than ``2 * len(needle)``
+    so the walk always advances.
+    """
+    n = len(needle)
+    if n == 0 or start >= end:
+        return
+    window = max(window, 2 * n)
+    step = window - (n - 1)
+    next_min = start
+    pos = start
+    while pos < end:
+        take = min(window, end - pos)
+        data = read(pos, take)
+        at = data.find(needle)
+        while at >= 0:
+            hit = pos + at
+            if hit >= next_min:
+                yield hit
+                next_min = hit + 1
+            at = data.find(needle, at + 1)
+        if pos + take >= end:
+            return
+        pos += step
+
+
 class MslReader:
     """Memory-mapped MSL file reader (context manager)."""
 
@@ -144,7 +195,13 @@ class MslReader:
         self._passphrase = passphrase
         self._kem_private = kem_private_key
         self._enc_params: Optional[MslEncryptionParams] = None
-        self._plaintext: Optional[bytes] = None   # decrypted block stream
+        # Decrypted block stream: a lazily decrypted DecryptedView after a
+        # streamed tag verification (default), or the whole plaintext as
+        # bytes when MEMDIVER_MSL_DECRYPT_ONESHOT=1 selects the legacy path.
+        self._plaintext = None
+        # Re-wrap handle (CEK + key-wrapping header fields), set only after a
+        # tag-verified decrypt; wiped on close. See _rewrap_material().
+        self._rewrap: Optional[RewrapMaterial] = None
         self.tag_status: TagStatus = TagStatus.NOT_ENCRYPTED
         # Block-region source: for plaintext files the mmap (blocks start at
         # header_size); for decrypted files the plaintext buffer (base 0).
@@ -155,6 +212,13 @@ class MslReader:
         # method). Reset alongside them wherever they are reset: a reopened
         # reader must never serve buffer offsets from the previous mapping.
         self._captured_runs_cache: Optional[CapturedRunIndex] = None
+        # Compressed region blocks: decompressed payload length per block
+        # file offset (recorded while collect_regions decodes them), and a
+        # ONE-entry cache of the most recently decompressed payload, so at
+        # most one decompressed block (<= the 1 GiB region block cap) is
+        # held at a time. Both reset with the other caches.
+        self._decompressed_lengths: dict = {}
+        self._payload_cache: Optional[Tuple[int, bytes]] = None
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
 
@@ -176,8 +240,15 @@ class MslReader:
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
         self._captured_runs_cache = None
+        self._decompressed_lengths = {}
+        self._payload_cache = None
+        if isinstance(self._plaintext, DecryptedView):
+            self._plaintext.close()  # releases its mmap view before the close
         self._plaintext = None
         self._buf = None
+        if self._rewrap is not None:
+            self._rewrap.wipe()
+            self._rewrap = None
         if self._mmap:
             self._mmap.close()
             self._mmap = None
@@ -304,7 +375,6 @@ class MslReader:
         self._enc_params = ep
         buf = self._mmap
         kem_ct = bytes(buf[hs:hs + ep.kem_ct_len])
-        ciphertext_and_tag = bytes(buf[hs + ep.kem_ct_len:])
 
         if not self._has_key_material(ep):
             self.tag_status = TagStatus.MISSING_KEY
@@ -320,29 +390,115 @@ class MslReader:
                 recipient_private=self._kem_private, kem_ciphertext=kem_ct,
             )
             aad = bytes(buf[0:hs]) + kem_ct
-            nonce = nonce_for_cipher(EncAlgo(ep.enc_algo), ep.nonce)
-            self._plaintext = aead_decrypt(
-                EncAlgo(ep.enc_algo), cek, nonce, aad, ciphertext_and_tag,
-            )
+            algo = EncAlgo(ep.enc_algo)
+            nonce = nonce_for_cipher(algo, ep.nonce)
+            if oneshot_requested():
+                self._decrypt_oneshot(algo, cek, nonce, aad)
+            else:
+                self._verify_and_seek(algo, cek, nonce, aad, kem_ct)
             self.tag_status = TagStatus.VALID
             self._buf = self._plaintext
             self._buf_base = 0
+            if self._rewrap is None:
+                self._rewrap = self._build_rewrap(ep, cek, kem_ct)
         # NOTE: MslAuthError and MslCryptoError both subclass ValueError, so
         # they MUST be caught before the bare ValueError clause. On any
         # failure path no plaintext is exposed (_buf/_plaintext stay None).
         except MslAuthError:
             # Wrong key or tampered ciphertext.
             self.tag_status = TagStatus.CORRUPTED
-            self._plaintext = self._buf = None
+            self._drop_decryption_state()
         except MslCryptoError:
             # Unsupported algorithm or missing optional library (e.g. ML-KEM).
             self.tag_status = TagStatus.MISSING_KEY
-            self._plaintext = self._buf = None
+            self._drop_decryption_state()
         except ValueError:
             # Malformed header declaring an unknown cipher/KEM/KDF code
             # (attacker-supplied bytes through KeyEncap()/KdfType()/EncAlgo()).
             self.tag_status = TagStatus.CORRUPTED
-            self._plaintext = self._buf = None
+            self._drop_decryption_state()
+
+    def _ciphertext_start(self) -> int:
+        return self._file_header.header_size + self._enc_params.kem_ct_len
+
+    def _decrypt_oneshot(self, algo: EncAlgo, cek: bytes, nonce: bytes,
+                         aad: bytes) -> None:
+        """Legacy path (``MEMDIVER_MSL_DECRYPT_ONESHOT=1``): whole plaintext.
+
+        Zero-copy view of the ciphertext for AES-GCM (cryptography accepts any
+        buffer), so peak RAM is ~1x the block stream, not 2x. PyNaCl demands
+        ``bytes``, so XChaCha20 still copies. Released in finally.
+        """
+        ct_view = memoryview(self._mmap)[self._ciphertext_start():]
+        try:
+            ciphertext_and_tag = (ct_view if algo == EncAlgo.AES_256_GCM
+                                  else bytes(ct_view))
+            self._plaintext = aead_decrypt(algo, cek, nonce, aad,
+                                           ciphertext_and_tag)
+        finally:
+            ct_view.release()
+
+    def _verify_and_seek(self, algo: EncAlgo, cek: bytes, nonce: bytes,
+                         aad: bytes, kem_ct: bytes) -> None:
+        """Default path: verify the tag in one bounded streamed pass, then
+        serve plaintext through a lazily decrypting :class:`DecryptedView`.
+
+        The file identity is captured BEFORE the pass, so a change during
+        verification is caught by the first read. The content key is held in
+        the re-wrap material's ``bytearray`` and wiped with it on close.
+        """
+        identity = FileIdentity.of_fd(self._file.fileno())
+        start = self._ciphertext_start()
+        end = len(self._mmap) - TAG_LEN
+        if end < start:
+            raise MslAuthError("AEAD tag missing (container truncated)")
+        tag = bytes(self._mmap[end:])
+        ct_view = memoryview(self._mmap)[start:end]
+        try:
+            verify_tag_streaming(algo, cek, nonce, aad, ct_view, tag)
+            self._rewrap = self._build_rewrap(self._enc_params, cek, kem_ct)
+            decryptor = SeekableDecryptor(algo, self._rewrap._cek, nonce)
+            guard = FileGuard(self._file.fileno(), identity, self.path)
+            self._plaintext = DecryptedView(ct_view, decryptor, guard)
+            guard.check()  # the verified bytes are the bytes we will serve
+            ct_view = None  # owned by the view now
+        finally:
+            if ct_view is not None:
+                ct_view.release()
+
+    def _drop_decryption_state(self) -> None:
+        if isinstance(self._plaintext, DecryptedView):
+            self._plaintext.close()
+        self._plaintext = self._buf = None
+        if self._rewrap is not None:
+            self._rewrap.wipe()
+            self._rewrap = None
+
+    def _build_rewrap(self, ep: MslEncryptionParams, cek: bytes,
+                      kem_ct: bytes) -> RewrapMaterial:
+        return RewrapMaterial(
+            enc_algo=EncAlgo(ep.enc_algo), kdf_type=KdfType(ep.kdf_type),
+            key_encap=KeyEncap(ep.key_encap), kdf_time=ep.kdf_time,
+            kdf_memory=ep.kdf_memory, kdf_lanes=ep.kdf_lanes,
+            kdf_salt=ep.kdf_salt, kem_ciphertext=kem_ct,
+            source_nonce=ep.nonce,
+            dump_uuid_bytes=self._file_header.dump_uuid.bytes,
+            _cek=bytearray(cek))
+
+    def _rewrap_material(self) -> RewrapMaterial:
+        """Key-wrapping handle for re-encrypting a derived copy.
+
+        Narrow, private API used only by :mod:`memdiver.msl.materialize`.
+        Available only while the reader is open and only after the AEAD tag
+        verified (``tag_status is VALID``); raises ``MslCryptoError`` otherwise.
+        The returned object is a request-scoped secret (redacted ``repr``,
+        wiped on :meth:`close`) — never cache or log it.
+        """
+        if self.tag_status is not TagStatus.VALID or self._rewrap is None:
+            raise MslCryptoError(
+                f"no verified key material to re-wrap "
+                f"(tag_status={self.tag_status.value})")
+        return self._rewrap
 
     def _parse_block_header(self, offset: int) -> MslBlockHeader:
         buf = self._buf
@@ -355,17 +511,20 @@ class MslReader:
                 f"Truncated block header at 0x{offset:X}: need "
                 f"{BLOCK_HEADER_SIZE} bytes, have {max(0, len(buf) - offset)}"
             )
-        if buf[offset:offset + 4] != BLOCK_MAGIC:
+        # One bounded copy of the header: works for the mmap and for the
+        # lazily decrypted view alike (which has no buffer protocol).
+        raw = bytes(buf[offset:offset + BLOCK_HEADER_SIZE])
+        if raw[0:4] != BLOCK_MAGIC:
             raise MslParseError(f"Bad block magic at 0x{offset:X}")
         bo = self._byte_order
         return MslBlockHeader(
-            block_type=struct.unpack_from(f"{bo}H", buf, offset + 4)[0],
-            flags=struct.unpack_from(f"{bo}H", buf, offset + 6)[0],
-            block_length=struct.unpack_from(f"{bo}I", buf, offset + 8)[0],
-            payload_version=struct.unpack_from(f"{bo}H", buf, offset + 0x0C)[0],
-            block_uuid=UUID(bytes=bytes(buf[offset + 0x10:offset + 0x20])),
-            parent_uuid=UUID(bytes=bytes(buf[offset + 0x20:offset + 0x30])),
-            prev_hash=bytes(buf[offset + 0x30:offset + 0x50]),
+            block_type=struct.unpack_from(f"{bo}H", raw, 4)[0],
+            flags=struct.unpack_from(f"{bo}H", raw, 6)[0],
+            block_length=struct.unpack_from(f"{bo}I", raw, 8)[0],
+            payload_version=struct.unpack_from(f"{bo}H", raw, 0x0C)[0],
+            block_uuid=UUID(bytes=raw[0x10:0x20]),
+            parent_uuid=UUID(bytes=raw[0x20:0x30]),
+            prev_hash=raw[0x30:0x50],
             file_offset=offset,
             payload_offset=offset + BLOCK_HEADER_SIZE,
         )
@@ -509,7 +668,107 @@ class MslReader:
         if self._buf is None:
             return memoryview(b"")
         end = min(offset + length, len(self._buf))
+        if isinstance(self._buf, DecryptedView):
+            # Encrypted files: a view over a freshly decrypted copy.
+            return memoryview(self._buf.read(offset, end - offset))
         return memoryview(self._buf)[offset:end]
+
+    def iter_find(self, needle: bytes, offset: int, length: int) -> Iterator[int]:
+        """Yield buffer offsets of *needle* inside ``[offset, offset+length)``.
+
+        Matches must lie wholly inside the (buffer-clamped) range; overlapping
+        matches are all reported, ascending — the same answer as
+        ``find_all_offsets(read_bytes(offset, length), needle)`` shifted by
+        ``offset``, without the copy. Plaintext buffers (the mmap, or the
+        one-shot plaintext ``bytes``) are searched in place with bounded
+        ``find(needle, start, end)``; a lazily decrypted view has no ``find``,
+        so it is decrypted in bounded windows (:func:`_iter_find_windowed`).
+        An empty needle yields nothing (see ``core.dump_io.find_all_offsets``
+        for why that guard is load-bearing on an mmap).
+        """
+        buf = self._buf
+        if buf is None or not needle or length <= 0:
+            return
+        end = min(offset + length, len(buf))
+        if offset < 0 or offset >= end:
+            return
+        if isinstance(buf, DecryptedView):
+            yield from _iter_find_windowed(buf.read, needle, offset, end)
+            return
+        start = offset
+        while True:
+            at = buf.find(needle, start, end)
+            if at < 0:
+                return
+            yield at
+            start = at + 1
+
+    def _decompressed_length(self, hdr: MslBlockHeader) -> int:
+        """Decompressed payload length of a compressed block (cached)."""
+        size = self._decompressed_lengths.get(hdr.file_offset)
+        if size is None:
+            size = len(self.decompressed_payload(hdr))
+            self._decompressed_lengths[hdr.file_offset] = size
+        return size
+
+    def decompressed_payload(self, hdr: MslBlockHeader) -> bytes:
+        """:meth:`read_block_payload`, keeping the LAST result only.
+
+        Run reads on a compressed region hit the same block many times in a
+        row (hex-viewer windows, a search walking its runs), so the most
+        recent decompressed payload is kept — one block at a time, bounded by
+        the writer's region block cap (1 GiB), released on ``close()``.
+        """
+        cached = self._payload_cache
+        if cached is not None and cached[0] == hdr.file_offset:
+            return cached[1]
+        payload = self.read_block_payload(hdr)
+        self._payload_cache = (hdr.file_offset, payload)
+        return payload
+
+    def run_span(self, run: CapturedRun) -> int:
+        """Bytes of *run* that can actually be read (``read_view`` clamping)."""
+        if run.block is not None:
+            return max(0, run.avail)
+        return max(0, min(run.buf_offset + run.avail, self.buffer_length)
+                   - run.buf_offset)
+
+    def run_view(self, run: CapturedRun, begin: int, length: int) -> memoryview:
+        """``length`` bytes of *run* starting ``begin`` bytes into it.
+
+        Uncompressed runs: :meth:`read_view` (zero-copy on an mmap).
+        Compressed runs: a view into the block's decompressed payload.
+        """
+        if run.block is None:
+            return self.read_view(run.buf_offset + begin, length)
+        if self._buf is None or length <= 0:
+            return memoryview(b"")
+        payload = self.decompressed_payload(run.block)
+        start = run.buf_offset + begin
+        return memoryview(payload)[start:min(start + length, len(payload))]
+
+    def iter_find_run(self, run: CapturedRun, needle: bytes) -> Iterator[int]:
+        """Run-relative offsets of *needle* inside *run*'s readable bytes.
+
+        Same answer as ``find_all_offsets(run_view(run, 0, run_span(run)),
+        needle)`` without copying the run: an uncompressed run is searched in
+        place (:meth:`iter_find`), a compressed one inside its cached
+        decompressed payload with bounded ``find(needle, start, end)``.
+        """
+        span = self.run_span(run)
+        if not needle or span <= 0 or self._buf is None:
+            return
+        if run.block is None:
+            for hit in self.iter_find(needle, run.buf_offset, span):
+                yield hit - run.buf_offset
+            return
+        payload = self.decompressed_payload(run.block)
+        lo = run.buf_offset
+        hi = min(lo + span, len(payload))
+        at = payload.find(needle, lo, hi)
+        while at >= 0:
+            yield at - lo
+            at = payload.find(needle, at + 1, hi)
 
     def read_block_payload(self, hdr: MslBlockHeader) -> bytes:
         """Read and decompress a block's payload bytes."""
@@ -521,11 +780,65 @@ class MslReader:
             raw = decompress(raw, hdr.comp_algo)
         return raw
 
+    def iter_blocks_of_type(self, *block_types) -> Iterator[Tuple[MslBlockHeader, bytes]]:
+        """Like :meth:`iter_blocks`, but reads payloads only for *block_types*.
+
+        Every other block is skipped at the header level, so asking for the
+        (small) module tables never copies or decompresses region payloads.
+        Continuations of a wanted type are merged as in :meth:`iter_blocks`.
+        """
+        wanted = {int(t) for t in block_types}
+        raw = ((hdr, self.read_block_payload(hdr))
+               for hdr in self._iter_raw_block_headers()
+               if hdr.block_type in wanted)
+        return _merge_cont(raw)
+
+    def iter_region_headers(self) -> Iterator[MslMemoryRegion]:
+        """Decode every MEMORY_REGION from its 0x20 header + page map only.
+
+        Uncompressed blocks are read with two bounded views (fixed header,
+        then header + PageStateMap); page data is never touched. A compressed
+        block has no random access, so its payload is decompressed one block
+        at a time and dropped after decoding (never cached). Continuation
+        blocks are skipped: the fixed header and page map live in the parent.
+        Malformed blocks are skipped with a warning, as in ``_collect``.
+        Yields nothing for an encrypted file opened without key material.
+        """
+        for hdr in self._iter_raw_block_headers():
+            if (hdr.block_type != BlockType.MEMORY_REGION
+                    or hdr.flags & BlockFlag.CONTINUATION):
+                continue
+            try:
+                yield decode_memory_region(
+                    hdr, self._region_head(hdr), self._byte_order)
+            except (MslParseError, struct.error, IndexError, OverflowError) as exc:
+                logger.warning("Skipping malformed MEMORY_REGION block at "
+                               "0x%X: %s", hdr.file_offset, exc)
+
+    def _region_head(self, hdr: MslBlockHeader) -> bytes:
+        """The fixed region header plus its padded page-state map."""
+        if hdr.compressed:
+            return self.read_block_payload(hdr)
+        avail = max(0, min(hdr.payload_length,
+                           len(self._buf) - hdr.payload_offset))
+        head = self.read_bytes(hdr.payload_offset, min(avail, 0x20))
+        if len(head) < 0x20:
+            return head  # decoder raises MslParseError on the short header
+        region_size = struct.unpack_from(f"{self._byte_order}Q", head, 8)[0]
+        log2 = head[0x12]
+        num_pages = region_size >> log2 if 10 <= log2 <= 40 else 0
+        map_bytes = ((num_pages + 3) // 4 + 7) & ~7
+        return self.read_bytes(hdr.payload_offset,
+                               min(avail, 0x20 + map_bytes))
+
     def _collect(self, block_type, decoder, cache_attr):
         cached = getattr(self, cache_attr)
         if cached is None:
             decoded = []
-            for h, p in self.iter_blocks():
+            # Payloads are read only for *block_type*: walking iter_blocks()
+            # here copied every region payload in the container to find a
+            # few small table blocks.
+            for h, p in self.iter_blocks_of_type(block_type):
                 if h.block_type != block_type:
                     continue
                 # A single non-conformant block (e.g. a real-world capture
@@ -545,7 +858,56 @@ class MslReader:
         return cached
 
     def collect_regions(self) -> List[MslMemoryRegion]:
-        return self._collect(BlockType.MEMORY_REGION, decode_memory_region, "_regions_cache")
+        """Every MEMORY_REGION, decoded from its header + page map (cached).
+
+        Decoded from :meth:`_region_head` rather than the full payload: a
+        region's decoded form never contains page data, so copying every
+        payload (up to 1 GiB per block) just to read its first few KiB was
+        pure waste — and on a 4 GiB container it was most of the anonymous
+        memory a first search allocated. Order is the order the old
+        ``iter_blocks()`` walk produced (see :meth:`_region_heads_in_merge_order`),
+        so callers that zip this list against another walk keep lining up.
+        """
+        cached = self._regions_cache
+        if cached is None:
+            cached = []
+            for hdr in self._region_heads_in_merge_order():
+                try:
+                    head = self._region_head(hdr)
+                    if hdr.compressed:  # head is the whole decompressed payload
+                        self._decompressed_lengths[hdr.file_offset] = len(head)
+                    cached.append(decode_memory_region(
+                        hdr, head, self._byte_order))
+                except (MslParseError, struct.error, IndexError, OverflowError) as exc:
+                    logger.warning("Skipping malformed MEMORY_REGION block at "
+                                   "0x%X: %s", hdr.file_offset, exc)
+            self._regions_cache = cached
+        return cached
+
+    def _region_heads_in_merge_order(self) -> List[MslBlockHeader]:
+        """MEMORY_REGION block headers in ``merge_continuations`` output order.
+
+        Replays :func:`msl.block_iter.merge_continuations` on HEADERS only:
+        leaf blocks and orphaned continuations are emitted where they occur,
+        a ``HAS_CHILDREN`` parent is held back until end-of-stream (or until a
+        later parent reuses its uuid), and a continuation of a pending parent
+        is absorbed. Only MEMORY_REGION headers are returned, but parents of
+        every type are tracked, exactly as the payload walk tracks them.
+        """
+        out: List[MslBlockHeader] = []
+        pending: dict = {}  # parent uuid -> header (insertion ordered)
+        for hdr in self._iter_raw_block_headers():
+            if hdr.flags & BlockFlag.CONTINUATION:
+                if hdr.parent_uuid not in pending:
+                    out.append(hdr)  # orphan: emitted as-is, like the merge
+            elif hdr.flags & BlockFlag.HAS_CHILDREN:
+                if hdr.block_uuid in pending:
+                    out.append(pending.pop(hdr.block_uuid))
+                pending[hdr.block_uuid] = hdr
+            else:
+                out.append(hdr)
+        out.extend(pending.values())
+        return [h for h in out if h.block_type == BlockType.MEMORY_REGION]
 
     def captured_run_index(self) -> CapturedRunIndex:
         """Every CAPTURED run in the container, indexed for lookup (cached).
@@ -560,6 +922,10 @@ class MslReader:
         is exactly the order :meth:`MslDumpSource.iter_ranges` yields in — so
         ``vas_offset`` is the run's offset in the flat ``"vas"`` stream, not a
         second opinion about it.
+
+        Built from :meth:`collect_regions`, which decodes each region from its
+        header + page map only (:meth:`_region_head`), so building the index
+        never copies page data.
 
         Buffer offsets are computed the same way the old per-region read
         computed them (payload start, past the 0x20 header and the 8-byte
@@ -579,11 +945,17 @@ class MslReader:
         for region in sorted(self.collect_regions(), key=lambda r: r.base_addr):
             page_size = int(region.page_size)
             map_bytes = ((int(region.num_pages) + 3) // 4 + 7) & ~7
-            base = int(region.block_header.payload_offset) + 0x20 + map_bytes
+            hdr = region.block_header
+            block = hdr if hdr.compressed else None
+            if block is None:
+                base = int(hdr.payload_offset) + 0x20 + map_bytes
+                held = buf_len - base
+            else:
+                base = 0x20 + map_bytes
+                held = self._decompressed_length(hdr) - base
             region_avail = max(
                 0,
-                min(count_captured_pages(region.page_states) * page_size,
-                    buf_len - base),
+                min(count_captured_pages(region.page_states) * page_size, held),
             )
             data_offset = 0
             for start_page, page_count in _captured_page_runs(region):
@@ -594,6 +966,7 @@ class MslReader:
                     buf_offset=base + data_offset,
                     avail=max(0, min(length, region_avail - data_offset)),
                     vas_offset=vas_offset,
+                    block=block,
                 ))
                 data_offset += length
                 vas_offset += length

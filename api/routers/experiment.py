@@ -22,13 +22,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from memdiver.api.dependencies import task_manager_or_503 as _task_manager_or_503
+from memdiver.api.models import MemoryOverrideFields
 
 logger = logging.getLogger("memdiver.api.routers.experiment")
 
 router = APIRouter()
 
 
-class ExperimentRunRequest(BaseModel):
+class ExperimentRunRequest(MemoryOverrideFields):
     """Request body for ``POST /api/experiment/run``.
 
     Only ``target`` is required; the other fields surface knobs the CLI
@@ -99,3 +100,55 @@ def run_experiment_endpoint(request: ExperimentRunRequest):
         task_id=record.task_id,
         status=record.status.value,
     )
+
+
+class CaptureRequest(BaseModel):
+    """Request body for ``POST /api/experiment/capture`` (one dump of a live process)."""
+
+    target: str = Field(..., description="Process ID, or process / Android package name.")
+    tool: str = Field(default="memslicer", description="memslicer | lldb | fridump.")
+    device: str = Field(
+        default="local",
+        description="local | usb | usb:<frida-device-id> | remote:<host>[:<port>].")
+    output: Optional[str] = Field(
+        default=None,
+        description="Output dump path (default: <task artifact root>/captures/...).")
+    max_region_size: Optional[int] = Field(
+        default=None, ge=1, description="Skip (and report) regions >= this many bytes.")
+    include_large_readonly: bool = Field(
+        default=False,
+        description="lldb: also capture non-writable regions >= 100 MiB.")
+    timeout: Optional[float] = Field(default=None, gt=0,
+                                     description="Backend timeout in seconds.")
+
+
+def _default_capture_output(request: CaptureRequest) -> str:
+    import datetime
+    import re
+
+    root = Path(_task_manager_or_503().artifact_store.root) / "captures"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", request.target.strip()) or "target"
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ext = "msl" if request.tool == "memslicer" else "bin"
+    return str(root / f"{stem}_{request.tool}_{stamp}.{ext}")
+
+
+@router.post("/capture")
+def capture_endpoint(request: CaptureRequest) -> dict:
+    """Capture one dump synchronously and return the capture report.
+
+    The report lists every region that was not captured under ``skipped``
+    (base / size / reason) plus ``summary_warnings``; ``ok`` false carries
+    ``error``. Invalid input / a missing backend propagate as
+    ``CapabilityError`` (400 / 412 via the app-level handler).
+    """
+    from memdiver.app.experiment_orchestration import capture_result
+
+    if not request.target.strip():
+        raise HTTPException(status_code=400, detail="target must be a pid or a name")
+    output = request.output or _default_capture_output(request)
+    return capture_result(
+        target=request.target, output=output, tool=request.tool,
+        device=request.device, max_region_size=request.max_region_size,
+        include_large_readonly=request.include_large_readonly,
+        timeout=request.timeout)

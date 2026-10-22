@@ -145,7 +145,7 @@ def _build_matched_msl() -> bytes:
         base_addr=_REGION_BASE, num_pages=1, page_data=bytes(page),
     )
     blob += region_block
-    return blob
+    return gm.chain_prev_hashes(blob)
 
 
 def _self_verify(msl_bytes: bytes, pcap_path: Path, work: Path) -> dict:

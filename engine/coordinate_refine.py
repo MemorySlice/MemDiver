@@ -85,7 +85,9 @@ def _pick_anchor(reference_region: np.ndarray, window: int) -> int:
     prof = compute_entropy_profile(reference_region.tobytes(), window=window, step=window)
     if not prof:
         return 0
-    return max(prof, key=lambda p: p[1])[0]
+    offsets, values = prof.as_arrays()
+    # argmax returns the FIRST maximum, same tie-break as max(..., key=...).
+    return int(offsets[int(np.argmax(values))])
 
 
 def correspondence_score(

@@ -153,11 +153,42 @@ class WelfordVariance:
             mean += delta / n
             m2 += delta * (x - mean)
 
-    def variance(self) -> np.ndarray:
-        """Return current population variance (ddof=0). Zeros if n == 0."""
+    def variance(self, out: Optional[np.ndarray] = None) -> np.ndarray:
+        """Return current population variance (ddof=0). Zeros if n == 0.
+
+        ``out`` (a float32 vector of length ``size``, e.g. a memmap) receives
+        the result instead of a fresh array. ``m2 / n`` is already float32, so
+        no ``astype`` copy is made; the values are identical to the historical
+        ``(m2 / n).astype(np.float32)``.
+        """
+        if out is not None and (out.shape != (self._size,) or out.dtype != np.float32):
+            raise ValueError("out must be a float32 vector of the accumulator size")
         if self._n == 0:
-            return np.zeros(self._size, dtype=np.float32)
-        return (self._m2 / self._n).astype(np.float32)
+            if out is None:
+                return np.zeros(self._size, dtype=np.float32)
+            out.fill(0.0)
+            return out
+        result = np.divide(self._m2, self._n, out=out)
+        if result.dtype != np.float32:  # legacy numpy value-based casting
+            result = result.astype(np.float32)
+        return result
+
+    def variance_summary(self) -> "tuple[float, float]":
+        """``(mean, max)`` of the current variance without a full-size temporary.
+
+        Walks ``m2 / n`` slab by slab. ``max`` is exact; ``mean`` is accumulated
+        in float64 (it can differ in the last float32 digits from
+        ``variance().mean()``, which uses float32 pairwise summation).
+        """
+        if self._n == 0 or self._size == 0:
+            return 0.0, 0.0
+        total = 0.0
+        peak = -np.inf
+        for start in range(0, self._size, CHUNK_BYTES):
+            part = np.divide(self._m2[start:start + CHUNK_BYTES], self._n)
+            total += float(part.sum(dtype=np.float64))
+            peak = max(peak, float(part.max()))
+        return total / self._size, peak
 
     def reset(self) -> None:
         self._mean.fill(0.0)
@@ -199,6 +230,17 @@ def classify_variance(
     if not isinstance(variance, np.ndarray):
         variance = np.array(variance, dtype=np.float32)
     result = np.full(len(variance), ByteClass.KEY_CANDIDATE, dtype=np.uint8)
+    # Element-wise, so classifying slab by slab is identical to one pass and
+    # keeps the bool-mask temporaries O(CHUNK_BYTES) instead of O(size).
+    for start in range(0, len(variance), CHUNK_BYTES):
+        end = start + CHUNK_BYTES
+        _classify_slab(variance[start:end], result[start:end], bands)
+    return result
+
+
+def _classify_slab(variance: np.ndarray, result: np.ndarray,
+                   bands: VarianceThresholds) -> None:
+    """Write the class codes of one variance slab into ``result`` (a view)."""
     # Variance is non-negative, so ``<= 0.0`` is exactly the historical
     # ``== 0.0`` test at the default invariant_max.
     result[variance <= bands.invariant_max] = ByteClass.INVARIANT
@@ -210,7 +252,6 @@ def classify_variance(
         (variance > bands.structural_max) & (variance <= bands.pointer_max)
     )
     result[mask_pointer] = ByteClass.POINTER
-    return result
 
 
 def normalize_byte_classes(byte_class: ByteClassSpec) -> Tuple[ByteClass, ...]:
@@ -279,6 +320,8 @@ def count_classifications(classifications) -> Dict[str, int]:
     Returns dict with human-readable string keys for backward compatibility.
     """
     if isinstance(classifications, np.ndarray):
+        if classifications.dtype.kind in "ui" and classifications.ndim == 1:
+            return _count_codes_slabbed(classifications)
         codes, cnts = np.unique(classifications, return_counts=True)
         return {ByteClass(int(c)).name.lower(): int(n) for c, n in zip(codes, cnts)}
     counts: Dict[str, int] = {}
@@ -286,3 +329,92 @@ def count_classifications(classifications) -> Dict[str, int]:
         label = ByteClass(int(code)).name.lower()
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+def _count_codes_slabbed(classifications: np.ndarray) -> Dict[str, int]:
+    """Same dict as the ``np.unique`` path (ascending code order, present codes
+    only) via per-slab ``bincount`` -- no full-size sort copy."""
+    if classifications.size and int(classifications.min()) < 0:
+        ByteClass(int(classifications.min()))  # raises like the unique path
+    totals = np.zeros(len(ByteClass), dtype=np.int64)
+    for start in range(0, len(classifications), CHUNK_BYTES):
+        part = np.bincount(classifications[start:start + CHUNK_BYTES])
+        if len(part) > len(totals):
+            totals = np.concatenate([totals, np.zeros(len(part) - len(totals), np.int64)])
+        totals[:len(part)] += part
+    return {ByteClass(code).name.lower(): int(n)
+            for code, n in enumerate(totals.tolist()) if n}
+
+
+# Leaf size (positions) for the slab-wise pairwise reductions below. 1 Mi
+# float32 positions = 4 MiB per reusable slab buffer.
+PAIRWISE_LEAF = 1 << 20
+
+
+def pairwise_leaves_sum(size: int, leaf_sum, max_leaf: int = PAIRWISE_LEAF):
+    """Reproduce ``np.add.reduce`` of a contiguous float vector slab by slab.
+
+    numpy reduces a contiguous float vector with pairwise summation: blocks
+    larger than 128 elements are split at ``n2 = n // 2 - (n // 2) % 8`` and
+    the halves are summed recursively. Every node of that tree is itself
+    ``np.add.reduce`` of its sub-range, so recursing with the same split rule
+    down to leaves of at most ``max_leaf`` elements and letting
+    ``leaf_sum(start, end)`` reduce each leaf gives a bit-identical total
+    without ever materialising the whole vector. Leaves are visited in
+    ascending offset order. ``max_leaf`` must be >= 128 so leaves sit on
+    tree nodes. Returns the total in the leaf sums' dtype.
+    """
+    if max_leaf < 128:
+        raise ValueError("max_leaf must be >= 128 (numpy's pairwise block size)")
+
+    def _reduce(start: int, n: int):
+        if n <= max_leaf:
+            return leaf_sum(start, start + n)
+        half = n // 2
+        half -= half % 8
+        left = _reduce(start, half)
+        right = _reduce(start + half, n - half)
+        return left.dtype.type(left + right)
+
+    return _reduce(0, size)
+
+
+class RunningTopK:
+    """Bounded running selection of the ``k`` largest values of a vector fed
+    slab by slab in ascending offset order.
+
+    Ordering is deterministic: descending value, ties broken by ascending
+    offset. Each slab contributes at most ``k`` local candidates, so working
+    memory is O(slab) for the partition plus O(k) for the running set.
+    """
+
+    def __init__(self, k: int) -> None:
+        self._k = int(k)
+        self._values = np.empty(0, dtype=np.float64)
+        self._offsets = np.empty(0, dtype=np.int64)
+
+    def add_slab(self, slab: np.ndarray, base_offset: int) -> None:
+        """Merge the candidates of ``slab`` (positions ``base_offset + i``)."""
+        if self._k <= 0 or slab.size == 0:
+            return
+        if len(self._values) == self._k and slab.max() <= self._values[-1]:
+            return  # nothing here beats (or out-ranks a tie with) the current set
+        local = self._slab_candidates(slab)
+        values = np.concatenate([self._values, slab[local].astype(np.float64)])
+        offsets = np.concatenate([self._offsets, local.astype(np.int64) + base_offset])
+        order = np.lexsort((offsets, -values))[: self._k]
+        self._values, self._offsets = values[order], offsets[order]
+
+    def _slab_candidates(self, slab: np.ndarray) -> np.ndarray:
+        """Local top-k indices of ``slab``, lowest index first among ties."""
+        k = self._k
+        if slab.size <= k:
+            return np.arange(slab.size)
+        threshold = np.partition(slab, slab.size - k)[slab.size - k]
+        above = np.flatnonzero(slab > threshold)
+        tied = np.flatnonzero(slab == threshold)[: k - len(above)]
+        return np.concatenate([above, tied])
+
+    def result(self) -> "List[Tuple[int, float]]":
+        """``[(offset, value), ...]`` in descending value / ascending offset."""
+        return [(int(o), float(v)) for o, v in zip(self._offsets, self._values)]

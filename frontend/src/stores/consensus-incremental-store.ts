@@ -1,3 +1,4 @@
+import { withSessionRegionFilter } from "@/stores/region-selection-store";
 import { create } from "zustand";
 
 export interface LiveStats {
@@ -68,7 +69,8 @@ export const useConsensusIncrementalStore = create<State>((set, get) => ({
     try {
       const res = await postJson<{ session_id: string; size: number }>(
         "/api/consensus/begin",
-        { size },
+        // Session region filter (wizard Regions step), when one is set.
+        withSessionRegionFilter({ size }),
       );
       set({
         sessionId: res.session_id,

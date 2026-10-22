@@ -34,6 +34,14 @@ settings.register_profile(
 )
 settings.load_profile("memdiver")
 
+# Starlette's TestClient sends ``Host: testserver``. The always-on Host
+# allow-list (api/security.HostAllowListMiddleware) would refuse it, so the
+# suite admits that one name -- test-only, via the same env knob an operator
+# uses. setdefault: a developer's own MEMDIVER_ALLOWED_HOSTS still wins.
+import os as _os
+
+_os.environ.setdefault("MEMDIVER_ALLOWED_HOSTS", "testserver")
+
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 if str(_REPO_ROOT) not in sys.path:

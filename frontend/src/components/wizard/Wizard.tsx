@@ -8,6 +8,13 @@ import { useAppStore, SINGLE_FILE_ALGORITHMS, REFERENCE_ALGORITHMS, MULTI_DUMP_A
 import type { AlgorithmName } from "@/stores/app-store";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { getAlgorithmAvailability, type AlgorithmAvailability } from "@/api/algorithms";
+import { readableFailure } from "@/api/client";
+import type { ImportPreview } from "@/api/types";
+import { StepRegions, type WizardDecryption } from "@/components/wizard/StepRegions";
+import { applyRegionSelection } from "@/components/wizard/apply-region-selection";
+import { useRegionSelectionStore } from "@/stores/region-selection-store";
+import { notifyError } from "@/utils/errorNotifier";
+import i18n from "@/i18n";
 
 const ALGO_AVAILABLE_PENDING: AlgorithmAvailability = { available: true, reason: null };
 
@@ -27,6 +34,7 @@ function WizardHeader() {
 
 const STEP_INDICATOR_KEYS: Record<string, string> = {
   "Select Data": "step.indicator.selectData",
+  "Regions": "import:step.indicator",
   "Directory Type": "step.indicator.directoryType",
   "Analysis": "step.indicator.analysis",
 };
@@ -340,6 +348,24 @@ function StepAnalysis() {
   );
 }
 
+/** Sticky warning toast for an import that dropped something that matters. */
+function notifyImportWarnings(imported: {
+  secretsOnlyInExcluded?: number;
+  warnings?: string[];
+}): void {
+  const lines = [
+    ...((imported.secretsOnlyInExcluded ?? 0) > 0
+      ? [i18n.t("import:warnings.secretsOnlyInExcluded", { count: imported.secretsOnlyInExcluded })]
+      : []),
+    ...(imported.warnings ?? []),
+  ];
+  if (lines.length === 0) return;
+  notifyError(lines.join(" "), i18n.t("import:warnings.heading"), {
+    severity: "warning",
+    autoDismissMs: 0,
+  });
+}
+
 export function Wizard() {
   const { t } = useTranslation("wizard");
   const {
@@ -366,12 +392,24 @@ export function Wizard() {
   );
   const [pathError, setPathError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
+  const [regionPreview, setRegionPreview] = useState<ImportPreview | null>(null);
+  // Encrypted-.msl key inputs: component state only (outlives the Regions
+  // step, never persisted), sent in the import-path POST body.
+  const [decryption, setDecryption] = useState<WizardDecryption>({ keyMaterial: {}, decryptOutput: false });
+  const regionCount = useRegionSelectionStore((s) => s.wizardCategories.length);
 
-  // Dynamic step list based on path detection
+  // Dynamic step list based on path detection. "Regions" needs a validated
+  // path to preview, so it only appears once the path is known to exist.
   const isDirectory = pathInfo?.is_directory ?? false;
-  const steps = isDirectory
-    ? ["Select Data", "Directory Type", "Analysis"]
-    : ["Select Data", "Analysis"];
+  const hasRegions = pathInfo?.exists === true;
+  const steps = [
+    "Select Data",
+    ...(hasRegions ? ["Regions"] : []),
+    ...(isDirectory ? ["Directory Type"] : []),
+    "Analysis",
+  ];
 
   // Map wizard step index to component
   const currentStepName = steps[wizardStep] ?? steps[0];
@@ -423,15 +461,52 @@ export function Wizard() {
     }
   }, [setWizardStep, t]);
 
+  /**
+   * Apply the Regions choice, then enter the workspace. A conversion or
+   * filtered copy replaces `inputPath` with the imported `.msl` (already
+   * registered in the dump store, so `completeWizard` does not add it twice).
+   */
+  const finishWizard = useCallback(async () => {
+    const app = useAppStore.getState();
+    const regions = useRegionSelectionStore.getState();
+    if (!hasRegions) {
+      completeWizard();
+      return;
+    }
+    setFinishing(true);
+    setFinishError(null);
+    try {
+      const outcome = await applyRegionSelection({
+        inputMode: app.inputMode,
+        inputPath: app.inputPath.trim(),
+        categories: regions.wizardCategories,
+        materialize: regions.wizardMaterialize,
+        preview: regionPreview,
+        keyMaterial: decryption.keyMaterial,
+        decryptOutput: decryption.decryptOutput,
+      });
+      regions.setRegionFilter(outcome.regionFilter);
+      if (outcome.imported) {
+        app.setInputPath(outcome.imported.path);
+        notifyImportWarnings(outcome.imported);
+      }
+      completeWizard();
+    } catch (e) {
+      setFinishError(t("import:step.finishFailed", { message: readableFailure(e) }));
+    } finally {
+      setFinishing(false);
+    }
+  }, [hasRegions, completeWizard, regionPreview, decryption, t]);
+
   const goForward = useCallback(async () => {
     if (currentStepName === "Select Data") {
       await validateAndAdvance();
     } else if (wizardStep < steps.length - 1) {
       setWizardStep(wizardStep + 1);
     } else {
-      completeWizard();
+      await finishWizard();
     }
-  }, [wizardStep, steps.length, setWizardStep, completeWizard, currentStepName, validateAndAdvance]);
+  }, [wizardStep, steps.length, setWizardStep, finishWizard, currentStepName, validateAndAdvance]);
 
   const shortcuts = useMemo(() => ({ escape: goBack }), [goBack]);
   useKeyboardShortcuts(shortcuts);
@@ -450,7 +525,9 @@ export function Wizard() {
   const nextDisabled =
     currentStepName === "Select Data"
       ? !inputPath.trim() || validating
-      : false;
+      : currentStepName === "Regions"
+        ? regionCount === 0
+        : finishing;
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: "var(--md-bg-primary)" }}>
@@ -461,9 +538,25 @@ export function Wizard() {
         {/* Step content */}
         <div className="md-panel p-6 mb-6">
           {currentStepName === "Select Data" && <StepSelectData error={pathError} />}
+          {currentStepName === "Regions" && (
+            <StepRegions
+              onPreviewChange={setRegionPreview}
+              decryption={decryption}
+              onDecryptionChange={setDecryption}
+            />
+          )}
           {currentStepName === "Directory Type" && <StepDirectoryType />}
           {currentStepName === "Analysis" && <StepAnalysis />}
         </div>
+
+        {finishing && (
+          <p role="status" className="text-sm md-text-muted mb-3">{t("import:step.finishing")}</p>
+        )}
+        {finishError && (
+          <p role="alert" className="text-sm mb-3" style={{ color: "var(--md-accent-red)" }}>
+            {finishError}
+          </p>
+        )}
 
         {/* Navigation */}
         <div className="flex justify-between">
@@ -481,7 +574,7 @@ export function Wizard() {
               background: nextDisabled ? "var(--md-text-muted)" : "var(--md-accent-blue)",
             }}
           >
-            {validating ? "\u23F3" : isLast ? t(finalActionKey) : t("common:next")}
+            {validating || finishing ? "\u23F3" : isLast ? t(finalActionKey) : t("common:next")}
           </button>
         </div>
       </div>

@@ -44,6 +44,7 @@ So this module reuses the *discipline* — the invariant style of
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -406,6 +407,27 @@ def _size_of_view(source: Any, view: Optional[str]) -> int:
     return int(source.size)
 
 
+def _search_view(source: Any, view: Optional[str]) -> Optional[str]:
+    """The ONE view a dump is sized and searched in.
+
+    *view* when the caller supplied one; otherwise the source's own
+    ``find_all`` default (``"raw"`` for :class:`~core.dump_source.RawDumpSource`,
+    gcore and the region-table sources, ``"vas"`` for
+    :class:`~core.dump_source.MslDumpSource`), read off its signature. Resolved
+    once so ``size_for`` and ``find_all`` agree: gcore and gdb_raw/lldb_raw
+    default ``size_for`` to ``"vas"`` but ``find_all`` to ``"raw"``, so leaning
+    on both defaults sized one view and searched another. ``None`` (a
+    duck-typed ``find_all`` without a ``view`` default) keeps today's calls.
+    """
+    if view is not None:
+        return view
+    try:
+        default = inspect.signature(source.find_all).parameters["view"].default
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None
+    return default if isinstance(default, str) else None
+
+
 def locate_key_across_dumps(
     dump_paths: Sequence[PathLike],
     needle: bytes,
@@ -420,10 +442,12 @@ def locate_key_across_dumps(
     Args:
         dump_paths: The dumps to search. Result rows come back in THIS order.
         needle: The secret bytes. Must be non-empty (see Raises).
-        view: Byte view to search. Forwarded to the source ONLY when supplied,
-            so each format keeps its own default (``"raw"`` for
-            :class:`~core.dump_source.RawDumpSource` and the region-table
-            sources, ``"vas"`` for :class:`~core.dump_source.MslDumpSource`).
+        view: Byte view to search. When omitted each format keeps its own
+            ``find_all`` default (``"raw"`` for
+            :class:`~core.dump_source.RawDumpSource`, gcore and the
+            region-table sources, ``"vas"`` for
+            :class:`~core.dump_source.MslDumpSource`); that one view sizes the
+            dump AND is searched, so ``size_for_view`` and ``offsets`` agree.
         key_material: ``key`` / ``passphrase`` / ``kem_private_key`` kwargs
             forwarded to :func:`core.dump_source.open_dump` so encrypted
             ``.msl`` containers decrypt.
@@ -457,8 +481,6 @@ def locate_key_across_dumps(
     started = time.perf_counter()
     rows: List[DumpKeyLocation] = []
     needle_len = len(needle)
-    view_kwargs: Dict[str, Any] = {} if view is None else {"view": view}
-
     for raw_path in dump_paths:
         path = Path(raw_path)
         dump_path = str(raw_path)
@@ -474,7 +496,10 @@ def locate_key_across_dumps(
                     on_source(source)
                 name = str(getattr(source, "name", name))
                 format_name = str(getattr(source, "format_name", ""))
-                size = _size_of_view(source, view)
+                searched_view = _search_view(source, view)
+                view_kwargs = (
+                    {} if searched_view is None else {"view": searched_view})
+                size = _size_of_view(source, searched_view)
                 if size < needle_len:
                     # NOT "absent", even though absence is logically provable
                     # for a view too short to contain the needle: such a view is
@@ -500,10 +525,12 @@ def locate_key_across_dumps(
                 # structs (see engine.truth_labels). The census feeds the
                 # verdict (hit_count) AND the window anchor (offsets).
                 # Never ``read_all().find()``: ``read_all`` is not a Protocol
-                # member (gcore/regioned sources omit it deliberately) and
-                # ``mmap.find`` defaults its start to the CURRENT file
-                # position, which has already reported a real secret absent
-                # (see core.dump_io.find_first_offset).
+                # member (duck-typed sources may lack it; gcore/regioned have
+                # it but materialise their whole "vas" view, and their default
+                # view differs from ``find_all``'s) and ``mmap.find`` defaults
+                # its start to the CURRENT file position, which has already
+                # reported a real secret absent (see
+                # core.dump_io.find_first_offset).
                 offsets = list(source.find_all(needle, **view_kwargs))
         except (OSError, ValueError) as exc:
             # NARROW ON PURPOSE. ``EncryptedDumpLockedError`` subclasses

@@ -19,6 +19,7 @@ unavailable and raise a clean MslCryptoError rather than crashing.
 import hmac
 import logging
 import os
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from memdiver.core.install_hints import (missing_package_message,
@@ -410,3 +411,52 @@ def derive_cek_consumer(
         raise MslCryptoError(f"{key_encap.name} requires a recipient private key")
     shared = kem_decapsulate(key_encap, recipient_private, kem_ciphertext)
     return hkdf_blake3(shared, salt=dump_uuid_bytes, info=MSL_CEK_INFO)
+
+
+# ------------------------------------------------------------ re-wrapping
+
+@dataclass(frozen=True, repr=False, eq=False)
+class RewrapMaterial:
+    """Everything needed to re-encrypt a derived copy of a decrypted ``.msl``
+    so that the SAME key material opens it (spec §10).
+
+    Produced only by :meth:`MslReader._rewrap_material` after a successful
+    (tag-verified) decrypt, consumed only by the writer's rewrap config
+    (``MslEncryptionConfig.rewrap``). The copy reuses the content key and the
+    key wrapping (KDF salt + Argon2id parameters, or the KEM ciphertext — whose
+    HKDF binds the CEK to ``dump_uuid``), but NEVER the nonce: the writer draws
+    a fresh one and refuses ``source_nonce``.
+
+    Request-scoped secret: never cache, log or serialise it. ``repr`` is
+    redacted and :meth:`wipe` zeroises the CEK buffer (best effort — Python
+    may hold transient copies).
+    """
+
+    enc_algo: EncAlgo
+    kdf_type: KdfType
+    key_encap: KeyEncap
+    kdf_time: int
+    kdf_memory: int
+    kdf_lanes: int
+    kdf_salt: bytes
+    kem_ciphertext: bytes
+    source_nonce: bytes
+    dump_uuid_bytes: bytes
+    _cek: bytearray = field(default_factory=bytearray)
+
+    @property
+    def cek(self) -> bytes:
+        if not any(self._cek):
+            raise MslCryptoError("re-wrap material has been wiped")
+        return bytes(self._cek)
+
+    def wipe(self) -> None:
+        for i in range(len(self._cek)):
+            self._cek[i] = 0
+
+    def __repr__(self) -> str:
+        return (f"RewrapMaterial(enc_algo={self.enc_algo.name}, "
+                f"kdf_type={self.kdf_type.name}, "
+                f"key_encap={self.key_encap.name}, cek=<redacted>)")
+
+    __str__ = __repr__

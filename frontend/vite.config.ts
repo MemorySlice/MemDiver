@@ -74,11 +74,22 @@ export default defineConfig({
       allow: [__dirname, path.resolve(__dirname, "../node_modules")],
     },
     port: 5173,
+    // Object form with `changeOrigin: false` on purpose. The string shorthand
+    // implies `changeOrigin: true`, which rewrites Host to the backend's while
+    // the browser's Origin stays the dev server's -- the backend's
+    // CrossSiteRequestGuard (api/security.py) would then see a cross-origin
+    // write. Keeping Host as the dev server's makes every proxied request
+    // same-origin (Origin host:port == Host), so no loopback-wide exception
+    // is needed on the backend.
     proxy: {
-      "/api": `http://127.0.0.1:${process.env.VITE_BACKEND_PORT ?? 8080}`,
+      "/api": {
+        target: `http://127.0.0.1:${process.env.VITE_BACKEND_PORT ?? 8080}`,
+        changeOrigin: false,
+      },
       "/ws": {
         target: `ws://127.0.0.1:${process.env.VITE_BACKEND_PORT ?? 8080}`,
         ws: true,
+        changeOrigin: false,
       },
     },
   },

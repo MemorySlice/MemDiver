@@ -32,6 +32,17 @@ FastAPI backend. Serves the built React bundle at `/` and the Marimo notebook at
 
 Background tasks run in a shared `ProcessPoolExecutor` with an `asyncio.Semaphore(1)` gating outer runs. Progress events (`stage_start`, `progress`, `stage_end`, `funnel`, `nsweep_point`, `oracle_tick`, `oracle_hit`, `artifact`, `done`, `error`) flow through a `ProgressBus` with per-task 512-event ring buffers.
 
+## Memory-budget guard
+
+Consensus-building routes estimate their peak memory and refuse when it exceeds the budget (`MEMDIVER_MEMORY_BUDGET_MB`, see [](../user_guide/configuration.md)). The refusal is a `CapabilityError` with `code: "memory_budget_exceeded"`, which the global handler in `api/main.py` maps to **HTTP 507** with a flat body (`api/memory_budget_errors.py`):
+
+```json
+{"error": "...", "code": "memory_budget_exceeded", "category": "PRECONDITION",
+ "message": "...", "estimate_bytes": 123, "budget_bytes": 45, "details": {"operation": "...", "breakdown": {}, "source": "..."}}
+```
+
+Routes that translate other `CapabilityError`s to `{"detail"}` locally re-raise this one so it always stays a 507. To run anyway, re-send the same request with `force_memory: true` (the `MemoryOverrideFields` mixin). It is accepted by `/api/analysis/consensus`, `/consensus/aligned-window`, `/consensus/regions`, `/candidates`, `/auto-export`, `/run`, `/api/pipeline/run`, `/api/experiment/run` and `/api/consensus/begin`, where `force` remains an alias. Background tasks get `force_memory` in their params. A task that fails on the guard records `error` (the message) plus `error_info: {code, estimate_bytes, budget_bytes, details}` on its task record, and its terminal `error` event carries the same dict as `extra`.
+
 ## Persistence
 
 Task records are atomically persisted to `<task_root>/<id>/record.json`; orphan `PENDING` / `RUNNING` records are reset to `FAILED` on app restart.
@@ -46,6 +57,9 @@ Uploaded oracles are persisted as `<oracle_dir>/<uuid>.py` plus a `<uuid>.json` 
 
 - **CORS** — `CORSMiddleware` with `allow_origins=settings.cors_origins` (default `["http://localhost:5173"]`; a literal `"*"` is dropped), credentials allowed, methods `GET`/`POST`/`PUT`/`DELETE`/`OPTIONS` (`PUT` is used by `PUT /api/settings/last-dir`; `PATCH` is not allowed), headers `Content-Type`/`Authorization`/`X-API-Key`.
 - **GZip** — `GZipMiddleware` with `minimum_size=1000`.
+- **Host allow-list** — `HostAllowListMiddleware` (pure ASGI, HTTP + WebSocket, always on) refuses any `Host` that is not `127.0.0.1`/`localhost`/`::1` (any port), `MEMDIVER_ALLOWED_HOSTS`, or a guarded non-loopback bind host, with `421` (DNS-rebinding defence).
+- **Cross-site guard** — `CrossSiteRequestGuard` (pure ASGI, always on) refuses non-safe requests and WebSocket handshakes with `Sec-Fetch-Site: cross-site` or an `Origin` that is not same-origin with `Host`, not in `cors_origins` and not the Vite dev origin (`localhost`/`127.0.0.1` on `MEMDIVER_FRONTEND_PORT` / `FRONTEND_PORT` / `5173`) — loopback origins on other ports are refused (`403`), and non-empty bodies typed `text/plain`/form-urlencoded/missing (`415`). Both run outermost. See [Security model](../user_guide/configuration.md#security-model).
+- **Read-path sandbox** — opt-in (`MEMDIVER_ALLOWED_ROOTS`); a router-level dependency (`api/path_policy.enforce_request_read_paths`) on every router taking read paths.
 - **Token auth** — `ApiTokenAuthMiddleware` is a no-op unless `MEMDIVER_API_TOKEN` is set; then every `/api`, `/ws` and `/notebook` route requires the token (`Authorization: Bearer …` or `X-API-Key: …`; WebSockets may pass `?token=…`). `/health`, `/docs`, `/redoc`, `/openapi.json` and the static bundle stay open. `memdiver web` refuses a non-loopback `MEMDIVER_HOST` without a token unless `MEMDIVER_ALLOW_INSECURE` is set (`api/security.py`).
 
 ## Configuration

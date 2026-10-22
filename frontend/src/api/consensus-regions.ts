@@ -179,6 +179,8 @@ export interface ConsensusRegionsRequest {
    * history and `Referer`.
    */
   keys?: AlignedWindowKey[];
+  /** Re-send past the server memory guard (see `@/api/memory-budget`). */
+  force_memory?: boolean;
 }
 
 /** Which dump the page's jump offsets are expressed in, and whether they exist. */

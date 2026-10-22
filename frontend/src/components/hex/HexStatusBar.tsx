@@ -57,6 +57,11 @@ export function HexStatusBar() {
   const selection = useHexStore((s) => s.selection);
   const fileSize = useHexStore((s) => s.fileSize);
   const format = useHexStore((s) => s.format);
+  const detectedFormat = useHexStore((s) => s.detectedFormat);
+  const availableViews = useHexStore((s) => s.availableViews);
+  // Name the view whenever the dump HAS several (an .msl, a gcore core, a
+  // gdb_raw/lldb_raw .bin) — the backend's answer, not the extension.
+  const multiView = format === "msl" || availableViews.length > 1;
   const viewMode = useHexStore((s) => s.viewMode);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const setWindowStart = useHexStore((s) => s.setWindowStart);
@@ -107,7 +112,7 @@ export function HexStatusBar() {
         : soloPath
           ? soloByteAt(soloPath, cursorOffset)
           : agreement?.byte;
-  const offsetLabel = format === "msl" && viewMode === "vas" ? t("statusBar.offsetLabelVas") : t("statusBar.offsetLabelOffset");
+  const offsetLabel = multiView && viewMode === "vas" ? t("statusBar.offsetLabelVas") : t("statusBar.offsetLabelOffset");
 
   // All three MSL view modes need a distinct label. Collapsing "va" into the
   // "raw" branch (as a `viewMode === "vas" ? … : "raw"` ternary does) makes the
@@ -214,8 +219,8 @@ export function HexStatusBar() {
           </div>
         )}
         <span>
-          {format.toUpperCase()}
-          {format === "msl" ? ` · ${viewModeLabel}` : ""}
+          {(detectedFormat || format).toUpperCase()}
+          {multiView ? ` · ${viewModeLabel}` : ""}
           {" | "}{t("statusBar.fileInfo", { size: (fileSize / 1024).toFixed(1), rows: totalRows })}
         </span>
       </div>

@@ -21,6 +21,19 @@ class ToolSession:
         self.scan_cache: Optional[dict] = None
         self._scan_protocols: Optional[tuple] = None
         self.protocol_version: str = ""
+        # Analysis-time region view filter, persisted form
+        # (``RegionSelection.to_note()``) or None for "every region".
+        self.region_filter: Optional[str] = None
+
+    def set_region_filter(self, spec: Optional[str]) -> Optional[str]:
+        """Set the session's region view filter from ``"heap,stack"`` / note.
+
+        Returns the normalised ``to_note()`` string (``None`` clears it or for
+        ``"all"``). Raises ``ValueError`` on unknown category names.
+        """
+        from memdiver.core.region_view_filter import region_filter_note
+        self.region_filter = region_filter_note(spec)
+        return self.region_filter
 
     def set_dataset(self, root: str) -> dict:
         """Set dataset root, clear caches, return confirmation.
@@ -71,3 +84,4 @@ class ToolSession:
         self.scan_cache = None
         self._scan_protocols = None
         self.protocol_version = ""
+        self.region_filter = None

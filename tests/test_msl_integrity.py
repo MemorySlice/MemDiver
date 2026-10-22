@@ -47,8 +47,9 @@ def test_verify_chain_valid(tmp_path):
     from memdiver.msl.integrity import verify_chain
 
     file_hdr = _build_file_header()
-    # Block 1: prev_hash = zeros
-    block1 = _build_block(0x0001, b'\xAA' * 32)
+    # Block 0: prev_hash = BLAKE3(file header, all HeaderSize bytes) (§4.4)
+    block1 = _build_block(0x0001, b'\xAA' * 32,
+                          prev_hash=blake3.blake3(file_hdr).digest())
     # Compute hash of block1 for block2's prev_hash
     h = blake3.blake3(block1)
     hash1 = h.digest()
@@ -183,7 +184,8 @@ def test_verify_chain_stops_at_end_of_capture(tmp_path):
     from memdiver.msl.integrity import verify_chain
 
     file_hdr = _build_file_header()
-    eoc_block = _build_block(BlockType.END_OF_CAPTURE, b'\xAA' * 32)
+    eoc_block = _build_block(BlockType.END_OF_CAPTURE, b'\xAA' * 32,
+                             prev_hash=hash_bytes(file_hdr))
     # A well-formed follow-on block that chains correctly off the EoC block.
     # If the loop didn't break at EoC, this would be walked and counted too.
     trailing_hash = hash_bytes(eoc_block)
@@ -212,3 +214,113 @@ def test_hashing_fallback_produces_32_bytes():
     digest = hash_bytes(b"integrity-fallback-test")
     assert len(digest) == 32
     assert digest == hash_bytes(b"integrity-fallback-test")
+
+
+# -- Block 0 chains from the file header (spec §4.4) --
+
+
+def _write(tmp_path, name, data):
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+def _verify(path):
+    from memdiver.msl.integrity import verify_chain
+    from memdiver.msl.reader import MslReader
+    with MslReader(path) as reader:
+        return verify_chain(reader)
+
+
+def test_block0_zero_prev_hash_tolerated_as_legacy(tmp_path):
+    """A zero Block 0 PrevHash (pre-fix MemDiver writer) violates §4.4 but is
+    tolerated: the file stays valid, flagged, with a warning."""
+    file_hdr = _build_file_header()
+    block0 = _build_block(0x0001, b'\xAA' * 32)  # zero prev_hash
+    report = _verify(_write(tmp_path, "zero.msl", file_hdr + block0))
+    assert report.valid
+    assert report.legacy_unchained_header
+    assert report.warnings and "legacy" in report.warnings[0]
+
+
+def test_legacy_zero_block0_still_checks_later_links(tmp_path):
+    """The legacy tolerance covers only the header link, not block links."""
+    file_hdr = _build_file_header()
+    block0 = _build_block(0x0001, b'\xAA' * 32)  # zero prev_hash
+    block1 = _build_block(0x0001, b'\xBB' * 32, prev_hash=b'\x11' * 32)
+    report = _verify(_write(tmp_path, "zero2.msl", file_hdr + block0 + block1))
+    assert not report.valid
+    assert report.legacy_unchained_header
+    assert report.broken_at == FILE_HEADER_SIZE + len(block0)
+
+
+def test_chained_header_is_not_flagged_legacy(tmp_path):
+    from memdiver.msl.hashing import hash_bytes
+    file_hdr = _build_file_header()
+    block0 = _build_block(0x0001, b'\xAA' * 32, prev_hash=hash_bytes(file_hdr))
+    report = _verify(_write(tmp_path, "chained.msl", file_hdr + block0))
+    assert report.valid and not report.legacy_unchained_header
+    assert report.warnings == []
+
+
+def test_block0_detects_header_tampering(tmp_path):
+    """Changing any header byte after writing breaks the Block 0 link."""
+    from memdiver.msl.hashing import hash_bytes
+    file_hdr = _build_file_header()
+    block0 = _build_block(0x0001, b'\xAA' * 32, prev_hash=hash_bytes(file_hdr))
+    tampered = bytearray(file_hdr)
+    struct.pack_into("<I", tampered, 0x34, 4242)  # PID
+    assert _verify(_write(tmp_path, "ok.msl", file_hdr + block0)).valid
+    report = _verify(_write(tmp_path, "bad.msl", bytes(tampered) + block0))
+    assert not report.valid
+    assert report.broken_at == FILE_HEADER_SIZE
+
+
+def test_chain_honors_sha256_hash_algo(tmp_path):
+    """HashAlgo=0x01 (SHA-256) selects SHA-256 for every PrevHash link."""
+    import hashlib
+    from memdiver.msl.enums import HashAlgo
+    hdr = bytearray(_build_file_header())
+    hdr[0x3D] = HashAlgo.SHA256
+    hdr = bytes(hdr)
+    block0 = _build_block(0x0001, b'\xAA' * 32, prev_hash=hashlib.sha256(hdr).digest())
+    block1 = _build_block(0x0001, b'\xBB' * 32, prev_hash=hashlib.sha256(block0).digest())
+    report = _verify(_write(tmp_path, "sha.msl", hdr + block0 + block1))
+    assert report.valid, report.errors
+    assert report.block_count == 2
+
+
+def test_unknown_hash_algo_reported(tmp_path):
+    hdr = bytearray(_build_file_header())
+    hdr[0x3D] = 0x7F
+    report = _verify(_write(tmp_path, "unk.msl", bytes(hdr) + _build_block(1, b'\xAA' * 32)))
+    assert not report.valid
+    assert any("HashAlgo" in e for e in report.errors)
+
+
+def test_chain_hasher_lookup():
+    from memdiver.msl.enums import HashAlgo
+    from memdiver.msl.hashing import hash_bytes
+    from memdiver.msl.integrity import chain_hasher
+    assert chain_hasher(HashAlgo.BLAKE3) is hash_bytes
+    assert len(chain_hasher(HashAlgo.SHA512_256)(b"x")) == 32
+    assert chain_hasher(0x7F) is None
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_memdiver_writer_block0_chains_from_header(tmp_path, streaming):
+    """MslWriter (in-memory and streaming) seeds Block 0 with hash(header)."""
+    from memdiver.msl.hashing import hash_bytes
+    from memdiver.msl.writer import MslWriter
+    path = tmp_path / f"w{int(streaming)}.msl"
+    w = MslWriter(path)
+    w.add_import_provenance(source_format=1, tool_name="test", orig_file_size=0)
+    w.add_memory_region(0x10000, b"\x11" * 4096)
+    w.add_end_of_capture()
+    w.write_streaming() if streaming else w.write()
+    raw = path.read_bytes()
+    hs = raw[9]
+    assert raw[hs + 0x30:hs + 0x50] == hash_bytes(raw[:hs])
+    report = _verify(path)
+    assert report.valid, report.errors
+    assert report.block_count == 3

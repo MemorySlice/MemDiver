@@ -7,14 +7,30 @@
  */
 
 import type { SecretHit } from "@/api/types";
-import type { HighlightRegion } from "@/stores/hex-store";
+import type { HexViewMode, HighlightRegion } from "@/stores/hex-store";
 import { useResultsStore } from "@/stores/results-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useAppStore } from "@/stores/app-store";
 import { secretTypeToHighlight } from "@/utils/highlight-types";
 
 interface AnalysisResultLike {
-  libraries: Array<{ hits: SecretHit[] }>;
+  libraries: Array<{ hits: SecretHit[]; metadata?: Record<string, unknown> }>;
+}
+
+const HIT_VIEWS: readonly HexViewMode[] = ["raw", "vas", "va"];
+
+/**
+ * The byte view a library report's hit offsets address, from the backend's
+ * `metadata.offset_view` (set by `run_file`: "vas" for .msl / gcore /
+ * gdb_raw / lldb_raw, "raw" for a flat dump). `undefined` when the report
+ * does not say (library-directory analysis, older saved sessions): those
+ * hits keep the historical "whatever view is on screen" behaviour.
+ */
+export function hitOffsetView(
+  metadata: Record<string, unknown> | undefined,
+): HexViewMode | undefined {
+  const view = metadata?.offset_view;
+  return HIT_VIEWS.includes(view as HexViewMode) ? (view as HexViewMode) : undefined;
 }
 
 /**
@@ -46,14 +62,22 @@ export function applyHitsToStores(
   }
 
   if (withHighlights) {
-    const allHits = result.libraries.flatMap((lib) => lib.hits);
-    const regions: HighlightRegion[] = allHits.map((hit) => ({
-      offset: hit.offset,
-      length: hit.length,
-      type: secretTypeToHighlight(hit.secret_type),
-      label: `${hit.secret_type} (${hit.library || "unknown"})`,
-    }));
-    useHexStore.getState().setHighlightedRegions(regions);
+    const regions: HighlightRegion[] = result.libraries.flatMap((lib) => {
+      const view = hitOffsetView(lib.metadata);
+      return lib.hits.map((hit) => ({
+        offset: hit.offset,
+        length: hit.length,
+        type: secretTypeToHighlight(hit.secret_type),
+        label: `${hit.secret_type} (${hit.library || "unknown"})`,
+        ...(view ? { view } : {}),
+      }));
+    });
+    const hex = useHexStore.getState();
+    hex.setHighlightedRegions(regions);
+    // Put the viewer in the view the offsets were computed in, so the
+    // highlights land on the hit bytes (no-op on a single-view dump).
+    const hitView = regions.find((r) => r.view)?.view;
+    if (hitView) hex.showView(hitView);
     if (anyHits) useAppStore.getState().setHasCandidateKeys(true);
   }
 }

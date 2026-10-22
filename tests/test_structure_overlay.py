@@ -252,3 +252,55 @@ def test_serialize_overlay_result_unknown_field_no_crash():
     assert {f["name"] for f in result["fields"]} == {"magic", "ghost_field"}
     # No size_choices fields -> no variant, and no crash on the unknown field.
     assert result["variant"] is None
+
+
+# --- shape / magic helpers (structure_scan) ---------------------------------
+
+from memdiver.core.structure_overlay import (  # noqa: E402
+    expected_field_bytes,
+    magic_signature,
+    score_structure_at,
+    structure_sizes,
+)
+
+
+def test_structure_sizes_fixed_and_polymorphic():
+    lib = get_structure_library(include_user=False)
+    assert structure_sizes(lib.get("tls12_master_secret")) == (48,)
+    assert structure_sizes(lib.get("tls13_master_secret")) == (32, 48)
+    assert structure_sizes(lib.get("ssh2_session_id")) == (20, 32, 64)
+    assert structure_sizes(lib.get("tls12_key_block_aes128_gcm")) == (40,)
+
+
+def test_expected_field_bytes_spellings():
+    def f(expected, ftype=FieldType.BYTES, size=4):
+        return FieldDef("m", ftype, 0, size, constraints={"equals": expected})
+    assert expected_field_bytes(f("7f454c46")) == b"\x7fELF"
+    assert expected_field_bytes(f(b"\x7fELF")) == b"\x7fELF"
+    assert expected_field_bytes(f(0x464C457F, FieldType.UINT32_LE)) == b"\x7fELF"
+    assert expected_field_bytes(f(0x7F454C46, FieldType.UINT32_BE)) == b"\x7fELF"
+    assert expected_field_bytes(f("zz")) is None
+    assert expected_field_bytes(f("7f45")) is None  # does not fill the field
+    assert expected_field_bytes(f(1 << 40, FieldType.UINT32_LE)) is None
+    assert expected_field_bytes(f(None)) is None
+
+
+def test_magic_signature_detects_equality_fields_only():
+    lib = get_structure_library(include_user=False)
+    assert magic_signature(lib.get("elf64_header")) == (0, b"\x7fELF")
+    assert magic_signature(lib.get("tls12_master_secret")) is None
+    assert magic_signature(lib.get("tls12_pre_master_secret_rsa")) is None  # byte_in only
+    one_byte = StructureDef("x", 1, (FieldDef("b", FieldType.UINT8, 0, 1,
+                                              constraints={"equals": 7}),))
+    assert magic_signature(one_byte) is None
+
+
+def test_score_structure_at_honours_hex_magic():
+    elf = get_structure_library(include_user=False).get("elf64_header")
+    data = b"\x00" * 16 + b"\x7fELF" + bytes(60)
+    overlays, score = score_structure_at(data, 16, elf)
+    assert score == 1.0
+    assert overlays[0].offset == 16 and overlays[0].valid
+    assert score_structure_at(data, 0, elf)[1] == 0.0
+    assert score_structure_at(data, 40, elf) == ([], 0.0)  # does not fit
+    assert score_structure_at(memoryview(data), 16, elf)[1] == 1.0

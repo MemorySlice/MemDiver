@@ -5,6 +5,8 @@ import { HexSearchBox } from "@/components/hex/HexSearchBox";
 import { SegmentedControl } from "@/components/common/SegmentedControl";
 import type { HexViewMode } from "@/stores/hex-store";
 
+const ALL_VIEWS: HexViewMode[] = ["raw", "vas", "va"];
+
 export function HexToolbar() {
   const { t } = useTranslation("hex");
   // Per-field selectors — this component only reads metadata that changes
@@ -12,6 +14,7 @@ export function HexToolbar() {
   const fileSize = useHexStore((s) => s.fileSize);
   const dumpPath = useHexStore((s) => s.dumpPath);
   const format = useHexStore((s) => s.format);
+  const availableViews = useHexStore((s) => s.availableViews);
   const viewMode = useHexStore((s) => s.viewMode);
   const setViewMode = useHexStore((s) => s.setViewMode);
   const scrollToOffset = useHexStore((s) => s.scrollToOffset);
@@ -32,6 +35,19 @@ export function HexToolbar() {
   const fileName = dumpPath?.split(/[\\/]/).pop() ?? "";
   const sizeKB = (fileSize / 1024).toFixed(1);
   const isMsl = format === "msl";
+  // Offered for ANY dump the backend reports several distinct views for
+  // (an .msl, but also a gcore core or a gdb_raw/lldb_raw .bin), not by
+  // extension. Before the probe answers, an .msl keeps its three views.
+  const views = availableViews.length > 0 ? availableViews : isMsl ? ALL_VIEWS : [];
+  const viewOptions = [
+    { id: "raw", label: t("toolbar.rawFile") },
+    { id: "vas", label: t("toolbar.memoryVas") },
+    {
+      id: "va",
+      label: t("toolbar.virtualAddress"),
+      title: t("toolbar.mslViewModeVaTitle"),
+    },
+  ].filter((o) => views.includes(o.id as HexViewMode));
 
   return (
     /*
@@ -61,21 +77,13 @@ export function HexToolbar() {
         two switches, so every radio-style control in the hex area behaves
         identically for a screen reader.
       */}
-      {isMsl && (
+      {viewOptions.length > 1 && (
         <SegmentedControl
-          aria-label={t("toolbar.mslViewModeLabel")}
-          title={t("toolbar.mslViewModeTitle")}
+          aria-label={t(isMsl ? "toolbar.mslViewModeLabel" : "toolbar.viewModeLabel")}
+          title={t(isMsl ? "toolbar.mslViewModeTitle" : "toolbar.viewModeTitle")}
           selected={viewMode}
           onSelect={(id) => setViewMode(id as HexViewMode)}
-          options={[
-            { id: "raw", label: t("toolbar.rawFile") },
-            { id: "vas", label: t("toolbar.memoryVas") },
-            {
-              id: "va",
-              label: t("toolbar.virtualAddress"),
-              title: t("toolbar.mslViewModeVaTitle"),
-            },
-          ]}
+          options={viewOptions}
         />
       )}
       <div className="flex items-center gap-1 shrink-0">

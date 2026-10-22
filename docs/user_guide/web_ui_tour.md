@@ -71,7 +71,7 @@ The toolbar's search box finds a byte sequence typed as hex, text, UTF-16LE text
 :alt: Entropy profile chart with Shannon entropy plotted against byte offset and high-entropy regions shaded
 :align: center
 
-Sliding-window Shannon entropy. Shaded regions exceed the configurable threshold (default 7.5).
+Sliding-window Shannon entropy: a min–max band per pixel column over every window position, with the maximum drawn as a line so a single key-sized spike stays visible. Shaded regions reach the threshold (default 4.5 bits/byte at the 32-byte window; a 32-byte window can reach at most log2(32) = 5.0, marked as a dashed line). Large dumps show a sampled preview first and refine to full resolution.
 ```
 
 ## Consensus view

@@ -7,13 +7,17 @@
  * tooltip with base address (hex), type name, RWX protection flags,
  * region size (KB), and mapped path (if present).
  *
+ * Entries with `captured === false` (layout-only ranges excluded at
+ * import, no bytes) render greyed + hatched, with a legend swatch and a
+ * tooltip note.
+ *
  * Dynamic SVG height scales with entry count, same behaviour as the
  * Plotly implementation.
  *
  * Loaded via React.lazy from `../VasChart.tsx` when
  * `settings.display.chartBackend === "svg"`.
  */
-import { memo, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useChartTheme } from "@/hooks/useChartTheme";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
@@ -22,6 +26,9 @@ import { scaleLinear, niceLinearTicks, formatNumber } from "./primitives";
 
 const MARGIN = { top: 40, right: 20, bottom: 36, left: 150 };
 const ROW_HEIGHT = 22;
+const NOT_CAPTURED_OPACITY = 0.45;
+const HATCH_SIZE = 6;
+const LEGEND_SWATCH = 10;
 
 const TYPE_NAME_KEYS: Record<number, string> = {
   0x00: "vas.type.unknown",
@@ -32,6 +39,11 @@ const TYPE_NAME_KEYS: Record<number, string> = {
   0x05: "vas.type.anonymous",
   0x06: "vas.type.shared",
 };
+
+/** `captured === false` marks a layout-only range excluded at import. */
+function isNotCaptured(e: VasEntry): boolean {
+  return e.captured === false;
+}
 
 function protStr(prot: number): string {
   return (
@@ -50,6 +62,8 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
   });
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [mouse, setMouse] = useState<{ x: number; y: number } | null>(null);
+  const hatchId = `vas-hatch-${useId().replace(/:/g, "")}`;
+  const hasNotCaptured = entries.some(isNotCaptured);
 
   const typeColors: Record<number, string> = useMemo(
     () => ({
@@ -112,6 +126,21 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
       >
         <title>{resolvedTitle}</title>
 
+        {hasNotCaptured && (
+          <defs>
+            <pattern
+              id={hatchId}
+              data-testid="vas-hatch-pattern"
+              width={HATCH_SIZE}
+              height={HATCH_SIZE}
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(45)"
+            >
+              <line x1={0} y1={0} x2={0} y2={HATCH_SIZE} stroke={tokens.textMuted} strokeWidth={2} />
+            </pattern>
+          </defs>
+        )}
+
         <rect x={MARGIN.left} y={MARGIN.top} width={plotW} height={plotH} fill={tokens.chartPlot} />
 
         <text
@@ -124,6 +153,29 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
         >
           {resolvedTitle}
         </text>
+
+        {hasNotCaptured && (
+          <g data-testid="vas-legend-not-captured">
+            <rect
+              x={containerWidth - MARGIN.right - LEGEND_SWATCH}
+              y={MARGIN.top / 2 - LEGEND_SWATCH / 2}
+              width={LEGEND_SWATCH}
+              height={LEGEND_SWATCH}
+              fill={`url(#${hatchId})`}
+              stroke={tokens.textMuted}
+              strokeOpacity={NOT_CAPTURED_OPACITY}
+            />
+            <text
+              x={containerWidth - MARGIN.right - LEGEND_SWATCH - 4}
+              y={MARGIN.top / 2 + 3}
+              textAnchor="end"
+              fontSize={10}
+              fill={tokens.textSecondary}
+            >
+              {t("vas.legend.notCaptured")}
+            </text>
+          </g>
+        )}
 
         {/* Vertical grid for X ticks */}
         {xTicks.map((t) => (
@@ -142,7 +194,10 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
         {entries.map((entry, i) => {
           const y = MARGIN.top + i * ROW_HEIGHT;
           const barWidth = Math.max(1, xScale(entry.region_size) - MARGIN.left);
-          const color = typeColors[entry.region_type] ?? tokens.textMuted;
+          const notCaptured = isNotCaptured(entry);
+          const color = notCaptured
+            ? tokens.textMuted
+            : typeColors[entry.region_type] ?? tokens.textMuted;
           const isHovered = hoverIdx === i;
           return (
             <g key={i}>
@@ -184,8 +239,23 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
                 width={barWidth}
                 height={ROW_HEIGHT - 6}
                 fill={color}
+                fillOpacity={notCaptured ? NOT_CAPTURED_OPACITY * 0.5 : 1}
                 rx={1}
+                data-captured={notCaptured ? "false" : undefined}
               />
+              {notCaptured && (
+                <rect
+                  x={MARGIN.left}
+                  y={y + 3}
+                  width={barWidth}
+                  height={ROW_HEIGHT - 6}
+                  fill={`url(#${hatchId})`}
+                  fillOpacity={NOT_CAPTURED_OPACITY}
+                  rx={1}
+                  data-testid="vas-bar-hatch"
+                  pointerEvents="none"
+                />
+              )}
             </g>
           );
         })}
@@ -255,6 +325,11 @@ export const VasChart = memo(function VasChart({ entries, title }: VasChartProps
           <div style={{ color: tokens.textSecondary }}>
             {`${protStr(hovered.protection)} | ${(hovered.region_size / 1024).toFixed(0)} KB`}
           </div>
+          {isNotCaptured(hovered) && (
+            <div style={{ color: tokens.textMuted, marginTop: 2, fontStyle: "italic" }}>
+              {t("vas.notCaptured")}
+            </div>
+          )}
           {hovered.mapped_path && (
             <div
               style={{

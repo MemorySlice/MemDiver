@@ -69,13 +69,16 @@ logger = logging.getLogger("memdiver.app.pipeline.batch_task_runner")
 #     return spec
 
 
-def _job_dict_to_request(job: Dict[str, Any]):
+def _job_dict_to_request(job: Dict[str, Any], *, force_memory: bool = False):
     """Translate a JSON-friendly job dict into a real ``AnalyzeRequest``.
 
     Pydantic models on the router side serialize ``Path`` as ``str``,
     so we re-hydrate ``library_dirs`` here. The dataclass __post_init__
     validates that each library_dir exists; any failure surfaces as a
     pickled exception that ``TaskManager._on_error`` reports.
+
+    ``force_memory`` (the batch-level default) bypasses the consensus
+    memory-budget guard; a job's own ``force_memory`` key overrides it.
     """
     from memdiver.core.input_schemas import AnalyzeRequest
 
@@ -89,6 +92,7 @@ def _job_dict_to_request(job: Dict[str, Any]):
         normalize=job.get("normalize", False),
         expand_keys=job.get("expand_keys", True),
         algorithms=job.get("algorithms"),
+        force=bool(job.get("force_memory", force_memory)),
     )
 
 
@@ -108,6 +112,8 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
       :class:`core.input_schemas.BatchRequest` for output_format
       validation parity with the CLI.
     * ``workers`` (int, default 1): inner thread count.
+    * ``force_memory`` (bool, default False): bypass the consensus
+      memory-budget guard for every job (a job dict may override it).
 
     Returns the dict shape ``TaskManager._on_success`` expects:
 
@@ -127,7 +133,8 @@ def run_batch(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     output_format = params.get("output_format", "json")
     workers = int(params.get("workers", 1))
 
-    jobs = [_job_dict_to_request(j) for j in jobs_raw]
+    force_memory = bool(params.get("force_memory", False))
+    jobs = [_job_dict_to_request(j, force_memory=force_memory) for j in jobs_raw]
     batch = BatchRequest(jobs=jobs, output_format=output_format)
 
     total = len(jobs)

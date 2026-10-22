@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import hmac
 import logging
-from typing import Any
+import os
+from typing import Any, Iterable
 from urllib.parse import parse_qs
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -203,3 +204,210 @@ def enforce_bind_guardrail(host: str, settings: Settings) -> None:
         f"Refusing to bind {host} without MEMDIVER_API_TOKEN. Set a token, "
         "or MEMDIVER_ALLOW_INSECURE=1 to override."
     )
+
+
+# ---------------------------------------------------------------------------
+# Request-origin hardening (always on)
+# ---------------------------------------------------------------------------
+#
+# Binding 127.0.0.1 keeps OTHER MACHINES out, but not other WEBSITES: any page
+# the operator visits can make the browser send requests to
+# http://127.0.0.1:8080. Two attacks follow, and the two pure-ASGI middlewares
+# below close them (they cover http AND websocket scope, unlike
+# BaseHTTPMiddleware):
+#
+# * DNS rebinding — evil.example re-resolves to 127.0.0.1, after which the
+#   page is "same-origin" with the API and CORS no longer applies. The request
+#   still carries ``Host: evil.example``, so HostAllowListMiddleware refuses any
+#   Host that is not loopback or explicitly configured.
+# * Cross-site request forgery — CORS only hides RESPONSES; a "simple" POST
+#   (text/plain, form-urlencoded, multipart) is still delivered and executed.
+#   CrossSiteRequestGuard refuses state-changing requests whose
+#   ``Sec-Fetch-Site`` / ``Origin`` say they came from another site, and
+#   refuses the body types a cross-site form/fetch can send without a CORS
+#   preflight. Requests with no Origin at all (curl, the CLI, TestClient) are
+#   not browser-originated and pass.
+
+#: Host-header names that are always accepted (any port).
+_LOOPBACK_HOST_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+#: Methods that must not change state, and so skip the cross-site checks.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+#: Body media types a browser sends cross-site WITHOUT a CORS preflight that
+#: no JSON route accepts. multipart/form-data is also preflight-free but is how
+#: uploads arrive, so it relies on the Origin / Sec-Fetch-Site checks instead.
+_SIMPLE_BODY_TYPES = frozenset({"text/plain", "application/x-www-form-urlencoded"})
+
+#: Prefixes exempt from the body Content-Type rule (NOT from the origin
+#: checks): the mounted Marimo app owns its own request formats.
+_CONTENT_TYPE_EXEMPT_PREFIXES = ("/notebook",)
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    """Return the first value of header *name* (lower-case bytes) in *scope*."""
+    for key, value in scope.get("headers") or ():
+        if key == name:
+            return value.decode("latin-1")
+    return None
+
+
+def _host_name(host_header: str) -> str:
+    """Return the host part of a Host header value, lower-cased, sans port."""
+    value = host_header.strip().lower()
+    if value.startswith("["):
+        return value[1:].split("]", 1)[0]
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value  # bare name, or an unbracketed IPv6 literal such as ::1
+
+
+def allowed_host_names(settings: Settings) -> frozenset[str]:
+    """Return every Host name (port-less, lower-case) the API answers to.
+
+    Loopback names, plus ``MEMDIVER_ALLOWED_HOSTS``, plus the bind host itself
+    when it is a non-loopback interface that passed
+    :func:`enforce_bind_guardrail` (token set, or the explicit insecure
+    override) — otherwise a deliberate network bind could not be reached.
+    ``"*"`` in ``MEMDIVER_ALLOWED_HOSTS`` disables the check (not recommended).
+    """
+    from memdiver.api.config import split_list_setting
+
+    names = set(_LOOPBACK_HOST_NAMES)
+    names.update(h.lower() for h in split_list_setting(settings.allowed_hosts))
+    bind = (settings.host or "").strip().lower().strip("[]")
+    if bind and bind not in _LOOPBACK_HOSTS and (settings.api_token or settings.allow_insecure):
+        names.add(bind)
+    return frozenset(names)
+
+
+async def _reject(scope: Scope, receive: Receive, send: Send, status: int, detail: str) -> None:
+    """Refuse an http request with JSON, or a websocket before its accept."""
+    if scope["type"] == "websocket":
+        await receive()  # the websocket.connect event
+        await send({"type": "websocket.close", "code": 1008})
+        return
+    await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
+
+
+class HostAllowListMiddleware:
+    """Refuse requests whose ``Host`` header is not an allowed name (DNS rebinding)."""
+
+    def __init__(self, app: ASGIApp, settings: Settings) -> None:
+        self.app = app
+        self._allowed = allowed_host_names(settings)
+        self._wildcard = "*" in self._allowed
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket") and not self._wildcard:
+            host = _header(scope, b"host")
+            if host is None or _host_name(host) not in self._allowed:
+                logger.warning("Rejected request with Host %r", host)
+                await _reject(scope, receive, send, 421,
+                              "Host header not allowed (see MEMDIVER_ALLOWED_HOSTS)")
+                return
+        await self.app(scope, receive, send)
+
+
+def _normalise_origin(origin: str) -> str:
+    return origin.strip().rstrip("/").lower()
+
+
+#: Environment variables naming the Vite dev server port, first match wins.
+#: ``FRONTEND_PORT`` is what tests/e2e/playwright.config.ts uses.
+_DEV_FRONTEND_PORT_ENVS = ("MEMDIVER_FRONTEND_PORT", "FRONTEND_PORT")
+
+#: Vite's default ``server.port`` (frontend/vite.config.ts).
+_DEFAULT_DEV_FRONTEND_PORT = "5173"
+
+
+def dev_frontend_origins() -> tuple[str, ...]:
+    """Return the Vite dev server origins trusted in addition to ``cors_origins``.
+
+    Both ``http://localhost:<port>`` and ``http://127.0.0.1:<port>`` for the
+    port in ``MEMDIVER_FRONTEND_PORT`` / ``FRONTEND_PORT`` (default 5173). A
+    non-numeric value is ignored. Any other origin must be listed in
+    ``MEMDIVER_CORS_ORIGINS`` or be same-origin with the request's Host.
+    """
+    port = _DEFAULT_DEV_FRONTEND_PORT
+    for name in _DEV_FRONTEND_PORT_ENVS:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            port = value
+            break
+    if not port.isdigit():
+        return ()
+    return (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
+
+
+class CrossSiteRequestGuard:
+    """Refuse cross-site state-changing requests and preflight-free JSON bodies.
+
+    Applies to non-safe HTTP methods and to every websocket handshake:
+
+    1. ``Sec-Fetch-Site: cross-site`` -> 403.
+    2. An ``Origin`` that is neither same-origin with the request's ``Host``
+       (which covers the Vite dev proxy: it runs with ``changeOrigin: false``
+       so Host stays the dev server's), nor one of the configured
+       ``cors_origins``, nor a Vite dev origin from
+       :func:`dev_frontend_origins` -> 403. A loopback Origin on some OTHER
+       port is refused like any other origin: another local web service
+       (a notebook, a second dev server) must not drive MemDiver.
+       ``Origin: null``, sent by sandboxed frames and file:// pages, is
+       never allowed.
+    3. HTTP only: a request carrying a body with no Content-Type, or with
+       ``text/plain`` / ``application/x-www-form-urlencoded`` -> 415. JSON
+       routes need ``application/json``; multipart uploads are covered by 1-2.
+    """
+
+    def __init__(self, app: ASGIApp, cors_origins: Iterable[str]) -> None:
+        self.app = app
+        trusted = [*cors_origins, *dev_frontend_origins()]
+        self._trusted_origins = frozenset(_normalise_origin(o) for o in trusted)
+
+    def _origin_problem(self, scope: Scope) -> str | None:
+        if (_header(scope, b"sec-fetch-site") or "").lower() == "cross-site":
+            return "cross-site request refused"
+        origin = _header(scope, b"origin")
+        if origin is None:
+            return None
+        normalised = _normalise_origin(origin)
+        if normalised in self._trusted_origins:
+            return None
+        host = (_header(scope, b"host") or "").strip().lower()
+        _, sep, netloc = normalised.partition("://")
+        if sep and host and netloc == host:
+            return None
+        return "cross-origin request refused"
+
+    @staticmethod
+    def _content_type_problem(scope: Scope) -> str | None:
+        path = scope.get("path", "")
+        if any(path == p or path.startswith(p + "/") for p in _CONTENT_TYPE_EXEMPT_PREFIXES):
+            return None
+        length = _header(scope, b"content-length")
+        chunked = "chunked" in (_header(scope, b"transfer-encoding") or "").lower()
+        has_body = chunked or (length is not None and length.strip() not in ("", "0"))
+        if not has_body:
+            return None
+        media_type = (_header(scope, b"content-type") or "").split(";", 1)[0].strip().lower()
+        if not media_type or media_type in _SIMPLE_BODY_TYPES:
+            return "request body must be application/json (or multipart/form-data for uploads)"
+        return None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        guarded = scope["type"] == "websocket" or (
+            scope["type"] == "http" and scope.get("method", "GET").upper() not in _SAFE_METHODS
+        )
+        if guarded:
+            problem = self._origin_problem(scope)
+            if problem:
+                logger.warning("%s: %s %s", problem, scope.get("method", "WS"), scope.get("path"))
+                await _reject(scope, receive, send, 403, problem)
+                return
+            if scope["type"] == "http":
+                problem = self._content_type_problem(scope)
+                if problem:
+                    await _reject(scope, receive, send, 415, problem)
+                    return
+        await self.app(scope, receive, send)

@@ -14,13 +14,14 @@
  * ErrorBoundary wiring this delegates to.
  */
 import { ChartDispatcher } from "@/components/charts/ChartDispatcher";
+import { loadPlotlyEntropyChart, loadSvgEntropyChart } from "./entropy-chart-loaders";
 import type { EntropyChartProps } from "./types";
 
 export function EntropyChart(props: EntropyChartProps) {
   return (
     <ChartDispatcher<EntropyChartProps>
-      loadPlotly={() => import("./plotly/EntropyChart")}
-      loadSvg={() => import("./svg/EntropyChart")}
+      loadPlotly={loadPlotlyEntropyChart}
+      loadSvg={loadSvgEntropyChart}
       {...props}
     />
   );

@@ -57,3 +57,56 @@ describe("HexToolbar file-name label", () => {
     expect(label().parentElement).toHaveClass("flex-wrap");
   });
 });
+
+/**
+ * The view switch follows the views the BACKEND detected (`availableViews`
+ * from the `/hex-raw` probe), not the `.msl` extension: a gcore core is "raw"
+ * by extension but has distinct raw and vas views.
+ */
+describe("HexToolbar view switch", () => {
+  function switchTabs(): string[] {
+    return screen.queryAllByRole("tab").map((el) => el.textContent ?? "");
+  }
+
+  it("offers raw + vas for a gcore core classified raw by extension", () => {
+    useHexStore.setState({
+      dumpPath: "/dumps/planted.core",
+      format: "raw",
+      viewMode: "raw",
+      availableViews: ["raw", "vas"],
+      detectedFormat: "gcore",
+    });
+    render(<HexToolbar />);
+    expect(switchTabs()).toEqual(["Raw file", "Memory (VAS)"]);
+    expect(screen.getByRole("tablist", { name: "Dump view mode" })).toBeInTheDocument();
+  });
+
+  it("shows no switch for a flat raw dump", () => {
+    useHexStore.setState({
+      dumpPath: "/dumps/flat.dump",
+      format: "raw",
+      viewMode: "raw",
+      availableViews: ["raw"],
+      detectedFormat: "raw",
+    });
+    render(<HexToolbar />);
+    expect(switchTabs()).toEqual([]);
+  });
+
+  it("shows no switch for an unprobed non-msl dump", () => {
+    useHexStore.setState({
+      dumpPath: "/dumps/flat.dump",
+      format: "raw",
+      availableViews: [],
+    });
+    render(<HexToolbar />);
+    expect(switchTabs()).toEqual([]);
+  });
+
+  it("keeps all three .msl views before the probe answers", () => {
+    useHexStore.setState({ availableViews: [] });
+    render(<HexToolbar />);
+    expect(switchTabs()).toEqual(["Raw file", "Memory (VAS)", "VA"]);
+    expect(screen.getByRole("tablist", { name: "MSL view mode" })).toBeInTheDocument();
+  });
+});

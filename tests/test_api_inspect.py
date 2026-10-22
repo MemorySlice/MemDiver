@@ -105,7 +105,7 @@ def test_vas_regions(client, msl_path):
     entries = data["vas_entries"]
     assert isinstance(entries, list) and len(entries) >= 1
     # The full five-field VAS entry shape the VasChart frontend consumes.
-    assert set(entries[0]) == {
+    assert set(entries[0]) - {"captured"} == {
         "base_addr", "region_size", "region_type", "protection", "mapped_path",
     }
     libssl = next(e for e in entries if e["mapped_path"] == "/usr/lib/libssl.so")

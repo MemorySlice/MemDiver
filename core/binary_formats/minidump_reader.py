@@ -10,6 +10,9 @@ extraction and region enumeration:
   (:class:`MinidumpMemoryInfo`), matching ``VirtualQuery``.
 - ``SystemInfoStream`` -> processor architecture and OS version.
 - ``MiscInfoStream`` -> the recorded process id.
+- ``ThreadListStream`` -> per-thread id, TEB and stack range
+  (:class:`MinidumpThread`). Malformed thread records are skipped
+  (logged) rather than raising, since they are optional enrichment.
 
 The reader never slurps the whole file: all I/O goes through a single
 ``mmap`` view opened in :meth:`MinidumpReader.open`. Minidumps are
@@ -113,6 +116,16 @@ class MinidumpSystemInfo:
     os_minor: int
 
 
+@dataclass(frozen=True)
+class MinidumpThread:
+    """One MINIDUMP_THREAD entry (id, TEB and saved stack range)."""
+
+    thread_id: int
+    teb: int
+    stack_start: int
+    stack_size: int
+
+
 @dataclass
 class MinidumpInfo:
     """Parsed summary of a Windows minidump."""
@@ -123,6 +136,7 @@ class MinidumpInfo:
     system_info: Optional[MinidumpSystemInfo] = None
     pid: Optional[int] = None
     has_memory_info_list: bool = False
+    threads: List[MinidumpThread] = field(default_factory=list)
 
 
 # struct formats (minidump, little-endian) -----------------------------------
@@ -161,6 +175,12 @@ _MEMORY_INFO_SIZE = _MEMORY_INFO.size  # 48
 # MINIDUMP_MISC_INFO (prefix): SizeOfInfo, Flags1, ProcessId.
 _MISC_INFO = struct.Struct("<III")
 _MISC_INFO_SIZE = _MISC_INFO.size  # 12
+
+# MINIDUMP_THREAD: ThreadId, SuspendCount, PriorityClass, Priority, Teb,
+# Stack (MINIDUMP_MEMORY_DESCRIPTOR: StartOfMemoryRange, DataSize, Rva),
+# ThreadContext (MINIDUMP_LOCATION_DESCRIPTOR: DataSize, Rva).
+_THREAD = struct.Struct("<IIIIQQIIII")
+_THREAD_SIZE = _THREAD.size  # 48
 
 
 class MinidumpReader:
@@ -303,6 +323,8 @@ class MinidumpReader:
             self._parse_system_info(rva, data_size, info)
         elif stream_type == MISC_INFO_STREAM:
             self._parse_misc_info(rva, data_size, info)
+        elif stream_type == THREAD_LIST_STREAM:
+            self._parse_thread_list(rva, data_size, info)
         else:
             logger.debug("Skipping stream type %d (rva=%d)", stream_type, rva)
 
@@ -423,3 +445,38 @@ class MinidumpReader:
         _size_of_info, flags1, process_id = _MISC_INFO.unpack_from(buf, rva)
         if flags1 & MINIDUMP_MISC1_PROCESS_ID:
             info.pid = process_id
+
+    def _parse_thread_list(
+        self, rva: int, data_size: int, info: MinidumpInfo,
+    ) -> None:
+        """Parse a MINIDUMP_THREAD_LIST (u32 count + 48-byte entries).
+
+        The thread list is optional enrichment, so a malformed stream is
+        logged and skipped (whole or per-entry) instead of raising. The
+        entry count is clamped to what fits in both the stream and file.
+        """
+        buf = self._mmap
+        assert buf is not None
+        file_len = len(buf)
+        if rva < 0 or data_size < 4 or rva + 4 > file_len:
+            logger.warning("Skipping malformed thread list at rva=%d", rva)
+            return
+        count = struct.unpack_from("<I", buf, rva)[0]
+        base = rva + 4
+        stream_end = min(rva + data_size, file_len)
+        fits = max(0, (stream_end - base) // _THREAD_SIZE)
+        if count > fits:
+            logger.warning(
+                "Thread list claims %d threads but only %d fit; truncating",
+                count, fits,
+            )
+            count = fits
+        for i in range(count):
+            (thread_id, _suspend, _prio_class, _prio, teb, stack_start,
+             stack_size, _stack_rva, _ctx_size, _ctx_rva) = _THREAD.unpack_from(
+                buf, base + i * _THREAD_SIZE,
+            )
+            info.threads.append(MinidumpThread(
+                thread_id=thread_id, teb=teb,
+                stack_start=stack_start, stack_size=stack_size,
+            ))

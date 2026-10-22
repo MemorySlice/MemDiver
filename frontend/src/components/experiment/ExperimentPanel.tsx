@@ -22,6 +22,7 @@ import type { ConvergenceSweepResult, ConvergencePoint } from '../../api/types';
 import { TaskWebSocket } from '@/api/websocket';
 import type { TaskProgressEvent } from '@/api/websocket';
 import { notifyError } from '@/utils/errorNotifier';
+import { CapturePanel } from './CapturePanel';
 
 export interface ExperimentConfig {
   targetScript: string;
@@ -328,6 +329,11 @@ export function ExperimentPanel() {
       {convergenceData && (
         <ConvergenceChart data={convergenceData} />
       )}
+
+      {/* Single-process capture (POST /api/experiment/capture) */}
+      <div className="border-t border-[var(--md-border)] pt-4">
+        <CapturePanel />
+      </div>
     </div>
   );
 }

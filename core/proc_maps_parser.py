@@ -46,6 +46,9 @@ def _is_image_path(path: str) -> bool:
         return True
     if "/lib/" in path or "/usr/" in path:
         return True
+    # macOS: dylibs, frameworks and system images.
+    if path.endswith(".dylib") or ".framework/" in path or path.startswith("/System/Library/"):
+        return True
     return False
 
 

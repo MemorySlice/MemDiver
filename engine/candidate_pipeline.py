@@ -264,7 +264,9 @@ def _entropy_profile_array(
     Element ``k`` is the entropy of the window starting at ``k*step``.
     """
     profile = compute_entropy_profile(reference_data, window=window, step=step)
-    return np.fromiter((e for _, e in profile), dtype=np.float32, count=len(profile))
+    _, values = profile.as_arrays()
+    # float64 -> float32 cast rounds exactly like the former per-item fromiter.
+    return values.astype(np.float32)
 
 
 def _entropy_coverage_mask(

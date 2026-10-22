@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from memdiver.algorithms.base import AlgorithmResult, AnalysisContext, BaseAlgorithm, Match
 from memdiver.algorithms.unknown_key.entropy_scan import EntropyScanAlgorithm
@@ -45,6 +45,34 @@ class PatternMatchAlgorithm(BaseAlgorithm):
             except (json.JSONDecodeError, IOError) as exc:
                 logger.warning("Failed to load pattern file %s: %s", json_file, exc)
                 continue
+
+    def estimate_working_set(self, size: int,
+                             context: Optional[AnalysisContext] = None,
+                             sample: Optional[Sequence[bytes]] = None) -> int:
+        """Largest per-pattern entropy scan (patterns run one after another).
+
+        Without a context the applicable patterns are unknown, so every
+        loaded pattern is considered.
+        """
+        patterns = (self._filter_patterns(context) if context is not None
+                    else self._patterns)
+        return max((self._entropy_scanner.estimate_working_set(
+            size, self._entropy_context(context, pattern), sample)
+            for pattern in patterns), default=0)
+
+    def _entropy_context(self, context: Optional[AnalysisContext],
+                         pattern: dict) -> AnalysisContext:
+        """The single-window entropy-scan context :meth:`run` builds."""
+        key_len = pattern["key_spec"]["length"]
+        entropy_min = pattern["key_spec"].get("entropy_min", 7.0)
+        return AnalysisContext(
+            library=context.library if context is not None else "",
+            tls_version=context.tls_version if context is not None else "",
+            phase=context.phase if context is not None else "",
+            extra={"window_sizes": [key_len],
+                   "entropy_threshold": min(entropy_min,
+                                            self._entropy_scanner.DEFAULT_THRESHOLD)},
+        )
 
     def run(self, dump_data: bytes, context: AnalysisContext) -> AlgorithmResult:
         applicable = self._filter_patterns(context)

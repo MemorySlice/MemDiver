@@ -33,6 +33,7 @@ import type {
   NSweepParams,
   PcapPair,
   PcapSession,
+  PipelineRunRequest,
   ReduceParams,
   StageRecord,
   TaskRecord,
@@ -52,6 +53,13 @@ import type {
 // part of the ``@/api/websocket`` re-export surface, so it is imported from
 // its defining module rather than redeclared here.
 import type { StageDiagnostic } from "@/api/progress-events";
+import { runPipeline } from "@/api/pipeline";
+import { readableFailure } from "@/api/client";
+import {
+  offerForcedResubmit,
+  withForceMemory,
+  type TaskFailureSource,
+} from "@/api/memory-budget";
 
 // v1 -> v2: the brute-force stride default changed 8 -> 1 (full coverage).
 // v2 -> v3: the brute-force jobs default changed 1 -> 0 (auto-parallel).
@@ -249,6 +257,12 @@ export interface PipelineState {
   // re-validates ``form.pcapPath`` (which is persisted) with the Oracle
   // stage's "Arm / re-validate" button (``data-testid="pcap-arm-btn"``).
   pcapSessions: PcapSession[];
+  /**
+   * The (unforced) body of the run this tab last submitted. NOT persisted and
+   * NOT cleared by ``setTaskId``: it is what ``offerForcedRerun`` re-sends with
+   * ``force_memory: true`` when the run fails on the server memory guard.
+   */
+  lastRunRequest: PipelineRunRequest | null;
 
   // ephemeral (rebuilt from the WS replay on reconnect)
   status: TaskStatus | "idle";
@@ -295,6 +309,13 @@ export interface PipelineState {
   ingestEvent: (event: TaskProgressEvent) => void;
   hydrateFromRecord: (record: TaskRecord) => void;
   resetRun: () => void;
+  setLastRunRequest: (body: PipelineRunRequest | null) => void;
+  /**
+   * If the current run failed on the memory guard (terminal ``error`` event or
+   * task record), offer the "Run anyway" dialog and re-submit the last body
+   * with ``force_memory: true``. A no-op for any other failure.
+   */
+  offerForcedRerun: (source: TaskFailureSource) => Promise<void>;
   addConvergencePoint: (point: ConvergencePoint) => void;
   setRefineLoading: (loading: boolean) => void;
 }
@@ -771,6 +792,7 @@ export const usePipelineStore = create<PipelineState>()(
       taskId: null,
       lastSeq: 0,
       pcapSessions: [],
+      lastRunRequest: null,
       ...baseRunState(),
 
       setStage: (stage) => set({ stage }),
@@ -835,6 +857,20 @@ export const usePipelineStore = create<PipelineState>()(
           convergenceHistory: [...s.convergenceHistory, point],
         })),
       setRefineLoading: (loading) => set({ refineLoading: loading }),
+      setLastRunRequest: (body) => set({ lastRunRequest: body }),
+      offerForcedRerun: async (source) => {
+        const { taskId, lastRunRequest } = get();
+        if (!taskId || !lastRunRequest) return;
+        try {
+          await offerForcedResubmit(taskId, source, async () => {
+            const resp = await runPipeline(withForceMemory(lastRunRequest, true));
+            get().setTaskId(resp.task_id);
+            set({ stage: "running" });
+          });
+        } catch (err) {
+          set({ error: readableFailure(err) });
+        }
+      },
     }),
     {
       name: "memdiver-pipeline",

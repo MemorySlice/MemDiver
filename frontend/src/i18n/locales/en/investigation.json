@@ -8,6 +8,13 @@
   },
   "panel": {
     "offsetTitle": "Offset 0x{{offset}}",
+    "viewOffsetTitle": "{{view}} offset 0x{{offset}}",
+    "viewNames": {
+      "raw": "Raw",
+      "vas": "VAS",
+      "va": "VA view"
+    },
+    "virtualAddress": "Virtual address 0x{{va}}",
     "readByteError": "Failed to read byte",
     "getEntropyError": "Failed to get entropy",
     "bytePrefix": "Byte: {{message}}",

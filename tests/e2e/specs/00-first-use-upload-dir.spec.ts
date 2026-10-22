@@ -8,7 +8,7 @@ import {
   pcapMatchedMslPath,
   pcapCapturePath,
 } from "../fixtures/dataset";
-import { enterWorkspaceWithMsl } from "../fixtures/workspace";
+import { enterWorkspaceWithMsl, revealPcapDropzone } from "../fixtures/workspace";
 
 /**
  * B0 — configure-on-first-use upload directory, browser-driven end to end.
@@ -329,9 +329,10 @@ test.describe("B0 — configure-on-first-use upload directory", { tag: "@require
     await expect(page.getByText(pcapMatchedMslPath, { exact: false })).toBeVisible();
     await page.getByRole("button", { name: /Next: Oracle/i }).click();
 
+    const pcapDropzone = await revealPcapDropzone(page);
     const [chooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByTestId("pcap-upload-dropzone").click(),
+      pcapDropzone.click(),
     ]);
     await chooser.setFiles(pcapCapturePath);
 

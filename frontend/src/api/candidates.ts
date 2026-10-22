@@ -14,6 +14,8 @@
  */
 
 import { request } from "./client";
+import type { Diagnostic } from "./diagnostics";
+import { withSessionRegionFilter } from "@/stores/region-selection-store";
 
 // ---- byte classes (core/variance.py ByteClass) ----
 
@@ -81,6 +83,8 @@ export interface AlignmentReport {
   n_sources: number;
   /** Non-empty exactly when the comparison is questionable. */
   warnings: string[];
+  /** Structured counterpart of `warnings`; absent on older servers. */
+  diagnostics?: Diagnostic[];
 }
 
 // ---- regions (engine/candidate_pipeline.py CandidateRegion) ----
@@ -155,6 +159,8 @@ export interface AnalysisCandidatesRequest {
   max_returned?: number;
   normalize?: boolean;
   project_id?: string;
+  /** Re-send past the server memory guard (see `@/api/memory-budget`). */
+  force_memory?: boolean;
 }
 
 export interface AnalysisCandidatesResponse {
@@ -258,5 +264,6 @@ export function dominantClass(
 export const analyzeCandidates = (body: AnalysisCandidatesRequest) =>
   request<AnalysisCandidatesResponse>("/api/analysis/candidates", {
     method: "POST",
-    body: JSON.stringify(body),
+    // Session region filter (wizard Regions step), unless the body sets one.
+    body: JSON.stringify(withSessionRegionFilter(body)),
   });

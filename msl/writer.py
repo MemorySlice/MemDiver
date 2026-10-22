@@ -11,6 +11,7 @@ All struct layouts must match the corresponding decoders.py decoder
 for roundtrip compatibility via MslReader.
 """
 
+import itertools
 import logging
 import os
 import struct
@@ -18,28 +19,47 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import (Callable, Dict, Iterator, List, Optional, Sequence,
+                    Tuple, Union)
 from uuid import UUID, uuid4
 
 from .compress import compress
-from .crypto import (aead_encrypt, derive_cek_producer, nonce_for_cipher,
-                     random_nonce)
+from .aead_stream import aead_stream_encryptor
+from .crypto import (RewrapMaterial, aead_encrypt, derive_cek_producer,
+                     nonce_for_cipher, random_nonce)
 from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
                     ARGON2ID_MIN_TIME, BLOCK_HEADER_SIZE, BLOCK_MAGIC,
                     FILE_HEADER_ENC_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
                     POINTER_GRAPH_INTEGRITY_FLAG, ArchType, BlockFlag,
                     BlockType, CompAlgo, ConnRowType, EncAlgo, Endianness,
                     HashAlgo, HeaderFlag, KdfType, KeyEncap, OSType, PageState)
-from .hashing import hash_bytes, hash_file, hash_stream
+from .hashing import _new_hasher, hash_bytes, hash_file, hash_stream
 from .types import (ConnectivityRow, MslConnArpEntry, MslConnIfaceStats,
                     MslConnIPv4Route, MslConnIPv6Route, MslConnMibCounter,
                     MslConnPacketSocket, MslConnSocketFamilyAgg,
-                    MslPointerGraphEdge, MslPointerGraphNode)
+                    MslPointerGraphEdge, MslPointerGraphNode, MslVasEntry)
 
 logger = logging.getLogger("memdiver.msl.writer")
 
 _ZERO_HASH = b"\x00" * 32
 _ZERO_UUID = b"\x00" * 16
+_NIL_UUID = UUID(int=0)
+
+# Largest MEMORY_REGION block the writer emits by default. BlockLength is a
+# u32 (spec Table 6), so one block can never exceed 4 GiB; larger regions are
+# split into consecutive MEMORY_REGION blocks at page boundaries. Override per
+# writer via ``MslWriter(region_block_cap=...)`` (must be page-aligned).
+REGION_BLOCK_CAP = 1 << 30
+# Bounded copy size for streamed region bytes: peak RAM is O(this), not O(dump).
+STREAM_CHUNK_SIZE = 16 << 20
+# Ciphertext slice size for streaming encryption (see _seal_block).
+SEAL_PIECE_SIZE = 1 << 20
+_U32_MAX = 0xFFFFFFFF
+
+# Byte source for a streamed region: ``read_chunk(offset, length)`` returns
+# exactly *length* bytes starting *offset* bytes into the region's captured-
+# byte stream (the same bytes ``add_memory_region(data=...)`` would receive).
+ReadChunk = Callable[[int, int], Union[bytes, bytearray, memoryview]]
 
 
 # Capability Bitmap bit positions per Memory Slice Specification v1.0.0 §9.
@@ -177,18 +197,32 @@ class MslEncryptionConfig:
 
     `nonce` and `kdf_salt` are normally generated from a CSPRNG; supply
     them only for deterministic fixtures/tests.
+
+    Re-wrap mode (:meth:`rewrap`): a derived copy of a decrypted container
+    reuses its content key and key wrapping (``rewrap_material``) so the same
+    key / passphrase / private key opens the copy; the nonce is always fresh
+    and the source nonce is refused.
     """
     enc_algo: EncAlgo = EncAlgo.AES_256_GCM
     kdf_type: KdfType = KdfType.NONE
     key_encap: KeyEncap = KeyEncap.NONE
-    raw_key: Optional[bytes] = None
-    passphrase: Optional[bytes] = None
+    raw_key: Optional[bytes] = field(default=None, repr=False)
+    passphrase: Optional[bytes] = field(default=None, repr=False)
     recipient_public: Optional[bytes] = None
     kdf_time: int = ARGON2ID_MIN_TIME
     kdf_memory: int = ARGON2ID_MIN_MEMORY_KIB
     kdf_lanes: int = ARGON2ID_MIN_LANES
     nonce: Optional[bytes] = None       # 24-byte Nonce field; None -> CSPRNG
     kdf_salt: Optional[bytes] = None    # 16-byte salt; None -> CSPRNG when Argon2id
+    rewrap_material: Optional[RewrapMaterial] = field(default=None, repr=False)
+
+    @classmethod
+    def rewrap(cls, material: RewrapMaterial) -> "MslEncryptionConfig":
+        """Config that re-encrypts under *material*'s key wrapping (fresh nonce)."""
+        return cls(enc_algo=material.enc_algo, kdf_type=material.kdf_type,
+                   key_encap=material.key_encap, kdf_time=material.kdf_time,
+                   kdf_memory=material.kdf_memory, kdf_lanes=material.kdf_lanes,
+                   kdf_salt=material.kdf_salt, rewrap_material=material)
 
 
 class MslWriter:
@@ -218,7 +252,15 @@ class MslWriter:
                  arch_type: int = ArchType.UNKNOWN,
                  imported: bool = True,
                  investigation: bool = False,
-                 encryption: Optional["MslEncryptionConfig"] = None):
+                 encryption: Optional["MslEncryptionConfig"] = None,
+                 region_block_cap: int = REGION_BLOCK_CAP,
+                 dump_uuid: Optional[UUID] = None,
+                 timestamp_ns: Optional[int] = None,
+                 clock_source: int = 0):
+        """*dump_uuid* / *timestamp_ns* / *clock_source* override the file
+        header fields (default: fresh uuid4, write time, 0). Used when a file
+        is rewritten from an existing ``.msl`` and must keep its identity.
+        """
         self._path = Path(path)
         self._pid = pid
         self._os_type = os_type
@@ -226,7 +268,9 @@ class MslWriter:
         self._imported = imported
         self._investigation = investigation
         self._encryption = encryption
-        self._dump_uuid = uuid4()
+        self._dump_uuid = dump_uuid if dump_uuid is not None else uuid4()
+        self._timestamp_ns = timestamp_ns
+        self._clock_source = clock_source
         # Generic blocks (memory regions, key hints, related dumps, ...)
         # in user call order. Each entry is (block_type, payload, block_uuid,
         # parent_uuid_bytes, flags). `flags` carries BlockFlag bits — bit 0
@@ -248,6 +292,17 @@ class MslWriter:
         # encrypted containers in Phase C). Lives outside the BLAKE3 chain.
         # Tuple shape: (encoded_appendix_block_bytes, block_uuid).
         self._pointer_graph_appendix: Optional[Tuple[bytes, UUID]] = None
+        # Region splitting (see REGION_BLOCK_CAP). `_region_index` holds
+        # (base_addr, region_size, block_uuid) for every MEMORY_REGION block;
+        # `_split_regions` maps a split region's first-block UUID to
+        # [(offset_from_region_base, chunk_block_uuid)] so key hints that
+        # address the whole region land on the correct chunk block.
+        self._region_block_cap = region_block_cap
+        self._region_index: List[Tuple[int, int, UUID]] = []
+        self._split_regions: Dict[UUID, List[Tuple[int, UUID]]] = {}
+        # True once a byte-source region is registered: such regions can
+        # only be emitted by write_streaming().
+        self._has_streamed_regions = False
 
     @property
     def dump_uuid(self) -> UUID:
@@ -280,62 +335,136 @@ class MslWriter:
         header's flag bits are set so the reader transparently
         decompresses on read. The BLAKE3 integrity chain hashes the
         on-disk (compressed) bytes, so chain validation works unchanged.
+
+        Regions larger than the writer's region block cap are split into
+        consecutive MEMORY_REGION blocks at page boundaries; the UUID of
+        the first block is returned (see region_for_va()).
         """
+        page_size, cap_pages = self._region_geometry(page_size_log2)
+        num_pages = _in_memory_page_count(len(data), page_size, page_states)
+        chunks = _plan_region_chunks(base_addr, page_size, num_pages,
+                                     page_states, cap_pages)
+        meta = _RegionMeta(protection, region_type, page_size_log2, timestamp_ns)
+        view = memoryview(data)
+        flags = _encode_comp_flags(compression)
+
+        def payload_for(chunk: "_RegionChunk") -> bytes:
+            payload = _region_payload_prefix(chunk, page_size, page_states, meta)
+            payload += view[chunk.data_offset:chunk.data_offset + chunk.data_len]
+            if compression is not CompAlgo.NONE:
+                payload = compress(payload, compression)
+            return payload
+
+        return self._append_region_blocks(chunks, page_size, payload_for, flags)
+
+    def add_memory_region_source(self, base_addr: int, region_size: int,
+                                 read_chunk: ReadChunk,
+                                 protection: int = 0x03, region_type: int = 0x05,
+                                 page_size_log2: int = 12,
+                                 timestamp_ns: int = 0,
+                                 page_states: Optional[Sequence[int]] = None,
+                                 compression: CompAlgo = CompAlgo.NONE) -> UUID:
+        """Register a memory region whose bytes are pulled at write time.
+
+        Streaming counterpart of add_memory_region(): instead of the bytes,
+        pass *read_chunk(offset, length)* returning exactly *length* bytes
+        from the region's captured-byte stream (only CAPTURED pages, in page
+        order). Bytes are copied in STREAM_CHUNK_SIZE pieces during
+        write_streaming(), so peak RAM stays O(chunk), not O(dump).
+
+        Same validation and splitting rules as add_memory_region(). Streamed
+        regions cannot be compressed or encrypted (both codecs are one-shot):
+        either raises ValueError so callers can fall back to the in-memory
+        path. Returns the UUID of the region's first block.
+        """
+        self._require_streamable(compression)
+        page_size, cap_pages = self._region_geometry(page_size_log2)
+        num_pages = _source_page_count(region_size, page_size, page_states)
+        chunks = _plan_region_chunks(base_addr, page_size, num_pages,
+                                     page_states, cap_pages)
+        meta = _RegionMeta(protection, region_type, page_size_log2, timestamp_ns)
+
+        def payload_for(chunk: "_RegionChunk") -> "_StreamedRegionPayload":
+            prefix = _region_payload_prefix(chunk, page_size, page_states, meta)
+            return _StreamedRegionPayload(prefix, read_chunk,
+                                          chunk.data_offset, chunk.data_len)
+
+        self._has_streamed_regions = True
+        return self._append_region_blocks(chunks, page_size, payload_for, 0)
+
+    def region_for_va(self, va: int) -> Optional[Tuple[UUID, int]]:
+        """Return (block_uuid, offset_in_block) of the region block holding *va*.
+
+        Resolves to the specific chunk block of a split region, so key hints
+        built from the result reference the block that contains the bytes.
+        Returns None when no registered region covers *va*.
+        """
+        for base, size, block_uuid in self._region_index:
+            if base <= va < base + size:
+                return block_uuid, va - base
+        return None
+
+    def _region_geometry(self, page_size_log2: int) -> Tuple[int, int]:
+        """Validate page size (spec §5.1) and return (page_size, cap_pages)."""
         if not (10 <= page_size_log2 <= 40):
             raise ValueError(
                 f"page_size_log2={page_size_log2} out of spec range [10, 40] "
                 f"(MSL Specification v1.0.0 §5.1)"
             )
         page_size = 1 << page_size_log2
-
-        if page_states is None:
-            # Backward-compat: data is the whole region; all pages CAPTURED.
-            region_size = len(data)
-            if region_size % page_size != 0:
-                raise ValueError(
-                    f"region_size={region_size} is not a multiple of "
-                    f"page_size={page_size} (MSL Specification v1.0.0 §5.1)"
-                )
-            num_pages = region_size // page_size
-            psm_bytes = (num_pages + 3) // 4
-            psm_padded = _pad8(psm_bytes)
-            page_state_map = b"\x00" * psm_padded  # all CAPTURED
-        else:
-            # Three-state model. region_size derives from page count, not
-            # from data length, because FAILED/UNMAPPED pages contribute
-            # zero bytes to data.
-            num_pages = len(page_states)
-            region_size = num_pages * page_size
-            captured_count = sum(
-                1 for s in page_states if int(s) == int(PageState.CAPTURED)
+        cap = self._region_block_cap
+        if cap < page_size or cap % page_size != 0:
+            raise ValueError(
+                f"region_block_cap={cap} must be a positive multiple of "
+                f"page_size={page_size}"
             )
-            expected_data_len = captured_count * page_size
-            if len(data) != expected_data_len:
-                raise ValueError(
-                    f"data length {len(data)} does not match expected "
-                    f"{expected_data_len} bytes for {captured_count} "
-                    f"CAPTURED pages × page_size={page_size}"
-                )
-            page_state_map = _encode_page_state_map(page_states)
+        return page_size, cap // page_size
 
-        payload = struct.pack("<QQBBB5xQ", base_addr, region_size,
-                              protection, region_type, page_size_log2,
-                              timestamp_ns)
-        payload += page_state_map + data
-        flags = _encode_comp_flags(compression)
+    def _require_streamable(self, compression: CompAlgo) -> None:
         if compression is not CompAlgo.NONE:
-            payload = compress(payload, compression)
-        block_uuid = uuid4()
-        self._blocks.append((BlockType.MEMORY_REGION, payload, block_uuid,
-                             _ZERO_UUID, flags))
+            raise ValueError(
+                "streamed memory regions cannot be compressed; use "
+                "add_memory_region() for compressed output"
+            )
+
+    def _append_region_blocks(self, chunks: Sequence["_RegionChunk"],
+                              page_size: int, payload_for, flags: int) -> UUID:
+        """Queue one MEMORY_REGION block per chunk; return the first UUID."""
+        placed: List[Tuple[int, UUID]] = []
+        for chunk in chunks:
+            block_uuid = uuid4()
+            self._blocks.append((BlockType.MEMORY_REGION, payload_for(chunk),
+                                 block_uuid, _ZERO_UUID, flags))
+            self._region_index.append(
+                (chunk.base_addr, chunk.page_count * page_size, block_uuid))
+            placed.append((chunk.first_page * page_size, block_uuid))
+        if len(placed) > 1:
+            self._split_regions[placed[0][1]] = placed
         self._cap_bitmap |= CapBit.MEMORY_REGIONS
-        return block_uuid
+        return placed[0][1]
+
+    def _resolve_region_chunk(self, region_uuid: UUID,
+                              offset: int) -> Tuple[UUID, int]:
+        """Map (first-block UUID, region offset) onto the owning chunk block."""
+        placed = self._split_regions.get(region_uuid)
+        if not placed:
+            return region_uuid, offset
+        for chunk_offset, chunk_uuid in reversed(placed):
+            if offset >= chunk_offset:
+                return chunk_uuid, offset - chunk_offset
+        return region_uuid, offset
 
     def add_key_hint(self, region_uuid: UUID, offset: int,
                      key_length: int, key_type: int, protocol: int,
                      confidence: int = 0x01, key_state: int = 0,
                      note: str = "") -> UUID:
-        """Add a key hint block (spec §5.6) referencing a memory region."""
+        """Add a key hint block (spec §5.6) referencing a memory region.
+
+        When *region_uuid* names a region that was split into several
+        blocks, (region_uuid, offset) is remapped to the chunk block that
+        holds *offset* and the offset is rebased onto that chunk.
+        """
+        region_uuid, offset = self._resolve_region_chunk(region_uuid, offset)
         note_bytes = _pack_padded_str(note) if note else b""
         note_raw_len = (len(note.encode("utf-8")) + 1) if note else 0
         payload = struct.pack("<16sQIHHBB2xI4x", region_uuid.bytes, offset,
@@ -359,15 +488,8 @@ class MslWriter:
         is computed and written as `source_hash`. Otherwise source_hash
         is 32 zero bytes.
         """
-        tool_bytes = _pack_padded_str(tool_name)
-        tool_raw_len = len(tool_name.encode("utf-8")) + 1
-        note_bytes = _pack_padded_str(note) if note else b""
-        note_raw_len = (len(note.encode("utf-8")) + 1) if note else 0
-        payload = struct.pack("<H2xIQQI4x", source_format, tool_raw_len,
-                              int(time.time() * 1e9), orig_file_size,
-                              note_raw_len)
-        payload += tool_bytes + note_bytes
-        payload += _file_digest_or_zero(source_path)
+        payload = build_import_provenance_payload(
+            source_format, tool_name, orig_file_size, note, source_path)
         block_uuid = uuid4()
         self._import_provenance = (payload, block_uuid)
         # Every imported file carries inferred (not observed) page states:
@@ -432,6 +554,56 @@ class MslWriter:
         self._module_list = (mod_list, index_uuid)
         self._cap_bitmap |= CapBit.MODULE_LIST
         return index_uuid
+
+    def add_raw_block(self, block_type: int, payload: bytes,
+                      block_uuid: Optional[UUID] = None,
+                      parent_uuid: Optional[UUID] = None,
+                      flags: int = 0) -> UUID:
+        """Queue an opaque block (already-encoded *payload*) in call order.
+
+        For copying blocks from an existing ``.msl`` without re-decoding them:
+        *payload* is written as-is (it must already be compressed when *flags*
+        carries BlockFlag.COMPRESSED), and passing the source's *block_uuid* /
+        *parent_uuid* keeps parent references between copied blocks valid.
+        The caller is responsible for the capability bitmap
+        (see add_capabilities()).
+        """
+        block_uuid = block_uuid if block_uuid is not None else uuid4()
+        parent = parent_uuid.bytes if parent_uuid is not None else _ZERO_UUID
+        self._blocks.append((int(block_type), bytes(payload), block_uuid,
+                             parent, int(flags)))
+        return block_uuid
+
+    def add_capabilities(self, bits: int) -> None:
+        """OR *bits* into the capability bitmap (for add_raw_block content)."""
+        self._cap_bitmap |= int(bits)
+
+    def add_raw_appendix(self, encoded: bytes) -> None:
+        """Emit already-encoded appendix block bytes verbatim after EoC.
+
+        The appendix (e.g. a POINTER_GRAPH copied from another ``.msl``) lives
+        outside the BLAKE3 chain; mutually exclusive with add_pointer_graph().
+        """
+        if self._pointer_graph_appendix is not None:
+            raise ValueError("an appendix was already added to this writer")
+        self._pointer_graph_appendix = (bytes(encoded), _NIL_UUID)
+
+    def add_vas_map(self, entries: Sequence[MslVasEntry]) -> UUID:
+        """Add a VAS Map block (type 0x1001): the address-space layout overlay.
+
+        Payload (mirrors ``decoders.decode_vas_map``): ``u32 entry_count``,
+        ``u32 entry_size`` (0 = variable-length entries), then per entry
+        ``u64 base_addr, u64 region_size, u8 protection, u8 region_type,
+        u16 path_len`` (raw length incl. NUL, 0 when no path), 4 pad bytes,
+        and the NUL-terminated path padded to 8 bytes. The format has no
+        "captured" flag: a VAS entry without a matching MEMORY_REGION block
+        is a range whose bytes were not stored.
+        """
+        payload = _build_vas_map_payload(entries)
+        block_uuid = uuid4()
+        self._blocks.append((BlockType.VAS_MAP, payload, block_uuid,
+                             _ZERO_UUID, 0))
+        return block_uuid
 
     # ------------------------------------------------------------------
     # Investigation-mode blocks (spec §6)
@@ -616,14 +788,17 @@ class MslWriter:
     # End-of-Capture
     # ------------------------------------------------------------------
 
-    def add_end_of_capture(self, reason: int = 0) -> None:
+    def add_end_of_capture(self, reason: int = 0,
+                           acq_end_ns: Optional[int] = None) -> None:
         """Add an End-of-Capture block (spec §4.5).
 
         The 32-byte file_hash slot is left as zeros here; `write()`
         finalizes it with a digest covering the file header and every
-        preceding encoded block.
+        preceding encoded block. *acq_end_ns* defaults to now.
         """
-        payload = struct.pack("<32sQ", b"\x00" * 32, int(time.time() * 1e9))
+        if acq_end_ns is None:
+            acq_end_ns = int(time.time() * 1e9)
+        payload = struct.pack("<32sQ", b"\x00" * 32, acq_end_ns)
         self._end_of_capture = (payload, uuid4())
 
     # ------------------------------------------------------------------
@@ -644,7 +819,59 @@ class MslWriter:
         The End-of-Capture block's `file_hash` is finalized over the file
         header + every prior encoded block, so the EoC pins the full
         file contents.
+
+        If any region was registered via add_memory_region_source(), the
+        file is emitted by write_streaming() (the only path able to pull
+        source bytes).
         """
+        if self._has_streamed_regions:
+            self.write_streaming()
+            return
+        ordered = self._prepare_ordered_blocks()
+        if self._encryption is not None:
+            self._write_encrypted(ordered)
+        else:
+            self._write_plaintext(ordered)
+
+    def write_streaming(self) -> None:
+        """Write the file block-by-block with O(chunk) peak memory.
+
+        Produces the same layout as the plaintext write() path: header with
+        the exact pre-computed BlockCount and CapBitmap, BLAKE3-chained
+        blocks, EoC FileHash over header + every prior block, then the
+        optional POINTER_GRAPH appendix. The prev_hash chain and EoC hasher
+        are updated incrementally while bytes are written, and streamed
+        region bytes are pulled in STREAM_CHUNK_SIZE pieces. Writes to a
+        temp file and ``os.replace``s it on success, like write().
+
+        Encrypted writers stream too (:meth:`_write_streaming_encrypted`):
+        the output is byte-identical to the in-memory encrypted write() for
+        the same nonce.
+        """
+        self._require_streamable(CompAlgo.NONE)
+        ordered = self._prepare_ordered_blocks()
+        if self._encryption is not None:
+            self._write_streaming_encrypted(ordered)
+            return
+        file_header = self._encode_base_header(encrypted=False, block_count=len(ordered))
+        file_hasher = _new_hasher()
+        file_hasher.update(file_header)
+        prev_hash = hash_bytes(file_header)  # §4.4: Block 0 chains from the header
+        with self._atomic_output() as f:
+            f.write(file_header)
+            for (block_type, payload, block_uuid, parent_uuid, flags) in ordered:
+                if block_type == BlockType.END_OF_CAPTURE:
+                    payload = _eoc_payload_with_hash(payload, file_hasher.digest())
+                header = self._encode_block_header(block_type, len(payload), block_uuid,
+                                                   parent_uuid, prev_hash, flags)
+                prev_hash = _stream_block(f, file_hasher, header, payload)
+            if self._pointer_graph_appendix is not None:
+                f.write(self._pointer_graph_appendix[0])
+        logger.info("Wrote MSL file (streaming): %s (%d blocks)",
+                    self._path, len(ordered))
+
+    def _prepare_ordered_blocks(self) -> List[Tuple[int, bytes, UUID, bytes, int]]:
+        """Finalize late-bound payloads, ensure the output dir, return blocks."""
         # Materialize System Context payload with the now-known TableBitmap.
         if self._system_context is not None:
             sc_payload, sc_uuid, sc_tb = self._system_context
@@ -653,10 +880,7 @@ class MslWriter:
 
         ordered = self._compose_ordered_blocks()
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        if self._encryption is not None:
-            self._write_encrypted(ordered)
-        else:
-            self._write_plaintext(ordered)
+        return ordered
 
     @contextmanager
     def _atomic_output(self):
@@ -687,7 +911,7 @@ class MslWriter:
         optional plaintext POINTER_GRAPH appendix after EoC."""
         file_header = self._encode_base_header(encrypted=False, block_count=len(ordered))
         encoded_blocks: List[Optional[bytes]] = []
-        prev_hash = _ZERO_HASH
+        prev_hash = hash_bytes(file_header)  # §4.4: Block 0 chains from the header
         eoc_index: Optional[int] = None
 
         for idx, (block_type, payload, block_uuid, parent_uuid, flags) in enumerate(ordered):
@@ -732,25 +956,7 @@ class MslWriter:
         encrypted region, after EoC.
         """
         cfg = self._encryption
-        kdf_salt = cfg.kdf_salt
-        if kdf_salt is None:
-            kdf_salt = os.urandom(16) if cfg.kdf_type == KdfType.ARGON2ID else b"\x00" * 16
-        nonce_field = cfg.nonce if cfg.nonce is not None else random_nonce(cfg.enc_algo)
-
-        cek, kem_ct = derive_cek_producer(
-            key_encap=cfg.key_encap, kdf_type=cfg.kdf_type,
-            dump_uuid_bytes=self._dump_uuid.bytes,
-            raw_key=cfg.raw_key, passphrase=cfg.passphrase, kdf_salt=kdf_salt,
-            kdf_time=cfg.kdf_time, kdf_memory=cfg.kdf_memory, kdf_lanes=cfg.kdf_lanes,
-            recipient_public=cfg.recipient_public,
-        )
-
-        # BlockCount=0 for encrypted files: the count would otherwise leak in
-        # the cleartext header, defeating full-container confidentiality. The
-        # spec permits 0 ("unknown/streaming").
-        base = self._encode_base_header(encrypted=True, block_count=0)
-        ext = self._encode_enc_extension(cfg, nonce_field, kdf_salt, len(kem_ct))
-        file_header = base + ext
+        file_header, kem_ct, cek, nonce = self._encryption_envelope()
         aad = file_header + kem_ct
 
         # Encode non-EoC blocks with zero PrevHash (§10.6), then EoC with a
@@ -768,8 +974,7 @@ class MslWriter:
         if eoc_entry is not None:
             eoc_payload_stub, eoc_uuid = eoc_entry
             file_hash = hash_stream((file_header, kem_ct, *pre_eoc))
-            acq_end_ns = struct.unpack_from("<Q", eoc_payload_stub, 32)[0]
-            new_eoc_payload = file_hash + struct.pack("<Q", acq_end_ns)
+            new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash)
             block_stream += self._encode_block(
                 BlockType.END_OF_CAPTURE, new_eoc_payload, eoc_uuid,
                 _ZERO_UUID, _ZERO_HASH, 0,
@@ -778,7 +983,6 @@ class MslWriter:
         if self._pointer_graph_appendix is not None:
             block_stream += self._pointer_graph_appendix[0]
 
-        nonce = nonce_for_cipher(cfg.enc_algo, nonce_field)
         ciphertext_and_tag = aead_encrypt(cfg.enc_algo, cek, nonce, aad, block_stream)
 
         with self._atomic_output() as f:
@@ -864,8 +1068,7 @@ class MslWriter:
             (file_header, *(b for b in encoded_blocks if b is not None))
         )
         _, eoc_payload_stub, eoc_uuid, _, _ = ordered[eoc_index]
-        acq_end_ns = struct.unpack_from("<Q", eoc_payload_stub, 32)[0]
-        new_eoc_payload = file_hash + struct.pack("<Q", acq_end_ns)
+        new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash)
         encoded_blocks[eoc_index] = self._encode_block(
             BlockType.END_OF_CAPTURE, new_eoc_payload, eoc_uuid,
             _ZERO_UUID, prev_hash, 0,
@@ -890,9 +1093,93 @@ class MslWriter:
             "<8sBBHIQ16sQHHIBIB2x",
             FILE_MAGIC, Endianness.LITTLE, header_size, version,
             flags, self._cap_bitmap, self._dump_uuid.bytes,
-            int(time.time() * 1e9), self._os_type, self._arch_type,
-            self._pid, 0, block_count, hash_algo,
+            self._header_timestamp_ns(), self._os_type, self._arch_type,
+            self._pid, self._clock_source, block_count, hash_algo,
         )
+
+    def _header_timestamp_ns(self) -> int:
+        if self._timestamp_ns is not None:
+            return self._timestamp_ns
+        return int(time.time() * 1e9)
+
+    def _encryption_envelope(self) -> Tuple[bytes, bytes, bytes, bytes]:
+        """(128-byte header, KEM ct, CEK, cipher nonce) for an encrypted write.
+
+        Shared by the in-memory and the streaming encrypted paths. In re-wrap
+        mode the CEK, KDF salt/params and KEM ciphertext come from the source
+        container; the nonce is always fresh (never the source nonce).
+        """
+        cfg = self._encryption
+        kdf_salt = cfg.kdf_salt
+        if kdf_salt is None:
+            kdf_salt = os.urandom(16) if cfg.kdf_type == KdfType.ARGON2ID else b"\x00" * 16
+        nonce_field = cfg.nonce if cfg.nonce is not None else random_nonce(cfg.enc_algo)
+        if cfg.rewrap_material is not None:
+            cek, kem_ct = self._rewrap_cek(cfg.rewrap_material, nonce_field)
+        else:
+            cek, kem_ct = derive_cek_producer(
+                key_encap=cfg.key_encap, kdf_type=cfg.kdf_type,
+                dump_uuid_bytes=self._dump_uuid.bytes,
+                raw_key=cfg.raw_key, passphrase=cfg.passphrase, kdf_salt=kdf_salt,
+                kdf_time=cfg.kdf_time, kdf_memory=cfg.kdf_memory,
+                kdf_lanes=cfg.kdf_lanes, recipient_public=cfg.recipient_public,
+            )
+        # BlockCount=0 for encrypted files: the count would otherwise leak in
+        # the cleartext header, defeating full-container confidentiality. The
+        # spec permits 0 ("unknown/streaming").
+        base = self._encode_base_header(encrypted=True, block_count=0)
+        ext = self._encode_enc_extension(cfg, nonce_field, kdf_salt, len(kem_ct))
+        return base + ext, kem_ct, cek, nonce_for_cipher(cfg.enc_algo, nonce_field)
+
+    def _rewrap_cek(self, material: RewrapMaterial,
+                    nonce_field: bytes) -> Tuple[bytes, bytes]:
+        """Validate a re-wrap and return (source CEK, source KEM ct)."""
+        n = len(nonce_for_cipher(material.enc_algo, nonce_field))
+        if nonce_field[:n] == material.source_nonce[:n]:
+            raise ValueError("refusing to reuse the source container's AEAD "
+                             "nonce for a re-wrapped copy")
+        if (material.key_encap != KeyEncap.NONE
+                and material.dump_uuid_bytes != self._dump_uuid.bytes):
+            # KEM CEK = HKDF(shared, salt=DumpUUID): a new UUID would make the
+            # reused KEM ciphertext derive a different key on open.
+            raise ValueError("a KEM re-wrap must keep the source dump_uuid")
+        return material.cek, material.kem_ciphertext
+
+    def _write_streaming_encrypted(
+            self, ordered: List[Tuple[int, bytes, UUID, bytes, int]]) -> None:
+        """Streaming twin of :meth:`_write_encrypted` (same bytes, O(chunk) RAM).
+
+        One incremental AEAD (:mod:`memdiver.msl.aead_stream`) over the same
+        plaintext block stream: zero PrevHash, EoC FileHash over header + KEM
+        ct + every pre-EoC block, appendix after EoC, 16-byte tag last.
+        """
+        cfg = self._encryption
+        file_header, kem_ct, cek, nonce = self._encryption_envelope()
+        sealer = aead_stream_encryptor(cfg.enc_algo, cek, nonce, file_header + kem_ct)
+        file_hasher = _new_hasher()
+        file_hasher.update(file_header)
+        file_hasher.update(kem_ct)
+        eoc_entry: Optional[Tuple[bytes, UUID]] = None
+        with self._atomic_output() as f:
+            f.write(file_header)
+            f.write(kem_ct)
+            for (block_type, payload, block_uuid, parent_uuid, flags) in ordered:
+                if block_type == BlockType.END_OF_CAPTURE:
+                    eoc_entry = (payload, block_uuid)
+                    continue
+                header = self._encode_block_header(block_type, len(payload), block_uuid,
+                                                   parent_uuid, _ZERO_HASH, flags)
+                _seal_block(f, sealer, file_hasher, header, payload)
+            if eoc_entry is not None:
+                eoc_payload = _eoc_payload_with_hash(eoc_entry[0], file_hasher.digest())
+                f.write(sealer.update(self._encode_block(
+                    BlockType.END_OF_CAPTURE, eoc_payload, eoc_entry[1],
+                    _ZERO_UUID, _ZERO_HASH, 0)))
+            if self._pointer_graph_appendix is not None:
+                f.write(sealer.update(self._pointer_graph_appendix[0]))
+            f.write(sealer.finalize())
+        logger.info("Wrote encrypted MSL file (streaming): %s (%d blocks, %s)",
+                    self._path, len(ordered), cfg.enc_algo.name)
 
     def _encode_enc_extension(self, cfg: "MslEncryptionConfig",
                               nonce_field: bytes, kdf_salt: bytes,
@@ -912,21 +1199,225 @@ class MslWriter:
     def _encode_block(self, block_type: int, payload: bytes,
                       block_uuid: UUID, parent_uuid: bytes,
                       prev_hash: bytes, flags: int = 0) -> bytes:
-        total_len = BLOCK_HEADER_SIZE + len(payload)
-        header = struct.pack(
+        header = self._encode_block_header(block_type, len(payload), block_uuid,
+                                           parent_uuid, prev_hash, flags)
+        return header + payload
+
+    def _encode_block_header(self, block_type: int, payload_len: int,
+                             block_uuid: UUID, parent_uuid: bytes,
+                             prev_hash: bytes, flags: int = 0) -> bytes:
+        total_len = BLOCK_HEADER_SIZE + payload_len
+        if total_len > _U32_MAX:
+            # BlockLength is a u32 (spec Table 6). Memory regions are split
+            # below REGION_BLOCK_CAP, so only an oversized generic payload
+            # (or a cap > 4 GiB) can reach this.
+            raise ValueError(
+                f"block of {total_len} bytes exceeds the u32 BlockLength limit"
+            )
+        return struct.pack(
             "<4sHHIH2x16s16s32s",
             BLOCK_MAGIC, block_type, flags, total_len, 1,
             block_uuid.bytes, parent_uuid, prev_hash,
         )
-        return header + payload
 
 
 # ---------------------------------------------------------------------- helpers
 
 
+def build_import_provenance_payload(source_format: int, tool_name: str,
+                                    orig_file_size: int, note: str = "",
+                                    source_path: Optional[Path] = None) -> bytes:
+    """Encode an IMPORT_PROVENANCE payload (spec §11).
+
+    Shared by add_import_provenance() and callers that place the block
+    themselves via add_raw_block().
+    """
+    tool_bytes = _pack_padded_str(tool_name)
+    tool_raw_len = len(tool_name.encode("utf-8")) + 1
+    note_bytes = _pack_padded_str(note) if note else b""
+    note_raw_len = (len(note.encode("utf-8")) + 1) if note else 0
+    payload = struct.pack("<H2xIQQI4x", source_format, tool_raw_len,
+                          int(time.time() * 1e9), orig_file_size,
+                          note_raw_len)
+    payload += tool_bytes + note_bytes
+    payload += _file_digest_or_zero(source_path)
+    return payload
+
+
 def _len_with_nul(s: str) -> int:
     """Length of UTF-8 bytes plus NUL terminator (0 if empty)."""
     return (len(s.encode("utf-8")) + 1) if s else 0
+
+
+def _eoc_payload_with_hash(eoc_payload_stub: bytes, file_hash: bytes) -> bytes:
+    """Return the EoC payload with *file_hash* filled in (acq_end_ns kept)."""
+    acq_end_ns = struct.unpack_from("<Q", eoc_payload_stub, 32)[0]
+    return file_hash + struct.pack("<Q", acq_end_ns)
+
+
+# -- Memory region splitting / streaming helpers --
+
+
+@dataclass(frozen=True)
+class _RegionMeta:
+    """Per-region header fields shared by every chunk block of the region."""
+    protection: int
+    region_type: int
+    page_size_log2: int
+    timestamp_ns: int
+
+
+@dataclass(frozen=True)
+class _RegionChunk:
+    """One MEMORY_REGION block's slice of a (possibly larger) region."""
+    base_addr: int
+    first_page: int
+    page_count: int
+    data_offset: int  # offset into the region's captured-byte stream
+    data_len: int
+
+
+@dataclass(frozen=True)
+class _StreamedRegionPayload:
+    """Deferred MEMORY_REGION payload: fixed prefix + bytes from a source.
+
+    ``len()`` reports the full on-disk payload length so the block header
+    can be packed before any source byte is read.
+    """
+    prefix: bytes
+    read_chunk: ReadChunk
+    data_offset: int
+    data_len: int
+
+    def __len__(self) -> int:
+        return len(self.prefix) + self.data_len
+
+    def iter_pieces(self, chunk_size: int = STREAM_CHUNK_SIZE) -> Iterator[memoryview]:
+        yield memoryview(self.prefix)
+        done = 0
+        while done < self.data_len:
+            want = min(chunk_size, self.data_len - done)
+            piece = memoryview(self.read_chunk(self.data_offset + done, want))
+            if piece.nbytes != want:
+                raise ValueError(
+                    f"read_chunk returned {piece.nbytes} bytes at offset "
+                    f"{self.data_offset + done}, expected {want}"
+                )
+            yield piece
+            done += want
+
+
+def _stream_block(f, file_hasher, header: bytes, payload) -> bytes:
+    """Write one block, feeding the file hasher; return the block's hash."""
+    block_hasher = _new_hasher()
+    pieces = (payload.iter_pieces() if isinstance(payload, _StreamedRegionPayload)
+              else (payload,))
+    for piece in itertools.chain((header,), pieces):
+        f.write(piece)
+        block_hasher.update(piece)
+        file_hasher.update(piece)
+    return block_hasher.digest()
+
+
+def _seal_block(f, sealer, file_hasher, header: bytes, payload) -> None:
+    """Encrypt one plaintext block into *f*, feeding the EoC file hasher."""
+    pieces = (payload.iter_pieces() if isinstance(payload, _StreamedRegionPayload)
+              else (payload,))
+    for piece in itertools.chain((header,), pieces):
+        view = memoryview(piece)
+        file_hasher.update(view)
+        # Seal in SEAL_PIECE_SIZE slices: each update() allocates its whole
+        # ciphertext, so this caps the transient buffer independently of the
+        # (up to STREAM_CHUNK_SIZE) source piece.
+        for start in range(0, view.nbytes, SEAL_PIECE_SIZE):
+            f.write(sealer.update(view[start:start + SEAL_PIECE_SIZE]))
+
+
+def _in_memory_page_count(data_len: int, page_size: int,
+                          page_states: Optional[Sequence[int]]) -> int:
+    """Validate in-memory region data against page states; return page count."""
+    if page_states is None:
+        # Backward-compat: data is the whole region; all pages CAPTURED.
+        if data_len % page_size != 0:
+            raise ValueError(
+                f"region_size={data_len} is not a multiple of "
+                f"page_size={page_size} (MSL Specification v1.0.0 §5.1)"
+            )
+        return data_len // page_size
+    # Three-state model. region_size derives from page count, not from data
+    # length, because FAILED/UNMAPPED pages contribute zero bytes to data.
+    captured_count = _count_captured(page_states, 0, len(page_states))
+    expected_data_len = captured_count * page_size
+    if data_len != expected_data_len:
+        raise ValueError(
+            f"data length {data_len} does not match expected "
+            f"{expected_data_len} bytes for {captured_count} "
+            f"CAPTURED pages × page_size={page_size}"
+        )
+    return len(page_states)
+
+
+def _source_page_count(region_size: int, page_size: int,
+                       page_states: Optional[Sequence[int]]) -> int:
+    """Validate a streamed region's size against page states; return pages."""
+    if region_size % page_size != 0:
+        raise ValueError(
+            f"region_size={region_size} is not a multiple of "
+            f"page_size={page_size} (MSL Specification v1.0.0 §5.1)"
+        )
+    num_pages = region_size // page_size
+    if page_states is not None and len(page_states) != num_pages:
+        raise ValueError(
+            f"page_states has {len(page_states)} entries but region_size="
+            f"{region_size} spans {num_pages} pages"
+        )
+    return num_pages
+
+
+def _count_captured(page_states: Optional[Sequence[int]],
+                    first: int, count: int) -> int:
+    if page_states is None:
+        return count
+    captured = int(PageState.CAPTURED)
+    return sum(1 for s in page_states[first:first + count] if int(s) == captured)
+
+
+def _plan_region_chunks(base_addr: int, page_size: int, num_pages: int,
+                        page_states: Optional[Sequence[int]],
+                        cap_pages: int) -> List[_RegionChunk]:
+    """Split a region into <= cap_pages chunks at page boundaries.
+
+    Always yields at least one chunk (an empty region stays one block).
+    Each chunk's data_offset/data_len locate its CAPTURED bytes inside the
+    region's captured-byte stream.
+    """
+    chunks: List[_RegionChunk] = []
+    first_page = data_offset = 0
+    while True:
+        page_count = min(cap_pages, num_pages - first_page)
+        data_len = _count_captured(page_states, first_page, page_count) * page_size
+        chunks.append(_RegionChunk(base_addr + first_page * page_size,
+                                   first_page, page_count, data_offset, data_len))
+        first_page += page_count
+        data_offset += data_len
+        if first_page >= num_pages:
+            return chunks
+
+
+def _region_payload_prefix(chunk: _RegionChunk, page_size: int,
+                           page_states: Optional[Sequence[int]],
+                           meta: _RegionMeta) -> bytes:
+    """Encode a chunk's MEMORY_REGION header + PageStateMap (spec §5.1)."""
+    header = struct.pack("<QQBBB5xQ", chunk.base_addr,
+                         chunk.page_count * page_size, meta.protection,
+                         meta.region_type, meta.page_size_log2,
+                         meta.timestamp_ns)
+    if page_states is None:
+        psm = b"\x00" * _pad8((chunk.page_count + 3) // 4)  # all CAPTURED
+    else:
+        end = chunk.first_page + chunk.page_count
+        psm = _encode_page_state_map(page_states[chunk.first_page:end])
+    return header + psm
 
 
 def _encode_comp_flags(algo: CompAlgo) -> int:
@@ -961,6 +1452,22 @@ def _encode_page_state_map(page_states: Sequence[int]) -> bytes:
         shift = 6 - 2 * (i % 4)
         buf[byte_idx] |= (bits << shift)
     return bytes(buf)
+
+
+def _build_vas_map_payload(entries: Sequence[MslVasEntry]) -> bytes:
+    """Encode VAS_MAP entries (see :meth:`MslWriter.add_vas_map`)."""
+    entries = list(entries)
+    parts = [struct.pack("<II", len(entries), 0)]
+    for e in entries:
+        path = e.mapped_path or ""
+        if _len_with_nul(path) > 0xFFFF:  # u16 path_len: drop, never fail
+            path = ""
+        parts.append(struct.pack("<QQBBH4x", e.base_addr, e.region_size,
+                                 int(e.protection) & 0xFF,
+                                 int(e.region_type) & 0xFF,
+                                 _len_with_nul(path) if path else 0))
+        parts.append(_pack_padded_str(path) if path else b"")
+    return b"".join(parts)
 
 
 def _build_module_list_index_payload(modules: Sequence[ModuleEntrySpec]) -> bytes:

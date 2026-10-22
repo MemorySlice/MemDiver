@@ -24,10 +24,19 @@ from memdiver.mcp_server.server import create_server  # noqa: E402
 # renamed registration is caught, not silently absorbed by a count.
 EXPECTED_TOOLS = {
     "scan_dataset", "list_phases", "list_protocols", "analyze_library",
+    # Session region view filter: the default every region_filter-taking tool
+    # falls back to when a call omits its own.
+    "set_region_filter", "get_region_filter",
     "read_hex", "get_entropy", "extract_strings", "get_session_info",
     "vas_regions",
     "get_processes", "get_modules", "get_handles", "detect_format",
+    # IMPORT_PROVENANCE with the note parsed (kept/excluded regions, the
+    # materialized flag): wired on all four surfaces in one change.
+    "get_import_provenance",
     "get_cross_references", "identify_structure", "import_raw_dump",
+    # Import-time region selection: metadata-only preview of what an import
+    # would keep, by category (import_raw_dump takes the matching selection).
+    "preview_import",
     "search_reduce", "brute_force", "n_sweep", "emit_plugin",
     "read_hex_raw", "resolve_va", "search_bytes", "get_page_states",
     "consensus", "auto_floor", "export_pattern",
@@ -56,6 +65,8 @@ EXPECTED_TOOLS = {
     # Phase 5 (G4): verify + experiment lifted into shared producers and
     # exposed on MCP alongside the CLI/API surfaces.
     "verify", "experiment",
+    # one dump of a live process (pid/name; local / USB / remote device)
+    "capture_dump",
     # TLS-key ground-truth: export the recovered keys as an SSLKEYLOGFILE.
     "export_keylog",
     # Phase 1 pcap oracle: parse an uploaded capture and enumerate its TLS

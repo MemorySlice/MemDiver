@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from memdiver.core.models import CryptoSecret, deprecated_kwarg
 
@@ -60,3 +60,21 @@ class BaseAlgorithm(ABC):
     def run(self, dump_data: bytes, context: AnalysisContext) -> AlgorithmResult:
         """Run the algorithm on dump data."""
         ...
+
+    def estimate_working_set(
+        self,
+        size: int,
+        context: Optional[AnalysisContext] = None,
+        sample: Optional[Sequence[bytes]] = None,
+    ) -> int:
+        """Predicted peak heap (bytes) of :meth:`run` on a *size*-byte dump.
+
+        Counts only what the algorithm allocates on top of ``dump_data``
+        itself (the caller budgets the dump buffer). ``context`` carries the
+        same ``extra`` parameters :meth:`run` will see; ``sample`` is an
+        optional list of blocks read from the dump, for algorithms whose cost
+        depends on content. Implementations must be conservative (an
+        over-estimate, never far below the measured peak). Default ``0``:
+        no size-proportional working set.
+        """
+        return 0

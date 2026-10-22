@@ -8,7 +8,7 @@ The experiment harness spawns a target process, lets it reach a known state, and
 |---|---|---|
 | `memslicer` | `.msl` | ships in the default `pip install memdiver` |
 | `lldb` | `.dump` | OS package (see below) |
-| `fridump` | `.dump` | ships in the default install (`frida-tools`); needs an attachable target |
+| `fridump` | `.dump` | the `fridump` module/script itself must be installed separately (`frida` ships in the default install); needs an attachable target |
 
 ### LLDB install per OS
 
@@ -38,6 +38,19 @@ sudo dnf install lldb
    ```
 
 4. Inspect `./experiment_output/AES256/aes_key_in_memory/<tool>/` for dumps + `keylog.csv`, and `./experiment_output/plugins/*.py` for the auto-generated Volatility3 plugin.
+
+## Capturing a running process (local, Android, remote)
+
+`experiment` starts its own local target. To dump a process that is already running, possibly on an Android device or behind a remote frida-server, use `capture`:
+
+```bash
+memdiver capture 5552 app.msl --device usb:emulator-5556           # memslicer -D
+memdiver capture 5552 app.msl --device usb                         # first USB device (-U)
+memdiver capture 1234 app.msl --device remote:192.168.1.20:27042   # remote frida-server (-R)
+memdiver capture 4242 snap.lldb_raw.bin --tool lldb                # local, chunked lldb
+```
+
+Every region that was not captured is reported (stderr, the JSON report's `skipped` list, and `<dump>.capture.json`). See the `capture` notes in the [CLI reference](../user_guide/cli_reference.md).
 
 ## Layout produced
 

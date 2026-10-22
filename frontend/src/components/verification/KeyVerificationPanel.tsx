@@ -19,6 +19,8 @@ import {
   shortClientRandom,
 } from "@/components/pipeline/oracle/pcap-session";
 import { useHexStore } from "@/stores/hex-store";
+import type { HexViewMode } from "@/stores/hex-store";
+import { resolveRequestView, VIEW_LABEL_KEYS } from "./request-view";
 import { useDumpStore } from "@/stores/dump-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
@@ -50,6 +52,13 @@ export function KeyVerificationPanel() {
   const selection = useHexStore((s) => s.selection);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const addBookmark = useHexStore((s) => s.addBookmark);
+  // Offsets address the hex viewer's CURRENT view: a cursor/selection
+  // prefill always, and a typed offset whenever the dump has several views
+  // that show different bytes (what the viewer shows is what gets verified —
+  // and bookmarked). A single-view dump keeps sending no view.
+  const viewMode = useHexStore((s) => s.viewMode);
+  const hasDistinctViews = useHexStore((s) => s.availableViews.length > 1);
+  const [verifiedView, setVerifiedView] = useState<HexViewMode | null>(null);
 
   const {
     ciphertextHex,
@@ -95,16 +104,16 @@ export function KeyVerificationPanel() {
     })),
   );
 
-  const { prefillOffset, prefillLength } = useMemo(() => {
+  const { prefillOffset, prefillLength, prefillFromViewer } = useMemo(() => {
     if (selection) {
       const start = Math.min(selection.anchor, selection.active);
       const len = Math.abs(selection.active - selection.anchor) + 1;
-      return { prefillOffset: start, prefillLength: len };
+      return { prefillOffset: start, prefillLength: len, prefillFromViewer: true };
     }
     if (cursorOffset !== null) {
-      return { prefillOffset: cursorOffset, prefillLength: 32 };
+      return { prefillOffset: cursorOffset, prefillLength: 32, prefillFromViewer: true };
     }
-    return { prefillOffset: 0, prefillLength: 32 };
+    return { prefillOffset: 0, prefillLength: 32, prefillFromViewer: false };
   }, [selection, cursorOffset]);
 
   const [offsetInput, setOffsetInput] = useState<string>("");
@@ -164,10 +173,17 @@ export function KeyVerificationPanel() {
   async function runVerify() {
     if (!canVerify) return;
     startVerify();
+    const view = resolveRequestView({
+      typedOffset: offsetInput.trim().length > 0,
+      prefillFromViewer,
+      hasDistinctViews,
+      viewMode,
+    });
     try {
       const res = await verifyKey({
         dump_path: dumpPath,
         offset: effectiveOffset,
+        view,
         length: effectiveLength,
         ciphertext_hex: cleanCiphertext,
         iv_hex: cleanIv.length > 0 ? cleanIv : undefined,
@@ -178,6 +194,7 @@ export function KeyVerificationPanel() {
         ...useDumpStore.getState().getKeyMaterialByPath(dumpPath),
       });
       setResult(res);
+      setVerifiedView(view ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("verification.requestFailed"));
     }
@@ -195,6 +212,7 @@ export function KeyVerificationPanel() {
       offset: result.offset,
       length: effectiveLength,
       label: t("verification.bookmarkLabel", { cipher: result.cipher }),
+      ...(verifiedView ? { view: verifiedView } : {}),
     });
   };
 
@@ -268,7 +286,14 @@ export function KeyVerificationPanel() {
 
       <div className="grid grid-cols-2 gap-2">
         <label className="block">
-          <span className="text-[10px] md-text-muted">{t("verification.offset")}</span>
+          <span className="text-[10px] md-text-muted">
+            {t("verification.offset")}
+            {hasDistinctViews && (
+              <span className="ml-1 font-mono" data-testid="verify-offset-view">
+                {t("verification.offsetInView", { view: t(VIEW_LABEL_KEYS[viewMode]) })}
+              </span>
+            )}
+          </span>
           <input
             className={INPUT}
             value={offsetInput}
@@ -409,7 +434,7 @@ export function KeyVerificationPanel() {
               })}
             </p>
           ) : result.verified === false ? (
-            <p className="text-[11px] md-text-error">
+            <p className="text-[11px] md-text-error" data-testid="verify-result-no-match">
               {t("verification.noMatch", {
                 offset: result.offset.toString(16).toUpperCase(),
                 cipher: result.cipher,

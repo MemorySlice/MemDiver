@@ -77,8 +77,13 @@ class AnalysisPipeline:
         algorithms: Optional[List[str]] = None,
         align_candidates: bool = False,
         verify_decryption: bool = False,
+        *,
+        force: bool = False,
     ) -> LibraryReport:
-        """Run full analysis on one library at one phase."""
+        """Run full analysis on one library at one phase.
+
+        ``force`` bypasses the consensus memory-budget guard.
+        """
         runs = RunDiscovery.discover_library_runs(
             library_dir, max_runs=max_runs,
             keylog_filename=keylog_filename, template=template,
@@ -131,7 +136,7 @@ class AnalysisPipeline:
                     _src = open_dump(_d.path)
                     _src.open()
                     _sources.append(_src)
-                self.consensus.build_from_sources(_sources)
+                self.consensus.build_from_sources(_sources, force=force)
             finally:
                 for _src in _sources:
                     _src.close()
@@ -549,6 +554,7 @@ class AnalysisPipeline:
                 template=template,
                 normalize=request.normalize,
                 algorithms=request.algorithms,
+                force=request.force,
             )
             result.libraries.append(report)
         result.metadata = {"diff_summary": self.diff_store.summary_stats()}

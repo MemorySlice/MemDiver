@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { readHex, getEntropy } from "@/api/client";
-import { useDumpStore } from "@/stores/dump-store";
+import { useCursorInspection } from "@/hooks/useCursorInspection";
+import { useHexStore } from "@/stores/hex-store";
 
 interface Props {
   dumpPath: string;
@@ -10,54 +9,33 @@ interface Props {
 
 export function InvestigationPanel({ dumpPath, offset }: Props) {
   const { t } = useTranslation("investigation");
-  const [byteVal, setByteVal] = useState<number | null>(null);
-  const [entropy, setEntropy] = useState<number | null>(null);
-  const [byteError, setByteError] = useState<string | null>(null);
-  const [entropyError, setEntropyError] = useState<string | null>(null);
-  const keyMaterial = useDumpStore((s) => s.getKeyMaterialByPath(dumpPath));
-  const [prevRequest, setPrevRequest] = useState({ dumpPath, offset, t, keyMaterial });
-
-  // Clear the previous offset's values whenever the request inputs change
-  // (adjusted during render rather than in the fetch effect below).
-  if (
-    prevRequest.dumpPath !== dumpPath ||
-    prevRequest.offset !== offset ||
-    prevRequest.t !== t ||
-    prevRequest.keyMaterial !== keyMaterial
-  ) {
-    setPrevRequest({ dumpPath, offset, t, keyMaterial });
-    setByteError(null);
-    setEntropyError(null);
-    setByteVal(null);
-    setEntropy(null);
-  }
-
-  useEffect(() => {
-    readHex(dumpPath, offset, 1, keyMaterial).then((d) => {
-      if (d.hex_lines.length > 0) {
-        const hex = d.hex_lines[0].split(/\s+/)[1];
-        if (hex) setByteVal(parseInt(hex, 16));
-      }
-    }).catch((e) => setByteError(e instanceof Error ? e.message : t("panel.readByteError")));
-
-    getEntropy(dumpPath, Math.max(0, offset - 128), 256, keyMaterial).then((d) => {
-      // Near EOF (or a locked keyed view) the 256-byte window can fall outside
-      // the entropy-readable size, in which case the backend returns an error
-      // envelope with no `overall_entropy`. Coerce to null so the panel hides
-      // the entropy bar rather than rendering (undefined).toFixed() — which
-      // throws and unmounts the whole hex viewer via the ErrorBoundary.
-      setEntropy(typeof d.overall_entropy === "number" ? d.overall_entropy : null);
-    }).catch((e) => setEntropyError(e instanceof Error ? e.message : t("panel.getEntropyError")));
-  }, [dumpPath, offset, t, keyMaterial]);
+  const { view, byteVal, entropy, byteError, entropyError } = useCursorInspection(dumpPath, offset);
+  const format = useHexStore((s) => s.format);
+  const availableViews = useHexStore((s) => s.availableViews);
+  const vaSpanStart = useHexStore((s) => s.vaSpanStart);
+  const pageStatesLoaded = useHexStore((s) => s.pageStatesLoaded);
+  // Same rule as HexStatusBar: name the view whenever the dump has several.
+  const multiView = format === "msl" || availableViews.length > 1;
+  const offsetHex = offset.toString(16).padStart(8, "0");
+  // "va"-view offsets are relative to the VA span start; show the absolute
+  // virtual address too once the span is known.
+  const virtualAddress = view === "va" && pageStatesLoaded ? vaSpanStart + offset : null;
 
   const entropyPct = entropy !== null ? (entropy / 8) * 100 : 0;
   const entropyColor = entropyPct > 90 ? "var(--md-accent-red)" : entropyPct > 70 ? "var(--md-accent-orange)" : "var(--md-accent-green)";
 
   return (
-    <div className="p-3 space-y-3 text-xs">
+    <div className="p-3 space-y-3 text-xs" data-testid="investigation-panel" data-view={view}>
       <h3 className="text-sm font-semibold md-text-accent">
-        {t("panel.offsetTitle", { offset: offset.toString(16).padStart(8, "0") })}
+        {multiView
+          ? t("panel.viewOffsetTitle", { view: t(`panel.viewNames.${view}`), offset: offsetHex })
+          : t("panel.offsetTitle", { offset: offsetHex })}
       </h3>
+      {virtualAddress !== null && (
+        <div className="md-text-secondary font-mono" data-testid="investigation-va">
+          {t("panel.virtualAddress", { va: virtualAddress.toString(16) })}
+        </div>
+      )}
 
       {byteError && <p className="text-xs" style={{ color: "var(--md-accent-red)" }}>{t("panel.bytePrefix", { message: byteError })}</p>}
       {entropyError && <p className="text-xs" style={{ color: "var(--md-accent-red)" }}>{t("panel.entropyPrefix", { message: entropyError })}</p>}
@@ -65,7 +43,7 @@ export function InvestigationPanel({ dumpPath, offset }: Props) {
       {byteVal !== null && (
         <div className="md-panel p-2 space-y-1">
           <div className="md-text-secondary">{t("panel.byteValue")}</div>
-          <div>{t("panel.hex")} <span className="hb-key">0x{byteVal.toString(16).padStart(2, "0")}</span></div>
+          <div>{t("panel.hex")} <span className="hb-key" data-testid="investigation-byte-hex">0x{byteVal.toString(16).padStart(2, "0")}</span></div>
           <div>{t("panel.dec")} {byteVal}</div>
           <div>{t("panel.ascii")} {byteVal >= 32 && byteVal < 127 ? String.fromCharCode(byteVal) : "."}</div>
         </div>

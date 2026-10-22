@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     max_workers: int = _cpu_workers()
-    max_rss_mb: int = 4096
+    max_rss_mb: int = 0  # 0 = no cap; the budget follows available RAM
     dataset_root: str = ""
     db_path: Path = Path("")
     # Configure-on-first-use (B0). ``upload_dir`` is not only where uploads land
@@ -80,6 +80,20 @@ class Settings(BaseSettings):
     # loud opt-out for the non-loopback bind guardrail (see api/security.py).
     api_token: str | None = None
     allow_insecure: bool = False
+
+    # Request-origin hardening (always on, see api/security.py). Extra Host
+    # header values to accept besides loopback (127.0.0.1 / localhost / ::1),
+    # as a comma-separated list, e.g. ``MEMDIVER_ALLOWED_HOSTS=memdiver.lan``.
+    # A plain ``str`` rather than ``list[str]`` so the env var is a simple comma
+    # list instead of the JSON pydantic-settings would demand for a list.
+    allowed_hosts: str = ""
+
+    # OPT-IN read-path sandbox (see api/path_policy.py). Unset/empty keeps the
+    # historical behaviour: every read path is admitted. When set, it is an
+    # ``os.pathsep``-separated list of directories (``:`` on POSIX, ``;`` on
+    # Windows); every client-supplied read path must then resolve inside one of
+    # them, the upload dir, the dataset root, the MemDiver home, or a favourite.
+    allowed_roots: str = ""
 
     # Phase 25 pipeline substrate
     oracle_dir: Path | None = None
@@ -167,6 +181,11 @@ class Settings(BaseSettings):
         if self.oracle_dir is None:
             self.oracle_dir = _oracle_dir_from_user_config()
         return self
+
+
+def split_list_setting(raw: str, sep: str = ",") -> list[str]:
+    """Split a separator-joined settings string into its non-blank items."""
+    return [item.strip() for item in (raw or "").split(sep) if item.strip()]
 
 
 @lru_cache(maxsize=1)

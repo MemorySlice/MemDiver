@@ -1,0 +1,144 @@
+{
+  "category": {
+    "heap": {
+      "label": "Heap",
+      "desc": "Private anonymous memory, including malloc arenas and large mmap allocations."
+    },
+    "stack": {
+      "label": "Stack",
+      "desc": "Thread stacks."
+    },
+    "image_code": {
+      "label": "Module code",
+      "desc": "Executable code of loaded modules (binary and libraries)."
+    },
+    "image_data": {
+      "label": "Module data",
+      "desc": "Writable module and file data (.data / .bss)."
+    },
+    "mapped_file": {
+      "label": "Mapped files",
+      "desc": "Read-only file mappings."
+    },
+    "shared": {
+      "label": "Shared memory",
+      "desc": "Memory shared with other processes."
+    },
+    "unclassified": {
+      "label": "Unclassified",
+      "desc": "Regions of unknown kind (raw dumps are unclassified throughout)."
+    },
+    "runtime": {
+      "label": "Runtime",
+      "desc": "Platform runtime and OS mappings (e.g. Android boot image, ART metadata, device and vDSO mappings). Rarely holds app secrets; excluded by default."
+    }
+  },
+  "checklist": {
+    "legend": "Region categories",
+    "defaults": "Defaults",
+    "defaultsHint": "Select heap, stack and unclassified",
+    "all": "All",
+    "allHint": "Select every region category",
+    "categoryStats_one": "{{count}} region · {{bytes}}",
+    "categoryStats_other": "{{count}} regions · {{bytes}}",
+    "categoryAbsent": "none in this dump",
+    "noneSelected": "Select at least one category."
+  },
+  "step": {
+    "indicator": "Regions",
+    "title": "Choose memory regions",
+    "description": "Pick which kinds of memory to import and analyse. Heap, stack and unclassified memory are where runtime secrets normally live.",
+    "loading": "Reading region layout…",
+    "error": "Could not preview the regions: {{message}}",
+    "retry": "Retry",
+    "noPreview": "No region preview is available for this input. The selection is still applied to every dump.",
+    "previewing": "Previewing {{name}}.",
+    "appliesToAll_one": "The selection applies to the {{count}} selected dump.",
+    "appliesToAll_other": "The selection applies to all {{count}} dumps.",
+    "appliesToAllUnknown": "The selection applies to every dump in this directory.",
+    "format": "Format: {{format}}",
+    "summary": "{{keeping}} · {{excluding}}",
+    "summaryKeeping_one": "Keeping {{count}} region ({{bytes}})",
+    "summaryKeeping_other": "Keeping {{count}} regions ({{bytes}})",
+    "summaryExcluding_one": "excluding {{count}} region ({{bytes}})",
+    "summaryExcluding_other": "excluding {{count}} regions ({{bytes}})",
+    "summaryLabel": "Selection summary",
+    "notes": "Preview notes",
+    "msl": {
+      "nonDestructive": "This is already an .msl file. By default it is left untouched and the selection is applied at analysis time."
+    },
+    "raw": {
+      "writes": "The selection decides what is written to the converted .msl. Excluded regions keep their place in the address-space map but carry no bytes."
+    },
+    "noLayoutInfo": "This raw dump has no memory layout; categories can't be separated. Provide a .maps sidecar (same name) to split it into regions.",
+    "imageDataInfo": "Static keys in statically linked binaries live in module data (.data / .bss). Include \"Module data\" if the target library is linked statically.",
+    "finishing": "Applying the region selection…",
+    "finishFailed": "Could not apply the region selection: {{message}}",
+    "runtimeNotice": {
+      "android_one": "Android process: {{count}} runtime region ({{bytes}}) — zygote/boot image, ART metadata and device mappings — is excluded by default. Select \"Runtime\" to keep it.",
+      "android_other": "Android process: {{count}} runtime regions ({{bytes}}) — zygote/boot image, ART metadata and device mappings — are excluded by default. Select \"Runtime\" to keep them.",
+      "generic_one": "{{count}} platform runtime region ({{bytes}}) is excluded by default. Select \"Runtime\" to keep it.",
+      "generic_other": "{{count}} platform runtime regions ({{bytes}}) are excluded by default. Select \"Runtime\" to keep them."
+    }
+  },
+  "materialize": {
+    "label": "Write filtered copy (materialize)",
+    "explanation": "Writes a new, smaller .msl containing only the selected regions. The copy does not keep the original's integrity hash or byte identity; the original file is left untouched.",
+    "batchHint": "Applies to .msl files only."
+  },
+  "encrypted": {
+    "legend": "Encrypted .msl",
+    "locked": "This container is encrypted. Enter its passphrase or raw key to list its regions and to write a filtered copy.",
+    "unlocked": "Unlocked with the supplied key material.",
+    "passphrase": "Passphrase",
+    "keyHex": "Raw key (hex, optional)",
+    "unlock": "Unlock preview",
+    "reencryptNote": "By default the filtered copy is re-encrypted with the same key, so the same passphrase or key opens it.",
+    "decryptOutput": "Write decrypted copy",
+    "decryptOutputWarning": "Warning: the filtered copy will be written as PLAINTEXT. Anyone with access to the file can read the selected memory, including any secrets it holds.",
+    "batchHint": "Used only for encrypted .msl files in this batch: they are opened with this passphrase or key and the filtered copy is written. Leave empty for plaintext files."
+  },
+  "table": {
+    "toggleShow_one": "Show {{count}} region",
+    "toggleShow_other": "Show {{count}} regions",
+    "toggleHide": "Hide region list",
+    "caption": "Regions in the previewed dump",
+    "base": "Base",
+    "size": "Size",
+    "protection": "Prot",
+    "category": "Category",
+    "name": "Name",
+    "nameUnknown": "—",
+    "module": "Module",
+    "included": "Included",
+    "yes": "yes",
+    "no": "no",
+    "truncated_one": "Showing the first {{shown}} of {{count}} region.",
+    "truncated_other": "Showing the first {{shown}} of {{count}} regions."
+  },
+  "warnings": {
+    "heading": "Import warnings",
+    "secretsOnlyInExcluded_one": "{{count}} known secret was found only in excluded regions. Include more categories to keep it.",
+    "secretsOnlyInExcluded_other": "{{count}} known secrets were found only in excluded regions. Include more categories to keep them."
+  },
+  "upload": {
+    "selectorHeading": "Regions to import",
+    "selectorHint": "Applied to every file in the next batch. Raw dumps are unclassified throughout.",
+    "kept": "Kept {{bytes}}",
+    "excluded_one": "Excluded {{count}} region ({{bytes}})",
+    "excluded_other": "Excluded {{count}} regions ({{bytes}})",
+    "materialized": "Filtered copy written.",
+    "filterAtAnalysis": "Stored verbatim; the region selection is applied at analysis time."
+  },
+  "maps": {
+    "label": "Memory map (.maps) file",
+    "placeholder": "/path/to/dump.maps",
+    "hint": "Optional: a /proc/<pid>/maps listing of the dumped process. Use it when the map isn't named like the dump.",
+    "browse": "Browse…",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "change": "change",
+    "activeDetected": "Regions from memory map {{name}} (auto-detected).",
+    "activeChosen": "Regions from memory map {{name}} (selected)."
+  }
+}

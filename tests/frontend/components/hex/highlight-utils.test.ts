@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRegionIndex, getRegionForOffset } from "@/components/hex/highlight-utils";
+import { buildRegionIndex, getRegionForOffset, regionsForView } from "@/components/hex/highlight-utils";
 import type { HighlightRegion } from "@/stores/hex-store";
 
 /**
@@ -48,5 +48,24 @@ describe("getRegionForOffset", () => {
     expect(getRegionForOffset(index, 16)).not.toBeNull();
     expect(getRegionForOffset(index, 19)).not.toBeNull();
     expect(getRegionForOffset(index, 20)).toBeNull();
+  });
+});
+
+describe("regionsForView", () => {
+  const tagged: HighlightRegion = { offset: 4352, length: 15, type: "pattern", label: "hit", view: "vas" };
+  const untagged: HighlightRegion = { offset: 7, length: 2, type: "search", label: "search" };
+
+  it("drops a region tagged for another view of a multi-view dump", () => {
+    expect(regionsForView([tagged, untagged], "raw", ["raw", "vas"])).toEqual([untagged]);
+  });
+
+  it("keeps a region in the view it was computed in", () => {
+    expect(regionsForView([tagged, untagged], "vas", ["raw", "vas"])).toEqual([tagged, untagged]);
+  });
+
+  it("keeps everything on a single-view or not-yet-probed dump", () => {
+    const regions = [tagged, untagged];
+    expect(regionsForView(regions, "raw", ["raw"])).toBe(regions);
+    expect(regionsForView(regions, "raw", [])).toBe(regions);
   });
 });

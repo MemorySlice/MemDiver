@@ -246,3 +246,100 @@ def best_match_structure(
             best = (struct_def, overlays, round(score, 4))
 
     return best
+
+
+# ---------------------------------------------------------------------------
+# Shape / magic helpers (used by algorithms.unknown_key.structure_scan)
+# ---------------------------------------------------------------------------
+
+#: Field types whose ``equals`` integer is stored big-endian.
+_BIG_ENDIAN_TYPES = frozenset({FieldType.UINT16_BE, FieldType.UINT32_BE, FieldType.UINT64_BE})
+#: Shortest magic worth a whole-dump ``find`` (1-byte magics would flood).
+MIN_MAGIC_BYTES = 2
+
+
+def structure_sizes(struct_def: StructureDef) -> Tuple[int, ...]:
+    """Every total size *struct_def* can resolve to, ascending.
+
+    ``auto_offsets`` layouts sum one choice per field (``size_choices`` or the
+    fixed ``size``); fixed layouts always occupy ``total_size``.
+    """
+    if not struct_def.auto_offsets:
+        return (struct_def.total_size,)
+    totals = {0}
+    for f in struct_def.fields:
+        choices = f.size_choices or (f.size,)
+        totals = {t + c for t in totals for c in choices}
+    return tuple(sorted(totals))
+
+
+def expected_field_bytes(field_def: FieldDef) -> Optional[bytes]:
+    """The exact bytes an ``equals`` constraint requires, or ``None``.
+
+    Accepts ``bytes``, a hex string (how the JSON/ELF/PE definitions spell a
+    BYTES magic, e.g. ``"7f454c46"``) and integers (encoded with the field's
+    size and endianness). Anything that does not fill the field exactly is
+    ``None``.
+    """
+    expected = field_def.constraints.get("equals")
+    if isinstance(expected, (bytes, bytearray)):
+        raw = bytes(expected)
+    elif isinstance(expected, str):
+        try:
+            raw = bytes.fromhex(expected)
+        except ValueError:
+            return None
+    elif isinstance(expected, int) and not isinstance(expected, bool):
+        order = "big" if field_def.field_type in _BIG_ENDIAN_TYPES else "little"
+        try:
+            raw = expected.to_bytes(field_def.size, order)
+        except OverflowError:
+            return None
+    else:
+        return None
+    return raw if len(raw) == field_def.size else None
+
+
+def magic_signature(struct_def: StructureDef) -> Optional[Tuple[int, bytes]]:
+    """``(offset_in_struct, magic)`` of the first fixed-offset ``equals`` field
+    of at least :data:`MIN_MAGIC_BYTES` bytes, or ``None`` (no magic)."""
+    if struct_def.auto_offsets:
+        return None
+    for f in struct_def.fields:
+        raw = expected_field_bytes(f) if "equals" in f.constraints else None
+        if raw is not None and len(raw) >= MIN_MAGIC_BYTES:
+            return f.offset, raw
+    return None
+
+
+def _field_valid(value: Any, field_def: FieldDef) -> bool:
+    """``_check_constraints`` with ``equals`` compared as exact bytes when the
+    expected value is a byte spelling (hex string / int) of a BYTES-like value."""
+    constraints = field_def.constraints
+    expected = expected_field_bytes(field_def) if "equals" in constraints else None
+    if expected is not None and isinstance(value, (bytes, bytearray)):
+        if bytes(value) != expected:
+            return False
+        constraints = {k: v for k, v in constraints.items() if k != "equals"}
+    return _check_constraints(value, constraints)
+
+
+def score_structure_at(
+    data: bytes, offset: int, struct_def: StructureDef,
+) -> Tuple[List[FieldOverlay], float]:
+    """Overlays of *struct_def* at *offset* and the passing fraction of its
+    constrained fields, with byte-spelled ``equals`` magics honoured (see
+    :func:`_field_valid`). 0.0 when nothing is constrained or it does not fit."""
+    constrained = [f for f in struct_def.fields if f.constraints]
+    if not constrained or offset + _compute_default_size(struct_def) > len(data):
+        return [], 0.0
+    # bytes() so a memoryview/mmap input parses to bytes like a bytes input.
+    chunk = bytes(data[offset:offset + min(compute_max_size(struct_def), len(data) - offset)])
+    overlays, _ = overlay_structure(chunk, offset, struct_def)
+    passing = 0
+    for ov in overlays:
+        field_def = struct_def.field_by_name(ov.field_name)
+        if field_def is not None and field_def.constraints:
+            ov.valid = _field_valid(ov.parsed_value, field_def)
+            passing += int(ov.valid)
+    return overlays, round(passing / len(constrained), 4)

@@ -91,6 +91,11 @@ class SessionSnapshot:
     solo_dump_path: str = ""
     rail_collapsed: bool = False
 
+    # Analysis-time region view filter (``RegionSelection.to_note()``, e.g.
+    # ``"regions=heap,stack"``); ``None`` analyses every region. Additive with
+    # a default, so sessions saved before it existed load unchanged.
+    region_filter: Optional[str] = None
+
 
 class SessionStore:
     """Save and load MemDiver session snapshots."""

@@ -44,6 +44,8 @@ export function StructureList() {
   const activeDump = useActiveDump();
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const setOverlay = useHexStore((s) => s.setActiveStructureOverlay);
+  // The cursor addresses the viewer's current view; read the structure there.
+  const viewMode = useHexStore((s) => s.viewMode);
   const dumpPath = activeDump?.path ?? "";
   const canApply = !!dumpPath && cursorOffset !== null;
 
@@ -72,12 +74,14 @@ export function StructureList() {
         cursorOffset!,
         name,
         useDumpStore.getState().getKeyMaterialByPath(dumpPath),
+        viewMode,
       );
       setOverlay({
         structureName: res.structure.name,
         baseOffset: res.structure.offset,
         totalSize: res.structure.total_size,
         fields: res.structure.fields,
+        view: viewMode,
       });
     } catch (err) {
       notifyError(
@@ -94,13 +98,14 @@ export function StructureList() {
     setDetecting(true);
     setDetectResult(null);
     try {
-      const res = await autoDetectStructure(dumpPath, cursorOffset!);
+      const res = await autoDetectStructure(dumpPath, cursorOffset!, undefined, viewMode);
       if (res.match) {
         setOverlay({
           structureName: res.match.name,
           baseOffset: cursorOffset!,
           totalSize: res.match.total_size,
           fields: res.match.fields,
+          view: viewMode,
         });
         setDetectResult(t("list.matched", { name: res.match.name, confidence: (res.match.confidence * 100).toFixed(0) }));
       } else {

@@ -92,6 +92,7 @@ memdiver mcp
 
 # 4. Collect fresh dumps from a target process
 memdiver experiment --target path/to/target.py --num-runs 10
+memdiver capture 5552 app.msl --device usb:emulator-5554   # one dump of a running (Android) process
 
 # 5. Marimo research sandbox (houses the 5 deeper visualization views)
 memdiver ui
@@ -189,7 +190,7 @@ network with zero auth is refused outright. Set a token, or override with
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
 | CLI subcommands | **33** | [`cli/`](cli/) |
 | FastAPI routers | **18** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **45** | [`mcp_server/`](mcp_server/) |
+| MCP tools | **48** | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
 | Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
 | Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
@@ -208,7 +209,7 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 45 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 48 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
@@ -216,7 +217,7 @@ All 33 subcommands exposed by [`cli/`](cli/):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Known secret &amp; detectors | Format conversion | Runtime shells |
 |---|---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` |
+| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` · `capture` |
 
 Newer subcommands at a glance:
 
@@ -269,7 +270,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 45 tools exposed to AI assistants
+mcp_server/     MCP server — 48 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import struct
 from pathlib import Path
+from typing import Optional, Sequence, Tuple
 
 from memdiver.core.binary_formats.elf_core_reader import (
     ELF_MAGIC,
@@ -45,6 +46,8 @@ from memdiver.core.binary_formats.elf_core_reader import (
     _PHDR64_SIZE,
     _PRSTATUS_PR_PID_OFFSET,
     _PRSTATUS_PR_PID_SIZE,
+    _PRSTATUS_PR_REG_OFFSET,
+    _PRSTATUS_REG_SIZE,
     _align4,
 )
 
@@ -56,6 +59,15 @@ _ASLR_BASE = 0x400000
 _NUM_LOAD = 12  # > 10 PT_LOAD segments, as the reader tests require.
 _BODY_SIZE = 256  # bytes captured per PT_LOAD segment (keeps the core tiny).
 _EM_X86_64 = 62
+_EM_AARCH64 = 183
+
+# Real elf_prstatus desc sizes emitted by Linux (descsz of NT_PRSTATUS).
+_PRSTATUS_DESC_SIZE = {_EM_X86_64: 336, _EM_AARCH64: 392}
+# Stack-pointer index within pr_reg, mirrored from kernel struct layouts.
+_SP_REG_INDEX = {_EM_X86_64: 19, _EM_AARCH64: 31}
+
+# (tid, stack pointer) per synthetic thread.
+ThreadSpec = Tuple[int, int]
 
 # A handful of plausible file-backed mappings for the NT_FILE note. The first
 # entry's VA range coincides with the first PT_LOAD segment so the module map
@@ -90,9 +102,24 @@ def build(run_dir: Path) -> Path:
 # -- ELF core assembly --------------------------------------------------------
 
 
-def _build_core_bytes() -> bytes:
-    """Assemble the full synthetic ELF64 ``ET_CORE`` byte stream."""
-    note_payload = _build_note_payload()
+def build_core_bytes(
+    machine: int = _EM_X86_64,
+    threads: Optional[Sequence[ThreadSpec]] = None,
+) -> bytes:
+    """Public entry: core bytes for ``machine`` with one PRSTATUS per thread."""
+    return _build_core_bytes(machine=machine, threads=threads)
+
+
+def _build_core_bytes(
+    machine: int = _EM_X86_64,
+    threads: Optional[Sequence[ThreadSpec]] = None,
+) -> bytes:
+    """Assemble the full synthetic ELF64 ``ET_CORE`` byte stream.
+
+    With ``threads=None`` the legacy single short PRSTATUS (pid only) is
+    emitted; otherwise one full-size PRSTATUS note per ``(tid, sp)``.
+    """
+    note_payload = _build_note_payload(machine, threads)
 
     # Program-header table: one PT_NOTE followed by _NUM_LOAD PT_LOAD entries.
     e_phnum = 1 + _NUM_LOAD
@@ -140,7 +167,7 @@ def _build_core_bytes() -> bytes:
         "<16sHHIQQQIHHHHHH",
         ELF_MAGIC + bytes([ELFCLASS64, ELFDATA2LSB, 1]) + b"\x00" * 9,
         ET_CORE,        # e_type
-        _EM_X86_64,     # e_machine
+        machine,        # e_machine
         1,              # e_version
         0,              # e_entry
         e_phoff,        # e_phoff
@@ -176,9 +203,19 @@ def _load_body(index: int) -> bytes:
 # -- PT_NOTE payload ----------------------------------------------------------
 
 
-def _build_note_payload() -> bytes:
+def _build_note_payload(
+    machine: int = _EM_X86_64,
+    threads: Optional[Sequence[ThreadSpec]] = None,
+) -> bytes:
     """Concatenate the NT_PRSTATUS and NT_FILE notes for the PT_NOTE segment."""
-    prstatus = _pack_note(NT_PRSTATUS, b"CORE\x00", _build_prstatus_desc())
+    if threads is None:
+        prstatus = _pack_note(NT_PRSTATUS, b"CORE\x00", _build_prstatus_desc())
+    else:
+        prstatus = b"".join(
+            _pack_note(NT_PRSTATUS, b"CORE\x00",
+                       _build_thread_prstatus_desc(machine, tid, sp))
+            for tid, sp in threads
+        )
     nt_file = _pack_note(NT_FILE, b"CORE\x00", _build_nt_file_desc())
     return prstatus + nt_file
 
@@ -204,6 +241,22 @@ def _build_prstatus_desc() -> bytes:
     desc[_PRSTATUS_PR_PID_OFFSET:end] = _PID.to_bytes(
         _PRSTATUS_PR_PID_SIZE, "little", signed=True,
     )
+    return bytes(desc)
+
+
+def _build_thread_prstatus_desc(machine: int, tid: int, sp: int) -> bytes:
+    """A full-size elf_prstatus desc with ``pr_pid`` and the stack pointer set."""
+    desc = bytearray(_PRSTATUS_DESC_SIZE.get(machine, 336))
+    end = _PRSTATUS_PR_PID_OFFSET + _PRSTATUS_PR_PID_SIZE
+    desc[_PRSTATUS_PR_PID_OFFSET:end] = tid.to_bytes(
+        _PRSTATUS_PR_PID_SIZE, "little", signed=True,
+    )
+    reg_index = _SP_REG_INDEX.get(machine)
+    if reg_index is not None:
+        off = _PRSTATUS_PR_REG_OFFSET + reg_index * _PRSTATUS_REG_SIZE
+        desc[off:off + _PRSTATUS_REG_SIZE] = sp.to_bytes(
+            _PRSTATUS_REG_SIZE, "little",
+        )
     return bytes(desc)
 
 

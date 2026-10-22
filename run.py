@@ -347,23 +347,42 @@ def handle_save_session(get_wizard_done, logger, mo, state, ws_toolbar):
 def import_tool(Path, get_wizard_done, mo):
     """MSL import tool controls."""
     mo.stop(not get_wizard_done())
-    from types import SimpleNamespace as _NS
-    import_file_browser = mo.ui.file_browser(
-        initial_path=str(Path.home()),
-        selection_mode="file", multiple=False,
-        label="Raw dump file to convert",
-    )
-    import_btn = mo.ui.button(
-        label="Import to MSL", value=0, on_click=lambda v: v + 1, kind="neutral",
-    )
-    import_widgets = _NS(file_browser=import_file_browser, btn=import_btn)
+    from memdiver.ui.controls.import_panel import create_import_controls
+    import_widgets = create_import_controls(mo, str(Path.home()))
     return (import_widgets,)
+
+
+@app.cell
+def import_preview_tool(Path, get_wizard_done, import_widgets, logger, mo):
+    """Metadata-only region preview for the chosen import source."""
+    mo.stop(not get_wizard_done())
+    from memdiver.ui.controls.import_panel import load_preview, render_preview
+    from memdiver.ui.locales import _
+    import_preview_el = None
+    if import_widgets.file_browser.value:
+        _src = Path(import_widgets.file_browser.value[0].path)
+        try:
+            import_preview_el = render_preview(
+                mo, load_preview(_src), import_widgets.categories.value,
+                import_widgets.materialize,
+            )
+        except Exception as e:
+            logger.warning("Import preview failed for %s: %s", _src, e)
+            import_preview_el = mo.callout(
+                mo.md(_("Preview unavailable: {error}").format(error=e)),
+                kind="warn",
+            )
+    return (import_preview_el,)
 
 
 @app.cell
 def run_import_tool(Path, get_wizard_done, import_widgets, logger, mo):
     """Execute MSL import."""
     mo.stop(not get_wizard_done())
+    from memdiver.ui.controls.import_panel import (
+        output_path_for, result_markdown, selection_spec,
+    )
+    from memdiver.ui.locales import _ as _t
     import_result_el = None
     if import_widgets.btn.value > 0 and import_widgets.file_browser.value:
         # Single-source: route through the shared app/ producer (same
@@ -372,18 +391,25 @@ def run_import_tool(Path, get_wizard_done, import_widgets, logger, mo):
         from memdiver.app.composition import build_tool_session
         from memdiver.app.tools import import_dump as _import_to_msl
         raw = Path(import_widgets.file_browser.value[0].path)
-        out = raw.with_suffix(".msl")
+        out = output_path_for(raw)
         try:
-            with mo.status.spinner(title="Importing to MSL..."):
-                res = _import_to_msl(build_tool_session(), str(raw), str(out))
+            _selection = selection_spec(import_widgets.categories.value)
+            with mo.status.spinner(title=_t("Importing to MSL...")):
+                res = _import_to_msl(
+                    build_tool_session(), str(raw), str(out),
+                    selection=_selection,
+                    materialize=bool(import_widgets.materialize.value),
+                )
             import_result_el = mo.callout(
-                mo.md(f"Imported **{raw.name}** -> **{out.name}**  \n"
-                       f"Regions: {res['regions_written']}, Key hints: {res['key_hints_written']}"),
-                kind="success",
+                mo.md(result_markdown(res, raw, out)),
+                kind="warn" if res.get("warnings") else "success",
             )
             logger.info("Imported %s -> %s", raw, out)
         except Exception as e:
-            import_result_el = mo.callout(mo.md(f"Import failed: {e}"), kind="danger")
+            import_result_el = mo.callout(
+                mo.md(_t("Import failed: {error}").format(error=e)),
+                kind="danger",
+            )
     return (import_result_el,)
 
 
@@ -857,6 +883,7 @@ def workspace_layout(
     ds_widgets,
     file_view_sections,
     get_wizard_done,
+    import_preview_el,
     import_result_el,
     import_widgets,
     mo,
@@ -904,10 +931,13 @@ def workspace_layout(
 
     # Tools section (always available)
     import_ui = mo.vstack([
-        import_widgets.file_browser, import_widgets.btn,
+        import_widgets.file_browser, import_widgets.categories,
+        import_preview_el if import_preview_el else mo.md(""),
+        import_widgets.btn,
         import_result_el if import_result_el else mo.md(""),
     ])
-    sections["Import Raw Dump to MSL"] = import_ui
+    from memdiver.ui.locales import _ as _t
+    sections[_t("Import Raw Dump to MSL")] = import_ui
 
     if sections:
         elements.append(mo.accordion(sections, lazy=True))

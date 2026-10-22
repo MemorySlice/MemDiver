@@ -43,6 +43,7 @@ PathLike = Union[str, Path]
 def open_consensus_sources(
     paths: Sequence[PathLike],
     key_material: Optional[Mapping[str, Any]] = None,
+    region_filter: Any = None,
 ) -> Iterator[List[DumpSource]]:
     """Open every dump path as a context-managed source and yield the list.
 
@@ -57,13 +58,19 @@ def open_consensus_sources(
     :param key_material: Optional ``open_dump`` keyword arguments (e.g.
         ``key`` / ``passphrase`` / ``kem_private_key``); ``None`` opens
         unencrypted.
+    :param region_filter: Optional analysis-time region view filter
+        (``RegionSelection`` / ``"heap,stack"`` / ``to_note()`` string),
+        forwarded to ``open_dump``. Honoured by ``.msl`` sources only; other
+        formats ignore it (see :func:`memdiver.core.dump_source.open_dump`).
     :yields: The opened sources, one per input path, in the same order.
     """
     km = key_material or {}
     with ExitStack() as stack:
         try:
             sources: List[DumpSource] = [
-                stack.enter_context(open_dump(Path(p), **km)) for p in paths
+                stack.enter_context(
+                    open_dump(Path(p), region_filter=region_filter, **km))
+                for p in paths
             ]
         except FileNotFoundError as exc:
             # ``core.dump_io.DumpReader.open`` raises the bare builtin, which is
@@ -83,6 +90,9 @@ def build_consensus(
     normalize: bool = False,
     key_material: Optional[Mapping[str, Any]] = None,
     on_source: Optional[Callable[[DumpSource], None]] = None,
+    region_filter: Any = None,
+    force: bool = False,
+    budget: Any = None,
 ) -> ConsensusVector:
     """Open the dumps, optionally inspect each, and build a consensus vector.
 
@@ -100,12 +110,23 @@ def build_consensus(
     :param on_source: Optional hook invoked once per opened source, in order,
         *before* the vector is built (e.g. the CLI's tag-status warning). It
         runs while every source is still open.
+    :param region_filter: Optional region view filter; see
+        :func:`open_consensus_sources`. The aligned ``.msl`` path and the
+        flat fallback both read through the filtered sources.
+    :param force: Proceed even when the flat build's estimated peak memory
+        exceeds the budget (otherwise ``CapabilityError`` code
+        ``memory_budget_exceeded``).
+    :param budget: Optional ``MemoryBudget`` / byte count; ``None`` resolves
+        the host budget.
     :returns: The built :class:`~memdiver.engine.consensus.ConsensusVector`.
     """
-    with open_consensus_sources(dump_paths, key_material=key_material) as sources:
+    with open_consensus_sources(
+        dump_paths, key_material=key_material, region_filter=region_filter,
+    ) as sources:
         if on_source is not None:
             for src in sources:
                 on_source(src)
         cm = ConsensusVector()
-        cm.build_from_sources(sources, normalize=normalize)
+        cm.build_from_sources(sources, normalize=normalize,
+                              force=force, budget=budget)
     return cm

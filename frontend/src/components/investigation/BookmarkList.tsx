@@ -7,11 +7,19 @@ export type { Bookmark };
 interface Props {
   bookmarks: Bookmark[];
   onAdd: (b: Bookmark) => void;
-  onRemove: (offset: number, length: number) => void;
-  onSelect: (offset: number) => void;
+  /** `bookmark` is the full entry (incl. the view it was taken in). */
+  onRemove: (offset: number, length: number, bookmark: Bookmark) => void;
+  /** `bookmark` is the full entry (incl. the view it was taken in). */
+  onSelect: (offset: number, bookmark: Bookmark) => void;
+  /** Tag each bookmark with its view (the dump has several). */
+  showViews?: boolean;
 }
 
-export function BookmarkList({ bookmarks, onAdd, onRemove, onSelect }: Props) {
+function bookmarkKey(b: Bookmark): string {
+  return `${b.view ?? ""}:${b.offset}:${b.length}`;
+}
+
+export function BookmarkList({ bookmarks, onAdd, onRemove, onSelect, showViews = false }: Props) {
   const { t } = useTranslation("investigation");
   const [label, setLabel] = useState("");
   const [offset, setOffset] = useState("");
@@ -43,12 +51,15 @@ export function BookmarkList({ bookmarks, onAdd, onRemove, onSelect }: Props) {
       ) : (
         <div className="space-y-1">
           {bookmarks.map((b) => (
-            <div key={b.offset} className="flex items-center justify-between p-1.5 rounded hover:bg-[var(--md-bg-hover)]">
-              <button onClick={() => onSelect(b.offset)} className="text-left flex-1 min-w-0 truncate" title={`0x${b.offset.toString(16)} — ${b.label}`} style={{ color: "var(--md-bookmark)" }}>
+            <div key={bookmarkKey(b)} data-testid="bookmark-entry" data-view={b.view ?? ""} className="flex items-center justify-between p-1.5 rounded hover:bg-[var(--md-bg-hover)]">
+              <button onClick={() => onSelect(b.offset, b)} className="text-left flex-1 min-w-0 truncate" title={`0x${b.offset.toString(16)} — ${b.label}`} style={{ color: "var(--md-bookmark)" }}>
+                {showViews && b.view && (
+                  <span className="mr-1 md-text-muted">{t(`panel.viewNames.${b.view}`)}</span>
+                )}
                 <span className="font-mono">0x{b.offset.toString(16)}</span>
                 <span className="ml-2 md-text-secondary">{b.label}</span>
               </button>
-              <button onClick={() => onRemove(b.offset, b.length)} className="px-1 hover:text-[var(--md-accent-red)]">x</button>
+              <button onClick={() => onRemove(b.offset, b.length, b)} className="px-1 hover:text-[var(--md-accent-red)]">x</button>
             </div>
           ))}
         </div>
