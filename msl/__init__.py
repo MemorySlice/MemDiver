@@ -9,6 +9,7 @@ Optional dependencies (lazy-imported when needed):
 from .enums import (
     BLOCK_HEADER_SIZE,
     BLOCK_MAGIC,
+    EXTENSION_FORBIDDEN_TYPES,
     FILE_HEADER_SIZE,
     FILE_MAGIC,
     ArchType,
@@ -25,6 +26,8 @@ from .enums import (
     PageState,
     Protection,
     RegionType,
+    ThreadState,
+    VasNameSource,
 )
 from .page_map import PageInterval
 from .types import (
@@ -32,7 +35,9 @@ from .types import (
     MslConnectionEntry,
     MslConnectionTable,
     MslEncryptedError,
+    ExtensionSegment,
     MslEndOfCapture,
+    MslEndOfExtension,
     MslFileHeader,
     MslGenericBlock,
     MslHandleEntry,
@@ -48,6 +53,8 @@ from .types import (
     MslProcessIdentity,
     MslProcessTable,
     MslRelatedDump,
+    MslThreadContext,
+    MslThreadRegister,
     MslVasEntry,
     MslVasMap,
 )

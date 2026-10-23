@@ -281,7 +281,8 @@ export function DumpList() {
         </>
       )}
 
-      {mode === "exploration" && (
+      {/* Heap mode is exploration plus heap features, so it keeps these. */}
+      {mode !== "verification" && (
         <>
           <hr className="border-[var(--md-border)]" />
 

@@ -346,3 +346,37 @@ describe("StageThresholds optional-stage labels", () => {
     );
   });
 });
+
+describe("StageThresholds heap policy", () => {
+  const PRISTINE = usePipelineStore.getState();
+
+  beforeEach(() => {
+    runPipelineMock.mockReset();
+    runPipelineMock.mockResolvedValue({ task_id: "task-1", status: "pending" });
+    usePipelineStore.setState({
+      ...PRISTINE,
+      stage: "thresholds",
+      form: { ...PRISTINE.form, sourcePaths: DUMPS, oracleId: "oracle-1" },
+    });
+  });
+
+  afterEach(() => {
+    usePipelineStore.setState(PRISTINE, true);
+  });
+
+  it("shows the backend default and sends no heap_policy while untouched", async () => {
+    await renderStage();
+    expect(screen.getByTestId("pipeline-heap-policy-select")).toHaveValue("annotate");
+    const body = await submit();
+    expect(body.reduce).not.toHaveProperty("heap_policy");
+  });
+
+  it("sends the chosen heap_policy inside reduce", async () => {
+    await renderStage();
+    fireEvent.change(screen.getByTestId("pipeline-heap-policy-select"), {
+      target: { value: "mask" },
+    });
+    const body = await submit();
+    expect(body.reduce?.heap_policy).toBe("mask");
+  });
+});

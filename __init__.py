@@ -71,6 +71,15 @@ from memdiver.core.binary_formats.format_descriptor import register_format
 from memdiver.app.pipeline.pipeline_runner import register_stage
 from memdiver.core.structure_library import get_structure_library
 
+# --- Heap allocator layer (register_allocator is its extension hook) --------
+from memdiver.heap import (
+    HeapLayout,
+    HeapRole,
+    analyze_heap,
+    detect_allocator,
+    register_allocator,
+)
+
 # --- Structured error model -------------------------------------------------
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
@@ -139,6 +148,13 @@ from memdiver.services import (
     list_phases,
     list_protocols,
     scan_dataset,
+    # heap
+    heap_chunk_at_result,
+    heap_chunks_result,
+    heap_detect_result,
+    heap_free_lists_result,
+    heap_roles_result,
+    heap_summary_result,
 )
 
 __all__ = [
@@ -173,6 +189,12 @@ __all__ = [
     "register_format",
     "register_stage",
     "get_structure_library",
+    "register_allocator",
+    # heap allocator layer
+    "analyze_heap",
+    "detect_allocator",
+    "HeapLayout",
+    "HeapRole",
     # structured error model
     "CapabilityError",
     "ErrorCategory",
@@ -237,4 +259,11 @@ __all__ = [
     "list_protocols",
     "list_phases",
     "analyze_library",
+    # heap producers
+    "heap_detect_result",
+    "heap_summary_result",
+    "heap_chunks_result",
+    "heap_chunk_at_result",
+    "heap_free_lists_result",
+    "heap_roles_result",
 ]

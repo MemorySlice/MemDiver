@@ -6,6 +6,13 @@ import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
 import type { HexViewMode } from "@/stores/hex-store";
 import { ABSENCE_META, type AbsenceKind } from "@/utils/absence-classes";
 import { markRings } from "./ground-classes";
+import {
+  HEAP_CHUNK_START_BIT,
+  HEAP_CHUNK_START_CLASS,
+  HEAP_ROLE_MASK,
+  heapRoleClassFor,
+  heapRoleLabelFor,
+} from "@/utils/heap-roles";
 import { VARIANCE_META, varianceCategoryForCode } from "@/utils/variance-classes";
 import {
   GLYPH_IDENTICAL,
@@ -167,6 +174,17 @@ interface HexRowProps {
    * this dump holds stays readable. See `@/utils/variant-ramp`.
    */
   soloUnderline?: boolean;
+  /**
+   * The heap role layer: a PACKED primitive per byte — the role code in the
+   * low byte, `HEAP_CHUNK_START_BIT` when a chunk starts here, `0` for no role
+   * (see `@/utils/heap-roles` and `@/hooks/useHeapLayer`).
+   *
+   * Consulted LAST and only for a cell no other highlight has claimed: the
+   * heap colours are the quiet background of heap mode, so a search hit, a
+   * structure field, a consensus class or an absence treatment always reads
+   * over them. Omitted (the layer is off), nothing changes.
+   */
+  getHeapCellAt?: (offset: number) => number;
 }
 
 export const HexRow = memo(function HexRow({
@@ -187,6 +205,7 @@ export const HexRow = memo(function HexRow({
   getVariantsAt,
   renderMode = "class",
   soloUnderline = false,
+  getHeapCellAt,
 }: HexRowProps) {
   const { t } = useTranslation("hex");
   const hexCells: ReactElement[] = [];
@@ -200,9 +219,16 @@ export const HexRow = memo(function HexRow({
   // rather than re-tested on all sixteen cells.
   const classMode = !soloUnderline && renderMode === "class";
   const glyphMode = !soloUnderline && renderMode === "glyph";
+  // `heap` paints the consensus heap roles (through `getHeapCellAt`) and
+  // nothing count-driven: a ramp tint under a role colour would be two
+  // vocabularies on one cell, the exact thing the switch exists to prevent.
+  const heapMode = !soloUnderline && renderMode === "heap";
   // Fully constant strings, looked up once per row instead of once per cell.
   const variesText = t("ndump.variesNote");
   const absenceTitles: Record<string, string> = {};
+  // Nine role labels at most (seven roles, mixed, uncovered); each is
+  // translated once per row.
+  const heapRoleTitles: Record<number, string> = {};
   // The last region the loop resolved an `nb-*` class for. Regions are
   // contiguous, so this is a reference compare in place of a `toLowerCase`.
   let lastRegionLabel: string | null = null;
@@ -273,6 +299,7 @@ export const HexRow = memo(function HexRow({
       else classes.push("var-tier-1");
     }
 
+    let consensusClassed = false;
     if (classMode && overlayEnabled && getClassificationAt && !isVoidCell) {
       // Backend ByteClass code → the CSS class hex.css paints. An unknown or
       // gap code (-1) yields no category and therefore no class, rather than
@@ -281,6 +308,7 @@ export const HexRow = memo(function HexRow({
       const category = code === undefined ? null : varianceCategoryForCode(code);
       if (category) {
         classes.push(VARIANCE_META[category].byteClass);
+        consensusClassed = true;
       }
     }
 
@@ -294,7 +322,8 @@ export const HexRow = memo(function HexRow({
      * no background at all, so agreement stays the quiet background the signal
      * stands out against.
      */
-    const variantCount = classMode || isVoidCell ? undefined : getVariantsAt?.(byteOffset);
+    const variantCount =
+      classMode || heapMode || isVoidCell ? undefined : getVariantsAt?.(byteOffset);
     const rampStep = variantRampStep(variantCount);
     // One mark per cell: a fill in the overlay, a rule under the value in solo.
     // The branch is on the FLAG, never on both, so the two ramps can never
@@ -327,8 +356,31 @@ export const HexRow = memo(function HexRow({
     // neither of which it may clobber. A void cause only paints where there is
     // genuinely no byte; a page-state cause tints the zero-filled byte the
     // backend did send, exactly as it did before.
-    if (absenceMeta && (!absenceMeta.voids || !loaded)) {
+    const absencePainted = absenceMeta !== undefined && (!absenceMeta.voids || !loaded);
+    if (absencePainted) {
       classes.push(absenceMeta.cellClass);
+    }
+
+    // The heap role layer, consulted only where nothing above claimed the
+    // cell: a region band, a variance tier, a consensus class, a ramp step, the
+    // cross-dump ring or an absence treatment all outrank it. The chunk-start
+    // tick rides the same gate — it is a `box-shadow`, and on a highlighted
+    // cell it would fight that highlight's own inset rule.
+    let heapCode = 0;
+    if (
+      getHeapCellAt &&
+      !region &&
+      varianceVal === undefined &&
+      !consensusClassed &&
+      rampStep === null &&
+      !differsAcrossDumps &&
+      !absencePainted
+    ) {
+      const packed = getHeapCellAt(byteOffset);
+      heapCode = packed & HEAP_ROLE_MASK;
+      const heapClass = heapRoleClassFor(heapCode);
+      if (heapClass) classes.push(heapClass);
+      if (packed & HEAP_CHUNK_START_BIT) classes.push(HEAP_CHUNK_START_CLASS);
     }
 
     // The selection and the search hit are BACKGROUNDS, and every tint pushed
@@ -358,6 +410,11 @@ export const HexRow = memo(function HexRow({
     if (variantCount !== undefined) {
       const variantText = t("row.variants", { n: variantCount });
       tooltip = tooltip ? `${tooltip} | ${variantText}` : variantText;
+    }
+    const heapRoleName = heapRoleLabelFor(heapCode);
+    if (heapRoleName) {
+      const heapText = (heapRoleTitles[heapCode] ??= t(`heap:roles.${heapRoleName}`));
+      tooltip = tooltip ? `${tooltip} | ${heapText}` : heapText;
     }
     // The whole point of the vocabulary is that the analyst can find out WHICH
     // absence this is without consulting a legend.

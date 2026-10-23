@@ -13,7 +13,7 @@ import pytest
 from memdiver.core.models import CryptoSecret
 from memdiver.core.region_view_filter import stored_region_infos
 from memdiver.msl import importer as importer_mod
-from memdiver.msl.enums import OSType, RegionType, SourceFormat
+from memdiver.msl.enums import OSType, RegionType, SourceFormat, VasNameSource
 from memdiver.msl.import_preview import (msl_classification_context,
                                          preview_import, runtime_note)
 from memdiver.msl.import_regioned import plan_regioned_raw
@@ -139,6 +139,11 @@ def test_regioned_import_writes_named_vas_map(android_bin, tmp_path):
     plan, _ = plan_regioned_raw(android_bin, MAPS_PATH)
     expected = sorted((e.base_addr, e.region.path) for e in plan.entries)
     assert [(e.base_addr, e.mapped_path) for e in vas] == expected
+    # MSL 1.1: a mapping name is source metadata; nameless entries unspecified.
+    assert {e.name_source for e in vas if e.mapped_path} == {
+        VasNameSource.SOURCE_METADATA}
+    assert {e.name_source for e in vas if not e.mapped_path} <= {
+        VasNameSource.UNSPECIFIED}
     with MslReader(out) as reader:
         assert reader.file_header.os_type == OSType.ANDROID
         (prov,) = reader.collect_import_provenance()
@@ -222,14 +227,21 @@ def _type_only(info):
 @pytest.mark.parametrize("keep_vas", [False, True])
 def test_old_regioned_msl_without_marker_classifies_identically(
         android_bin, tmp_path, monkeypatch, keep_vas):
-    """No ``region_names=1`` marker -> names ignored, legacy categories."""
+    """No ``region_names=1`` marker -> names ignored, legacy categories.
+
+    Pre-1.1 files also carry NameSource 0 in every VAS entry, so the
+    importer's NameSource helpers are neutralised too.
+    """
     monkeypatch.setattr(importer_mod, "_named_base_note", lambda note: note)
+    monkeypatch.setattr(importer_mod, "_named_vas_name_source", lambda info: 0)
+    monkeypatch.setattr(importer_mod, "_path_name_source", lambda *a: 0)
     if not keep_vas:  # pre-W1a importer: VAS_MAP only when excluding
         monkeypatch.setattr(importer_mod, "_add_named_vas_map",
                             importer_mod._add_vas_map_if_excluded)
     out = tmp_path / "old.msl"
     _import(android_bin, out)
     assert bool(_vas(out)) is keep_vas
+    assert all(e.name_source == VasNameSource.UNSPECIFIED for e in _vas(out))
     infos = preview_import(out).regions
     assert all(r.name is None for r in infos)
     assert [r.category for r in infos] == [_type_only(r) for r in infos]
@@ -240,17 +252,68 @@ def test_old_regioned_msl_without_marker_classifies_identically(
             [r.category for r in infos]
 
 
-def _live_msl(path: Path, imported: bool, with_vas: bool = True) -> Path:
+def _live_msl(path: Path, imported: bool, with_vas: bool = True,
+              name_source: int = VasNameSource.UNSPECIFIED) -> Path:
     writer = MslWriter(path, imported=imported)
     writer.add_memory_region(0x7000000000, b"\x11" * 4096,
                              region_type=RegionType.HEAP)
     if with_vas:
         writer.add_vas_map([MslVasEntry(0x7000000000, 4096, 3,
                                         int(RegionType.HEAP),
-                                        "[anon:dalvik-zygote space]")])
+                                        "[anon:dalvik-zygote space]",
+                                        name_source=int(name_source))])
     writer.add_end_of_capture()
     writer.write()
     return path
+
+
+# -- MSL 1.1 NameSource trust rule (spec 5.8) -----------------------------------
+
+
+def test_imported_without_marker_trusted_by_source_metadata(
+        android_bin, tmp_path, monkeypatch):
+    """NameSource=2 entries make names trusted even without the marker."""
+    monkeypatch.setattr(importer_mod, "_named_base_note", lambda note: note)
+    out = tmp_path / "nomarker.msl"
+    _import(android_bin, out)
+    with MslReader(out) as reader:
+        (prov,) = reader.collect_import_provenance()
+        assert not parse_provenance_note(prov.note).region_names
+        assert reader.file_header.flags & 0x1  # IMPORTED
+        _, names, live = msl_classification_context(reader)
+    assert names is not None and not live
+    assert {e.name_source for e in _vas(out) if e.mapped_path} == {
+        VasNameSource.SOURCE_METADATA}
+    infos = preview_import(out).regions
+    assert C.RUNTIME in {r.category for r in infos}
+    assert [r.category for r in infos] == \
+        [r.category for r in preview_import(android_bin).regions]
+
+
+@pytest.mark.parametrize("imported", [False, True])
+def test_live_name_source_is_trusted(tmp_path, imported):
+    """NameSource=1 (LIVE) is trusted; ``live_named`` only when not IMPORTED."""
+    path = _live_msl(tmp_path / "live11.msl", imported=imported,
+                     name_source=VasNameSource.LIVE)
+    with MslReader(path) as reader:
+        source_format, names, live = msl_classification_context(reader)
+    assert source_format is None and names is not None
+    assert live is (not imported)
+    assert names.name_for(0x7000000000) == "[anon:dalvik-zygote space]"
+    (info,) = preview_import(path).regions
+    assert info.category is C.RUNTIME
+
+
+@pytest.mark.parametrize("imported", [False, True])
+def test_synthesized_name_source_is_not_trusted(tmp_path, imported):
+    """Entries that are all NameSource=3 never make names trusted, even
+    where the pre-1.1 inference (live capture with a VAS_MAP) would."""
+    path = _live_msl(tmp_path / "synth.msl", imported=imported,
+                     name_source=VasNameSource.SYNTHESIZED)
+    with MslReader(path) as reader:
+        assert msl_classification_context(reader)[1:] == (None, False)
+    (info,) = preview_import(path).regions
+    assert info.category is C.HEAP and info.name is None
 
 
 def test_live_capture_with_vas_names_is_trusted(tmp_path):

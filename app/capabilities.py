@@ -310,6 +310,19 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("analysis.algorithm_availability",
          "memdiver.app.tools_algorithms.algorithm_availability",
          ("library", "web")),
+    # -- heap: allocator detection, chunk layout, free lists (0.10.0) ---------
+    _cap("heap.detect", "memdiver.app.tools_heap.heap_detect_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("heap.summary", "memdiver.app.tools_heap.heap_summary_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("heap.chunks", "memdiver.app.tools_heap.heap_chunks_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("heap.chunk_at", "memdiver.app.tools_heap.heap_chunk_at_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("heap.free_lists", "memdiver.app.tools_heap.heap_free_lists_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("heap.roles", "memdiver.app.tools_heap.heap_roles_result",
+         ("library", "cli", "web", "mcp")),
 )
 
 

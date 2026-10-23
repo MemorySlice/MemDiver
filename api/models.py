@@ -117,7 +117,25 @@ class MemoryOverrideFields(BaseModel):
     )
 
 
-class ConsensusRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields):
+class HeapAllocatorFields(BaseModel):
+    """Mixin: the heap allocator a consensus build annotates heap roles with.
+
+    A plain ``str``, not a ``Literal``: the producer validates the name, so a
+    typo is the same 400 (INVALID_INPUT) on every surface instead of a 422.
+    """
+
+    allocator: str = Field(
+        default="auto",
+        description=(
+            "Allocator for the non-destructive heap-role annotation: auto, "
+            "ptmalloc2, dlmalloc, scudo, mallocng, jemalloc, generic, or off "
+            "(no heap analysis)."
+        ),
+    )
+
+
+class ConsensusRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields,
+                       HeapAllocatorFields):
     """Request body for consensus matrix computation."""
 
     dump_paths: list[str]
@@ -137,7 +155,7 @@ class AlignedWindowKey(KeyMaterialFields):
     dump_path: str
 
 
-class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields):
+class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields):
     """Request body for ``POST /api/analysis/consensus/aligned-window``.
 
     POST rather than GET for two reasons that are not style: N dump paths plus
@@ -182,7 +200,7 @@ class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields):
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
-class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields):
+class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields):
     """Request body for ``POST /api/analysis/consensus/regions``.
 
     Every occurrence of a consensus class, paginated and JUMPABLE — the list
@@ -230,7 +248,8 @@ class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields):
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
-class AnalysisCandidatesRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields):
+class AnalysisCandidatesRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields,
+                                HeapAllocatorFields):
     """Request body for the exploratory candidate search (no oracle, no pcap).
 
     Mirrors ``app.tools_pipeline.analyze_candidates`` 1:1 so the web surface
@@ -255,6 +274,9 @@ class AnalysisCandidatesRequest(KeyMaterialFields, RegionFilterFields, MemoryOve
     max_returned: int = DEFAULT_MAX_RETURNED_REGIONS
     normalize: bool = False
     project_id: str = ""
+    #: "annotate" (default, non-destructive: each region gains ``heap``),
+    #: "mask" (allocator metadata removed, ``stages.heap_masked``) or "off".
+    heap_policy: str = "annotate"
 
 
 class KeySecretFields(KeyMaterialFields):
@@ -277,7 +299,7 @@ class KeySecretFields(KeyMaterialFields):
     secret: dict | None = None
 
 
-class LocateKeyRequest(KeySecretFields):
+class LocateKeyRequest(KeySecretFields, HeapAllocatorFields):
     """Request body for ``POST /api/analysis/locate-key``.
 
     Mirrors every caller-facing parameter of ``app.tools_pipeline.locate_key``:

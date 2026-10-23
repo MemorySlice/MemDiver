@@ -221,7 +221,9 @@
     "colDump": "Dump",
     "colByte": "Byte",
     "colChar": "Char",
-    "groundTruth": "Read from each dump — never the overlay's computed byte."
+    "groundTruth": "Read from each dump — never the overlay's computed byte.",
+    "heapRole": "heap: {{name}}",
+    "heapRoleNone": "heap: no role"
   },
   "consensusError": {
     "title": "Consensus rebuild failed",
@@ -257,7 +259,9 @@
     "legendVoid": "void",
     "legendGlyphIdentical": "identical",
     "legendGlyphVariants": "2–6 variants",
-    "legendGlyphVoid": "void"
+    "legendGlyphVoid": "void",
+    "heap": "Heap",
+    "heapTitle": "Colour each byte by its consensus heap role (where the dumps disagree on the role: mixed)"
   },
   "rail": {
     "label": "Dump rail",

@@ -149,6 +149,7 @@
 .page-state-captured { background: var(--md-page-captured); }
 .page-state-failed { background: var(--md-page-failed); }
 .page-state-unmapped { background: var(--md-page-unmapped); }
+.page-state-not-resident { background: var(--md-page-not-resident); }
 
 /* --- MSL "va" view per-byte page-state overlays --- */
 /* CAPTURED bytes render normally; only FAILED/UNMAPPED get a tint so the
@@ -161,6 +162,10 @@
 .hex-byte.page-unmapped,
 .hex-char.page-unmapped {
   background: color-mix(in srgb, var(--md-page-unmapped) 30%, transparent);
+}
+.hex-byte.page-not-resident,
+.hex-char.page-not-resident {
+  background: color-mix(in srgb, var(--md-page-not-resident) 30%, transparent);
 }
 
 /* Consensus overlay colors */
@@ -634,4 +639,102 @@
 .hex-byte.var-tier-3,
 .hex-char.var-tier-3 {
   background-image: linear-gradient(rgba(255,80,20,0.30), rgba(255,80,20,0.30));
+}
+
+/* --- Heap role layer (heap mode) --- */
+/* What each byte IS to the allocator: chunk header, user data, free-list link,
+   stale freed data, allocator metadata, top chunk, slack. `HexRow` asks the
+   layer only for a cell no highlight above has claimed, so these are the
+   quiet ground of heap mode — every other band reads over them.
+   They ARE grounds (a `background`), so each one is named in
+   `../components/hex/ground-classes.ts` and a selection across a heap cell
+   gets its outline ring like on any other tinted cell.
+   Tokens only (`--md-hl-heap-*`, defined per theme in globals.css). User data
+   is the most common role and gets the lightest mix; free links, the
+   exploit-relevant bytes, the strongest. */
+.hex-byte.heap-header,
+.hex-char.heap-header {
+  background: color-mix(in srgb, var(--md-hl-heap-header) 30%, transparent);
+}
+.hex-byte.heap-user,
+.hex-char.heap-user {
+  background: color-mix(in srgb, var(--md-hl-heap-user) 14%, transparent);
+}
+.hex-byte.heap-freelink,
+.hex-char.heap-freelink {
+  background: color-mix(in srgb, var(--md-hl-heap-freelink) 34%, transparent);
+}
+.hex-byte.heap-free,
+.hex-char.heap-free {
+  background: color-mix(in srgb, var(--md-hl-heap-free) 20%, transparent);
+}
+.hex-byte.heap-meta,
+.hex-char.heap-meta {
+  background: color-mix(in srgb, var(--md-hl-heap-meta) 26%, transparent);
+}
+.hex-byte.heap-top,
+.hex-char.heap-top {
+  background: color-mix(in srgb, var(--md-hl-heap-top) 16%, transparent);
+}
+.hex-byte.heap-slack,
+.hex-char.heap-slack {
+  background: color-mix(in srgb, var(--md-hl-heap-slack) 18%, transparent);
+}
+
+/* MIXED: consensus-only (the overlay's Heap render mode). The aligned dumps
+   hold DIFFERENT roles at this byte, so it gets its own hue (magenta, far
+   from every role's) rather than any one role's colour. */
+.hex-byte.heap-mixed,
+.hex-char.heap-mixed {
+  background: color-mix(in srgb, var(--md-hl-heap-mixed) 28%, transparent);
+}
+
+/* High contrast: the alpha mixes are the first thing to blur together, so the
+   two roles an analyst hunts for (headers and free links) also go bold. */
+.high-contrast .hex-byte.heap-header,
+.high-contrast .hex-char.heap-header,
+.high-contrast .hex-byte.heap-freelink,
+.high-contrast .hex-char.heap-freelink {
+  font-weight: 700;
+}
+
+/* The chunk-start tick: a 2px rule on the chunk's first byte. A `box-shadow`,
+   NOT a background or a border — a border would widen the inline-block cell
+   and push the grid out of alignment, and a background would fight the role
+   fill it sits on. `HexRow` only adds it on cells the heap layer owns, so it
+   never competes with another highlight's inset rule. */
+.hex-byte.heap-chunk-start,
+.hex-char.heap-chunk-start {
+  box-shadow: inset 2px 0 0 0 var(--md-hl-heap-tick);
+}
+
+/* Heap legend swatches: separate from the byte rules (a legend is not a
+   byte), reading the same tokens so the legend cannot drift from the grid. */
+.md-variance-swatch.heap-swatch-header {
+  background: color-mix(in srgb, var(--md-hl-heap-header) 30%, transparent);
+}
+.md-variance-swatch.heap-swatch-user {
+  background: color-mix(in srgb, var(--md-hl-heap-user) 14%, transparent);
+}
+.md-variance-swatch.heap-swatch-freelink {
+  background: color-mix(in srgb, var(--md-hl-heap-freelink) 34%, transparent);
+}
+.md-variance-swatch.heap-swatch-free {
+  background: color-mix(in srgb, var(--md-hl-heap-free) 20%, transparent);
+}
+.md-variance-swatch.heap-swatch-meta {
+  background: color-mix(in srgb, var(--md-hl-heap-meta) 26%, transparent);
+}
+.md-variance-swatch.heap-swatch-top {
+  background: color-mix(in srgb, var(--md-hl-heap-top) 16%, transparent);
+}
+.md-variance-swatch.heap-swatch-slack {
+  background: color-mix(in srgb, var(--md-hl-heap-slack) 18%, transparent);
+}
+.md-variance-swatch.heap-swatch-mixed {
+  background: color-mix(in srgb, var(--md-hl-heap-mixed) 28%, transparent);
+}
+.md-variance-swatch.heap-swatch-chunk-start {
+  background: transparent;
+  box-shadow: inset 2px 0 0 0 var(--md-hl-heap-tick);
 }

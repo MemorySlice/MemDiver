@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -62,6 +62,12 @@ class ReduceParams(BaseModel):
     entropy_window: int = 32
     entropy_threshold: float = 4.5
     min_region: int = 16
+    #: How the reduce stage treats the consensus stage's heap roles
+    #: (``heap_roles.npz``; see ``engine.candidate_heap``). Forwarded to
+    #: ``tools_pipeline.search_reduce``; "mask" without heap roles fails the
+    #: run with a PRECONDITION error. The nsweep / escalate / auto-floor reduce
+    #: paths have no heap roles and drop it (``pipeline_runner``).
+    heap_policy: Literal["annotate", "mask", "off"] = "annotate"
 
 
 class BruteForceParams(BaseModel):

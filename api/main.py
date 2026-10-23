@@ -231,6 +231,7 @@ def create_app() -> FastAPI:
         docs,
         dumps,
         experiment,
+        heap,
         inspect,
         oracles,
         path,
@@ -263,6 +264,10 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         inspect.router, prefix="/api/inspect", tags=["inspect"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        heap.router, prefix="/api/heap", tags=["heap"],
         dependencies=_read_path_policy,
     )
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])

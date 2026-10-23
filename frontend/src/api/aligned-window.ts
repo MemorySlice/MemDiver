@@ -30,6 +30,7 @@
 
 import { request } from "./client";
 import type { Diagnostic } from "./diagnostics";
+import type { HeapRoleCode, HeapRoleNameLegend, HeapWindowStatus } from "./types";
 import { useDumpStore } from "@/stores/dump-store";
 
 /** Which coordinate space the caller is navigating in. */
@@ -262,6 +263,20 @@ export interface AlignedWindowResponse {
   variants: number[];
   segments: AlignedWindowSegment[];
   dumps: AlignedWindowDump[];
+  /**
+   * Whether `heap_roles` is readable for this window. Absent on older servers
+   * and on a consensus built without a heap annotation; only `"ok"` lets the
+   * overlay's `Heap` render mode paint.
+   */
+  heap_status?: HeapWindowStatus;
+  /**
+   * `length` entries, parallel to `classes`: the consensus heap role code of
+   * each window byte (`0` none, `1..7` roles, `254` mixed, `255` uncovered).
+   * See `@/utils/heap-roles`.
+   */
+  heap_roles?: HeapRoleCode[];
+  /** Code → role name legend for `heap_roles` (JSON keys are strings). */
+  heap_role_names?: HeapRoleNameLegend;
 }
 
 /**

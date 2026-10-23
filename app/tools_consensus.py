@@ -1094,6 +1094,42 @@ def _anchor_dict(
 # ---------------------------------------------------------------------------
 
 
+def _heap_role_names() -> Dict[str, str]:
+    """``{code: role_name}`` legend for ``heap_roles`` (JSON keys are strings)."""
+    from memdiver.heap.model import HeapRole
+
+    return {str(int(role)): role.name.lower() for role in HeapRole}
+
+
+def _window_heap_roles(heap: Any, projection: Any, length: int) -> List[int]:
+    """Per-byte heap role codes parallel to the window's ``classes``.
+
+    Segments read the slab's role runs; gap bytes are ``UNCOVERED``.
+    """
+    from memdiver.heap.model import HeapRole
+
+    roles = [int(HeapRole.UNCOVERED)] * length
+    for seg in projection.segments:
+        window = heap.runs.window(int(seg.slab_offset), int(seg.length))
+        lo = int(seg.window_offset)
+        roles[lo:lo + int(seg.length)] = window.tolist()
+    return roles
+
+
+def _heap_window_fields(
+    consensus: Optional[ConsensusVector], projection: Any, length: int,
+) -> Dict[str, Any]:
+    """``heap_roles`` / ``heap_role_names`` / ``heap_status`` when annotated."""
+    heap = getattr(consensus, "heap", None) if consensus is not None else None
+    if heap is None:
+        return {}
+    return {
+        "heap_status": heap.status,
+        "heap_roles": _window_heap_roles(heap, projection, length),
+        "heap_role_names": _heap_role_names(),
+    }
+
+
 def aligned_window_from_vector(
     consensus: Optional[ConsensusVector],
     *,
@@ -1133,7 +1169,11 @@ def aligned_window_from_vector(
         consensus, the filter the BUILD recorded is used (see
         :func:`_effective_region_filter`); echoed as ``region_filter``.
     :returns: The aligned-window payload — see Invariant W1 in the module
-        docstring.
+        docstring. When the consensus carries a heap annotation
+        (``consensus.heap``), it also has ``heap_status``, ``heap_roles``
+        (one :class:`~memdiver.heap.model.HeapRole` code per window byte,
+        parallel to ``classes``; ``255`` = uncovered) and ``heap_role_names``
+        (``{code: name}`` legend).
     """
     del session  # stateless; the parameter exists for producer symmetry
     if anchor_path is not None and slab_offset is not None:
@@ -1223,6 +1263,7 @@ def aligned_window_from_vector(
         "dumps": blocks,
         # Every offset above is in this filter's view (None = unfiltered).
         "region_filter": view_filter,
+        **_heap_window_fields(consensus, projection, window_length),
     }
 
 
@@ -1241,8 +1282,12 @@ def aligned_window_result(
     key_material_by_path: Optional[Dict[str, Any]] = None,
     region_filter: Optional[str] = None,
     force: bool = False,
+    allocator: str = "auto",
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one aligned window.
+
+    ``allocator`` ("auto", an allocator name, or "off") drives the heap-role
+    annotation the window's ``heap_roles`` are read from; "off" omits them.
 
     ``classify=False`` skips the build entirely and takes the labelled
     no-consensus path: ``classified: false``, ``method: "file_offset"``, a real
@@ -1273,6 +1318,7 @@ def aligned_window_result(
             key_material=_shared_key_material(paths, key_material_by_path),
             region_filter=_effective_region_filter(None, region_filter),
             force=force,
+            allocator=allocator,
         )
 
     payload = aligned_window_from_vector(
@@ -1773,8 +1819,12 @@ def class_regions_result(
     key_material_by_path: Optional[Dict[str, Any]] = None,
     region_filter: Optional[str] = None,
     force: bool = False,
+    allocator: str = "auto",
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one page of regions.
+
+    ``allocator`` is forwarded to ``build_consensus`` (heap annotation;
+    "off" skips the heap analysis, which this page does not report).
 
     The ``*_result`` half of the pair, for a caller that holds paths rather
     than a built vector — the CLI and MCP surfaces, and the ``dump_paths``
@@ -1800,6 +1850,7 @@ def class_regions_result(
         key_material=_shared_key_material(paths, key_material_by_path),
         region_filter=_effective_region_filter(None, region_filter),
         force=force,
+        allocator=allocator,
     )
     payload = class_regions_from_vector(
         consensus,

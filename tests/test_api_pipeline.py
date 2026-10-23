@@ -739,3 +739,50 @@ def test_pipeline_runs_an_oracle_that_requires_its_config(client, synthetic_dump
     hits = json.loads(r.content)
     assert hits["verified_count"] >= 1, hits
     assert any(h["key_hex"] == key.hex() for h in hits["hits"]), hits
+
+
+def _captured_run_params(client, synthetic_dumps, body_extra: dict) -> dict:
+    from types import SimpleNamespace
+
+    from memdiver.api.services.task_manager import TaskManager
+
+    oracle_id = _upload_and_arm_shape2(client, {"key_hex": bytes(range(32)).hex()})
+    captured: dict = {}
+
+    def _fake_submit(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_id="captured", status=SimpleNamespace(value="queued")
+        )
+
+    original = TaskManager.submit
+    TaskManager.submit = _fake_submit
+    try:
+        r = client.post("/api/pipeline/run", json={
+            "source_paths": synthetic_dumps, "oracle_id": oracle_id, **body_extra,
+        })
+    finally:
+        TaskManager.submit = original
+    assert r.status_code == 200, r.text
+    return captured["params"]
+
+
+def test_run_forwards_reduce_heap_policy_to_the_worker(client, synthetic_dumps):
+    """``reduce.heap_policy`` reaches the worker instead of being dropped."""
+    params = _captured_run_params(
+        client, synthetic_dumps, {"reduce": {"heap_policy": "mask"}})
+    assert params["reduce_kwargs"]["heap_policy"] == "mask"
+
+
+def test_run_defaults_reduce_heap_policy_to_annotate(client, synthetic_dumps):
+    params = _captured_run_params(client, synthetic_dumps, {})
+    assert params["reduce_kwargs"]["heap_policy"] == "annotate"
+
+
+def test_run_rejects_an_unknown_heap_policy(client, synthetic_dumps):
+    r = client.post("/api/pipeline/run", json={
+        "source_paths": synthetic_dumps,
+        "oracle_id": "whatever",
+        "reduce": {"heap_policy": "bogus"},
+    })
+    assert r.status_code == 422, r.text

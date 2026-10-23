@@ -68,7 +68,9 @@ from ._shared import (
     _decrypt_parent_parser,
     _region_selection_parent_parser,
     _setup_logging,
+    add_allocator_argument,
     add_force_memory_argument,
+    add_heap_policy_argument,
     to_cli_exit,
 )
 from .import_keys import decrypt_output_parent_parser
@@ -91,6 +93,7 @@ from .consensus import (
     add_region_filter_arguments,
 )
 from .capture import _cmd_capture, add_capture_parser
+from .heap import _cmd_heap, add_heap_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
     DEFAULT_AUTO_EXPORT_CONTEXT,
@@ -198,6 +201,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cs.add_argument("-v", "--verbose", action="store_true")
     add_region_filter_arguments(cs)
     add_force_memory_argument(cs)
+    add_allocator_argument(cs)
     # incremental consensus (Welford-backed, persisted state)
     cb = sub.add_parser(
         "consensus-begin",
@@ -252,6 +256,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cw.add_argument("-v", "--verbose", action="store_true")
     add_region_filter_arguments(cw)
     add_force_memory_argument(cw)
+    add_allocator_argument(cw)
     # consensus-regions — EVERY occurrence of a class, paginated and jumpable
     cr = sub.add_parser(
         "consensus-regions",
@@ -291,6 +296,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cr.add_argument("-v", "--verbose", action="store_true")
     add_region_filter_arguments(cr)
     add_force_memory_argument(cr)
+    add_allocator_argument(cr)
     # search-reduce
     sr = sub.add_parser(
         "search-reduce",
@@ -324,6 +330,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "region carries 'rank' and 'score' either way.")
     sr.add_argument("-o", "--output", required=True, help="Output candidates.json")
     sr.add_argument("-v", "--verbose", action="store_true")
+    # The Welford --state session carries no heap roles, so 'annotate' is a
+    # no-op here and 'mask' is refused (use analyze-candidates for heap work).
+    add_heap_policy_argument(sr)
     # analyze-candidates (the exploratory path: no oracle, no capture)
     ac = sub.add_parser(
         "analyze-candidates",
@@ -364,6 +373,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ac.add_argument("-o", "--output", help="Output JSON file")
     ac.add_argument("-v", "--verbose", action="store_true")
     add_force_memory_argument(ac)
+    add_heap_policy_argument(ac)
+    add_allocator_argument(ac)
     # brute-force
     bf = sub.add_parser(
         "brute-force",
@@ -626,6 +637,7 @@ def _build_parser() -> argparse.ArgumentParser:
                          f"true total either way")
     lk.add_argument("-o", "--output", help="Output JSON file")
     lk.add_argument("-v", "--verbose", action="store_true")
+    add_allocator_argument(lk)
     # locate-field-pairs (N (dump, capture) pairs, each with its OWN needle)
     lfp = sub.add_parser(
         "locate-field-pairs",
@@ -1045,6 +1057,10 @@ def _build_parser() -> argparse.ArgumentParser:
     add_force_memory_argument(ep_exp)
     # capture — one dump of an existing process (pid/name, local/USB/remote)
     add_capture_parser(sub)
+    # heap — allocator detection, summary, chunk table, chunk lookup, free
+    # lists, byte roles over the app.tools_heap producers (same as /api/heap
+    # and MCP).
+    add_heap_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1248,6 +1264,7 @@ def main():
         "verify-plugin": _cmd_verify_plugin,
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,
+        "heap": _cmd_heap,
     }
     handler = handlers.get(args.command)
     if handler is None:

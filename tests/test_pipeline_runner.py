@@ -721,3 +721,136 @@ def test_escalate_stage_forwards_the_oracle_config(tmp_path):
         pipeline_runner._stage_escalate(state)
 
     assert captured["oracle_config"] == {"key_hex": KEY_BYTES.hex()}
+
+
+# ------------------------------------------------------------------
+# heap_policy — honoured by the reduce stage only
+#
+# The web threshold panel posts ``reduce.heap_policy``. Only the reduce stage
+# (``tools_pipeline.search_reduce``) has the consensus heap roles to apply it;
+# nsweep and escalate reduce without them, so the key is dropped there.
+# ------------------------------------------------------------------
+
+
+def _capture_producer_kwargs(captured: Dict[str, Any]):
+    def _fake_run_producer(_producer, **kwargs):
+        captured.update(kwargs)
+        return {}
+    return _fake_run_producer
+
+
+def test_reduce_stage_forwards_heap_policy_to_search_reduce(tmp_path):
+    from unittest.mock import patch
+
+    from memdiver.app.pipeline import pipeline_runner
+
+    captured: Dict[str, Any] = {}
+    with patch.object(pipeline_runner, "_run_producer",
+                      _capture_producer_kwargs(captured)), \
+            patch.object(pipeline_runner, "register_artifact"), \
+            patch.object(pipeline_runner, "_producer_sink", return_value=None):
+        pipeline_runner._run_reduce(
+            tmp_path / "variance.npy", tmp_path / "reference.bin", 4,
+            {"min_variance": 100.0, "heap_policy": "mask"},
+            ctx=_FakeCtx(), artifact_dir=tmp_path, artifacts=[],
+        )
+
+    assert captured["heap_policy"] == "mask"
+
+
+def test_nsweep_stage_drops_heap_policy(tmp_path):
+    from unittest.mock import patch
+
+    from memdiver.app.pipeline import pipeline_runner
+
+    captured: Dict[str, Any] = {}
+    nsweep_params = {
+        "n_values": [2, 3],
+        "reduce_kwargs": {"min_variance": 100.0, "heap_policy": "mask"},
+    }
+    with patch.object(pipeline_runner, "_run_producer",
+                      _capture_producer_kwargs(captured)), \
+            patch.object(pipeline_runner, "register_artifact"), \
+            patch.object(pipeline_runner, "_producer_sink", return_value=None):
+        try:
+            pipeline_runner._run_nsweep(
+                [], tmp_path / "oracle.py", nsweep_params,
+                ctx=_FakeCtx(), artifact_dir=tmp_path, artifacts=[],
+            )
+        except (FileNotFoundError, OSError, ValueError):
+            pass  # report.json read-back; the producer call already happened
+
+    assert captured["reduce_kwargs"] == {"min_variance": 100.0}
+    # The caller's dict is not mutated.
+    assert nsweep_params["reduce_kwargs"]["heap_policy"] == "mask"
+
+
+def test_escalate_stage_drops_heap_policy(tmp_path):
+    from unittest.mock import patch
+
+    from memdiver.app.pipeline import pipeline_runner
+
+    captured: Dict[str, Any] = {}
+    state = pipeline_runner.PipelineState(
+        ctx=_FakeCtx(),
+        artifact_dir=tmp_path,
+        reduce_kwargs={"min_region": 8, "heap_policy": "mask"},
+        oracle_path=tmp_path / "oracle.py",
+        bf_kwargs={"key_sizes": [32], "stride": 8},
+        nsweep_params=None,
+        emit_params=None,
+    )
+    state.consensus = {
+        "variance_path": str(tmp_path / "variance.npy"),
+        "reference_path": str(tmp_path / "reference.bin"),
+        "num_dumps": 4,
+    }
+    with patch.object(pipeline_runner, "_run_producer",
+                      _capture_producer_kwargs(captured)), \
+            patch.object(pipeline_runner, "register_artifact"), \
+            patch.object(pipeline_runner, "_producer_sink", return_value=None):
+        pipeline_runner._stage_escalate(state)
+
+    assert captured["reduce_kwargs"] == {"min_region": 8}
+
+
+def test_auto_floor_stage_drops_heap_policy(tmp_path):
+    from unittest.mock import patch
+
+    from memdiver.app.pipeline import pipeline_runner
+
+    variance_path = tmp_path / "variance.npy"
+    np.save(variance_path, np.zeros(64, dtype=np.float32))
+    reference_path = tmp_path / "reference.bin"
+    reference_path.write_bytes(bytes(64))
+    captured: Dict[str, Any] = {}
+
+    def _fake_run_auto_floor(*_args, **kwargs):
+        captured.update(kwargs)
+        return "verdict"
+
+    with patch("memdiver.engine.auto_floor.run_auto_floor", _fake_run_auto_floor), \
+            patch("memdiver.engine.oracle.load_oracle", return_value=object()):
+        pipeline_runner.run_auto_floor_stage(
+            variance_path=str(variance_path),
+            reference_path=str(reference_path),
+            num_dumps=4,
+            oracle_path=str(tmp_path / "oracle.py"),
+            reduce_kwargs={"min_region": 8, "heap_policy": "annotate"},
+        )
+
+    assert captured["reduce_kwargs"] == {"min_region": 8}
+
+
+def test_run_pipeline_mask_without_heap_roles_fails_with_precondition(
+    dumps_dir, oracle_path, artifact_dir
+):
+    """``mask`` never silently degrades: no heap roles -> the task errors."""
+    from memdiver.core.service_errors import CapabilityError
+
+    params = _config_pipeline_params(dumps_dir, oracle_path, artifact_dir)
+    params.pop("nsweep")
+    params["reduce_kwargs"]["heap_policy"] = "mask"
+
+    with pytest.raises(CapabilityError, match="heap_roles.npz"):
+        run_pipeline(params, _FakeCtx())

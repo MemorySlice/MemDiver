@@ -66,6 +66,17 @@ export const heapStackMslPath = path.join(__dirname, "heap_stack_msl", "sample.m
 export const heapStackMslAvailable = existsSync(heapStackMslPath);
 export const HEAP_STACK_MSL_UUID = "5eedc0de-0000-4000-8000-00000000beef";
 
+// Committed live-capture .msl holding a REAL synthetic glibc ptmalloc2 [heap]
+// (tests/fixtures/synth_heap.glibc_heap: tcache struct, in-use + tcache'd
+// chunks, top chunk) plus libc.so.6 in the module list, so the heap analysis
+// resolves to ptmalloc2 and recovers every chunk. expected.json is the
+// builder's chunk oracle the heap-mode spec asserts against.
+// Regenerate with: python tests/e2e/fixtures/glibc_heap_msl/generate.py
+export const glibcHeapMslPath = path.join(__dirname, "glibc_heap_msl", "sample.msl");
+export const glibcHeapExpectedPath = path.join(__dirname, "glibc_heap_msl", "expected.json");
+export const glibcHeapMslAvailable =
+  existsSync(glibcHeapMslPath) && existsSync(glibcHeapExpectedPath);
+
 // Committed ASLR-shifted .msl PAIR for the multi-dump specs (side-by-side
 // panes + cross-dump overlay). Regenerate with:
 //   python tests/e2e/fixtures/aslr_msl/generate.py

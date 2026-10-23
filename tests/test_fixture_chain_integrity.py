@@ -23,9 +23,13 @@ _FIXTURE_ROOTS = (_TESTS / "fixtures", _TESTS / "e2e" / "fixtures")
 _FLAGS_OFFSET = 0x0C
 
 # Real capture whose header byte 0x0B was hand-patched 0x00 -> 0x01
-# (Version 0.1 -> 1.1) after capture; not regenerable.
+# (Version 0.1 -> 1.1) after capture; not regenerable. The patched byte
+# breaks exactly two links: Block 0's PrevHash (= hash of the header) and
+# the EoC FileHash (which covers the header too).
 _CHROME_MIN = _TESTS / "fixtures" / "real_samples" / "chrome_min.msl"
 _KNOWN_MODIFIED_HEADER = {_CHROME_MIN: (0x0B, 0x00)}
+_HEADER_PATCH_ERRORS = ("Hash mismatch at block 0x{header_size:X}:",
+                        "EoC FileHash mismatch:")
 
 # Fixtures the e2e specs / tests rely on; they must exist so this test
 # cannot pass vacuously.
@@ -81,7 +85,14 @@ def test_known_modified_header_fails_only_at_block0(path):
     report, header_size = _report(path)
     assert not report.valid
     assert report.broken_at == header_size, report.errors
-    assert len(report.errors) == 1, report.errors  # every later link intact
+    allowed = tuple(prefix.format(header_size=header_size)
+                    for prefix in _HEADER_PATCH_ERRORS)
+    # Only the two header-derived checks fail; every later link is intact.
+    assert report.errors, "expected the Block 0 PrevHash mismatch"
+    assert all(err.startswith(allowed) for err in report.errors), report.errors
+    assert report.errors[0].startswith(allowed[0]), report.errors
+    assert report.block_count_ok
+    assert report.segments == [] and report.trailing_bytes == 0
 
 
 @pytest.mark.parametrize("path", list(_KNOWN_MODIFIED_HEADER),

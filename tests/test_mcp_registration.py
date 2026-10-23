@@ -102,7 +102,17 @@ EXPECTED_TOOLS = {
     # needs this one most: it is the only place an emitted plugin's claims can
     # be checked without a human reading a TreeGrid.
     "verify_vol3_plugin",
+    # P5c: allocator-aware heap analysis (heap.* capabilities) -- detect the
+    # allocator, summarise the heap, page the chunk table, resolve the chunk
+    # and byte role at an address, walk the free lists, map the byte roles of
+    # a view window. Registered on all four surfaces in the heap phase.
+    "heap_detect", "heap_summary", "heap_chunks", "heap_chunk_at",
+    "heap_free_lists", "heap_roles",
 }
+
+#: The exact registered-tool count, pinned on its own so the docs' "N tools"
+#: claims have one number to agree with.
+EXPECTED_TOOL_COUNT = 56
 
 
 def _registered_tool_names(server) -> set:
@@ -142,3 +152,4 @@ def test_server_registers_all_expected_tools(registered):
 
 def test_server_tool_count(registered):
     assert len(registered) == len(EXPECTED_TOOLS), sorted(registered)
+    assert len(EXPECTED_TOOLS) == EXPECTED_TOOL_COUNT

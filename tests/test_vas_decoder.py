@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from memdiver.msl.decoders import decode_vas_map
+from memdiver.msl.enums import BLOCK_HEADER_SIZE, VasNameSource
 from memdiver.msl.types import MslBlockHeader, MslVasEntry, MslVasMap
 from tests.fixtures.generate_msl_fixtures import (
     _build_vas_map,
@@ -35,10 +36,10 @@ def _make_block_header():
 def _build_raw_vas_payload(entries):
     """Build raw VAS_MAP payload bytes for decoder tests."""
     payload = struct.pack("<II", len(entries), 0)
-    for base, size, prot, rtype, path in entries:
+    for base, size, prot, rtype, path, name_source in entries:
         path_raw_len = (len(path.encode("utf-8")) + 1) if path else 0
-        payload += struct.pack("<QQBBH4x", base, size, prot, rtype,
-                               path_raw_len)
+        payload += struct.pack("<QQBBHB3x", base, size, prot, rtype,
+                               path_raw_len, name_source)
         if path:
             raw = path.encode("utf-8") + b"\x00"
             padded = raw.ljust((len(raw) + 7) & ~7, b"\x00")
@@ -48,7 +49,7 @@ def _build_raw_vas_payload(entries):
 
 def test_decode_vas_map_basic():
     """Round-trip decode of a single-entry VAS_MAP."""
-    entries = [(0x7FFF00000000, 0x21000, 0x07, 0x01, "")]
+    entries = [(0x7FFF00000000, 0x21000, 0x07, 0x01, "", 1)]
     payload = _build_raw_vas_payload(entries)
     hdr = _make_block_header()
     result = decode_vas_map(hdr, payload, "<")
@@ -71,9 +72,9 @@ def test_decode_vas_map_empty():
 def test_decode_vas_map_multiple_entries():
     """Multiple entries with different types decode correctly."""
     entries = [
-        (0x00400000, 0x10000, 0x05, 0x03, "/usr/lib/libssl.so"),
-        (0x7FFF00000000, 0x21000, 0x07, 0x01, ""),
-        (0x7FFFFFFDE000, 0x22000, 0x03, 0x02, "[stack]"),
+        (0x00400000, 0x10000, 0x05, 0x03, "/usr/lib/libssl.so", 1),
+        (0x7FFF00000000, 0x21000, 0x07, 0x01, "", 0),
+        (0x7FFFFFFDE000, 0x22000, 0x03, 0x02, "[stack]", 2),
     ]
     payload = _build_raw_vas_payload(entries)
     hdr = _make_block_header()
@@ -82,11 +83,12 @@ def test_decode_vas_map_multiple_entries():
     assert result.entries[0].region_type == 0x03  # IMAGE
     assert result.entries[1].region_type == 0x01  # HEAP
     assert result.entries[2].mapped_path == "[stack]"
+    assert [e.name_source for e in result.entries] == [1, 0, 2]
 
 
 def test_vas_entry_fields():
     """Verify all fields of a VAS entry decode correctly."""
-    entries = [(0xDEADBEEF, 0x1000, 0x07, 0x04, "/tmp/mapped.dat")]
+    entries = [(0xDEADBEEF, 0x1000, 0x07, 0x04, "/tmp/mapped.dat", 3)]
     payload = _build_raw_vas_payload(entries)
     hdr = _make_block_header()
     result = decode_vas_map(hdr, payload, "<")
@@ -96,6 +98,46 @@ def test_vas_entry_fields():
     assert e.protection == 0x07
     assert e.region_type == 0x04
     assert e.mapped_path == "/tmp/mapped.dat"
+    assert e.name_source == 3
+
+
+def test_decode_vas_map_legacy_pad_bytes_name_source_zero():
+    """A pre-1.1 entry (4 zero pad bytes at +0x14) decodes name_source == 0."""
+    payload = struct.pack("<II", 1, 0) + struct.pack(
+        "<QQBBH4x", 0x1000, 0x2000, 0x03, 0x05, 0
+    )
+    hdr = _make_block_header()
+    result = decode_vas_map(hdr, payload, "<")
+    assert result.entries[0].name_source == 0
+    assert result.entries[0].mapped_path == ""
+
+
+def test_decode_vas_map_name_source_source_metadata():
+    """NameSource 2 (SOURCE_METADATA) at entry offset +0x14 round-trips."""
+    entries = [(0x7000_0000_0000, 0x4000, 0x05, 0x03, "/data/app/libfoo.so", 2)]
+    payload = _build_raw_vas_payload(entries)
+    # 8-byte VAS Map header (2x uint32), then NameSource at entry +0x14.
+    assert payload[8 + 0x14] == 2
+    hdr = _make_block_header()
+    result = decode_vas_map(hdr, payload, "<")
+    e = result.entries[0]
+    assert e.name_source == 2
+    assert VasNameSource(e.name_source) is VasNameSource.SOURCE_METADATA
+    assert e.mapped_path == "/data/app/libfoo.so"
+
+
+def test_fixture_vas_map_default_entries_name_source_unspecified():
+    """The fixture generator's default VAS Map entries carry NameSource 0."""
+    block, _ = _build_vas_map()
+    payload = block[BLOCK_HEADER_SIZE:]
+    hdr = _make_block_header()
+    result = decode_vas_map(hdr, payload, "<")
+    assert result.entry_count == 3
+    assert all(e.name_source == 0 for e in result.entries)
+    assert all(
+        VasNameSource(e.name_source) is VasNameSource.UNSPECIFIED
+        for e in result.entries
+    )
 
 
 def test_collect_vas_map():
@@ -175,7 +217,7 @@ def test_decode_vas_map_truncated_path_raises():
     """An entry whose path_len runs past the payload raises MslParseError."""
     # One entry header claiming a 0x20-byte path but no path bytes follow.
     payload = struct.pack("<II", 1, 0) + struct.pack(
-        "<QQBBH4x", 0x1000, 0x1000, 0x07, 0x01, 0x20
+        "<QQBBHB3x", 0x1000, 0x1000, 0x07, 0x01, 0x20, 0
     )
     hdr = _make_block_header()
     with pytest.raises(MslParseError):

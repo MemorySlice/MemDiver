@@ -196,6 +196,117 @@ class MslEndOfCapture:
     block_header: MslBlockHeader
     file_hash: bytes  # 32 bytes BLAKE3
     acq_end_ns: int
+    block_count: int = 0  # capture-segment blocks incl. EoC; 0 = unknown / legacy 40-byte EoC
+
+
+@dataclass
+class MslEndOfExtension:
+    """End-of-Extension payload (spec Table 12a, type 0x0FFE).
+
+    Terminates an extension segment (spec 4.6). ``segment_hash`` is
+    H(HashAlgo) of every byte from the segment's first block through the
+    last byte before this block; ``block_count`` includes this terminator
+    and MUST be exact; ``producer`` names the appending tool (may be "").
+    """
+    block_header: MslBlockHeader
+    segment_hash: bytes  # 32 bytes
+    written_at_ns: int
+    block_count: int
+    producer: str = ""
+
+
+@dataclass(frozen=True)
+class ExtensionSegment:
+    """One extension segment of an open ``.msl`` (spec 4.6), header-only.
+
+    ``start`` / ``end`` are reader-buffer offsets: ``start`` is the first
+    block's offset, ``end`` the byte just past the End-of-Extension block
+    (or past the last framed block when ``terminator`` is None, i.e. the
+    segment is unterminated and everything from ``start`` on is trailing
+    data). ``headers`` holds every block header of the segment INCLUDING
+    the terminator's; ``terminator`` is the decoded End-of-Extension
+    payload or None. Verification (chain continuity, SegmentHash,
+    BlockCount) is done by :func:`integrity.verify_chain` /
+    :meth:`MslReader.iter_extension_blocks`, not here.
+    """
+    index: int
+    start: int
+    end: int
+    headers: Tuple[MslBlockHeader, ...]
+    terminator: Optional[MslEndOfExtension]
+
+    @property
+    def terminated(self) -> bool:
+        return self.terminator is not None
+
+    @property
+    def producer(self) -> str:
+        return self.terminator.producer if self.terminator is not None else ""
+
+
+@dataclass(frozen=True)
+class MslThreadRegister:
+    """One register entry of a Thread Context block (spec Table 19b).
+
+    ``width`` is the value size in bytes (1-255); ``flags`` carries the
+    ``REG_ROLE_*`` role bits (enums.py); ``value`` holds exactly ``width``
+    raw bytes in the file's byte order (vector registers in native lane
+    order), left undecoded so unknown registers are preserved verbatim.
+    """
+    name: str
+    width: int
+    flags: int
+    value: bytes
+
+    @property
+    def is_pc(self) -> bool:
+        return bool(self.flags & 0x0001)
+
+    @property
+    def is_sp(self) -> bool:
+        return bool(self.flags & 0x0002)
+
+
+@dataclass(frozen=True)
+class MslThreadContext:
+    """Thread Context payload (spec Tables 19a/19b, type 0x0011).
+
+    ``flags`` carries the ``TC_FLAG_*`` bits (enums.py); ``state`` is a
+    ``ThreadState`` code; ``arch`` is 0 for the file header ``ArchType`` or
+    an ``ArchType`` code for mixed-mode threads (WOW64 / ARM64EC).
+    """
+    block_header: MslBlockHeader
+    thread_id: int
+    start_time_ns: int
+    flags: int
+    state: int
+    arch: int
+    name: str
+    registers: Tuple[MslThreadRegister, ...] = ()
+
+    @property
+    def current(self) -> bool:
+        return bool(self.flags & 0x0001)
+
+    @property
+    def crashed(self) -> bool:
+        return bool(self.flags & 0x0002)
+
+    @property
+    def suspended(self) -> bool:
+        return bool(self.flags & 0x0004)
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.flags & 0x0008)
+
+    def register(self, name: str) -> Optional[MslThreadRegister]:
+        """The register called *name* (lowercase mnemonic), or None."""
+        wanted = name.lower()
+        for reg in self.registers:
+            if reg.name == wanted:
+                return reg
+        return None
 
 
 @dataclass
@@ -223,6 +334,7 @@ class MslVasEntry:
     protection: int       # Protection flags
     region_type: int      # RegionType enum value
     mapped_path: str      # empty string for anonymous regions
+    name_source: int = 0  # VasNameSource value, 0 = unspecified
 
 
 @dataclass
@@ -416,11 +528,11 @@ class MslGenericBlock:
     payload: bytes
 
 
-# -- POINTER_GRAPH appendix (0x1003) — MemDiver extension --
+# -- POINTER_GRAPH (0x1003) — MemDiver extension-segment block --
 
 @dataclass(frozen=True)
 class MslPointerGraphNode:
-    """Single node in a POINTER_GRAPH appendix.
+    """Single node in a POINTER_GRAPH block.
 
     `value` holds either a virtual address, a file/region offset, or a
     symbol identifier depending on `node_kind` (see enums.NodeKind).
@@ -433,7 +545,7 @@ class MslPointerGraphNode:
 
 @dataclass(frozen=True)
 class MslPointerGraphEdge:
-    """Single directed edge between two nodes in a POINTER_GRAPH appendix.
+    """Single directed edge between two nodes in a POINTER_GRAPH block.
 
     `src_idx` / `dst_idx` index into the parent graph's `nodes` tuple.
     `metadata` is an optional UTF-8 free-form annotation (call count,
@@ -447,16 +559,17 @@ class MslPointerGraphEdge:
 
 @dataclass(frozen=True)
 class MslPointerGraph:
-    """POINTER_GRAPH appendix payload (type 0x1003).
+    """POINTER_GRAPH payload (type 0x1003).
 
-    A plaintext appendix block emitted *after* End-of-Capture (and after
-    the AEAD Tag for encrypted containers). Lives outside the BLAKE3
-    block chain (block header `prev_hash` is zero). The appendix carries
-    its own optional self-integrity BLAKE3 (`appendix_hash`), independent
-    of the main container's chain.
+    A producer-defined Structural block, so it lives in an extension
+    segment (spec 4.6): after the End-of-Capture block, chained from it
+    (zero PrevHash inside an encrypted container) and closed by an
+    End-of-Extension block whose SegmentHash covers it. The payload also
+    carries its own optional BLAKE3 trailer (`appendix_hash`), kept from
+    the pre-1.1 era when the block was an unchained appendix.
 
-    A reader that doesn't recognize block type 0x1003 stops at EoC and
-    safely ignores the appendix — fully backward compatible.
+    A reader that doesn't implement extension segments stops at EoC and
+    safely ignores the block — fully backward compatible.
     """
     block_header: MslBlockHeader
     nodes: Tuple[MslPointerGraphNode, ...] = ()

@@ -232,3 +232,49 @@ describe("OverlayByteInspector without a cursor", () => {
     expect(screen.queryAllByTestId(/^overlay-inspector-row-/)).toHaveLength(0);
   });
 });
+
+describe("OverlayByteInspector heap role", () => {
+  function seedHeap(heapStatus: string | null, code: number | undefined) {
+    seed({ n: 2, bytes: { "/dumps/d0.msl": 1, "/dumps/d1.msl": 1 } });
+    act(() => {
+      useMultiHexStore.setState({ heapStatus, heapRoleAt: () => code });
+    });
+  }
+
+  it("names the consensus heap role of the inspected byte", () => {
+    seedHeap("ok", 3);
+    render(<OverlayByteInspector />);
+    const role = screen.getByTestId("overlay-inspector-heap-role");
+    expect(role).toHaveTextContent("heap: Free-list link");
+    expect(role).toHaveAttribute("data-heap-code", "3");
+  });
+
+  it("states the disagreement for a MIXED byte", () => {
+    seedHeap("ok", 254);
+    render(<OverlayByteInspector />);
+    const role = screen.getByTestId("overlay-inspector-heap-role");
+    expect(role).toHaveTextContent("heap: Mixed (dumps disagree)");
+    expect(role).toHaveAttribute(
+      "title",
+      "The aligned dumps hold different heap roles at this byte.",
+    );
+  });
+
+  it("says 'no role' for a byte outside every role", () => {
+    seedHeap("ok", 0);
+    render(<OverlayByteInspector />);
+    expect(screen.getByTestId("overlay-inspector-heap-role")).toHaveTextContent("heap: no role");
+  });
+
+  it("shows nothing when the window's heap roles are unusable", () => {
+    seedHeap("no_va_coordinate", 3);
+    render(<OverlayByteInspector />);
+    expect(screen.queryByTestId("overlay-inspector-heap-role")).toBeNull();
+  });
+
+  it("shows nothing when the server sent no roles", () => {
+    seedHeap("ok", undefined);
+    render(<OverlayByteInspector />);
+    expect(screen.queryByTestId("overlay-inspector-heap-role")).toBeNull();
+  });
+});

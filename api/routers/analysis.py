@@ -114,7 +114,8 @@ def run_consensus(
     # Request value wins; otherwise the named session's persisted filter.
     region_filter = request_region_filter(req)
     cm = build_consensus(req.dump_paths, normalize=req.normalize, key_material=km,
-                         region_filter=region_filter, force=req.force_memory)
+                         region_filter=region_filter, force=req.force_memory,
+                         allocator=req.allocator)
 
     # Register the build under its own id so range queries are isolated per
     # client — no shared mutable state on a process-wide singleton.
@@ -179,6 +180,12 @@ def run_consensus(
         # banner without reaching into ``alignment``. Empty when nothing is
         # questionable. Same shape as POST /candidates' ``diagnostics``.
         "diagnostics": cm.alignment_report.diagnostic_dicts,
+        # The heap-role annotation's status + summary (the same block the
+        # pipeline consensus.json carries); None under ``allocator: "off"``.
+        "heap": (
+            {"status": cm.heap.status, **cm.heap.to_dict()}
+            if cm.heap is not None else None
+        ),
     }
 
 
@@ -224,6 +231,8 @@ def analysis_candidates(req: AnalysisCandidatesRequest):
         key_material=km,
         region_filter=request_region_filter(req),
         force=req.force_memory,
+        heap_policy=req.heap_policy,
+        allocator=req.allocator,
     )
 
 
@@ -261,6 +270,7 @@ def analysis_locate_key(req: LocateKeyRequest):
         view=req.view,
         max_offsets=req.max_offsets,
         key_material=km,
+        allocator=req.allocator,
     )
 
 
@@ -640,6 +650,7 @@ def consensus_aligned_window(
             key_material_by_path=key_material_by_path,
             region_filter=request_region_filter(req),
             force=req.force_memory,
+            allocator=req.allocator,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload
@@ -738,6 +749,7 @@ def consensus_regions(
             key_material_by_path=key_material_by_path,
             region_filter=request_region_filter(req),
             force=req.force_memory,
+            allocator=req.allocator,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload

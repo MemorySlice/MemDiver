@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **48 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **56 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -20,6 +20,20 @@ The downstream stages `search_reduce`, `brute_force`, `auto_floor` and `emit_plu
      "details": {"estimate_bytes": ..., "budget_bytes": ..., "operation": ..., "breakdown": ..., "source": ...}}
 
 Every one of these tools takes `force_memory: bool = False`. Fewer or smaller dumps (or a `region_filter`) are the safe fix; re-calling with `force_memory=true` runs the build anyway (a warning is logged). Any other tool error that carries `details` now includes them under `details` too.
+```
+
+```{admonition} Heap awareness (`allocator`, `heap_policy`)
+:class: note
+
+`consensus`, `aligned_window`, `consensus_regions`, `analyze_candidates` and `locate_key` take `allocator: str = "auto"`: the heap allocator used to label each byte's heap role (`auto` detects it; `ptmalloc2`, `dlmalloc`, `scudo`, `mallocng`, `jemalloc` and `generic` force one; `off` turns heap analysis off). This is non-destructive. `consensus` reports the result under `heap` (and writes `heap_roles.npz` beside `variance.npy`), `aligned_window` returns `heap_roles`, and each `locate_key` hit gets a `heap` entry naming its chunk. A hit in a `free`, `cached` or `quarantined` chunk is a residual copy.
+
+`analyze_candidates` and `search_reduce` also take `heap_policy: str = "annotate"`:
+
+- `"annotate"` (default) is non-destructive. Each region gets a `heap` block (`chunk`, `residual`, `role_counts`), and the ranking stays the same.
+- `"mask"` removes allocator metadata (chunk headers, free-list links) from the candidates before they are reduced. The number of bytes removed is in `stages.heap_masked`. It fails with a PRECONDITION error when no heap annotation is available.
+- `"off"` turns heap analysis off.
+
+`search_reduce` reads the heap roles from the `heap_roles.npz` that `consensus` wrote beside the variance file.
 ```
 
 ## Dataset inspection
@@ -67,6 +81,19 @@ Every one of these tools takes `force_memory: bool = False`. Fewer or smaller du
 | `get_module_index` | List MODULE_LIST_INDEX entries in an MSL file (uuid/base/size/path). |
 | `get_import_provenance` | IMPORT_PROVENANCE records with the note parsed (kept/excluded regions, materialized copy + original EoC hash, `region_names`: the VAS map stores trusted mapping names); empty for non-`.msl`. |
 | `get_blocks` | List all blocks in an MSL file grouped by category. |
+
+## Heap analysis
+
+Allocator-aware heap parsing for ptmalloc2 (glibc), dlmalloc, scudo (Android), mallocng (musl), jemalloc (partial: slab level only) and a `generic` heuristic fallback. Every tool takes `allocator` (`"auto"` detects), works on `.msl` (with key material when encrypted) and raw dumps, and `base_va` places a flat raw dump without a `.maps` sidecar. `summary`/`chunks`/`chunk_at`/`free_lists`/`roles` also take `regions` (parse only these mappings) and `max_chunks` (walk cap). Bad input (unknown allocator/state/view, a VA window together with an offset window) returns the structured `{"error", ...}` body.
+
+| Tool | Purpose |
+|---|---|
+| `heap_detect` | Rank allocator candidates with their evidence and the detected platform. Start here. |
+| `heap_summary` | Whole-heap overview: regions, chunk counts/bytes by state, size histogram, bytes per role (`chunk_header`, `user_data`, `free_link`, `free_data`, `allocator_meta`, `top`, `slack`), coverage, diagnostics. |
+| `heap_chunks` | One page of the chunk table, filtered by `state`, `min_size`/`max_size` and either a `va_start`/`va_end` or an `offset`/`length` window in `view` (`vas`/`raw`/`va`); rows carry `view_offset`. |
+| `heap_chunk_at` | The chunk containing a `va` (or `offset` in `view`), the role of that byte, offsets in chunk/user data and the neighbouring chunks. |
+| `heap_free_lists` | Walked free lists (tcache, fastbins, …) optionally of one `kind`, with `cycle` and `corrupt` flags. |
+| `heap_roles` | Byte-role runs of an `offset`/`length` window in `view` (`vas`/`raw`/`va`; `length` max 1 MiB): `runs` of `{offset, length, role}` in view offsets (sorted, non-overlapping, coalesced; bytes in no chunk omitted), `chunk_starts` in the window, and the allocator's `partial`/`heuristic` flags. |
 
 ## Format conversion
 

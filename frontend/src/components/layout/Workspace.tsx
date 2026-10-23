@@ -4,10 +4,11 @@ import { useTranslation } from "react-i18next";
 import { Panel, Group, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SettingsMenu } from "@/components/settings/SettingsMenu";
-import { useAppStore } from "@/stores/app-store";
+import { useAppStore, type AppMode } from "@/stores/app-store";
 import { useAnalysisStore } from "@/stores/analysis-store";
 import { useResultsStore } from "@/stores/results-store";
 import { ModeBanner } from "@/components/analysis/ModeBanner";
+import { MODE_ACCENT } from "@/components/analysis/mode-accent";
 import { AnalysisPanel } from "@/components/analysis/AnalysisPanel";
 import { ConsensusBuilder } from "@/components/analysis/ConsensusBuilder";
 import { ScanResultsPanel } from "@/components/results/ScanResultsPanel";
@@ -76,6 +77,9 @@ import { useSessionLoader } from "@/hooks/useSessionLoader";
 import { useBeforeUnloadGuard } from "@/hooks/useBeforeUnloadGuard";
 import { NewSessionDialog } from "@/components/session/NewSessionDialog";
 import { persistSession } from "@/utils/session-persistence";
+import { HeapOverview } from "@/components/heap/HeapOverview";
+import { HeapPanel } from "@/components/heap/HeapPanel";
+import { useHeapModeLayer } from "@/hooks/useHeapModeLayer";
 
 function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal" | "vertical" }) {
   const isHorizontal = orientation === "horizontal";
@@ -105,7 +109,7 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
         <span
           className="text-xs px-2 py-0.5 rounded uppercase md-text-on-accent"
           style={{
-            background: mode === "verification" ? "var(--md-accent-blue)" : "var(--md-accent-purple)",
+            background: MODE_ACCENT[mode],
           }}
         >
           {t(`modeBadge.${mode}`)}
@@ -145,12 +149,26 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import";
-export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap";
+export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
+
+const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
+/** Heap mode adds its overview tab; no other mode offers it. */
+const HEAP_SIDE_TABS: readonly SideTab[] = [...BASE_SIDE_TABS, "heap"];
 
 function Sidebar() {
   const { t } = useTranslation("layout");
-  const [sideTab, setSideTab] = useState<SideTab>("bookmarks");
+  const mode = useAppStore((s) => s.mode);
+  const [sideTab, setSideTab] = useState<SideTab>(mode === "heap" ? "heap" : "bookmarks");
+  const sideTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
+  // Entering heap mode opens its overview; leaving it drops a tab that no
+  // longer exists. Adjusted during render, guarded by the last mode seen.
+  const [prevMode, setPrevMode] = useState(mode);
+  if (prevMode !== mode) {
+    setPrevMode(mode);
+    if (mode === "heap") setSideTab("heap");
+    else if (!sideTabs.includes(sideTab)) setSideTab("bookmarks");
+  }
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const { bookmarks, addBookmark, removeBookmarkEntry, jumpToBookmark, multiView } = useHexStore(
@@ -167,12 +185,13 @@ function Sidebar() {
   return (
     <div data-tour-id="workspace-sidebar" className="h-full flex flex-col overflow-hidden md-bg-secondary">
       <div className="flex border-b border-[var(--md-border)]">
-        {(["bookmarks", "dumps", "format", "structures", "sessions", "import"] as const).map((tab) => (
+        {sideTabs.map((tab) => (
           <button
             key={tab}
             onClick={() => setSideTab(tab)}
             title={t(`tabs.${tab}`)}
-            data-testid={`tab-${tab}`}
+            // The bottom panel also has a "heap" tab; keep the ids distinct.
+            data-testid={tab === "heap" ? "tab-heap-overview" : `tab-${tab}`}
             className={`flex-1 text-xs py-1.5 capitalize transition-colors truncate px-1 ${
               sideTab === tab ? "bg-[var(--md-bg-hover)]" : "md-text-secondary hover:bg-[var(--md-bg-hover)]"
             }`}
@@ -259,9 +278,17 @@ function Sidebar() {
         {sideTab === "structures" && <StructureList />}
         {sideTab === "sessions" && <SessionManager />}
         {sideTab === "import" && <FileUpload />}
+        {sideTab === "heap" && <HeapOverview dumpPath={dumpPath} />}
       </div>
     </div>
   );
+}
+
+/** Mirrors heap mode onto the heap layer of the active dump (see the hook). */
+function HeapModeBridge() {
+  const activeDump = useActiveDump();
+  useHeapModeLayer(activeDump?.path ?? null);
+  return null;
 }
 
 function HexFocusBridge() {
@@ -640,13 +667,23 @@ function OverlayDetailPanel() {
   );
 }
 
+const EXPLORATION_BOTTOM_TABS: readonly BottomTab[] = ["analysis", "results", "strings", "entropy", "consensus", "live-consensus", "architect", "experiment", "convergence", "variance", "vas", "verify-key", "pipeline"];
+
+/** Bottom tabs per mode; heap mode is exploration plus the heap panel. */
+const BOTTOM_TABS_BY_MODE: Readonly<Record<AppMode, readonly BottomTab[]>> = {
+  verification: ["analysis", "results", "strings", "verify-key", "pipeline"],
+  exploration: EXPLORATION_BOTTOM_TABS,
+  heap: ["analysis", "heap", ...EXPLORATION_BOTTOM_TABS.slice(1)],
+};
+
 function BottomTabs() {
   const { t } = useTranslation("layout");
   // Aliased reference to the translate function: the tab-row `.map((t) => ...)`
   // below shadows `t` with the tab name, so the aria-label lookup inside that
   // callback must go through this alias instead of the shadowed `t`.
   const translate = t;
-  const [tab, setTab] = useState<BottomTab>("analysis");
+  const mode = useAppStore((s) => s.mode);
+  const [tab, setTab] = useState<BottomTab>(mode === "heap" ? "heap" : "analysis");
   const totalHits = useResultsStore((s) => s.getTotalHitCount());
   const isRunning = useAnalysisStore((s) => s.isRunning);
   const pipelineStatus = usePipelineStore((s) => s.status);
@@ -671,16 +708,12 @@ function BottomTabs() {
     entries: [],
   });
   const vasPathRef = useRef("");
-  const mode = useAppStore((s) => s.mode);
   // The variance tab mirrors whatever neighborhood the user is currently
   // inspecting in the hex viewer (see NeighborhoodOverlayPanel), rather than
   // a pipeline-run-scoped hit — that overlay is the one "live" variance
   // series the workspace already tracks.
   const neighborhoodOverlay = useHexStore((s) => s.activeNeighborhoodOverlay);
-  const availableTabs: BottomTab[] =
-    mode === "verification"
-      ? ["analysis", "results", "strings", "verify-key", "pipeline"]
-      : ["analysis", "results", "strings", "entropy", "consensus", "live-consensus", "architect", "experiment", "convergence", "variance", "vas", "verify-key", "pipeline"];
+  const availableTabs = BOTTOM_TABS_BY_MODE[mode];
 
   // The tab switches below react to store changes, so they adjust state
   // during render (each guarded by the value it last saw) instead of in
@@ -698,10 +731,12 @@ function BottomTabs() {
     if (isRunning && !pipelineRunning) setTab("analysis");
   }
 
-  // Reset tab when mode hides the current tab
+  // Reset tab when mode hides the current tab; entering heap mode opens
+  // the heap panel.
   if (prevMode !== mode) {
     setPrevMode(mode);
-    if (!availableTabs.includes(tab)) setTab("analysis");
+    if (mode === "heap") setTab("heap");
+    else if (!availableTabs.includes(tab)) setTab("analysis");
   }
 
   // Switch to results on new hits — but don't hijack the bottom tab on
@@ -891,6 +926,7 @@ function BottomTabs() {
         )}
         {tab === "verify-key" && <KeyVerificationPanel />}
         {tab === "pipeline" && <PipelinePanel />}
+        {tab === "heap" && <HeapPanel dumpPath={dumpPath} />}
       </div>
     </div>
   );
@@ -972,6 +1008,7 @@ export function Workspace() {
             <ResizeHandle />
             <Panel id="main" defaultSize="45%" minSize="20%">
               <HexFocusBridge />
+              <HeapModeBridge />
               <div data-tour-id="workspace-main" className="h-full flex flex-col min-h-0">
                 <MainAreaDumpBar />
                 <div className="flex-1 min-h-0">

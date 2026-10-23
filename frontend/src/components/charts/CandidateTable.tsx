@@ -2,11 +2,13 @@ import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   dominantClass,
+  regionsHaveHeap,
   type ByteClassName,
   type CandidateRegion,
 } from "@/api/candidates";
 import { offsetToHex } from "@/utils/hex-codec";
 import { VARIANCE_META } from "@/utils/variance-classes";
+import { CandidateHeapCells, CandidateHeapHeaders } from "./CandidateHeapCells";
 
 /** Class -> colour, read from the shared variance map so one colour means one
  * class everywhere -- the Consensus tab's histogram, the hex grid and this
@@ -44,6 +46,9 @@ export const CandidateTable = memo(function CandidateTable(
   { regions, onJump, jumpable }: Props,
 ) {
   const { t } = useTranslation("candidates");
+  // Heap columns only when the answer carries heap context: a run with
+  // `heap_policy: "off"` (or an older server) keeps the table it always had.
+  const showHeap = regionsHaveHeap(regions);
 
   return (
     <div className="overflow-x-auto">
@@ -55,6 +60,7 @@ export const CandidateTable = memo(function CandidateTable(
             <th scope="col" className="py-1 pr-2 font-medium">{t("table.offset")}</th>
             <th scope="col" className="py-1 pr-2 font-medium text-right">{t("table.length")}</th>
             <th scope="col" className="py-1 pr-2 font-medium">{t("table.class")}</th>
+            {showHeap && <CandidateHeapHeaders />}
             <th scope="col" className="py-1 pr-2 font-medium text-right">{t("table.score")}</th>
             <th scope="col" className="py-1 pr-2 font-medium text-right">{t("table.variance")}</th>
             <th scope="col" className="py-1 font-medium text-right">{t("table.entropy")}</th>
@@ -101,6 +107,7 @@ export const CandidateTable = memo(function CandidateTable(
                     {cls ? t(`class.${cls}`) : t("class.unclassified")}
                   </span>
                 </td>
+                {showHeap && <CandidateHeapCells heap={region.heap} />}
                 <td className="py-0.5 pr-2 text-right font-mono">{region.score.toFixed(3)}</td>
                 <td className="py-0.5 pr-2 text-right font-mono">
                   {region.mean_variance.toFixed(1)}

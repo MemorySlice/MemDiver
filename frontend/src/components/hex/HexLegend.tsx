@@ -3,10 +3,14 @@ import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 import { HIGHLIGHT_META } from "@/utils/highlight-types";
 import type { HighlightType } from "@/utils/highlight-types";
+import { selectHeapLayerEnabled, useHeapStore } from "@/stores/heap-store";
+import { HeapLegend } from "./HeapLegend";
 
 export function HexLegend() {
   const { t } = useTranslation("hex");
   const regions = useHexStore((s) => s.highlightedRegions);
+  const dumpPath = useHexStore((s) => s.dumpPath);
+  const heapLayerOn = useHeapStore(selectHeapLayerEnabled(dumpPath));
   const [collapsed, setCollapsed] = useState(false);
 
   const activeTypes = useMemo(() => {
@@ -17,7 +21,7 @@ export function HexLegend() {
     return counts;
   }, [regions]);
 
-  if (activeTypes.size === 0) return null;
+  if (activeTypes.size === 0 && !heapLayerOn) return null;
 
   return (
     <div className="flex items-center gap-1 px-2 py-0.5 border-b border-[var(--md-border)] text-[10px] md-text-secondary">
@@ -44,6 +48,7 @@ export function HexLegend() {
               </span>
             );
           })}
+          {heapLayerOn && dumpPath && <HeapLegend dumpPath={dumpPath} />}
         </div>
       )}
     </div>

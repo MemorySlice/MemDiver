@@ -36,10 +36,13 @@ def test_collect_thread_contexts(msl_path):
         blocks = reader.collect_thread_contexts()
         assert len(blocks) == 1
         b = blocks[0]
-        # Fallback-or-decoded: either MslThreadContext or MslGenericBlock
-        if isinstance(b, MslThreadContext):
-            assert b.thread_id == 0xDEAD
-            assert b.register_data == b"\xAA\xBB\xCC\xDD"
+        # Spec 5.7 layout (Tables 19a/19b) as written by the fixture generator.
+        assert isinstance(b, MslThreadContext)
+        assert b.thread_id == 0xDEAD
+        assert b.name == "main"
+        assert b.current
+        assert b.register("rip") is not None and b.register("rip").is_pc
+        assert b.register("rsp") is not None and b.register("rsp").is_sp
 
 
 def test_collect_file_descriptors(msl_path):

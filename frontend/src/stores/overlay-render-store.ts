@@ -20,7 +20,7 @@ import { create } from "zustand";
  * nothing else.
  */
 
-export const OVERLAY_RENDER_MODES = ["class", "variants", "glyph"] as const;
+export const OVERLAY_RENDER_MODES = ["class", "variants", "glyph", "heap"] as const;
 
 export type OverlayRenderMode = (typeof OVERLAY_RENDER_MODES)[number];
 
@@ -31,6 +31,34 @@ export type OverlayRenderMode = (typeof OVERLAY_RENDER_MODES)[number];
  * a colour the consensus never produced.
  */
 export const DEFAULT_OVERLAY_RENDER_MODE: OverlayRenderMode = "class";
+
+/**
+ * Whether `mode` can paint given the aligned window's `heap_status`.
+ *
+ * Only `heap` depends on it: it paints the consensus heap roles, which exist
+ * only when the window says `"ok"`. Every other mode is always available.
+ */
+export function overlayRenderModeAvailable(
+  mode: OverlayRenderMode,
+  heapStatus: string | null,
+): boolean {
+  return mode !== "heap" || heapStatus === "ok";
+}
+
+/**
+ * The mode the overlay ACTUALLY paints: the chosen one, or the default when
+ * the chosen one cannot paint right now (`heap` with no usable roles).
+ *
+ * Derived, never written back: the choice survives a window whose heap roles
+ * are unavailable, so returning to one that has them restores `heap` without
+ * the analyst having to pick it again.
+ */
+export function effectiveOverlayRenderMode(
+  mode: OverlayRenderMode,
+  heapStatus: string | null,
+): OverlayRenderMode {
+  return overlayRenderModeAvailable(mode, heapStatus) ? mode : DEFAULT_OVERLAY_RENDER_MODE;
+}
 
 export interface OverlayRenderState {
   renderMode: OverlayRenderMode;

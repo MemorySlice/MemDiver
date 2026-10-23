@@ -81,6 +81,16 @@ def create_server():
     from memdiver.app.tools_consensus import DEFAULT_REGIONS_PER_PAGE
 
     from memdiver.app import tools_consensus
+    from memdiver.app import tools_heap
+    # Same reason: the heap walk cap and chunk page size an agent sees
+    # advertised must be the producer's numbers.
+    from memdiver.app.tools_heap import (
+        DEFAULT_CHUNK_PAGE_SIZE as HEAP_DEFAULT_CHUNK_PAGE_SIZE,
+    )
+    from memdiver.app.tools_heap import (
+        DEFAULT_ROLES_LENGTH as HEAP_DEFAULT_ROLES_LENGTH,
+    )
+    from memdiver.heap.analyze import DEFAULT_MAX_CHUNKS as HEAP_DEFAULT_MAX_CHUNKS
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
@@ -299,6 +309,174 @@ def create_server():
             _session, msl_path, key_file, passphrase, kem_key_file,
         )))
 
+    # -- heap.* : allocator-aware heap analysis -----------------------------
+    # Shared vocabulary for the six heap tools (repeated in each docstring
+    # because the docstring IS the tool description an agent reads):
+    # ``allocator`` is ``auto`` (detect) or one of ptmalloc2 (glibc), dlmalloc,
+    # scudo (Android), mallocng (musl), jemalloc (partial: slab level only) or
+    # generic (heuristic fallback when nothing else fits).
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_detect(
+        dump_path: str, allocator: str = "auto", base_va: Optional[int] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Identify which heap allocator produced a dump. START HERE for heap work.
+
+        Returns ranked ``candidates`` (each with a confidence and the
+        ``evidence`` behind it), the ``best`` verdict and the detected
+        ``platform`` (os/arch/pointer_size). Supported allocators: ptmalloc2
+        (glibc), dlmalloc, scudo (Android), mallocng (musl), jemalloc (partial,
+        slab level) and a ``generic`` heuristic fallback. ``allocator`` other
+        than ``auto`` is echoed back as the verdict (``hinted: true``).
+        ``base_va`` sets the VA of a flat raw dump without a ``.maps`` sidecar.
+        Works on ``.msl`` (pass key material if encrypted) and raw dumps.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_detect_result(
+            _session, dump_path, allocator, base_va=base_va,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_summary(
+        dump_path: str, allocator: str = "auto", base_va: Optional[int] = None,
+        max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS, regions: Optional[List[str]] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Whole-heap overview: the cheap first look before paging chunks.
+
+        Parses the heap with ``allocator`` (``auto`` detects; ptmalloc2,
+        dlmalloc, scudo, mallocng, jemalloc [partial], generic [heuristic])
+        and returns the heap ``regions``, chunk counts and bytes per state
+        (in_use/free/cached/quarantined), a power-of-two ``size_histogram``,
+        ``role_bytes`` (bytes per role: chunk_header, user_data, free_link,
+        free_data, allocator_meta, top, slack), ``metadata_bytes``, ``free_list_count``, ``coverage``
+        and parser ``diagnostics``. ``partial``/``heuristic`` flag an
+        allocator whose parse is incomplete or guessed. ``regions`` limits
+        parsing to the named mappings; ``max_chunks`` caps the walk.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_summary_result(
+            _session, dump_path, allocator, base_va=base_va,
+            max_chunks=max_chunks, regions=regions,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_chunks(
+        dump_path: str, allocator: str = "auto", state: Optional[str] = None,
+        min_size: Optional[int] = None, max_size: Optional[int] = None,
+        va_start: Optional[int] = None, va_end: Optional[int] = None,
+        offset: Optional[int] = None, length: Optional[int] = None,
+        view: str = "vas", page: int = 0,
+        page_size: int = HEAP_DEFAULT_CHUNK_PAGE_SIZE,
+        base_va: Optional[int] = None, max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS,
+        regions: Optional[List[str]] = None, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """One page of the parsed chunk table (va, size, state, user_va, ...).
+
+        Use to enumerate allocations, e.g. every free chunk of a key-sized
+        class. Filters: ``state`` (in_use/free/cached/quarantined; cached =
+        parked in tcache/fastbin, so freed though still marked in use), ``min_size``/``max_size``
+        and ONE window -- ``va_start``/``va_end`` (half-open VAs) OR
+        ``offset``/``length`` in ``view`` (``vas`` dense captured memory,
+        ``raw`` file bytes, ``va`` sparse .msl VA view); never both. Each row
+        carries ``view_offset`` so it can be opened with ``read_hex``.
+        ``page`` is 0-based; ``page_size`` max 2000. Allocators as for
+        ``heap_summary`` (``auto`` detects).
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_chunks_result(
+            _session, dump_path, allocator, state=state, min_size=min_size,
+            max_size=max_size, va_start=va_start, va_end=va_end, offset=offset,
+            length=length, view=view, page=page, page_size=page_size,
+            base_va=base_va, max_chunks=max_chunks, regions=regions,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_chunk_at(
+        dump_path: str, allocator: str = "auto", va: Optional[int] = None,
+        offset: Optional[int] = None, view: str = "vas",
+        base_va: Optional[int] = None, max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS,
+        regions: Optional[List[str]] = None, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Which heap chunk owns an address, and what role does that byte play?
+
+        Give exactly ONE of ``va`` or ``offset`` (in ``view``: vas/raw/va).
+        Use it on a candidate key hit (e.g. from ``search_bytes`` or
+        ``locate_key``) to tell user data from allocator metadata. Returns
+        ``found``, the containing ``chunk``, the byte's ``role``
+        (chunk_header, user_data, free_link, free_data [stale payload in a
+        freed chunk], allocator_meta, top, slack, none), ``offset_in_chunk``/``offset_in_user`` and the ``prev``/``next``
+        neighbour chunks (nearest below/above when ``found`` is false).
+        Allocators as for ``heap_summary`` (``auto`` detects).
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_chunk_at_result(
+            _session, dump_path, allocator, va=va, offset=offset, view=view,
+            base_va=base_va, max_chunks=max_chunks, regions=regions,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_free_lists(
+        dump_path: str, allocator: str = "auto", kind: Optional[str] = None,
+        base_va: Optional[int] = None, max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS,
+        regions: Optional[List[str]] = None, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Walk the allocator's free lists (tcache bins, fastbins, ...).
+
+        Use to find freed-but-not-wiped allocations (residual secrets) and to
+        spot heap corruption. Returns every list (or only those of ``kind``;
+        ``kinds`` lists what exists) with ``head_va``, the ``chunk_vas`` in
+        link order, ``decoded`` (safe-linking undone), a ``cycle`` flag and a
+        ``corrupt`` flag when an entry is not a parsed chunk start
+        (``unresolved_vas``). Allocators as for ``heap_summary`` (``auto``
+        detects); lists exist only where the allocator keeps them.
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_free_lists_result(
+            _session, dump_path, allocator, kind=kind, base_va=base_va,
+            max_chunks=max_chunks, regions=regions,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def heap_roles(
+        dump_path: str, allocator: str = "auto", view: str = "vas",
+        offset: int = 0, length: int = HEAP_DEFAULT_ROLES_LENGTH,
+        base_va: Optional[int] = None, max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS,
+        regions: Optional[List[str]] = None, key_file: Optional[str] = None,
+        passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+    ) -> str:
+        """Role of every heap byte in a window, as coalesced runs.
+
+        Use to colour a hex window or to see at a glance which bytes of a
+        region are allocator metadata vs. user data. The window is
+        ``offset``/``length`` in ``view`` (``vas`` dense captured memory,
+        ``raw`` file bytes, ``va`` sparse .msl VA view); ``length`` max
+        1 MiB. Returns ``runs`` (``{offset, length, role}`` in view offsets,
+        sorted, non-overlapping; role is chunk_header, user_data, free_link,
+        free_data, allocator_meta, top or slack -- bytes in no chunk are
+        omitted), ``chunk_starts`` (view offsets of chunk starts in the
+        window) and the allocator's ``partial``/``heuristic`` flags.
+        Allocators as for ``heap_summary`` (``auto`` detects).
+        """
+        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_roles_result(
+            _session, dump_path, allocator, view=view, offset=offset,
+            length=length, base_va=base_va, max_chunks=max_chunks,
+            regions=regions,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+        )))
+
     @mcp.tool()
     def get_connections(
         msl_path: str, key_file: Optional[str] = None,
@@ -482,6 +660,8 @@ def create_server():
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
         force_memory: bool = False,
+        heap_policy: str = "annotate",
+        allocator: str = "auto",
     ) -> str:
         """Rank candidate regions across N dumps — NO oracle, NO capture needed.
 
@@ -519,6 +699,15 @@ def create_server():
         consensus build is refused with code ``memory_budget_exceeded``
         (``estimate_bytes`` / ``budget_bytes`` in the error) unless
         ``force_memory=true``.
+
+        ``heap_policy`` controls allocator-metadata handling: "annotate" (the
+        default, non-destructive) tags each candidate with the heap chunk it
+        sits in (``chunk`` / ``residual`` fields) without changing the ranking;
+        "mask" removes allocator metadata (chunk headers, free-list links)
+        from the candidates before reduction and reports the cost under
+        ``stages.heap_masked``; "off" disables heap analysis entirely.
+        ``allocator`` ("auto", "ptmalloc2", "dlmalloc", "scudo", "mallocng",
+        "jemalloc", "generic" or "off") picks the heap parser; "auto" detects.
         """
         return json.dumps(tools_pipeline.analyze_candidates(
             dump_paths=dump_paths,
@@ -540,6 +729,8 @@ def create_server():
             passphrase=passphrase,
             kem_key_file=kem_key_file,
             force=force_memory,
+            heap_policy=heap_policy,
+            allocator=allocator,
         ))
 
     @mcp.tool()
@@ -557,6 +748,7 @@ def create_server():
         region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        heap_policy: str = "annotate",
     ) -> str:
         """Reduce consensus variance to a RANKED candidate region list.
 
@@ -579,6 +771,11 @@ def create_server():
         ``region_filter`` (``.msl`` only) overrides the view filter the
         upstream stage recorded in its artifact; omitted, the recorded filter
         is reused so offsets stay consistent, and ``"all"`` disables it.
+
+        ``heap_policy`` uses the heap layout persisted beside the variance
+        artifact: "annotate" (default, non-destructive) tags candidates with
+        their heap chunk; "mask" removes allocator metadata from the
+        candidates (count under ``stages.heap_masked``); "off" disables it.
         """
         return json.dumps(tools_pipeline.search_reduce(
             variance_path=variance_path,
@@ -600,6 +797,7 @@ def create_server():
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
+            heap_policy=heap_policy,
         ))
 
     @mcp.tool()
@@ -871,6 +1069,7 @@ def create_server():
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
         force_memory: bool = False,
+        allocator: str = "auto",
     ) -> str:
         """Build a per-byte consensus variance vector; writes variance.npy.
 
@@ -886,12 +1085,17 @@ def create_server():
         consensus build is refused with code ``memory_budget_exceeded``
         (``estimate_bytes`` / ``budget_bytes`` in the error) unless
         ``force_memory=true``.
+
+        ``allocator`` ("auto", "ptmalloc2", "dlmalloc", "scudo", "mallocng",
+        "jemalloc", "generic" or "off") drives the non-destructive heap-role
+        annotation (reported under ``heap``); "auto" detects the allocator and
+        "off" disables heap analysis.
         """
         return json.dumps(tools_pipeline.consensus(
             dump_paths=dump_paths, output_dir=output_dir, normalize=normalize,
             region_filter=_session_region_filter(region_filter),
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-            force=force_memory,
+            force=force_memory, allocator=allocator,
         ))
 
     @mcp.tool()
@@ -909,6 +1113,7 @@ def create_server():
         region_filter: Optional[str] = None,
         key_material_by_path: Optional[dict] = None,
         force_memory: bool = False,
+        allocator: str = "auto",
     ) -> str:
         """Read ONE window in EVERY dump at the address the consensus aligned.
 
@@ -934,6 +1139,10 @@ def create_server():
         consensus build is refused with code ``memory_budget_exceeded``
         (``estimate_bytes`` / ``budget_bytes`` in the error) unless
         ``force_memory=true``.
+
+        ``allocator`` ("auto", "ptmalloc2", "dlmalloc", "scudo", "mallocng",
+        "jemalloc", "generic" or "off") drives the non-destructive heap-role
+        annotation the window's ``heap_roles`` are read from; "off" omits them.
         """
         return json.dumps(tools_consensus.aligned_window_result(
             _session, dump_paths=dump_paths, anchor_path=anchor_path,
@@ -942,7 +1151,7 @@ def create_server():
             include_bytes=include_bytes,
             region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
-            force=force_memory,
+            force=force_memory, allocator=allocator,
         ).payload)
 
     @mcp.tool()
@@ -962,6 +1171,7 @@ def create_server():
         region_filter: Optional[str] = None,
         key_material_by_path: Optional[dict] = None,
         force_memory: bool = False,
+        allocator: str = "auto",
     ) -> str:
         """List EVERY occurrence of a consensus class, paginated and jumpable.
 
@@ -1004,6 +1214,11 @@ def create_server():
         consensus build is refused with code ``memory_budget_exceeded``
         (``estimate_bytes`` / ``budget_bytes`` in the error) unless
         ``force_memory=true``.
+
+        ``allocator`` ("auto", "ptmalloc2", "dlmalloc", "scudo", "mallocng",
+        "jemalloc", "generic" or "off") drives the non-destructive heap-role
+        annotation (reported under ``heap``); "auto" detects the allocator and
+        "off" disables heap analysis.
         """
         return json.dumps(tools_consensus.class_regions_result(
             _session, dump_paths=dump_paths, classes=classes,
@@ -1012,7 +1227,7 @@ def create_server():
             include_anchor_offsets=include_anchor_offsets, normalize=normalize,
             region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
-            force=force_memory,
+            force=force_memory, allocator=allocator,
         ).payload)
 
     @mcp.tool()
@@ -1144,6 +1359,7 @@ def create_server():
         max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        allocator: str = "auto",
     ) -> str:
         """Locate a secret you ALREADY HOLD across N dumps — honest three-valued.
 
@@ -1191,6 +1407,13 @@ def create_server():
         on the reference 8-dump OpenSSL run the master secret survives in 2.
         Nothing is persisted. Supply key_file / passphrase / kem_key_file for
         encrypted ``.msl`` inputs.
+
+        ``allocator`` ("auto", "ptmalloc2", "dlmalloc", "scudo", "mallocng",
+        "jemalloc", "generic" or "off") adds non-destructive heap context:
+        each dump row with hits gains ``heap``, a list parallel to ``offsets``
+        of ``{allocator, chunk_va, chunk_size, state, offset_in_chunk, role}``
+        (``null`` outside every chunk) — a hit in a FREED chunk is a residual
+        copy. "off" disables it.
         """
         return json.dumps(tools_pipeline.locate_key(
             dump_paths=dump_paths,
@@ -1203,6 +1426,7 @@ def create_server():
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
+            allocator=allocator,
         ))
 
     @mcp.tool()

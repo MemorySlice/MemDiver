@@ -15,6 +15,7 @@ from memdiver.msl.import_preview import preview_import
 from memdiver.msl.importer import (import_dump, import_msl_passthrough,
                                    import_run_directory)
 from memdiver.msl.integrity import verify_chain
+from memdiver.msl.materialize import materialize_msl, stored_regions
 from memdiver.msl.page_map import count_captured_pages
 from memdiver.msl.reader import MslReader
 from memdiver.msl.region_select import (RegionSelection, parse_selection,
@@ -22,9 +23,9 @@ from memdiver.msl.region_select import (RegionSelection, parse_selection,
 from memdiver.msl.types import (MslPointerGraphEdge, MslPointerGraphNode,
                                 MslVasEntry)
 from memdiver.msl.writer import (CapBit, ConnectionTableEntry,
-                                 HandleTableEntry, ModuleEntrySpec,
-                                 MslEncryptionConfig, MslWriter,
-                                 ProcessTableEntry)
+                                 ExtensionBlock, HandleTableEntry,
+                                 ModuleEntrySpec, MslEncryptionConfig,
+                                 MslWriter, ProcessTableEntry)
 
 from tests.fixtures import generate_msl_fixtures as gen
 from tests.fixtures import synth_elf_core
@@ -365,9 +366,43 @@ def test_writer_fixture_compressed_tables_and_appendix(tmp_path):
             mli.block_header.block_uuid}
         (pg_a,), (pg_b,) = a.collect_pointer_graphs(), b.collect_pointer_graphs()
         assert pg_b.nodes == pg_a.nodes and pg_b.edges == pg_a.edges
+        # The pointer graph comes back from a re-emitted, verified segment
+        # (spec 4.6) under the source producer, re-chained after the new EoC.
+        (seg_a,), (seg_b,) = verify_chain(a).segments, verify_chain(b).segments
+        assert seg_b.verified and seg_b.producer == seg_a.producer
+        assert b.trailing_bytes == 0
+        assert [h.block_uuid for h in b.scan_extension_segments()[0].headers[:-1]] \
+            == [h.block_uuid for h in a.scan_extension_segments()[0].headers[:-1]]
         vas = sorted(e.base_addr for vm in b.collect_vas_map()
                      for e in vm.entries)
     assert vas == [0x400000, 0x10000000, 0x7FFF0000]
+
+
+def test_tampered_extension_segment_is_dropped(tmp_path):
+    """A source segment that fails verification is not re-emitted."""
+    src = _writer_built_msl(tmp_path)
+    with MslReader(src) as reader:
+        (seg,) = reader.scan_extension_segments()
+        assert seg.headers[0].block_type == BlockType.POINTER_GRAPH
+        flip_at = seg.headers[0].payload_offset + 4
+    raw = bytearray(src.read_bytes())
+    raw[flip_at] ^= 0xFF
+    src.write_bytes(raw)
+
+    out = tmp_path / "mat.msl"
+    with MslReader(src) as reader:
+        assert not verify_chain(reader).segments[0].verified
+        regions = stored_regions(reader, None)
+        stats = materialize_msl(reader, src, out, regions,
+                                [True] * len(regions), "selection=all")
+    assert stats.dropped_extension_segments == 1
+    assert stats.extension_segments_written == 0
+    with MslReader(out) as copy:
+        report = verify_chain(copy)
+        assert report.valid and report.segments == []
+        assert copy.collect_pointer_graphs() == []
+        assert copy.trailing_bytes == 0
+        assert len(copy.collect_regions()) == 3
 
 
 def test_split_stack_region_keeps_page_states(tmp_path):
@@ -404,15 +439,17 @@ def test_writer_raw_block_capabilities_and_appendix(tmp_path):
     child = w.add_raw_block(0x7777, b"child\x00\x00\x00", parent_uuid=parent,
                             flags=0x10)
     w.add_capabilities(CapBit.MODULE_LIST)
-    w.add_raw_appendix(b"")
-    with pytest.raises(ValueError):
-        w.add_raw_appendix(b"")
+    with pytest.raises(NotImplementedError):
+        w.add_raw_appendix(b"")  # pre-1.1 appendix: gone with spec 4.6
+    w.add_extension_segment("t/1", [ExtensionBlock(0x1100, b"x\0\0\0\0\0\0\0")])
     w.add_end_of_capture()
     w.write()
     with MslReader(path) as reader:
         headers = [h for h in reader._iter_raw_block_headers()
                    if h.block_type == 0x7777]
         assert reader.file_header.cap_bitmap & CapBit.MODULE_LIST
-        assert verify_chain(reader).valid
+        report = verify_chain(reader)
+        assert report.valid and report.segments[0].verified
+        assert reader.collect_end_of_extension()[0].producer == "t/1"
     assert [(h.block_uuid, h.parent_uuid, h.flags) for h in headers] == [
         (UUID(int=1), UUID(int=0), 0), (child, parent, 0x10)]

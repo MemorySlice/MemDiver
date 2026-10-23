@@ -173,11 +173,17 @@ def _build_related_dump(related_uuid=None, related_pid=5678, relationship=1,
     return _build_block(0x0041, payload)
 
 
-def _build_vas_map(entries=None):
-    """Build VAS Map payload (type 0x1001).
+_VAS_NAME_SOURCE_UNSPECIFIED = 0  # VasNameSource.UNSPECIFIED (spec 5.8)
 
-    Each entry: uint64 base, uint64 size, uint8 prot, uint8 rtype,
-    uint16 path_len, 4 pad, then path string.
+
+def _build_vas_map(entries=None):
+    """Build VAS Map payload (type 0x1001, spec 5.8).
+
+    Each entry: BaseAddr(8) RegionSize(8) Protection(1) RegionType(1)
+    PathLen(2) NameSource(1) Reserved(3), then MappedPath (pad8). The
+    NameSource byte at entry offset +0x14 is written explicitly as
+    ``_VAS_NAME_SOURCE_UNSPECIFIED`` (0) so the layout matches the 1.1 spec
+    byte for byte (older generators wrote 4 pad bytes there instead).
     """
     if entries is None:
         entries = [
@@ -190,8 +196,8 @@ def _build_vas_map(entries=None):
     for base, size, prot, rtype, path in entries:
         path_bytes = _pack_padded_str(path) if path else b""
         path_raw_len = (len(path.encode("utf-8")) + 1) if path else 0
-        payload += struct.pack("<QQBBH4x", base, size, prot, rtype,
-                               path_raw_len)
+        payload += struct.pack("<QQBBHB3x", base, size, prot, rtype,
+                               path_raw_len, _VAS_NAME_SOURCE_UNSPECIFIED)
         payload += path_bytes
     return _build_block(0x1001, payload)
 
@@ -459,9 +465,41 @@ def _build_connectivity_table(entries=None):
 
 # -- Ext decoder fixture builders (speculative layouts mirroring decoders_ext.py) --
 
-def _build_thread_context(thread_id=0xDEAD, register_data=b"\xAA\xBB\xCC\xDD"):
-    """Build Thread Context payload (type 0x0011) — speculative layout."""
-    payload = struct.pack("<Q", thread_id) + register_data
+# Thread Context (spec Tables 19a/19b): ThreadID(8) StartTime(8) Flags(2)
+# ThreadState(1) Arch(1) RegCount(4) NameLen(2) Reserved(6), then ThreadName
+# (pad8, omitted when NameLen is 0), then RegCount register entries of
+# NameLen(1) Width(1) Flags(2) Reserved(4) + Name (pad8) + Value (pad8).
+_TC_HEAD = "<QQHBBIH6x"
+_TC_REG_HEAD = "<BBH4x"
+_TC_FLAG_CURRENT = 0x0001
+_TC_STATE_RUNNING = 0x01
+_REG_ROLE_PC = 0x0001
+_REG_ROLE_SP = 0x0002
+_DEFAULT_THREAD_REGISTERS = (
+    # (name, width, flags, value)
+    ("rip", 8, _REG_ROLE_PC, (0x00007FFF_DEAD_BEEF).to_bytes(8, "little")),
+    ("rsp", 8, _REG_ROLE_SP, (0x00007FFF_FFFF_E000).to_bytes(8, "little")),
+)
+
+
+def _pack_thread_register(name, width, flags, value):
+    """Pack one Table 19b register entry (name NUL-terminated, both pad8)."""
+    raw_name = name.encode("utf-8") + b"\x00"
+    head = struct.pack(_TC_REG_HEAD, len(raw_name), width, flags)
+    return head + _pack_padded_str(name) + value.ljust(_pad8(width), b"\x00")
+
+
+def _build_thread_context(thread_id=0xDEAD, start_time_ns=1_700_000_000_000_000_000,
+                          flags=_TC_FLAG_CURRENT, state=_TC_STATE_RUNNING, arch=0,
+                          name="main", registers=_DEFAULT_THREAD_REGISTERS):
+    """Build a Thread Context payload (type 0x0011, spec Tables 19a/19b)."""
+    raw_name = name.encode("utf-8") + b"\x00" if name else b""
+    payload = struct.pack(_TC_HEAD, thread_id, start_time_ns, flags, state,
+                          arch, len(registers), len(raw_name))
+    if raw_name:
+        payload += _pack_padded_str(name)
+    for reg_name, width, reg_flags, value in registers:
+        payload += _pack_thread_register(reg_name, width, reg_flags, value)
     return _build_block(0x0011, payload)
 
 
@@ -555,16 +593,33 @@ def _build_system_context(
     return _build_block(0x0050, payload)
 
 
-def _build_end_of_capture(acq_end_ns):
-    """Build End-of-Capture payload (type 0x0FFF).
+def _count_blocks(blob: bytes) -> int:
+    """Number of blocks already assembled in *blob* (file header + blocks)."""
+    header_size = blob[9]
+    offset, count = header_size, 0
+    while offset + BLOCK_HEADER_SIZE <= len(blob) and blob[offset:offset + 4] == BLOCK_MAGIC:
+        offset += struct.unpack_from("<I", blob, offset + 8)[0]
+        count += 1
+    return count
+
+
+def _build_end_of_capture(acq_end_ns, block_count=0):
+    """Build the 48-byte End-of-Capture payload (type 0x0FFF, spec Table 10):
+    FileHash(32) AcqEnd(8) BlockCount(4) Reserved(4).
+
+    ``block_count`` is the number of capture-segment blocks *including* this
+    EoC (consumer rule 13); 0 means unknown and is skipped by verify_chain.
+    Pass ``_count_blocks(blob) + 1`` from an assembler to make it exact.
 
     The 32-byte file_hash slot is intentionally left as zeros for the
     raw struct.pack fixture path: these fixtures don't exercise the
     file-hash finalization performed by MslWriter.write(), so a zero
-    digest is acceptable here. Tests that need a real file_hash should
+    digest is acceptable here (verify_chain treats an all-zero FileHash
+    as a warning only). Tests that need a real file_hash should
     construct fixtures via MslWriter directly.
     """
-    payload = struct.pack("<32sQ", b"\x00" * 32, acq_end_ns)
+    payload = struct.pack("<32sQI4x", b"\x00" * 32, acq_end_ns, block_count)
+    assert len(payload) == 48
     return _build_block(0x0FFF, payload)
 
 
@@ -627,12 +682,13 @@ def generate_msl_file() -> bytes:
     conn_block, _ = _build_connectivity_table()
     blob += conn_block
 
-    # Block 10-15: Ext decoder blocks (speculative layouts; see decoders_ext.py).
-    # Real producers MUST NOT emit 0x0011-0x0015 per spec §4.3 — these exist
-    # only for round-trip testing of memdiver's guess decoders.
+    # Thread Context (0x0011) is spec-defined (Tables 19a/19b) since 1.1.
     tc_block, _ = _build_thread_context()
     blob += tc_block
 
+    # Ext decoder blocks 0x0012-0x0015 (speculative layouts; see decoders_ext.py).
+    # Real producers MUST NOT emit them per spec §4.3 — these exist only for
+    # round-trip testing of memdiver's guess decoders.
     fd_block, _ = _build_file_descriptor()
     blob += fd_block
 
@@ -648,8 +704,10 @@ def generate_msl_file() -> bytes:
     sc_block, _ = _build_system_context()
     blob += sc_block
 
-    # Final block: End-of-Capture
-    eoc_block, _ = _build_end_of_capture(timestamp_ns + 1_000_000_000)
+    # Final block: End-of-Capture; BlockCount counts every block incl. itself
+    eoc_block, _ = _build_end_of_capture(
+        timestamp_ns + 1_000_000_000, block_count=_count_blocks(blob) + 1,
+    )
     blob += eoc_block
 
     return chain_prev_hashes(blob)

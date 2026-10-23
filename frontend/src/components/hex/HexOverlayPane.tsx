@@ -15,7 +15,11 @@ import { absenceForPageState, type AbsenceKind } from "@/utils/absence-classes";
 import { useConsensusRun, useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
-import { useOverlayRenderStore } from "@/stores/overlay-render-store";
+import {
+  effectiveOverlayRenderMode,
+  useOverlayRenderStore,
+} from "@/stores/overlay-render-store";
+import { HEAP_ROLE_NONE } from "@/utils/heap-roles";
 import { chunkErrorSignature } from "./chunk-error-signal";
 import { ConsensusErrorBanner } from "./ConsensusErrorBanner";
 import { overlayAbsenceAt, pluralityAt } from "./consensus-byte";
@@ -99,7 +103,11 @@ export function HexOverlayPane() {
   // store now calls `"error"`.
   const chunkErrorKey = useMultiHexStore((s) => chunkErrorSignature(s.chunkErrors));
 
-  const renderMode = useOverlayRenderStore((s) => s.renderMode);
+  const chosenRenderMode = useOverlayRenderStore((s) => s.renderMode);
+  const heapStatus = useMultiHexStore((s) => s.heapStatus);
+  // `heap` can only paint while the window's heap roles are usable; otherwise
+  // the pane paints the default reading. Derived, so the choice is kept.
+  const renderMode = effectiveOverlayRenderMode(chosenRenderMode, heapStatus);
 
   // WHOSE bytes this pane paints. `soloPath` swaps the whole stream for one
   // dump's own bytes; the weights and the exclusions change what the overlay
@@ -205,6 +213,16 @@ export function HexOverlayPane() {
     (offset: number) => {
       void anchorVersion;
       return useMultiHexStore.getState().variantsAt(offset);
+    },
+    [anchorVersion],
+  );
+
+  // The consensus heap role, packed the way `HexRow`'s heap layer reads it.
+  // No chunk-start bit: the aligned window carries roles, not chunk starts.
+  const getHeapCellAt = useCallback(
+    (offset: number) => {
+      void anchorVersion;
+      return useMultiHexStore.getState().heapRoleAt(offset) ?? HEAP_ROLE_NONE;
     },
     [anchorVersion],
   );
@@ -456,6 +474,7 @@ export function HexOverlayPane() {
                   getDiffersAt={getDiffersAt}
                   getVariantsAt={getVariantsAt}
                   renderMode={renderMode}
+                  getHeapCellAt={renderMode === "heap" ? getHeapCellAt : undefined}
                   soloUnderline={soloPath !== null}
                   view={viewMode}
                   getAbsenceAt={getAbsenceAt}

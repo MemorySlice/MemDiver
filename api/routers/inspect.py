@@ -609,7 +609,11 @@ def _ext_to_dict(block):
         return {"decoded": False, "payload_hex": block.payload[:256].hex()}
     if isinstance(block, MslThreadContext):
         return {"decoded": True, "thread_id": block.thread_id,
-                "register_data_hex": block.register_data[:256].hex()}
+                "name": block.name, "state": block.state,
+                "flags": block.flags, "arch": block.arch,
+                "registers": [{"name": r.name, "width": r.width,
+                               "flags": r.flags, "value_hex": r.value.hex()}
+                              for r in block.registers]}
     if isinstance(block, MslFileDescriptor):
         return {"decoded": True, "fd": block.fd, "path": block.path}
     if isinstance(block, MslNetworkConnection):
@@ -634,12 +638,12 @@ def list_thread_contexts(
     msl_path: str,
     session: ToolSession = Depends(get_tool_session),
 ):
-    """THREAD_CONTEXT blocks (0x0011). Speculative layout — spec reserved."""
+    """THREAD_CONTEXT blocks (0x0011), spec 1.1 Section 5.7 (Tables 19a/19b)."""
     with _open_msl(msl_path) as reader:
         blocks = reader.collect_thread_contexts()
     return {
-        "spec_reserved": True,
-        "note": _RESERVED_NOTE,
+        "spec_reserved": False,
+        "note": "Thread Context layout per MSL 1.1 Section 5.7.",
         "entries": [_ext_to_dict(b) for b in blocks],
     }
 

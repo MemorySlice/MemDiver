@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_OVERLAY_RENDER_MODE,
+  effectiveOverlayRenderMode,
   OVERLAY_RENDER_MODES,
+  overlayRenderModeAvailable,
   useOverlayRenderStore,
 } from "@/stores/overlay-render-store";
 
@@ -44,7 +46,30 @@ describe("overlay render store", () => {
     expect(useOverlayRenderStore.getState().renderMode).toBe("class");
   });
 
-  it("names exactly the three modes the switch offers", () => {
-    expect([...OVERLAY_RENDER_MODES]).toEqual(["class", "variants", "glyph"]);
+  it("names exactly the four modes the switch offers", () => {
+    expect([...OVERLAY_RENDER_MODES]).toEqual(["class", "variants", "glyph", "heap"]);
+  });
+});
+
+describe("heap render mode availability", () => {
+  it("is available only when the window's heap status is ok", () => {
+    expect(overlayRenderModeAvailable("heap", "ok")).toBe(true);
+    for (const status of [null, "no_va_coordinate", "empty_consensus", "error"]) {
+      expect(overlayRenderModeAvailable("heap", status)).toBe(false);
+    }
+  });
+
+  it("never gates the three heap-independent modes", () => {
+    for (const mode of ["class", "variants", "glyph"] as const) {
+      expect(overlayRenderModeAvailable(mode, null)).toBe(true);
+      expect(effectiveOverlayRenderMode(mode, "error")).toBe(mode);
+    }
+  });
+
+  it("falls back to the default while heap roles are unusable, without forgetting the choice", () => {
+    useOverlayRenderStore.getState().setRenderMode("heap");
+    expect(effectiveOverlayRenderMode("heap", "no_va_coordinate")).toBe("class");
+    expect(effectiveOverlayRenderMode("heap", "ok")).toBe("heap");
+    expect(useOverlayRenderStore.getState().renderMode).toBe("heap");
   });
 });

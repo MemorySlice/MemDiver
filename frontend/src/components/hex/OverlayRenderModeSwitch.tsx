@@ -2,11 +2,26 @@ import { useTranslation } from "react-i18next";
 
 import { SegmentedControl } from "@/components/common/SegmentedControl";
 
+import { useMultiHexStore } from "@/stores/multi-hex-store";
 import {
+  effectiveOverlayRenderMode,
   OVERLAY_RENDER_MODES,
+  overlayRenderModeAvailable,
   useOverlayRenderStore,
   type OverlayRenderMode,
 } from "@/stores/overlay-render-store";
+
+/** The `heap:overlay.unavailable.*` reason for a non-`ok` heap status. */
+function heapUnavailableKey(heapStatus: string | null): string {
+  switch (heapStatus) {
+    case "no_va_coordinate":
+    case "empty_consensus":
+    case "error":
+      return `heap:overlay.unavailable.${heapStatus}`;
+    default:
+      return "heap:overlay.unavailable.missing";
+  }
+}
 
 interface OverlayRenderModeSwitchProps {
   /**
@@ -23,8 +38,9 @@ interface OverlayRenderModeSwitchProps {
 }
 
 /**
- * `Class │ Variants │ Glyph` — which reading of the aligned window the overlay
- * paints.
+ * `Class │ Variants │ Glyph │ Heap` — which reading of the aligned window the
+ * overlay paints. `Heap` is disabled, with the localized reason as its title,
+ * whenever the window's `heap_status` is not `"ok"`.
  *
  * Tab semantics and markup come from the shared `SegmentedControl`, which is
  * also what `MainViewSwitcher` and the `Raw file │ Memory (VAS) │ VA` group in
@@ -36,11 +52,20 @@ export function OverlayRenderModeSwitch({ enabled }: OverlayRenderModeSwitchProp
   const { t } = useTranslation("hex");
   const renderMode = useOverlayRenderStore((s) => s.renderMode);
   const setRenderMode = useOverlayRenderStore((s) => s.setRenderMode);
+  const heapStatus = useMultiHexStore((s) => s.heapStatus);
 
   const titleKey: Record<OverlayRenderMode, string> = {
     class: "renderMode.classTitle",
     variants: "renderMode.variantsTitle",
     glyph: "renderMode.glyphTitle",
+    heap: "renderMode.heapTitle",
+  };
+
+  /** Why `mode` is unavailable right now, or `null` when it can be chosen. */
+  const disabledReason = (mode: OverlayRenderMode): string | null => {
+    if (!enabled) return t("renderMode.needTwoTitle");
+    if (!overlayRenderModeAvailable(mode, heapStatus)) return t(heapUnavailableKey(heapStatus));
+    return null;
   };
 
   return (
@@ -49,15 +74,20 @@ export function OverlayRenderModeSwitch({ enabled }: OverlayRenderModeSwitchProp
       testId="hex-overlay-render-mode"
       data={{ "data-enabled": enabled ? "true" : "false" }}
       dimmed={!enabled}
-      selected={renderMode}
+      // What the grid actually paints, so an unavailable `heap` choice never
+      // reads as selected over a grid painted in another mode.
+      selected={effectiveOverlayRenderMode(renderMode, heapStatus)}
       onSelect={(id) => setRenderMode(id as OverlayRenderMode)}
-      options={OVERLAY_RENDER_MODES.map((mode) => ({
-        id: mode,
-        label: t(`renderMode.${mode}`),
-        testId: `hex-overlay-render-mode-${mode}`,
-        disabled: !enabled,
-        title: enabled ? t(titleKey[mode]) : t("renderMode.needTwoTitle"),
-      }))}
+      options={OVERLAY_RENDER_MODES.map((mode) => {
+        const reason = disabledReason(mode);
+        return {
+          id: mode,
+          label: t(`renderMode.${mode}`),
+          testId: `hex-overlay-render-mode-${mode}`,
+          disabled: reason !== null,
+          title: reason ?? t(titleKey[mode]),
+        };
+      })}
     />
   );
 }

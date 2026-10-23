@@ -4,6 +4,8 @@ import { useAlignedSelection } from "@/hooks/useAlignedPanes";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 import { byteToAscii, byteToHex } from "@/utils/hex-codec";
+import { VarianceSwatch } from "@/components/common/VarianceSwatch";
+import { HEAP_ROLE_MIXED, heapRoleLabelFor, heapRoleSwatchFor } from "@/utils/heap-roles";
 import { VARIANCE_META, varianceCategoryForCode } from "@/utils/variance-classes";
 
 /**
@@ -34,6 +36,7 @@ export function OverlayByteInspector() {
   // Rotates this component when bytes land, so the table fills in as the
   // window loads instead of staying on "absent" until the next cursor move.
   const chunkVersionByPath = useMultiHexStore((s) => s.chunkVersionByPath);
+  const heapStatus = useMultiHexStore((s) => s.heapStatus);
 
   if (cursorOffset === null || !anchor) {
     return (
@@ -67,6 +70,12 @@ export function OverlayByteInspector() {
   });
 
   const differing = rows.filter((r) => r.differs).length;
+
+  // The consensus heap role, only where the window's roles are usable. The
+  // window carries no per-byte agreement count; MIXED is its disagreement
+  // verdict, so that is what the hint states.
+  const heapCode = heapStatus === "ok" ? store.heapRoleAt(cursorOffset) : undefined;
+  const heapLabel = heapCode === undefined ? null : heapRoleLabelFor(heapCode);
 
   return (
     <div
@@ -108,6 +117,31 @@ export function OverlayByteInspector() {
             ? t("inspector.differSummary", { differing, total: rows.length })
             : t("inspector.identical", { total: rows.length })}
         </span>
+        {heapCode !== undefined && (
+          <>
+            <span aria-hidden="true" className="md-text-muted">
+              ·
+            </span>
+            <span
+              data-testid="overlay-inspector-heap-role"
+              data-heap-code={heapCode}
+              title={
+                heapCode === HEAP_ROLE_MIXED
+                  ? t("heap:overlay.mixedHint")
+                  : t("heap:overlay.inspectorTitle")
+              }
+            >
+              <VarianceSwatch
+                swatchClass={heapRoleSwatchFor(heapCode) ?? ""}
+                label={
+                  heapLabel
+                    ? t("inspector.heapRole", { name: t(`heap:roles.${heapLabel}`) })
+                    : t("inspector.heapRoleNone")
+                }
+              />
+            </span>
+          </>
+        )}
       </div>
 
       <table className="w-full font-mono">

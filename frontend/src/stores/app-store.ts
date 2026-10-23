@@ -60,6 +60,22 @@ export const EXPLORATION_ALGORITHMS: readonly AlgorithmName[] = [
   ...ALL_ALGORITHMS,
 ] as const;
 
+/**
+ * The workspace mode. "heap" is exploration plus the heap-analysis panels and
+ * hex layer, so every consumer that gates on "not verification" treats it like
+ * exploration.
+ */
+export const APP_MODES = ["verification", "exploration", "heap"] as const;
+export type AppMode = (typeof APP_MODES)[number];
+
+/**
+ * A persisted mode string back to an `AppMode`. Unknown, missing or
+ * future values fall back to "verification", the safe default.
+ */
+export function parseAppMode(value: unknown): AppMode {
+  return (APP_MODES as readonly unknown[]).includes(value) ? (value as AppMode) : "verification";
+}
+
 interface AppState {
   // Dataset config
   datasetRoot: string;
@@ -74,7 +90,7 @@ interface AppState {
   selectedPhase: string;
 
   // UI mode (workspace toggle)
-  mode: "verification" | "exploration";
+  mode: AppMode;
   inputMode: "file" | "directory" | "dataset";
   inputPath: string;
 
@@ -113,7 +129,7 @@ interface AppState {
   setScenario: (scenario: string) => void;
   setLibraries: (libs: string[]) => void;
   setPhase: (phase: string) => void;
-  setMode: (mode: "verification" | "exploration") => void;
+  setMode: (mode: AppMode) => void;
   setInputMode: (mode: "file" | "directory" | "dataset") => void;
   setInputPath: (path: string) => void;
   setAppView: (view: "landing" | "wizard" | "workspace") => void;
@@ -227,7 +243,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       scenario: snap.scenario,
       selectedLibraries: snap.selected_libraries,
       selectedPhase: snap.selected_phase,
-      mode: snap.mode === "exploration" ? "exploration" : "verification",
+      mode: parseAppMode(snap.mode),
       inputMode: resolvedMode,
       inputPath: snap.input_path,
       selectedAlgorithms: (snap.selected_algorithms ?? []) as AlgorithmName[],

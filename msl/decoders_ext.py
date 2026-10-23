@@ -1,14 +1,18 @@
 """Extended block decoders for additional MSL block types.
 
+THREAD_CONTEXT (0x0011) is decoded per spec 1.1 Section 5.7 (Tables 19a/19b):
+the layout is normative, matches memslicer's ``write_thread_context`` byte
+for byte, and the result is :class:`types.MslThreadContext`.
+
 WARNING — SPECULATIVE LAYOUTS
 -----------------------------
-The decoders for block types 0x0011 (THREAD_CONTEXT), 0x0012 (FILE_DESCRIPTOR),
-0x0013 (NETWORK_CONNECTION), 0x0014 (ENVIRONMENT_BLOCK), and 0x0015
-(SECURITY_TOKEN) use GUESSED layouts — the Memory Slice Specification v1.0.0
-(binary format 1.1, §4.3, Table 9) RESERVES these type codes and explicitly
-states that producers MUST NOT emit them until their payloads are defined in
-a future spec version. Conformant MSL files therefore never contain them, and
-the layouts below have not been validated against any authoritative reference.
+The decoders for block types 0x0012 (FILE_DESCRIPTOR), 0x0013
+(NETWORK_CONNECTION), 0x0014 (ENVIRONMENT_BLOCK), and 0x0015
+(SECURITY_TOKEN) use GUESSED layouts — the Memory Slice Specification
+(§4.3, Table 9) RESERVES these type codes and explicitly states that
+producers MUST NOT emit them until their payloads are defined in a future
+spec version. Conformant MSL files therefore never contain them, and the
+layouts below have not been validated against any authoritative reference.
 
 If/when a future spec version defines these block types, re-verify every
 decoder in this file against the new spec tables and update both the
@@ -35,8 +39,9 @@ from typing import List
 
 from .enums import BlockType, POINTER_GRAPH_INTEGRITY_FLAG
 from .hashing import hash_bytes
-from .types import (MslBlockHeader, MslGenericBlock, MslPointerGraph,
-                    MslPointerGraphEdge, MslPointerGraphNode)
+from .types import (MslBlockHeader, MslGenericBlock, MslParseError,
+                    MslPointerGraph, MslPointerGraphEdge, MslPointerGraphNode,
+                    MslThreadContext, MslThreadRegister)
 
 logger = logging.getLogger("memdiver.msl.decoders_ext")
 
@@ -51,13 +56,7 @@ def _read_padded_str(buf: bytes, offset: int, length: int) -> str:
     return buf[offset:offset + length].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
 # -- Extended dataclasses --
-
-@dataclass(frozen=True)
-class MslThreadContext:
-    block_header: MslBlockHeader
-    thread_id: int
-    register_data: bytes  # raw register snapshot
-
+# (MslThreadContext / MslThreadRegister live in types.py: spec-defined.)
 
 @dataclass(frozen=True)
 class MslFileDescriptor:
@@ -120,20 +119,67 @@ def decode_generic(
     return MslGenericBlock(block_header=hdr, payload=bytes(payload))
 
 
+# ThreadID(8) StartTime(8) Flags(2) ThreadState(1) Arch(1) RegCount(4)
+# NameLen(2) Reserved(6) -- spec Table 19a; ThreadName (pad8) follows.
+THREAD_CONTEXT_HEAD_SIZE = 0x20
+# NameLen(1) Width(1) Flags(2) Reserved(4) -- spec Table 19b; Name (pad8)
+# and Value (pad8) follow.
+THREAD_REGISTER_HEAD_SIZE = 0x08
+
+
 def decode_thread_context(
     hdr: MslBlockHeader, payload: bytes, byte_order: str,
 ) -> "MslThreadContext | MslGenericBlock":
-    """Decode Thread Context payload (type 0x0011)."""
+    """Decode a Thread Context payload (type 0x0011, spec Tables 19a/19b).
+
+    Falls back to :class:`MslGenericBlock` on a truncated or malformed
+    payload (same contract as the other ext decoders), so one bad block
+    never aborts ``collect_thread_contexts``.
+    """
     try:
-        bo = byte_order
-        thread_id = struct.unpack_from(f"{bo}Q", payload, 0)[0]
-        register_data = bytes(payload[8:])
-        return MslThreadContext(
-            block_header=hdr, thread_id=thread_id,
-            register_data=register_data,
-        )
-    except Exception:
+        return _decode_thread_context_strict(hdr, payload, byte_order)
+    except (MslParseError, struct.error, IndexError, UnicodeDecodeError):
         return decode_generic(hdr, payload, byte_order)
+
+
+def _decode_thread_context_strict(
+    hdr: MslBlockHeader, payload: bytes, byte_order: str,
+) -> MslThreadContext:
+    bo = byte_order
+    _require(payload, THREAD_CONTEXT_HEAD_SIZE, "THREAD_CONTEXT head")
+    tid, start_ns, flags, state, arch, reg_count, name_len = struct.unpack_from(
+        f"{bo}QQHBBIH", payload, 0)
+    offset = THREAD_CONTEXT_HEAD_SIZE
+    _require(payload, offset + name_len, "THREAD_CONTEXT name")
+    name = _read_padded_str(payload, offset, name_len)
+    offset += _pad8(name_len)
+    registers = []
+    for _ in range(reg_count):
+        register, offset = _decode_thread_register(payload, offset, bo)
+        registers.append(register)
+    return MslThreadContext(
+        block_header=hdr, thread_id=tid, start_time_ns=start_ns, flags=flags,
+        state=state, arch=arch, name=name, registers=tuple(registers),
+    )
+
+
+def _decode_thread_register(payload: bytes, offset: int, bo: str):
+    """Decode one Table 19b entry at *offset*; return ``(register, next)``."""
+    _require(payload, offset + THREAD_REGISTER_HEAD_SIZE, "THREAD_CONTEXT register")
+    name_len, width, flags = struct.unpack_from(f"{bo}BBH", payload, offset)
+    offset += THREAD_REGISTER_HEAD_SIZE
+    _require(payload, offset + name_len, "THREAD_CONTEXT register name")
+    name = _read_padded_str(payload, offset, name_len)
+    offset += _pad8(name_len)
+    _require(payload, offset + width, "THREAD_CONTEXT register value")
+    value = bytes(payload[offset:offset + width])
+    offset += _pad8(width)
+    return MslThreadRegister(name=name, width=width, flags=flags, value=value), offset
+
+
+def _require(payload: bytes, end: int, ctx: str) -> None:
+    if end > len(payload):
+        raise MslParseError(f"{ctx} truncated: need {end} bytes, have {len(payload)}")
 
 
 def decode_file_descriptor(
@@ -282,7 +328,7 @@ def decode_system_context(
 def decode_pointer_graph(
     hdr: MslBlockHeader, payload: bytes, byte_order: str,
 ) -> "MslPointerGraph | MslGenericBlock":
-    """Decode a POINTER_GRAPH appendix payload (type 0x1003).
+    """Decode a POINTER_GRAPH payload (type 0x1003, extension segment).
 
     Layout (see docs/file_formats/msl_v1_0_0.md):
       Header (16 bytes): node_count(u32), edge_count(u32), flags(u32),
@@ -361,10 +407,10 @@ def decode_pointer_graph(
 
 def verify_pointer_graph_integrity(graph: "MslPointerGraph",
                                    raw_payload: bytes) -> bool:
-    """Verify a POINTER_GRAPH appendix's self-integrity trailer.
+    """Verify a POINTER_GRAPH block's self-integrity trailer.
 
     Returns True when:
-      - the appendix did not carry a trailer (no claim to verify), OR
+      - the block did not carry a trailer (no claim to verify), OR
       - the stored BLAKE3 matches a fresh hash of (header + nodes + edges).
     Returns False only when a trailer was present and the hash doesn't
     match. Caller supplies the raw on-disk payload (not the decoded

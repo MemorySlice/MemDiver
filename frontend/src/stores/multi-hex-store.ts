@@ -165,6 +165,23 @@ export interface MultiHexState {
   variantChunks: Map<number, Uint8Array>;
 
   /**
+   * Consensus heap role code per window index, one array per chunk — the
+   * `Heap` render mode's input (`0` none, `1..7` roles, `254` mixed, `255`
+   * uncovered; see `@/utils/heap-roles`).
+   *
+   * Present only for chunks whose response carried `heap_roles`, for the same
+   * reason as `variantChunks`: "the server did not say" is not "no role".
+   * `Uint8Array`: every code fits in one unsigned byte.
+   */
+  heapRoleChunks: Map<number, Uint8Array>;
+  /**
+   * The latest window's `heap_status`, or `null` when the server sent none
+   * (older backend, heap annotation off, nothing loaded yet). Only `"ok"`
+   * enables the `Heap` render mode.
+   */
+  heapStatus: string | null;
+
+  /**
    * Repaint counter PER PATH, not one global counter.
    *
    * A single global counter would rotate the memoization identity of EVERY
@@ -265,6 +282,11 @@ export interface MultiHexState {
    * `undefined` when the chunk is not loaded under the live identity.
    */
   variantsAt(offset: number): number | undefined;
+  /**
+   * The consensus heap role code at `offset`, or `undefined` when the chunk
+   * is not loaded under the live identity or its response carried no roles.
+   */
+  heapRoleAt(offset: number): number | undefined;
   /** The failure message (if any) recorded for the chunk holding `offset`. */
   getChunkError(offset: number): string | null;
   /** The full failure record for the chunk holding `offset`, retry budget included. */
@@ -376,13 +398,16 @@ function chunkCost(chunk: PaneChunk): number {
 interface SideChunks {
   classChunks: Map<number, Int8Array>;
   variantChunks: Map<number, Uint8Array>;
+  /** Optional so callers that predate the heap layer still type-check. */
+  heapRoleChunks?: Map<number, Uint8Array>;
 }
 
 /** Bytes the window arrays for ONE chunk offset cost. */
 function sideCostAt(offset: number, side: SideChunks): number {
   return (
     (side.classChunks.get(offset)?.byteLength ?? 0) +
-    (side.variantChunks.get(offset)?.byteLength ?? 0)
+    (side.variantChunks.get(offset)?.byteLength ?? 0) +
+    (side.heapRoleChunks?.get(offset)?.byteLength ?? 0)
   );
 }
 
@@ -397,6 +422,9 @@ function sideTotal(side: SideChunks): number {
   let total = 0;
   for (const array of side.classChunks.values()) total += array.byteLength;
   for (const array of side.variantChunks.values()) total += array.byteLength;
+  if (side.heapRoleChunks) {
+    for (const array of side.heapRoleChunks.values()) total += array.byteLength;
+  }
   return total;
 }
 
@@ -458,10 +486,12 @@ function pruneOrphanChunkState(
   classChunks: Map<number, Int8Array>,
   variantChunks: Map<number, Uint8Array>,
   chunkIdentity: Map<number, string>,
+  heapRoleChunks: Map<number, Uint8Array> = new Map(),
 ): {
   classChunks: Map<number, Int8Array>;
   variantChunks: Map<number, Uint8Array>;
   chunkIdentity: Map<number, string>;
+  heapRoleChunks: Map<number, Uint8Array>;
 } {
   const held = new Set<number>();
   for (const cache of byPath.values()) {
@@ -478,6 +508,7 @@ function pruneOrphanChunkState(
     classChunks: keepByOffset(classChunks),
     variantChunks: keepByOffset(variantChunks),
     chunkIdentity: keepByOffset(chunkIdentity),
+    heapRoleChunks: keepByOffset(heapRoleChunks),
   };
 }
 
@@ -516,6 +547,8 @@ export interface ChunkWindow {
    * The disagreement verdict too: `>= 2` is a differ. See `variantChunks`.
    */
   variants: Uint8Array | undefined;
+  /** Consensus heap role codes, or `undefined` when stale/absent/not sent. */
+  heapRoles: Uint8Array | undefined;
   /** The recorded failure for this chunk under the live identity. */
   failure: ChunkFailure | null;
 }
@@ -542,6 +575,7 @@ export function chunkWindowAt(state: MultiHexState, offset: number): ChunkWindow
     live,
     classes: live ? state.classChunks.get(chunkOffset) : undefined,
     variants: live ? state.variantChunks.get(chunkOffset) : undefined,
+    heapRoles: live ? state.heapRoleChunks.get(chunkOffset) : undefined,
     failure:
       identity === null
         ? null
@@ -678,6 +712,8 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
   byPath: new Map(),
   classChunks: new Map(),
   variantChunks: new Map(),
+  heapRoleChunks: new Map(),
+  heapStatus: null,
   chunkVersionByPath: new Map(),
   pending: new Set(),
   chunkErrors: new Map(),
@@ -870,6 +906,15 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
     return found;
   },
 
+  heapRoleAt: (offset) => {
+    const window = chunkWindowAt(get(), offset);
+    const roles = window.heapRoles;
+    if (!roles) return undefined;
+    const index = offset - window.chunkOffset;
+    if (index < 0 || index >= roles.length) return undefined;
+    return roles[index];
+  },
+
   variantsAt: (offset) => {
     const window = chunkWindowAt(get(), offset);
     const variants = window.variants;
@@ -934,6 +979,7 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
         prev.classChunks,
         prev.variantChunks,
         prev.chunkIdentity,
+        prev.heapRoleChunks,
       );
       // The loaded window just lost every chunk of every dropped pane.
       return {
@@ -954,6 +1000,8 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
       byPath: new Map(),
       classChunks: new Map(),
       variantChunks: new Map(),
+      heapRoleChunks: new Map(),
+      heapStatus: null,
       chunkVersionByPath: new Map(),
       pending: new Set(),
       chunkErrors: new Map(),
@@ -1274,10 +1322,19 @@ function applyResponse(
     variantChunks.delete(chunkOffset);
   }
 
+  // Same replace-or-remove rule as `variantChunks`: a chunk whose response
+  // carried no roles must not keep a previous selection's.
+  const heapRoleChunks = new Map(prev.heapRoleChunks);
+  if (Array.isArray(response.heap_roles)) {
+    heapRoleChunks.set(chunkOffset, new Uint8Array(response.heap_roles));
+  } else {
+    heapRoleChunks.delete(chunkOffset);
+  }
+
   const chunkIdentity = new Map(prev.chunkIdentity);
   chunkIdentity.set(chunkOffset, identity);
 
-  const side = { classChunks, variantChunks };
+  const side = { classChunks, variantChunks, heapRoleChunks };
   const evicted = evictToBudget(byPath, prev.budgetBytes, side);
   // Nothing can be orphaned when nothing was evicted: this response only ADDED
   // chunks, and the side maps were already a subset of the held offsets before
@@ -1285,8 +1342,14 @@ function applyResponse(
   // response for a result identical to its input.
   const pruned =
     evicted === byPath
-      ? { classChunks, variantChunks, chunkIdentity }
-      : pruneOrphanChunkState(evicted, classChunks, variantChunks, chunkIdentity);
+      ? { classChunks, variantChunks, chunkIdentity, heapRoleChunks }
+      : pruneOrphanChunkState(
+          evicted,
+          classChunks,
+          variantChunks,
+          chunkIdentity,
+          heapRoleChunks,
+        );
 
   const pending = new Set(prev.pending);
   pending.delete(key);
@@ -1305,6 +1368,7 @@ function applyResponse(
     windowVersion: prev.windowVersion + 1,
     alignment: response.alignment,
     truncated: response.truncated,
+    heapStatus: response.heap_status ?? null,
     ...pruned,
   };
 }

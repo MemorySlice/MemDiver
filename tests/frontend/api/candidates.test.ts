@@ -3,6 +3,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   analyzeCandidates,
   buildCandidatesRequest,
+  regionsHaveHeap,
   dominantClass,
   BYTE_CLASSES,
   DEFAULT_CANDIDATE_CLASSES,
@@ -167,5 +168,44 @@ describe("analyzeCandidates", () => {
     expect(JSON.parse(init.body as string)).toEqual(body);
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe("heap policy and heap context", () => {
+  const paths = ["/a", "/b"];
+
+  it("omits heap_policy unless one was chosen", () => {
+    expect(buildCandidatesRequest(paths, DEFAULT_CANDIDATE_FILTERS)).not.toHaveProperty(
+      "heap_policy",
+    );
+  });
+
+  it("sends the chosen heap_policy", () => {
+    const body = buildCandidatesRequest(paths, {
+      ...DEFAULT_CANDIDATE_FILTERS,
+      heapPolicy: "mask",
+    });
+    expect(body.heap_policy).toBe("mask");
+  });
+
+  it("reports heap columns only when some region carries heap context", () => {
+    const base = {
+      offset: 0,
+      length: 16,
+      rank: 1,
+      score: 1,
+      score_components: { byte_class: 1, variance: 1, entropy: 1, length: 1 },
+      class_counts: {},
+      mean_variance: 0,
+      mean_entropy: 0,
+      region_entropy: 0,
+    };
+    expect(regionsHaveHeap([base])).toBe(false);
+    expect(
+      regionsHaveHeap([
+        base,
+        { ...base, heap: { role_counts: {}, chunk: null, residual: false, agreement: null } },
+      ]),
+    ).toBe(true);
   });
 });

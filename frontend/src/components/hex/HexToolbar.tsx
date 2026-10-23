@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useHexStore } from "@/stores/hex-store";
 import { HexSearchBox } from "@/components/hex/HexSearchBox";
 import { SegmentedControl } from "@/components/common/SegmentedControl";
+import { HeapLayerToggle } from "@/components/hex/HeapLayerToggle";
 import type { HexViewMode } from "@/stores/hex-store";
 
 const ALL_VIEWS: HexViewMode[] = ["raw", "vas", "va"];
@@ -86,6 +87,7 @@ export function HexToolbar() {
           options={viewOptions}
         />
       )}
+      <HeapLayerToggle dumpPath={dumpPath} />
       <div className="flex items-center gap-1 shrink-0">
         <input
           type="text"

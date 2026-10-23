@@ -20,7 +20,7 @@ memdiver ui
 
 ## Extension points
 
-MemDiver has seven pluggable surfaces. They differ in how (and whether) an
+MemDiver has eight pluggable surfaces. They differ in how (and whether) an
 out-of-tree package can register into them:
 
 | Extension point | How to add (in-tree) | Out-of-tree (entry point)? | Guide |
@@ -32,12 +32,13 @@ out-of-tree package can register into them:
 | Binary format | `register_format(FormatDescriptor(...))` | YES (`memdiver.formats`) | [adding_binary_format](adding_binary_format.md) |
 | Pipeline stage | `register_stage(Stage(...))` (import-time) | YES (`memdiver.pipeline_stages`) | [adding_pipeline_stage](adding_pipeline_stage.md) |
 | Verification resource | `register_resource_type(name, factory)` in `engine/resources/builtin_oracle.py` | YES (`memdiver.oracles`) | [adding_oracles](adding_oracles.md) |
+| Heap allocator | `register_allocator(AllocatorDescriptor(...))`; built-ins in `heap/builtin.py` | YES (`memdiver.allocators`; existing kinds only) | [adding_allocator](adding_allocator.md) |
 
-Six of the seven extension points support out-of-tree registration by an installed
+Seven of the eight extension points support out-of-tree registration by an installed
 package via an `entry_points` group (all except **Oracle**, which is loaded from
 a user-supplied `.py` file at runtime rather than an installed package — see
 [adding_oracles](adding_oracles.md)). For the two subclass-based points the entry
-point resolves to a subclass (or a module exposing one); for the four
+point resolves to a subclass (or a module exposing one); for the five
 register-call-based points it resolves to a module (imported for its
 `register_*` side effects) or a callable (invoked to self-register). Discovery is
 additive and failure-isolated — a silent no-op when nothing is installed.
@@ -123,4 +124,5 @@ adding_dump_source
 adding_binary_format
 adding_kdf
 adding_pipeline_stage
+adding_allocator
 ```

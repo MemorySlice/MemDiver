@@ -14,7 +14,7 @@ import logging
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -55,6 +55,9 @@ from memdiver.core.slab_variance import (
 )
 from .consensus_va import supports_va_alignment
 from .results import StaticRegion
+
+if TYPE_CHECKING:  # runtime import would pull the heap layer into every build
+    from .consensus_heap import ConsensusHeap
 
 logger = logging.getLogger("memdiver.engine.consensus")
 
@@ -453,6 +456,10 @@ class ConsensusVector:
         # (aligned windows, class-region jump offsets) must open them with
         # this same filter or it reads the wrong bytes.
         self.region_filter: Union[str, None] = None
+        # Optional heap-role annotation of the slab (engine.consensus_heap),
+        # attached by consensus_service.build_consensus. Purely additive: it
+        # never feeds variance or classifications. None = not computed.
+        self.heap: Union["ConsensusHeap", None] = None
 
     @property
     def classifications(self) -> array:

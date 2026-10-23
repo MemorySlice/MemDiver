@@ -84,6 +84,12 @@ needle.
   per dump. It only shortens the `offsets` list. `hit_count` always gives the
   true number of occurrences, so the verdict and every count stay the same. A
   shortened list sets `offsets_truncated: true`.
+- **`--allocator NAME`** (default `auto`): the heap allocator used to add chunk
+  context to each hit (`auto`, `ptmalloc2`, `dlmalloc`, `scudo`, `mallocng`,
+  `jemalloc`, `generic`). `off` turns heap annotation off. The web body field
+  and the MCP `locate_key` parameter are both called `allocator`. On stderr,
+  each hit inside a chunk gets one line with the chunk address, its size and
+  its state, and hits in freed chunks are marked `residual`.
 - **Encrypted `.msl`**: pass `--key-file` (32-byte raw key), `--passphrase`
   (Argon2id) or `--kem-key-file` (X25519/ML-KEM/hybrid recipient key). When a
   container is still locked, the command raises an error. It does not report a
@@ -131,7 +137,16 @@ A `not_searched` verdict claims **nothing**. Never treat it as an absence.
 
 Each row in `dumps` has `dump_path`, `name`, `format_name`, `size_for_view`,
 `status`, `present`, `first_offset`, `hit_count`, `offsets` (ascending),
-`offsets_truncated` and `detail`. `status` is one of:
+`offsets_truncated` and `detail`. When heap annotation is on (the library
+default, `allocator="auto"`), a row also carries `heap`: one entry per offset,
+`{allocator, chunk_va, chunk_size, state, offset_in_chunk, role}`, or `null`
+when the hit is outside every allocator chunk. A hit whose `state` is `free`,
+`cached` or `quarantined` is a **residual** copy left in freed memory. See
+[Heap allocator awareness](heap.md#located-key-hits). The CLI, web and MCP
+payloads all carry this list as it is. `--allocator off` (or `"allocator": "off"`)
+leaves it out.
+
+`status` is one of:
 
 | `status` | Meaning | `present` |
 |---|---|---|

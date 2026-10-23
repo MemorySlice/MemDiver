@@ -69,6 +69,9 @@ def test_streaming_matches_in_memory(tmp_path):
     with MslReader(stream) as r:
         assert r.file_header.block_count == 4
         assert len(r.collect_end_of_capture()) == 1
+        assert r.collect_end_of_capture()[0].block_count == 4
+    with MslReader(mem) as r:
+        assert r.collect_end_of_capture()[0].block_count == 4
 
 
 def test_write_dispatches_to_streaming(tmp_path):
@@ -90,8 +93,40 @@ def test_streaming_integrity_and_eoc_hash(tmp_path):
         assert report.valid, report.errors
         eoc = r.collect_end_of_capture()[0]
         eoc_offset = eoc.block_header.file_offset
+        assert eoc.block_count == report.block_count
     raw = out.read_bytes()
     assert eoc.file_hash == hash_bytes(raw[:eoc_offset])
+
+
+def test_streaming_pointer_graph_segment_after_eoc(tmp_path):
+    """write_streaming emits the pointer-graph extension segment (spec 4.6):
+    chained from H(EoC), verified, and excluded from both block counts."""
+    from memdiver.msl.hashing import hash_bytes
+    from memdiver.msl.types import MslPointerGraphEdge, MslPointerGraphNode
+    out = tmp_path / "s_pg.msl"
+    w = MslWriter(out, region_block_cap=3 * PAGE)
+    _populate(w, _pattern(7), STATES, streamed=True)
+    w.add_pointer_graph([MslPointerGraphNode(1, 0x10040, "a")],
+                        [MslPointerGraphEdge(0, 0, 1, "self")])
+    w.write_streaming()
+    with MslReader(out) as r:
+        report = verify_chain(r)
+        assert report.valid, report.errors
+        capture_blocks = len(list(r._iter_raw_block_headers()))
+        # import provenance + 3 chunks (7 pages / cap 3) + 2 chunks (4 pages)
+        # + EoC; the segment blocks are excluded from every count
+        assert report.block_count == capture_blocks == 7
+        assert r.file_header.block_count == capture_blocks
+        assert r.collect_end_of_capture()[0].block_count == capture_blocks
+        assert report.header_block_count == report.eoc_block_count == capture_blocks
+        assert report.file_hash_ok is True
+        assert len(report.segments) == 1 and report.segments[0].verified
+        assert report.trailing_bytes == 0
+        graphs = r.collect_pointer_graphs()
+        assert len(graphs) == 1 and graphs[0].nodes[0].label == "a"
+        eoc_hdr = r.collect_end_of_capture()[0].block_header
+        eoc_bytes = r.read_bytes(eoc_hdr.file_offset, eoc_hdr.block_length)
+        assert graphs[0].block_header.prev_hash == hash_bytes(eoc_bytes)
 
 
 @pytest.mark.parametrize("streamed", [False, True])

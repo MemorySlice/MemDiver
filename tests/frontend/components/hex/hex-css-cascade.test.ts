@@ -271,3 +271,35 @@ describe("hex.css search highlight survives a tinted cell", () => {
     expect(cell.outline).toBe(SELECTION_OUTLINE);
   });
 });
+
+describe("hex.css heap role layer", () => {
+  const HEAP_GROUNDS = [
+    ["heap-header", "--md-hl-heap-header"],
+    ["heap-user", "--md-hl-heap-user"],
+    ["heap-freelink", "--md-hl-heap-freelink"],
+    ["heap-free", "--md-hl-heap-free"],
+    ["heap-meta", "--md-hl-heap-meta"],
+    ["heap-top", "--md-hl-heap-top"],
+    ["heap-slack", "--md-hl-heap-slack"],
+    ["heap-mixed", "--md-hl-heap-mixed"],
+  ] as const;
+
+  it.each(HEAP_GROUNDS)("%s paints its own token as the ground", (cls, token) => {
+    expect(cellStyle(["hex-byte", cls]).backgroundColor).toContain(token);
+  });
+
+  it.each(HEAP_GROUNDS)("marks a selected %s cell", (cls) => {
+    expect(cellStyle(["hex-byte", "selected", cls]).outline).toBe(SELECTION_OUTLINE);
+  });
+
+  /**
+   * The tick is a box-shadow, not a ground: the chunk's first byte keeps its
+   * role fill, and the tick is not a competitor for the selection either.
+   */
+  it("draws the chunk-start tick without touching the ground", () => {
+    const cell = cellStyle(["hex-byte", "heap-header", "heap-chunk-start"]);
+    expect(cell.backgroundColor).toContain("--md-hl-heap-header");
+    expect(cell.boxShadow).toContain("--md-hl-heap-tick");
+    expect(GROUND_CLASSES.has("heap-chunk-start")).toBe(false);
+  });
+});

@@ -170,11 +170,13 @@ def test_encrypt_verify_chain_skips_prevhash(tmp_path):
         assert report.block_count >= 2  # region + key hint + EoC
 
 
-# -- Encrypted + POINTER_GRAPH appendix (inside the encrypted region) --
+# -- Encrypted + POINTER_GRAPH extension segment (inside the AEAD stream) --
 
-def test_encrypt_with_pointer_graph_appendix(tmp_path):
-    """The appendix lives inside the AEAD envelope; the reader recovers it
-    from the decrypted stream after EoC and does NOT leak it in plaintext."""
+def test_encrypt_with_pointer_graph_segment(tmp_path):
+    """The segment lives inside the AEAD envelope before the tag (spec 4.6);
+    the reader recovers it from the decrypted stream after EoC, it verifies,
+    it is excluded from the block counts and does NOT leak in plaintext."""
+    from memdiver.msl.integrity import verify_chain
     key = os.urandom(32)
     out = tmp_path / "enc_pg.msl"
     nodes = [MslPointerGraphNode(node_kind=NodeKind.ADDRESS, value=0xDEAD, label="x")]
@@ -195,6 +197,22 @@ def test_encrypt_with_pointer_graph_appendix(tmp_path):
         assert len(graphs) == 1
         assert tuple(graphs[0].nodes) == tuple(nodes)
         assert tuple(graphs[0].edges) == tuple(edges)
+        # Inside an AEAD container every PrevHash is zero (spec 10.6),
+        # including the segment's blocks.
+        for hdr, _ in reader.iter_extension_blocks():
+            assert hdr.prev_hash == b"\x00" * 32
+        report = verify_chain(reader)
+        assert report.valid, report.errors
+        # region + EoC; the segment blocks are not capture blocks
+        assert report.block_count == 2
+        assert reader.file_header.block_count == 0  # never in the clear header
+        assert reader.collect_end_of_capture()[0].block_count == 2
+        assert report.eoc_block_count == 2 and report.block_count_ok
+        assert report.file_hash_ok is True
+        assert len(report.segments) == 1
+        assert report.segments[0].verified, report.segments[0].errors
+        assert report.segments[0].producer.startswith("memdiver/")
+        assert report.trailing_bytes == 0
 
 
 # -- ML-KEM / hybrid (skip-gated on liboqs-python) --

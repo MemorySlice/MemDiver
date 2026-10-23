@@ -1,6 +1,7 @@
 import { memo, useId } from "react";
 import { useTranslation } from "react-i18next";
 import { BYTE_CLASSES, type ByteClassName, type CandidateFilterState } from "@/api/candidates";
+import { HeapPolicySelect } from "./HeapPolicySelect";
 
 /** Byte alignments worth offering: none, word, pointer, page. */
 const ALIGNMENT_CHOICES = [1, 4, 8, 16, 4096];
@@ -134,6 +135,13 @@ export const CandidateFilters = memo(function CandidateFilters({
             ))}
           </select>
         </label>
+
+        <HeapPolicySelect
+          testId="candidate-heap-policy-select"
+          value={value.heapPolicy}
+          disabled={disabled}
+          onChange={(heapPolicy) => onChange({ ...value, heapPolicy })}
+        />
       </div>
     </fieldset>
   );

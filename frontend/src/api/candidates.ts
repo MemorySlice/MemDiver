@@ -15,6 +15,7 @@
 
 import { request } from "./client";
 import type { Diagnostic } from "./diagnostics";
+import type { CandidateHeapAnnotation, HeapAllocatorChoice, HeapPolicy } from "./types";
 import { withSessionRegionFilter } from "@/stores/region-selection-store";
 
 // ---- byte classes (core/variance.py ByteClass) ----
@@ -95,6 +96,8 @@ export interface CandidateScoreComponents {
   variance: number;
   entropy: number;
   length: number;
+  /** Additive heap adjustment; present only under `heap_policy: "mask"`. */
+  heap?: number;
 }
 
 export interface CandidateRegion {
@@ -115,6 +118,11 @@ export interface CandidateRegion {
   mean_entropy: number;
   /** Shannon entropy of the region's OWN bytes, bits/byte. */
   region_entropy: number;
+  /**
+   * Heap context (chunk, roles, residual flag). Present only when the
+   * consensus carried a heap annotation and `heap_policy` was not `"off"`.
+   */
+  heap?: CandidateHeapAnnotation;
 }
 
 /** Reduction funnel counts (engine/candidate_pipeline.py StageCounts). */
@@ -124,6 +132,8 @@ export interface CandidateStages {
   byte_class: number;
   aligned: number;
   high_entropy: number;
+  /** Variance survivors removed as allocator metadata (`heap_policy: "mask"` only). */
+  heap_masked?: number;
 }
 
 /** Structured note qualifying a result (core.service_result.Diagnostic). */
@@ -159,6 +169,10 @@ export interface AnalysisCandidatesRequest {
   max_returned?: number;
   normalize?: boolean;
   project_id?: string;
+  /** Heap annotation of the consensus; backend default `"auto"`. */
+  allocator?: HeapAllocatorChoice | "off";
+  /** What the reduction does with heap roles; backend default `"annotate"`. */
+  heap_policy?: HeapPolicy;
   /** Re-send past the server memory guard (see `@/api/memory-budget`). */
   force_memory?: boolean;
 }
@@ -169,7 +183,10 @@ export interface AnalysisCandidatesResponse {
   class_counts: Partial<Record<ByteClassName, number>>;
   alignment: AlignmentReport;
   /** The RESOLVED thresholds the reduction actually ran with. */
-  thresholds: Record<string, unknown>;
+  thresholds: Record<string, unknown> & {
+    /** The heap policy the reduction ran under; absent before heap support. */
+    heap_policy?: HeapPolicy;
+  };
   stages: CandidateStages;
   fallback_entropy_only: boolean;
   /** True total, regardless of how many rows came back inline. */
@@ -200,6 +217,12 @@ export interface CandidateFilterState {
   entropyThreshold: number;
   /** Byte-alignment a candidate's start must satisfy. */
   alignment: number;
+  /**
+   * What the reduction does with heap roles. Optional so a filter state built
+   * before heap policies existed still type-checks; `undefined` sends nothing
+   * and the backend applies its `"annotate"` default.
+   */
+  heapPolicy?: HeapPolicy;
 }
 
 /** Defaults mirroring `AnalysisCandidatesRequest`, with the class rule above. */
@@ -235,6 +258,8 @@ export function buildCandidatesRequest(
     order: opts.order ?? "rank",
     max_returned: opts.maxReturned ?? DEFAULT_MAX_RETURNED_REGIONS,
     normalize: opts.normalize ?? false,
+    // Omitted unless chosen, so an untouched form posts the body it always did.
+    ...(filters.heapPolicy ? { heap_policy: filters.heapPolicy } : {}),
   };
 }
 
@@ -259,6 +284,11 @@ export function dominantClass(
     }
   }
   return best;
+}
+
+/** Whether any row carries heap context, i.e. whether the heap columns show. */
+export function regionsHaveHeap(regions: readonly CandidateRegion[]): boolean {
+  return regions.some((region) => region.heap !== undefined);
 }
 
 export const analyzeCandidates = (body: AnalysisCandidatesRequest) =>

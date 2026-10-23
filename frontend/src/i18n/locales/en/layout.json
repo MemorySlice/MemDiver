@@ -4,7 +4,8 @@
   "newSession": "New Session",
   "modeBadge": {
     "verification": "verification",
-    "exploration": "exploration"
+    "exploration": "exploration",
+    "heap": "heap"
   },
   "analysisRunningAria": "Analysis running",
   "bottomPanelContentAria": "Bottom panel content",
@@ -14,11 +15,13 @@
     "format": "format",
     "structures": "structures",
     "sessions": "sessions",
-    "import": "import"
+    "import": "import",
+    "heap": "heap"
   },
   "bottomTabs": {
     "variance": "variance",
-    "vas": "vas"
+    "vas": "vas",
+    "heap": "heap"
   },
   "mslBlocks": "MSL Blocks",
   "modules": "Modules",

@@ -126,6 +126,16 @@ from memdiver.app.tools_consensus import (
 from memdiver.app.tools_algorithms import algorithm_availability
 from memdiver.app.tools_fields import infer_fields_result
 
+# --- heap: allocator detection, chunk layout, free lists --------------------
+from memdiver.app.tools_heap import (
+    heap_chunk_at_result,
+    heap_chunks_result,
+    heap_detect_result,
+    heap_free_lists_result,
+    heap_roles_result,
+    heap_summary_result,
+)
+
 __all__ = [
     # session
     "ToolSession",
@@ -209,4 +219,12 @@ __all__ = [
     # frontend-serving producers
     "infer_fields_result",
     "algorithm_availability",
+    # heap — which allocator, its chunks and free lists, and the role of any
+    # heap byte; every one runs the single heap.analyze_heap facade.
+    "heap_detect_result",
+    "heap_summary_result",
+    "heap_chunks_result",
+    "heap_chunk_at_result",
+    "heap_free_lists_result",
+    "heap_roles_result",
 ]

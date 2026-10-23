@@ -36,7 +36,7 @@ from memdiver.core.binary_formats.elf_core_reader import (
     machine_to_arch_type,
 )
 from memdiver.core.dump_source import open_dump
-from memdiver.msl.enums import ArchType, PageState, SourceFormat
+from memdiver.msl.enums import ArchType, PageState, SourceFormat, VasNameSource
 from memdiver.msl.importer import import_elf_core
 from memdiver.msl.page_map import get_region_page_data
 from memdiver.msl.reader import MslReader
@@ -168,6 +168,15 @@ def test_import_elf_core_three_state(tmp_path) -> None:
         rc = _region_by_base(reader, va_c)
         assert all(s == PageState.FAILED for s in _states(rc))
         assert get_region_page_data(reader, rc) == b""
+
+        # VAS map (MSL 1.1 NameSource): the NT_FILE name is source
+        # metadata, nameless segments are unspecified.
+        vas = {e.base_addr: e for vm in reader.collect_vas_map()
+               for e in vm.entries}
+        assert vas[va_a].mapped_path == "/usr/lib/libc.so.6"
+        assert vas[va_a].name_source == int(VasNameSource.SOURCE_METADATA)
+        assert {vas[va_b].name_source, vas[va_c].name_source} == {
+            int(VasNameSource.UNSPECIFIED)}
 
         # ELF import assigns only CAPTURED/FAILED; UNMAPPED is never
         # synthesized, and the page states are flagged inferred.

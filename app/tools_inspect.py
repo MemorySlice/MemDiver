@@ -684,7 +684,9 @@ def page_states_result(
                     state_name = "CAPTURED"
                 elif iv.state == PageState.UNMAPPED:
                     state_name = "UNMAPPED"
-                else:  # FAILED or RESERVED -> FAILED
+                elif iv.state == PageState.NOT_RESIDENT:
+                    state_name = "NOT_RESIDENT"
+                else:  # FAILED
                     state_name = "FAILED"
                 entry = {
                     "va": region.base_addr + iv.start_page * region.page_size,

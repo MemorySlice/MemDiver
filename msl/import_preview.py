@@ -37,7 +37,8 @@ from memdiver.core.binary_formats.minidump_reader import (
     MEM_COMMIT, MinidumpReader)
 from memdiver.core.format_detect import detect_format
 
-from .enums import BlockType, HeaderFlag, OSType, Protection, RegionType, TagStatus
+from .enums import (BlockType, HeaderFlag, OSType, Protection, RegionType,
+                    TagStatus, VasNameSource)
 from .importer import (_align_down, _align_up, _is_et_core, _map_protect,
                        _map_type, _plan_segment_pages, _protection_from_flags,
                        _region_type_for_segment, _stored_segment_length)
@@ -462,11 +463,16 @@ def msl_classification_context(reader) -> Tuple[
     they must not be used, which keeps older files' classification
     byte-identical):
 
-    * with IMPORT_PROVENANCE, names are trusted only when its note carries
-      the ``region_names=1`` marker (written by MemDiver's ELF / regioned
-      importers and propagated by materialize);
-    * without provenance and with the IMPORTED header flag clear (a live
-      memslicer capture), names are trusted whenever a VAS_MAP exists.
+    * MSL 1.1 entries carry a NameSource (spec 5.8): names are trusted as
+      soon as ANY entry is LIVE or SOURCE_METADATA; entries that are all
+      SYNTHESIZED (derived, e.g. from module coverage) are not trusted;
+    * when every entry has NameSource UNSPECIFIED (files written before
+      1.1) the pre-1.1 inference applies unchanged: with
+      IMPORT_PROVENANCE, names are trusted only when its note carries the
+      ``region_names=1`` marker (written by MemDiver's ELF / regioned
+      importers and propagated by materialize); without provenance and
+      with the IMPORTED header flag clear (a live memslicer capture), names
+      are trusted whenever a VAS_MAP exists.
 
     ``live_named`` is True for a trusted, non-IMPORTED (live) file: its
     stored types come from name rules and alignment folds them back
@@ -489,7 +495,9 @@ def msl_classification_context(reader) -> Tuple[
         except (ValueError, IndexError, OverflowError):
             continue  # best-effort metadata only
     imported = bool(reader.file_header.flags & HeaderFlag.IMPORTED)
-    if has_provenance:
+    if any(e.name_source for e in entries):
+        trusted = _names_trusted_by_source(entries)
+    elif has_provenance:
         trusted = provenance is not None and \
             parse_provenance_note(provenance.note).region_names
     else:
@@ -497,6 +505,15 @@ def msl_classification_context(reader) -> Tuple[
     source_format = provenance.source_format if provenance else None
     names = MappingNameIndex.from_vas_entries(entries) if trusted else None
     return source_format, names, bool(trusted and not imported)
+
+
+_TRUSTED_NAME_SOURCES = (int(VasNameSource.LIVE),
+                         int(VasNameSource.SOURCE_METADATA))
+
+
+def _names_trusted_by_source(entries: Sequence) -> bool:
+    """MSL 1.1 rule: any LIVE / SOURCE_METADATA entry makes names trusted."""
+    return any(e.name_source in _TRUSTED_NAME_SOURCES for e in entries)
 
 
 def msl_region_infos(regions: Iterable[_RawRegion],

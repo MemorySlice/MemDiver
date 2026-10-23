@@ -22,8 +22,12 @@ survives:
   (a live memslicer capture gains provenance here, see
   :func:`import_preview.msl_classification_context`);
 * one IMPORT_PROVENANCE records the rewrite (see :func:`_provenance_note`);
-* END_OF_CAPTURE is recomputed by the writer; a post-EoC appendix (e.g.
-  POINTER_GRAPH) is copied verbatim.
+* END_OF_CAPTURE is recomputed by the writer; every *verified* source
+  extension segment (spec 4.6, e.g. the POINTER_GRAPH segment) is re-emitted
+  block by block with its block identities, flags and on-disk payloads
+  intact under the source segment's producer, closed by a fresh
+  End-of-Extension block re-chained after the new EoC. Unverified or
+  unterminated source segments (trailing data) are dropped and counted.
 
 Region bytes are streamed from the source mmap; a compressed (or
 continuation-merged) source region is decoded one block at a time.
@@ -36,16 +40,18 @@ from typing import List, Optional, Sequence
 
 from .decoders import (decode_end_of_capture, decode_import_provenance,
                        decode_key_hint, decode_memory_region, decode_vas_map)
-from .enums import BlockFlag, BlockType, HeaderFlag, SourceFormat, TagStatus
+from .enums import (BlockFlag, BlockType, HeaderFlag, SourceFormat, TagStatus,
+                    VasNameSource)
 from .import_preview import (_module_for, _msl_modules,
                              msl_classification_context, msl_region_infos)
+from .integrity import verify_extension_segments
 from .page_map import count_captured_pages
 from .region_select import (DROPPED_KEY_HINTS_KEY, MATERIALIZED_KEY,
                             ORIG_EOC_HASH_KEY, REGION_NAMES_NOTE, RegionInfo,
                             join_provenance_note)
 from .types import (MslBlockHeader, MslEndOfCapture, MslImportProvenance,
                     MslMemoryRegion, MslParseError, MslVasEntry)
-from .writer import (CapBit, MslEncryptionConfig, MslWriter,
+from .writer import (CapBit, ExtensionBlock, MslEncryptionConfig, MslWriter,
                      build_import_provenance_payload)
 
 logger = logging.getLogger("memdiver.msl.materialize")
@@ -75,6 +81,8 @@ class MaterializeStats:
     regions_written: int = 0
     key_hints_written: int = 0
     dropped_key_hints: int = 0
+    extension_segments_written: int = 0
+    dropped_extension_segments: int = 0
 
 
 def stored_regions(reader, source_format: Optional[int]) -> List[StoredRegion]:
@@ -195,7 +203,7 @@ class _Materializer:
         self._add_key_hints()
         self._add_vas_map()
         self._add_provenance()
-        self._add_end_and_appendix()
+        self._add_end_and_extensions()
         self._writer.write()
         return self.stats
 
@@ -307,7 +315,8 @@ class _Materializer:
                 entries.append(MslVasEntry(
                     base_addr=info.base_addr, region_size=info.size,
                     protection=info.protection, region_type=info.region_type,
-                    mapped_path=info.name or info.module_path or ""))
+                    mapped_path=info.name or info.module_path or "",
+                    name_source=_synthesized_name_source(info)))
         self._writer.add_vas_map(sorted(entries, key=lambda e: e.base_addr))
 
     def _add_provenance(self) -> None:
@@ -338,13 +347,52 @@ class _Materializer:
                                     else "", ";".join(parts))
         return join_provenance_note(base, self._selection_note)
 
-    def _add_end_and_appendix(self) -> None:
+    def _add_end_and_extensions(self) -> None:
+        """EoC, then every verified source extension segment (spec 4.6)."""
         acq_end = self._eoc.acq_end_ns if self._eoc is not None else None
         self._writer.add_end_of_capture(acq_end_ns=acq_end)
-        start = self._reader._appendix_offset()
-        if start is not None:
-            self._writer.add_raw_appendix(self._reader.read_bytes(
-                start, self._reader.buffer_length - start))
+        reports, _ = verify_extension_segments(self._reader)
+        verified = {r.index for r in reports if r.verified}
+        for seg in self._reader.scan_extension_segments():
+            if seg.index in verified:
+                self._copy_extension_segment(seg)
+            else:
+                self._drop_extension_segment(seg)
+
+    # Deprecated name, kept for callers of the pre-1.1 appendix copy.
+    _add_end_and_appendix = _add_end_and_extensions
+
+    def _copy_extension_segment(self, seg) -> None:
+        """Re-emit *seg*'s blocks (not its terminator) under its producer."""
+        blocks = [self._extension_block(hdr) for hdr in seg.headers
+                  if hdr.block_type != BlockType.END_OF_EXTENSION]
+        if not blocks:
+            self._drop_extension_segment(seg)
+            return
+        self._writer.add_extension_segment(producer=seg.producer, blocks=blocks)
+        self.stats.extension_segments_written += 1
+
+    def _extension_block(self, hdr: MslBlockHeader) -> ExtensionBlock:
+        """On-disk payload (still compressed when flagged), identity kept."""
+        payload = self._reader.read_bytes(hdr.payload_offset, hdr.payload_length)
+        parent = hdr.parent_uuid if hdr.parent_uuid.int else None
+        return ExtensionBlock(hdr.block_type, payload, block_uuid=hdr.block_uuid,
+                              parent_uuid=parent, flags=hdr.flags)
+
+    def _drop_extension_segment(self, seg) -> None:
+        state = "unterminated" if not seg.terminated else "unverified"
+        logger.warning("dropping %s extension segment %d at 0x%X (%d block(s))",
+                       state, seg.index, seg.start, len(seg.headers))
+        self.stats.dropped_extension_segments += 1
+
+
+def _synthesized_name_source(info: RegionInfo) -> int:
+    """NameSource of a VAS entry synthesized from a stored region's info."""
+    if info.name:
+        return VasNameSource.SOURCE_METADATA  # trusted mapping name
+    if info.module_path:
+        return VasNameSource.SYNTHESIZED  # derived from module coverage
+    return VasNameSource.UNSPECIFIED
 
 
 def require_decrypted(reader, name: str) -> None:

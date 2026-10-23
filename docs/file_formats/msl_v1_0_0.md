@@ -1,5 +1,7 @@
 # Memory Slice (.msl) — Specification v1.0.0 (binary format 1.1)
 
+> **Superseded:** the current mirror is [msl_v1_1_0.md](msl_v1_1_0.md) (spec 1.1.0: EoC `BlockCount`, extension segments / End-of-Extension `0x0FFE`, VAS Map `NameSource`, Thread Context, NotResident pages). This page describes the 1.0.0 document and the pre-1.1 MemDiver behaviour and is kept for reference.
+
 MemDiver's native snapshot format. Container for memory regions, module tables, process identity, VAS maps, connection tables, handle tables, key hints, and provenance metadata with BLAKE3 integrity chaining.
 
 ## Specification source

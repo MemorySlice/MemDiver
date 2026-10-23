@@ -706,3 +706,244 @@ export interface ImportSelectionResult {
   /** Encrypted source: the filtered copy was written as plaintext (opt-in). */
   decrypted_output?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Heap analysis (`/api/heap/*`). Shapes mirror the backend `heap/` package's
+// `to_dict` payloads 1:1; the closed vocabularies (allocator kinds, chunk
+// states, roles) live as const tuples in `./heap`, and their unions are
+// re-derived here so a backend rename breaks `tsc -b` in one place.
+// ---------------------------------------------------------------------------
+
+/** Allocator families the backend can parse (`heap.model.AllocatorKind`). */
+export type HeapAllocatorKind =
+  | "ptmalloc2"
+  | "dlmalloc"
+  | "scudo"
+  | "mallocng"
+  | "jemalloc"
+  | "generic"
+  | "unknown";
+
+/** What a caller may ASK for: a concrete allocator, or detection. */
+export type HeapAllocatorChoice = HeapAllocatorKind | "auto";
+
+/** `heap.model.ChunkState`. `cached` = sitting in tcache/fastbin. */
+export type HeapChunkState = "in_use" | "free" | "cached" | "quarantined" | "unknown";
+
+/** The byte roles the `/api/heap/roles` endpoint paints. */
+export type HeapRoleName =
+  | "chunk_header"
+  | "user_data"
+  | "free_link"
+  | "free_data"
+  | "allocator_meta"
+  | "top"
+  | "slack";
+
+/** One piece of evidence behind a detection or a parse. */
+export interface HeapEvidence {
+  source: string;
+  detail: string;
+  weight: number;
+}
+
+export interface HeapDetectCandidate {
+  kind: HeapAllocatorKind;
+  score: number;
+  evidence: HeapEvidence[];
+}
+
+export interface HeapPlatform {
+  os: string;
+  arch: string;
+  pointer_size: number;
+  endianness: string;
+  source: string;
+}
+
+/** `GET /api/heap/detect`. */
+export interface HeapDetectResponse {
+  best: HeapAllocatorKind;
+  confidence: number;
+  hinted: boolean;
+  platform: HeapPlatform | null;
+  candidates: HeapDetectCandidate[];
+  format: string;
+}
+
+export interface HeapRegion {
+  va: number;
+  size: number;
+  name: string;
+  kind: string;
+}
+
+export interface HeapSizeBucket {
+  min_size: number;
+  max_size: number;
+  count: number;
+}
+
+/** `GET /api/heap/summary`. */
+export interface HeapSummaryResponse {
+  allocator: HeapAllocatorKind;
+  confidence: number;
+  version_hint: string | null;
+  partial: boolean;
+  heuristic: boolean;
+  levels: string[];
+  platform: HeapPlatform | null;
+  regions: HeapRegion[];
+  chunk_count: number;
+  counts_by_state: Partial<Record<HeapChunkState, number>>;
+  bytes_by_state: Partial<Record<HeapChunkState, number>>;
+  size_histogram: HeapSizeBucket[];
+  role_bytes: Partial<Record<HeapRoleName, number>>;
+  metadata_bytes: number;
+  free_list_count: number;
+  evidence: HeapEvidence[];
+  coverage: Record<string, unknown>;
+  diagnostics: string[];
+  format: string;
+}
+
+/** One parsed chunk (`heap.model.HeapChunk.to_dict`). */
+export interface HeapChunk {
+  va: number;
+  size: number;
+  state: HeapChunkState;
+  header_len: number;
+  user_va: number;
+  user_len: number;
+  flags: Record<string, unknown> | string[] | number | null;
+  bin: string | number | null;
+  extra: Record<string, unknown>;
+  confidence: number;
+  /** The chunk's start in the REQUESTED view's coordinate, or null if unmapped. */
+  view_offset: number | null;
+}
+
+/** `GET /api/heap/chunks`. */
+export interface HeapChunksResponse {
+  allocator: HeapAllocatorKind;
+  view: string;
+  total: number;
+  chunk_count: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  chunks: HeapChunk[];
+  diagnostics: string[];
+  filters: Record<string, unknown>;
+}
+
+/** `GET /api/heap/chunk-at`. */
+export interface HeapChunkAtResponse {
+  allocator: HeapAllocatorKind;
+  va: number;
+  view: string;
+  view_offset: number | null;
+  found: boolean;
+  chunk: HeapChunk | null;
+  role: HeapRoleName | null;
+  offset_in_chunk: number | null;
+  offset_in_user: number | null;
+  prev: HeapChunk | null;
+  next: HeapChunk | null;
+}
+
+export interface HeapFreeList {
+  kind: string;
+  index: number;
+  head_va: number;
+  length: number;
+  chunk_vas: number[];
+  decoded: boolean;
+  cycle: boolean;
+  corrupt: boolean;
+  unresolved_vas: number[];
+}
+
+/** `GET /api/heap/free-lists`. */
+export interface HeapFreeListsResponse {
+  allocator: HeapAllocatorKind;
+  kinds: string[];
+  list_count: number;
+  cycle_count: number;
+  corrupt_count: number;
+  lists: HeapFreeList[];
+}
+
+/** One non-overlapping run of a role, in view coordinates. */
+export interface HeapRoleRun {
+  offset: number;
+  length: number;
+  role: HeapRoleName;
+}
+
+/** `GET /api/heap/roles`. */
+export interface HeapRolesResponse {
+  allocator: HeapAllocatorKind;
+  view: string;
+  offset: number;
+  length: number;
+  runs: HeapRoleRun[];
+  chunk_starts: number[];
+  partial: boolean;
+  heuristic: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Heap annotations on consensus / candidate / locate-key payloads (P7 → P8c)
+// ---------------------------------------------------------------------------
+
+/**
+ * `heap_status` on an aligned-window answer: whether `heap_roles` can be read.
+ * Absent on older servers and on a consensus built with `allocator="off"`.
+ */
+export type HeapWindowStatus = "ok" | "no_va_coordinate" | "empty_consensus" | "error";
+
+/**
+ * Role codes in an aligned window's `heap_roles` (`heap.model.HeapRole`):
+ * `0` none, `1..7` the `HeapRoleName`s, `254` MIXED (the dumps disagree),
+ * `255` UNCOVERED (outside every annotated run).
+ */
+export type HeapRoleCode = number;
+
+/** The `heap_role_names` legend: role code (as a JSON key) → role name. */
+export type HeapRoleNameLegend = Record<string, string>;
+
+/** What the candidate reduction does with the consensus heap roles. */
+export const HEAP_POLICIES = ["annotate", "mask", "off"] as const;
+export type HeapPolicy = (typeof HEAP_POLICIES)[number];
+
+/** The anchor chunk holding a candidate's first byte (slab coordinates). */
+export interface CandidateHeapChunk {
+  start: number;
+  size: number;
+  state: HeapChunkState;
+  offset_in_chunk: number;
+  /** Dumps whose chunk there agrees with the anchor's. */
+  agree: number;
+}
+
+/** `CandidateRegion.heap` — present under `heap_policy` annotate / mask. */
+export interface CandidateHeapAnnotation {
+  /** Bytes per role name inside the region (`none`/`uncovered`/`mixed` included). */
+  role_counts: Record<string, number>;
+  chunk: CandidateHeapChunk | null;
+  /** True when the region starts in a freed (free/cached/quarantined) chunk. */
+  residual: boolean;
+  /** Fewest agreeing dumps over the region's role runs; `null` when no runs. */
+  agreement: number | null;
+}
+
+/** One locate-key hit's heap context, parallel to `DumpKeyLocation.offsets`. */
+export interface KeyHitHeap {
+  allocator: HeapAllocatorKind | string;
+  chunk_va: number;
+  chunk_size: number;
+  state: HeapChunkState;
+  offset_in_chunk: number;
+  role: HeapRoleName | string | null;
+}

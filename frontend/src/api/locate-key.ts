@@ -18,6 +18,7 @@
  */
 
 import { request } from "./client";
+import type { HeapAllocatorChoice, KeyHitHeap } from "./types";
 
 // ---- the three-valued per-dump status (engine/key_location.py) ----
 
@@ -72,6 +73,11 @@ export interface DumpKeyLocation {
   /** The TRUE occurrence total, even when `offsets` was truncated. */
   hit_count: number;
   offsets: number[];
+  /**
+   * Heap context per hit, PARALLEL to `offsets` (`null` = the hit is in no
+   * parsed chunk). Absent on older servers and with `allocator: "off"`.
+   */
+  heap?: (KeyHitHeap | null)[];
   offsets_truncated: boolean;
   /** Why the dump could not be searched; empty on a searched row. */
   detail: string;
@@ -120,6 +126,8 @@ export interface LocateKeyRequest {
   pcap_field?: PcapFieldSelector | null;
   view?: string | null;
   max_offsets?: number;
+  /** Allocator for the per-hit heap context; backend default `"auto"`. */
+  allocator?: HeapAllocatorChoice | "off";
   // container decryption (KeyMaterialFields)
   passphrase?: string | null;
   key_hex?: string | null;

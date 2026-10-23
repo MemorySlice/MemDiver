@@ -21,11 +21,15 @@ from memdiver.core.binary_formats.minidump_reader import (
     PAGE_EXECUTE_READ,
     PAGE_READWRITE,
 )
-from memdiver.msl.enums import ArchType, OSType, PageState, Protection, RegionType, SourceFormat
-from memdiver.msl.importer import import_dump, import_minidump
+from memdiver.msl.enums import (ArchType, OSType, PageState, Protection,
+                                RegionType, SourceFormat, VasNameSource)
+from memdiver.msl.importer import (_add_vas_map_if_excluded, _SelectionPlan,
+                                   import_dump, import_minidump)
 from memdiver.msl.page_map import get_region_page_data
 from memdiver.msl.reader import MslReader
-from memdiver.msl.writer import CapBit
+from memdiver.msl.region_select import (RegionCategory, RegionInfo,
+                                        parse_selection)
+from memdiver.msl.writer import CapBit, MslWriter
 
 from tests.test_minidump_reader import AMD64, _build_minidump
 
@@ -197,6 +201,68 @@ def test_metadata_and_provenance(tmp_path) -> None:
         assert hdr.pid == 2468
         prov = reader.collect_import_provenance()
         assert prov[0].source_format == SourceFormat.MINIDUMP == 3
+
+
+def test_vas_map_name_source_when_regions_excluded(tmp_path) -> None:
+    """A selection that drops a region writes the full layout as a VAS map;
+    minidump regions have no module path, so NameSource is UNSPECIFIED."""
+    descriptors = [(0x10000, bytes(PAGE)), (0x50000, bytes(PAGE))]
+    mem_infos = [
+        (0x10000, 0x10000, PAGE_READWRITE, PAGE, MEM_COMMIT,
+         PAGE_READWRITE, MEM_PRIVATE),
+        (0x50000, 0x50000, PAGE_EXECUTE_READ, PAGE, MEM_COMMIT,
+         PAGE_EXECUTE_READ, MEM_IMAGE),
+    ]
+    path = _write(tmp_path, _build_minidump(
+        descriptors, mem_infos=mem_infos), "sel.dmp")
+    out = tmp_path / "sel.msl"
+    all_but_image_code = parse_selection(",".join(
+        c.value for c in RegionCategory if c is not RegionCategory.IMAGE_CODE))
+    result = import_minidump(path, out, selection=all_but_image_code)
+    assert result.regions_written == 1
+
+    with MslReader(out) as reader:
+        assert {r.base_addr for r in reader.collect_regions()} == {0x10000}
+        (vas,) = reader.collect_vas_map()
+    assert [(e.base_addr, e.mapped_path, e.name_source) for e in vas.entries] == [
+        (0x10000, "", int(VasNameSource.UNSPECIFIED)),
+        (0x50000, "", int(VasNameSource.UNSPECIFIED)),
+    ]
+
+
+def _plan_with_module(path: str) -> _SelectionPlan:
+    infos = [
+        RegionInfo(0x10000, PAGE, int(Protection.READ | Protection.WRITE),
+                   int(RegionType.HEAP), RegionCategory.HEAP, None, PAGE),
+        RegionInfo(0x50000, PAGE, int(Protection.READ | Protection.EXECUTE),
+                   int(RegionType.IMAGE), RegionCategory.IMAGE_CODE, path, PAGE),
+    ]
+    return _SelectionPlan(selection=None, infos=infos, keep=[True, False])
+
+
+def _name_sources(path: Path) -> list:
+    with MslReader(path) as reader:
+        (vas,) = reader.collect_vas_map()
+    return [(e.mapped_path, e.name_source) for e in vas.entries]
+
+
+def test_add_vas_map_if_excluded_name_source_for_module_paths(tmp_path) -> None:
+    """The minidump caller marks module-stream paths as SOURCE_METADATA;
+    the default (derived paths) is SYNTHESIZED; no path -> UNSPECIFIED."""
+    dll = "C:\\Windows\\System32\\ntdll.dll"
+    meta, default = tmp_path / "meta.msl", tmp_path / "default.msl"
+    for out, kwargs in ((meta, {"name_source_for_path":
+                                VasNameSource.SOURCE_METADATA}),
+                        (default, {})):
+        w = MslWriter(out, pid=1, imported=True)
+        _add_vas_map_if_excluded(w, _plan_with_module(dll), **kwargs)
+        w.add_import_provenance(SourceFormat.MINIDUMP, "t", 0)
+        w.add_end_of_capture()
+        w.write()
+    assert _name_sources(meta) == [("", int(VasNameSource.UNSPECIFIED)),
+                                   (dll, int(VasNameSource.SOURCE_METADATA))]
+    assert _name_sources(default) == [("", int(VasNameSource.UNSPECIFIED)),
+                                      (dll, int(VasNameSource.SYNTHESIZED))]
 
 
 # -- Dispatcher regression ----------------------------------------------------

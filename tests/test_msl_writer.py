@@ -16,7 +16,8 @@ from memdiver.msl.types import (MslConnArpEntry, MslConnIfaceStats, MslConnIPv4R
                        MslConnIPv6Route, MslConnMibCounter,
                        MslConnPacketSocket, MslConnSocketFamilyAgg,
                        MslPointerGraphEdge, MslPointerGraphNode)
-from memdiver.msl.writer import MslWriter
+from memdiver.msl.hashing import hash_bytes
+from memdiver.msl.writer import ExtensionBlock, MslWriter
 
 
 @pytest.fixture
@@ -524,7 +525,7 @@ def test_compress_unavailable_codec_raises(tmp_path, monkeypatch):
     assert not out.exists()
 
 
-# -- POINTER_GRAPH appendix (Tier 1 Phase B) --
+# -- POINTER_GRAPH in an extension segment (spec 4.6) --
 
 
 def _sample_pointer_graph():
@@ -560,16 +561,30 @@ def _sample_pointer_graph():
     return nodes, edges
 
 
-def test_pointer_graph_appendix_roundtrip(tmp_path):
-    """Writer emits POINTER_GRAPH after EoC; reader recovers exact data."""
-    out = tmp_path / "with_pg.msl"
-    nodes, edges = _sample_pointer_graph()
+def _eoc_block_bytes(reader: MslReader) -> bytes:
+    """Raw bytes of the End-of-Capture block (last capture-segment header)."""
+    eoc = list(reader._iter_raw_block_headers())[-1]
+    assert eoc.block_type == BlockType.END_OF_CAPTURE
+    return reader.read_bytes(eoc.file_offset, eoc.block_length)
 
-    w = MslWriter(out)
-    w.add_memory_region(0x1000, b"\xAA" * 4096)
-    pg_uuid = w.add_pointer_graph(nodes, edges)
+
+def _write_pointer_graph_file(path: Path, *, with_region: bool = True,
+                              emit_integrity: bool = True, producer=None):
+    nodes, edges = _sample_pointer_graph()
+    w = MslWriter(path)
+    if with_region:
+        w.add_memory_region(0x1000, b"\xAA" * 4096)
+    pg_uuid = w.add_pointer_graph(nodes, edges, emit_integrity=emit_integrity,
+                                  producer=producer)
     w.add_end_of_capture()
     w.write()
+    return nodes, edges, pg_uuid
+
+
+def test_pointer_graph_segment_roundtrip(tmp_path):
+    """Writer emits POINTER_GRAPH in a segment after EoC; reader recovers it."""
+    out = tmp_path / "with_pg.msl"
+    nodes, edges, pg_uuid = _write_pointer_graph_file(out)
 
     with MslReader(out) as reader:
         graphs = reader.collect_pointer_graphs()
@@ -577,25 +592,49 @@ def test_pointer_graph_appendix_roundtrip(tmp_path):
         graph = graphs[0]
         assert graph.block_header.block_type == BlockType.POINTER_GRAPH
         assert graph.block_header.block_uuid == pg_uuid
-        # Appendix lives outside the chain — prev_hash MUST be zero
-        assert graph.block_header.prev_hash == b"\x00" * 32
+        # Spec 4.6: the first extension block chains from H(EoC block bytes).
+        assert graph.block_header.prev_hash == hash_bytes(_eoc_block_bytes(reader))
         assert tuple(graph.nodes) == tuple(nodes)
         assert tuple(graph.edges) == tuple(edges)
-        # Default emit_integrity=True → appendix_hash present and verifiable
+        # Default emit_integrity=True -> appendix_hash present and verifiable
         assert graph.appendix_hash is not None
         assert len(graph.appendix_hash) == 32
 
 
-def test_pointer_graph_appendix_integrity_verification(tmp_path):
+def test_pointer_graph_segment_is_verified_with_memdiver_producer(tmp_path):
+    """The writer's own segment verifies and names memdiver as producer."""
+    from memdiver.msl.integrity import verify_chain
+
+    out = tmp_path / "pg_verified.msl"
+    _write_pointer_graph_file(out)
+    with MslReader(out) as reader:
+        report = verify_chain(reader)
+        assert report.valid, report.errors
+        assert len(report.segments) == 1
+        seg = report.segments[0]
+        assert seg.verified, seg.errors
+        assert seg.producer.startswith("memdiver/")
+        assert seg.block_count == 2  # POINTER_GRAPH + End-of-Extension
+        terminators = reader.collect_end_of_extension()
+        assert len(terminators) == 1
+        assert terminators[0].block_count == 2
+        assert terminators[0].producer == seg.producer
+
+
+def test_pointer_graph_segment_custom_producer(tmp_path):
+    out = tmp_path / "pg_producer.msl"
+    _write_pointer_graph_file(out, producer="acme-tool/9.9")
+    with MslReader(out) as reader:
+        assert reader.scan_extension_segments()[0].producer == "acme-tool/9.9"
+        assert reader.collect_end_of_extension()[0].producer == "acme-tool/9.9"
+
+
+def test_pointer_graph_segment_integrity_verification(tmp_path):
     """The stored BLAKE3 trailer matches a fresh hash over header+nodes+edges."""
     from memdiver.msl.decoders_ext import verify_pointer_graph_integrity
 
     out = tmp_path / "pg_integrity.msl"
-    nodes, edges = _sample_pointer_graph()
-    w = MslWriter(out)
-    w.add_pointer_graph(nodes, edges, emit_integrity=True)
-    w.add_end_of_capture()
-    w.write()
+    _write_pointer_graph_file(out, with_region=False, emit_integrity=True)
 
     with MslReader(out) as reader:
         graph = reader.collect_pointer_graphs()[0]
@@ -604,14 +643,11 @@ def test_pointer_graph_appendix_integrity_verification(tmp_path):
         assert verify_pointer_graph_integrity(graph, raw_payload) is True
 
 
-def test_pointer_graph_appendix_no_integrity_trailer(tmp_path):
+def test_pointer_graph_segment_no_integrity_trailer(tmp_path):
     """emit_integrity=False produces no trailer; appendix_hash is None."""
     out = tmp_path / "pg_no_integrity.msl"
-    nodes, edges = _sample_pointer_graph()
-    w = MslWriter(out)
-    w.add_pointer_graph(nodes, edges, emit_integrity=False)
-    w.add_end_of_capture()
-    w.write()
+    nodes, _, _ = _write_pointer_graph_file(out, with_region=False,
+                                            emit_integrity=False)
 
     with MslReader(out) as reader:
         graph = reader.collect_pointer_graphs()[0]
@@ -619,8 +655,8 @@ def test_pointer_graph_appendix_no_integrity_trailer(tmp_path):
         assert tuple(graph.nodes) == tuple(nodes)
 
 
-def test_pointer_graph_appendix_outside_chain(tmp_path):
-    """verify_chain stops at EoC; appendix doesn't poison integrity."""
+def test_pointer_graph_segment_not_counted_in_capture(tmp_path):
+    """verify_chain counts capture blocks only; the segment is verified apart."""
     from memdiver.msl.integrity import verify_chain
 
     out = tmp_path / "pg_chain_isolated.msl"
@@ -633,15 +669,22 @@ def test_pointer_graph_appendix_outside_chain(tmp_path):
 
     with MslReader(out) as reader:
         report = verify_chain(reader)
-        # Chain valid for in-chain blocks; appendix is excluded
         assert report.valid, f"chain invalid: {report.errors}"
         assert report.broken_at is None
-        # MEMORY_REGION + EoC == 2 in-chain blocks (the appendix is NOT counted)
+        # MEMORY_REGION + EoC == 2 capture blocks (segment blocks NOT counted)
         assert report.block_count == 2
+        assert reader.file_header.block_count == 2
+        assert reader.collect_end_of_capture()[0].block_count == 2
+        assert report.header_block_count == 2
+        assert report.eoc_block_count == 2
+        assert report.block_count_ok
+        assert report.file_hash_ok is True
+        assert report.segments[0].verified
+        assert report.trailing_bytes == 0
 
 
-def test_pointer_graph_appendix_absent(tmp_path):
-    """Files without an appendix yield an empty pointer-graph list."""
+def test_pointer_graph_segment_absent(tmp_path):
+    """Files without a segment yield an empty pointer-graph list."""
     out = tmp_path / "no_pg.msl"
     w = MslWriter(out)
     w.add_memory_region(0, b"\x00" * 4096)
@@ -650,10 +693,11 @@ def test_pointer_graph_appendix_absent(tmp_path):
 
     with MslReader(out) as reader:
         assert reader.collect_pointer_graphs() == []
+        assert reader.scan_extension_segments() == []
 
 
 def test_pointer_graph_iter_blocks_stops_at_eoc(tmp_path):
-    """iter_blocks should not return the appendix — chain ends at EoC.
+    """iter_blocks should not return the segment — the capture ends at EoC.
 
     Pins backward compatibility: existing collectors (regions, key hints,
     etc.) that iterate via iter_blocks must NOT see the POINTER_GRAPH
@@ -673,10 +717,13 @@ def test_pointer_graph_iter_blocks_stops_at_eoc(tmp_path):
         assert BlockType.POINTER_GRAPH not in block_types
         assert BlockType.MEMORY_REGION in block_types
         assert BlockType.END_OF_CAPTURE in block_types
+        ext_types = [h.block_type for h, _ in reader.iter_extension_blocks()]
+        assert ext_types == [BlockType.POINTER_GRAPH, BlockType.END_OF_EXTENSION]
 
 
 def test_pointer_graph_replacing_call_overwrites(tmp_path):
-    """Calling add_pointer_graph twice keeps only the latest registration."""
+    """Calling add_pointer_graph twice keeps only the latest registration
+    and still emits a single segment."""
     out = tmp_path / "pg_replace.msl"
     nodes_a, edges_a = _sample_pointer_graph()
     nodes_b = [MslPointerGraphNode(
@@ -687,10 +734,12 @@ def test_pointer_graph_replacing_call_overwrites(tmp_path):
     w = MslWriter(out)
     w.add_pointer_graph(nodes_a, edges_a)
     w.add_pointer_graph(nodes_b, edges_b)
+    assert w.extension_segment_count == 1
     w.add_end_of_capture()
     w.write()
 
     with MslReader(out) as reader:
+        assert len(reader.scan_extension_segments()) == 1
         graphs = reader.collect_pointer_graphs()
         assert len(graphs) == 1
         assert tuple(graphs[0].nodes) == tuple(nodes_b)
@@ -698,25 +747,141 @@ def test_pointer_graph_replacing_call_overwrites(tmp_path):
 
 
 def test_pointer_graph_tampered_trailer_detected(tmp_path):
-    """Flipping a byte in the appendix trailer makes verifier return False."""
-    from memdiver.msl.decoders_ext import verify_pointer_graph_integrity
+    """Flipping a byte of the graph payload breaks the segment: verify_chain
+    marks it unverified, the collector hides it, the unverified walk still
+    yields it and the self-integrity trailer no longer matches."""
+    from memdiver.msl.decoders_ext import (decode_pointer_graph,
+                                           verify_pointer_graph_integrity)
+    from memdiver.msl.integrity import verify_chain
 
     out = tmp_path / "pg_tampered.msl"
-    nodes, edges = _sample_pointer_graph()
-    w = MslWriter(out)
-    w.add_pointer_graph(nodes, edges, emit_integrity=True)
-    w.add_end_of_capture()
-    w.write()
+    _write_pointer_graph_file(out, with_region=False, emit_integrity=True)
 
-    # Corrupt one byte of the appendix payload AFTER write
+    with MslReader(out) as reader:
+        pg_hdr = reader.scan_extension_segments()[0].headers[0]
+        assert pg_hdr.block_type == BlockType.POINTER_GRAPH
+        # Last byte of the trailer (32-byte BLAKE3 at the end of the payload).
+        tamper_at = pg_hdr.payload_offset + pg_hdr.payload_length - 1
+
     data = bytearray(out.read_bytes())
-    data[-1] ^= 0xFF
+    data[tamper_at] ^= 0xFF
     out.write_bytes(bytes(data))
 
     with MslReader(out) as reader:
-        graph = reader.collect_pointer_graphs()[0]
-        raw_payload = reader.read_block_payload(graph.block_header)
+        report = verify_chain(reader)
+        assert report.capture_ok
+        assert not report.valid
+        assert not report.segments[0].verified
+        assert not report.segments[0].segment_hash_ok
+        assert any("segment 0" in e for e in report.errors)
+        assert reader.collect_pointer_graphs() == []
+        unverified = [(h, p) for h, p in reader.iter_extension_blocks(include_unverified=True)
+                      if h.block_type == BlockType.POINTER_GRAPH]
+        assert len(unverified) == 1
+        hdr, raw_payload = unverified[0]
+        graph = decode_pointer_graph(hdr, raw_payload, reader._byte_order)
         assert verify_pointer_graph_integrity(graph, raw_payload) is False
+
+
+# -- add_extension_segment (spec 4.6) --
+
+
+def test_add_extension_segment_rejects_forbidden_type(tmp_path):
+    w = MslWriter(tmp_path / "x.msl")
+    with pytest.raises(ValueError, match="0x0001"):
+        w.add_extension_segment("t", [ExtensionBlock(0x0001, b"\x00" * 8)])
+    with pytest.raises(ValueError, match="0x0FFF"):
+        w.add_extension_segment("t", [ExtensionBlock(BlockType.END_OF_CAPTURE, b"")])
+    with pytest.raises(ValueError, match="0x0FFE"):
+        w.add_extension_segment("t", [ExtensionBlock(BlockType.END_OF_EXTENSION, b"")])
+    assert w.extension_segment_count == 0
+
+
+def test_add_extension_segment_rejects_empty_block_list(tmp_path):
+    w = MslWriter(tmp_path / "x.msl")
+    with pytest.raises(ValueError, match="at least one block"):
+        w.add_extension_segment("t", [])
+    assert w.extension_segment_count == 0
+
+
+def test_extension_segment_without_eoc_fails_at_write(tmp_path):
+    out = tmp_path / "no_eoc.msl"
+    w = MslWriter(out)
+    w.add_memory_region(0, b"\x00" * 4096)
+    w.add_extension_segment("t", [ExtensionBlock(0x1100, b"\x01" * 8)])
+    with pytest.raises(ValueError, match="End-of-Capture"):
+        w.write()
+    assert not out.exists()
+
+
+def test_two_extension_segments_chained_in_order(tmp_path):
+    """Pointer graph + a custom 0x1100 segment both verify, in file order,
+    with the PrevHash chain running EoC -> seg0 -> seg1."""
+    from memdiver.msl.integrity import verify_chain
+
+    out = tmp_path / "two_segments.msl"
+    nodes, edges = _sample_pointer_graph()
+    w = MslWriter(out)
+    w.add_memory_region(0, b"\x11" * 4096)
+    w.add_pointer_graph(nodes, edges)
+    custom_uuid = uuid4()
+    idx = w.add_extension_segment(
+        "custom-tool/1.0",
+        [ExtensionBlock(0x1100, b"\x42" * 16, block_uuid=custom_uuid)])
+    assert idx == 1 and w.extension_segment_count == 2
+    w.add_end_of_capture()
+    w.write()
+
+    with MslReader(out) as reader:
+        report = verify_chain(reader)
+        assert report.valid, report.errors
+        assert report.block_count == 2
+        assert [s.verified for s in report.segments] == [True, True]
+        assert [s.producer for s in report.segments][1] == "custom-tool/1.0"
+        assert report.segments[0].producer.startswith("memdiver/")
+        assert report.trailing_bytes == 0
+        segments = reader.scan_extension_segments()
+        assert segments[0].end == segments[1].start
+        types = [h.block_type for h, _ in reader.iter_extension_blocks()]
+        assert types == [BlockType.POINTER_GRAPH, BlockType.END_OF_EXTENSION,
+                         0x1100, BlockType.END_OF_EXTENSION]
+        # Chain continuity across the segment boundary.
+        prev = hash_bytes(_eoc_block_bytes(reader))
+        for seg in segments:
+            for hdr in seg.headers:
+                assert hdr.prev_hash == prev
+                prev = hash_bytes(reader.read_bytes(hdr.file_offset, hdr.block_length))
+        assert segments[1].headers[0].block_uuid == custom_uuid
+        assert len(reader.collect_pointer_graphs()) == 1
+
+
+def test_add_raw_appendix_removed(tmp_path):
+    w = MslWriter(tmp_path / "x.msl")
+    with pytest.raises(NotImplementedError, match="add_extension_segment"):
+        w.add_raw_appendix(b"\x00" * 80)
+
+
+def test_extension_bytes_identical_across_writes(tmp_path):
+    """Writing the same writer twice (fixed timestamp) yields identical
+    extension bytes: WrittenAt and the terminator UUID are fixed per writer."""
+    out = tmp_path / "twice.msl"
+    nodes, edges = _sample_pointer_graph()
+    w = MslWriter(out, timestamp_ns=1_700_000_000_000_000_000)
+    w.add_memory_region(0, b"\x22" * 4096)
+    w.add_pointer_graph(nodes, edges)
+    w.add_extension_segment("t", [ExtensionBlock(0x1100, b"\x07" * 8)])
+    w.add_end_of_capture(acq_end_ns=5)
+
+    def _extension_bytes() -> bytes:
+        w.write()
+        with MslReader(out) as reader:
+            start = reader._extension_start()
+            assert start is not None
+            return reader.read_bytes(start, reader.buffer_length - start)
+
+    first = _extension_bytes()
+    second = _extension_bytes()
+    assert first and first == second
 
 
 # --- atomic write (temp + os.replace) ---

@@ -23,6 +23,7 @@ from .types import (
     MslConnPacketSocket,
     MslConnSocketFamilyAgg,
     MslEndOfCapture,
+    MslEndOfExtension,
     MslHandleEntry,
     MslHandleTable,
     MslImportProvenance,
@@ -136,12 +137,48 @@ def decode_process_identity(
 def decode_end_of_capture(
     hdr: MslBlockHeader, payload: bytes, byte_order: str
 ) -> MslEndOfCapture:
-    """Decode End-of-Capture payload (type 0x0FFF, spec Table 10)."""
+    """Decode End-of-Capture payload (type 0x0FFF, spec Table 10).
+
+    Layout (48 bytes): FileHash(32) AcqEnd(8) BlockCount(4) Reserved(4).
+    The legacy 40-byte form (no BlockCount) is accepted: block_count
+    defaults to 0 (= unknown).
+    """
     bo = byte_order
     file_hash = payload[0:32]
     acq_end = struct.unpack_from(f"{bo}Q", payload, 0x20)[0]
+    block_count = 0
+    if len(payload) >= 0x2C:
+        block_count = struct.unpack_from(f"{bo}I", payload, 0x28)[0]
     return MslEndOfCapture(
         block_header=hdr, file_hash=bytes(file_hash), acq_end_ns=acq_end,
+        block_count=block_count,
+    )
+
+
+# SegmentHash(32) WrittenAt(8) BlockCount(4) Reserved(4) ProducerLen(2)
+# Reserved(6) -- spec Table 12a; Producer (pad8) follows.
+END_OF_EXTENSION_HEAD_SIZE = 0x38
+
+
+def decode_end_of_extension(
+    hdr: MslBlockHeader, payload: bytes, byte_order: str
+) -> MslEndOfExtension:
+    """Decode End-of-Extension payload (type 0x0FFE, spec Table 12a).
+
+    Layout: SegmentHash(32) WrittenAt(8) BlockCount(4) Reserved(4)
+    ProducerLen(2, incl. NUL, 0 = none) Reserved(6) Producer(pad8).
+    """
+    bo = byte_order
+    _require(payload, END_OF_EXTENSION_HEAD_SIZE, "END_OF_EXTENSION head")
+    segment_hash = bytes(payload[0:32])
+    written_at, block_count, _reserved, producer_len = struct.unpack_from(
+        f"{bo}QIIH", payload, 0x20)
+    _require(payload, END_OF_EXTENSION_HEAD_SIZE + producer_len,
+             "END_OF_EXTENSION producer")
+    producer = _read_padded_str(payload, END_OF_EXTENSION_HEAD_SIZE, producer_len)
+    return MslEndOfExtension(
+        block_header=hdr, segment_hash=segment_hash, written_at_ns=written_at,
+        block_count=block_count, producer=producer,
     )
 
 
@@ -214,13 +251,14 @@ def decode_vas_map(hdr: MslBlockHeader, payload: bytes, byte_order: str) -> MslV
         protection = payload[offset + 0x10]
         region_type = payload[offset + 0x11]
         path_len = struct.unpack_from(f"{bo}H", payload, offset + 0x12)[0]
-        # 4 bytes padding at offset+0x14
+        # u8 name_source (VasNameSource) at offset+0x14; 3 reserved bytes follow
+        name_source = payload[offset + 0x14]
         _require(payload, offset + 0x18 + path_len, f"VAS_MAP entry {idx} path")
         path = _read_padded_str(payload, offset + 0x18, path_len)
         entries.append(MslVasEntry(
             base_addr=base_addr, region_size=region_size,
             protection=protection, region_type=region_type,
-            mapped_path=path,
+            mapped_path=path, name_source=name_source,
         ))
         if entry_size > 0:
             offset += entry_size

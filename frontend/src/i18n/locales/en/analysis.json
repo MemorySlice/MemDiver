@@ -96,6 +96,8 @@
     "exploration": "Full discovery toolkit — all algorithms, entropy visualization, cross-dump consensus.",
     "modeLabel": "Mode:",
     "verificationName": "verification",
-    "explorationName": "exploration"
+    "explorationName": "exploration",
+    "heap": "Exploration plus heap analysis — allocator detection, chunk table, free lists and a heap layer in the hex view.",
+    "heapName": "heap"
   }
 }

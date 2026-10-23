@@ -31,7 +31,7 @@ import type { ByteAbsence } from "@/stores/multi-hex-store";
  * second, view-gated code path — that gate is why the page-state tints never
  * rendered in the `"vas"` coordinate at all.
  */
-export type AbsenceKind = ByteAbsence | "unmapped" | "failed";
+export type AbsenceKind = ByteAbsence | "unmapped" | "failed" | "not-resident";
 
 export interface AbsenceMeta {
   /** The class `HexRow` puts on the cell; styled by `hex.css`. */
@@ -109,6 +109,17 @@ export const ABSENCE_META: Record<AbsenceKind, AbsenceMeta> = {
     swatchClass: null,
     labelKey: null,
   },
+  // MSL 1.1 NotResident: a never-touched anonymous page whose content is known
+  // to be zero; printed like the other page states, tinted so it is not read
+  // as a capture failure.
+  "not-resident": {
+    cellClass: "page-not-resident",
+    glyph: null,
+    voids: false,
+    titleKey: null,
+    swatchClass: null,
+    labelKey: null,
+  },
 };
 
 /** The legend entries, in the order a reader meets them in the grid. */
@@ -142,5 +153,6 @@ export function absenceForPageState(
 ): AbsenceKind | undefined {
   if (pageState === "FAILED") return "failed";
   if (pageState === "UNMAPPED") return "unmapped";
+  if (pageState === "NOT_RESIDENT") return "not-resident";
   return undefined;
 }

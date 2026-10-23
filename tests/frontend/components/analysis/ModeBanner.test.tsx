@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 // See the comment in `ErrorBoundary.test.tsx` — needed so `tsc -b` sees
 // jest-dom's `Assertion` augmentation even though `tests/setup.ts` is
 // excluded from that program.
@@ -21,7 +21,8 @@ describe("ModeBanner", () => {
     // Under zustand v5 a bare object-returning selector loops forever inside
     // useSyncExternalStore; mounting at all is the assertion.
     expect(() => render(<ModeBanner />)).not.toThrow();
-    expect(screen.getAllByRole("button").length).toBe(2);
+    // verification, exploration, heap.
+    expect(screen.getAllByRole("button").length).toBe(3);
   });
 
   it("does not re-render on app-store fields it never reads", () => {
@@ -52,5 +53,14 @@ describe("ModeBanner", () => {
     // (1 commit then, 0 now). Asserted as a floor so an i18n change does not
     // fail a test about store subscriptions.
     expect(counter.count - initial).toBeGreaterThanOrEqual(1);
+  });
+
+  it("switches to heap mode and marks it pressed", () => {
+    render(<ModeBanner />);
+    fireEvent.click(screen.getByTestId("mode-heap"));
+    expect(useAppStore.getState().mode).toBe("heap");
+    expect(screen.getByTestId("mode-heap")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("mode-verification")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/heap analysis/i)).toBeInTheDocument();
   });
 });

@@ -36,7 +36,7 @@ import { keyMaterialWire } from "./key-material-wire";
 const BASE = ""; // relative -- Vite proxy handles /api/* during dev
 
 /** Append the non-empty key-material fields to a query string, if present. */
-function appendKey(qs: URLSearchParams, key?: KeyMaterial) {
+export function appendKey(qs: URLSearchParams, key?: KeyMaterial) {
   if (key?.passphrase) qs.set("passphrase", key.passphrase);
   if (key?.key_hex) qs.set("key_hex", key.key_hex);
   if (key?.kem_key_hex) qs.set("kem_key_hex", key.kem_key_hex);

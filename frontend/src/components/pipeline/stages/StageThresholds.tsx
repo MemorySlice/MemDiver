@@ -29,6 +29,7 @@ import { runPipeline } from "@/api/pipeline";
 import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import type { WizardStage } from "@/stores/pipeline-store";
 import { usePipelineStore } from "@/stores/pipeline-store";
+import { HeapPolicySelect } from "@/components/charts/HeapPolicySelect";
 import { defaultNValues, parseNValues } from "@/utils/n-values";
 
 /** Caption + hover-help bubble shared by every field control below. */
@@ -318,6 +319,18 @@ export function StageThresholds({ onAdvance }: Props) {
             min={1}
             onChange={(v) => patchReduce({ min_region: v })}
           />
+          {/*
+            Only written into `reduce` once chosen, so an untouched form posts
+            the body it always did and the backend applies `"annotate"`.
+          */}
+          <div className="text-xs">
+            <HeapPolicySelect
+              testId="pipeline-heap-policy-select"
+              value={form.reduce.heap_policy}
+              onChange={(heap_policy) => patchReduce({ heap_policy })}
+              selectClassName={FIELD_INPUT_CLASS}
+            />
+          </div>
         </div>
       </div>
 

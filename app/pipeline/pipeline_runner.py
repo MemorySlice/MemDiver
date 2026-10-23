@@ -360,6 +360,23 @@ def _build_consensus(
     }
 
 
+def _reduce_kwargs_without_heap(
+    reduce_kwargs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Copy of ``reduce_kwargs`` minus ``heap_policy``.
+
+    Only the reduce stage (``tools_pipeline.search_reduce``) loads the heap
+    roles the consensus stage wrote. The nsweep fold (fresh Welford per N) and
+    the auto-floor / escalate sweep reduce with no heap annotation, so a
+    ``heap_policy`` there would either be rejected as an unknown keyword or be
+    a silent no-op ("mask" quietly behaving as "off"). Dropping it keeps those
+    stages exactly as they were before the reduce stage honoured the policy.
+    """
+    stripped = dict(reduce_kwargs or {})
+    stripped.pop("heap_policy", None)
+    return stripped
+
+
 def _run_reduce(
     variance_path: Path,
     reference_path: Path,
@@ -527,7 +544,7 @@ def _run_nsweep(
         pcap_max_challenges=pcap_max_challenges,
         output_dir=str(out_dir),
         n_values=list(nsweep_params["n_values"]),
-        reduce_kwargs=dict(nsweep_params.get("reduce_kwargs") or {}),
+        reduce_kwargs=_reduce_kwargs_without_heap(nsweep_params.get("reduce_kwargs")),
         key_sizes=tuple(nsweep_params.get("key_sizes", (32,))),
         stride=nsweep_params.get("stride", 1),
         exhaustive=nsweep_params.get("exhaustive", True),
@@ -698,7 +715,7 @@ def run_auto_floor_stage(
         reference_data,
         int(num_dumps),
         oracle,
-        reduce_kwargs=dict(reduce_kwargs or {}),
+        reduce_kwargs=_reduce_kwargs_without_heap(reduce_kwargs),
         key_sizes=tuple(key_sizes),
         stride=stride,
         coverage=coverage,
@@ -991,7 +1008,7 @@ def _stage_escalate(state: "PipelineState") -> None:
         oracle_config=state.oracle_config,
         output_dir=str(out_dir),
         num_dumps=int(consensus["num_dumps"]),
-        reduce_kwargs=dict(state.reduce_kwargs),
+        reduce_kwargs=_reduce_kwargs_without_heap(state.reduce_kwargs),
         key_sizes=tuple(bf.get("key_sizes", (32,))),
         stride=int(bf.get("stride", 1)),
         oracle_budget=state.escalate_oracle_budget,

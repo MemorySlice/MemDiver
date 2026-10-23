@@ -46,6 +46,17 @@ from .experiment import (
     _experiment_cli_progress,
     _print_experiment_table,
 )
+from .heap import (
+    _HEAP_HANDLERS,
+    _cmd_heap,
+    _cmd_heap_at,
+    _cmd_heap_chunks,
+    _cmd_heap_detect,
+    _cmd_heap_free_lists,
+    _cmd_heap_roles,
+    _cmd_heap_summary,
+    add_heap_parser,
+)
 from .inspect import (
     _INSPECT_HANDLERS,
     _cmd_inspect,
@@ -169,4 +180,14 @@ __all__ = [
     "_cmd_inspect_provenance",
     "_cmd_inspect_xref",
     "_cmd_inspect_structure",
+    # heap
+    "_HEAP_HANDLERS",
+    "add_heap_parser",
+    "_cmd_heap",
+    "_cmd_heap_detect",
+    "_cmd_heap_summary",
+    "_cmd_heap_chunks",
+    "_cmd_heap_at",
+    "_cmd_heap_free_lists",
+    "_cmd_heap_roles",
 ]

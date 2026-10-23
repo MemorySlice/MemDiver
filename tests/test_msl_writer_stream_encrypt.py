@@ -53,9 +53,22 @@ def test_streaming_encrypted_equals_in_memory(tmp_path, algo):
     assert streamed == in_memory
     with MslReader(tmp_path / "s.msl", key=KEY) as r:
         assert r.tag_status is TagStatus.VALID
-        assert verify_chain(r).valid
+        report = verify_chain(r)
+        assert report.valid, report.errors
         assert {g.base_addr for g in r.collect_regions()} == {0x10000, 0x900000}
         assert r.collect_pointer_graphs()
+        # The pointer graph sits in a verified extension segment inside the
+        # AEAD stream; header / EoC counts cover capture blocks only.
+        assert len(report.segments) == 1 and report.segments[0].verified
+        capture_blocks = len(list(r._iter_raw_block_headers()))
+        # 2 regions + key hint + EoC (process identity is only emitted for
+        # imported=False writers); the segment blocks are not counted.
+        assert report.block_count == capture_blocks == 4
+        assert r.file_header.block_count == 0
+        assert r.collect_end_of_capture()[0].block_count == capture_blocks
+        assert report.eoc_block_count == capture_blocks
+        assert report.file_hash_ok is True
+        assert report.trailing_bytes == 0
 
 
 def test_streaming_encrypted_passphrase_roundtrip(tmp_path):
@@ -64,7 +77,10 @@ def test_streaming_encrypted_passphrase_roundtrip(tmp_path):
     _populate(w, bytes(2 * PAGE))
     w.write()  # streamed regions -> write_streaming()
     with MslReader(tmp_path / "p.msl", passphrase=b"pw") as r:
-        assert r.tag_status is TagStatus.VALID and verify_chain(r).valid
+        assert r.tag_status is TagStatus.VALID
+        report = verify_chain(r)
+        assert report.valid and report.segments[0].verified
+        assert len(r.collect_pointer_graphs()) == 1
 
 
 @pytest.mark.skipif(not crypto.kem_is_available(KeyEncap.X25519),
@@ -76,7 +92,10 @@ def test_streaming_encrypted_x25519_roundtrip(tmp_path):
     _populate(w, bytes(PAGE))
     w.write_streaming()
     with MslReader(tmp_path / "k.msl", kem_private_key=priv) as r:
-        assert r.tag_status is TagStatus.VALID and verify_chain(r).valid
+        assert r.tag_status is TagStatus.VALID
+        report = verify_chain(r)
+        assert report.valid and report.segments[0].verified
+        assert len(r.collect_pointer_graphs()) == 1
 
 
 @pytest.mark.parametrize("algo", ALGOS)

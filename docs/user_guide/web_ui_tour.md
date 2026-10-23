@@ -125,6 +125,29 @@ Stages: `consensus` → `search_reduce` → `brute_force`, then the optional `es
 Downloadable artifacts include the finalized consensus state (`consensus/state.json`, which points at the Welford `mean.npy` / `m2.npy` arrays written next to it), the variance vector, `search_reduce/candidates.json`, the `brute_force/hits.json` catalog, the N-sweep report, and the synthesized Volatility 3 plugin with its YARA rule. The results view has **Plugin**, **Report**, and **Raw** tabs.
 ```
 
+## Heap mode
+
+The mode banner offers a third mode, **Heap**, next to verification and
+exploration. Heap mode is exploration plus allocator-aware panels:
+
+- The **Heap** side tab opens on entering the mode. It shows the detected
+  allocator with its confidence and evidence, a *Partial* or *Heuristic* tag
+  when the parser covers only part of the allocator, the platform and version
+  hint, the heap regions (click one to jump there) and the chunk counts by
+  state.
+- The **Heap** bottom tab holds the chunk table (filter by state, size and
+  address range; click a row to jump to the chunk), a size histogram, the
+  free-list tree and a chunk inspector with the header fields and neighbouring
+  chunks.
+- The hex viewer paints a **heap layer**: every byte is colored by its role
+  (chunk header, user data, free-list link, freed data, allocator metadata, top
+  chunk, slack), and a tick marks each chunk start. The heap legend explains the
+  colors. The **Heap layer** toolbar button hides the layer while you stay in
+  the mode.
+
+Allocators, roles and limitations are covered in
+[Heap allocator awareness](heap.md).
+
 ## Theme triptych
 
 ```{figure} /_static/screenshots/11_theme_triptych.png

@@ -9,6 +9,7 @@ FastAPI backend. Serves the built React bundle at `/` and the Marimo notebook at
 | `/api/dataset` | Scan, list protocols, list phases. |
 | `/api/analysis` | Run, consensus, verify-key, auto-export. |
 | `/api/inspect` | Hex, entropy, strings, structure overlay, VAS, module / process / connection / handle tables. |
+| `/api/heap` | Heap allocator analysis: allocator detection (`/detect`), whole-heap overview (`/summary`), paged/filtered chunk table (`/chunks`), chunk containing a VA or offset (`/chunk-at`), walked free lists (`/free-lists`), byte-role runs of a view window (`/roles`). Errors use the global `{error, code, category}` contract. |
 | `/api/sessions` | `.memdiver` session CRUD. |
 | `/api/tasks` | Background-task status + cancellation. |
 | `/api/dumps` | Multipart upload → MSL convert. |

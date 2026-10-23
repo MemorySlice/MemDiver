@@ -26,7 +26,7 @@ from memdiver.core.binary_formats.minidump_reader import (
 from memdiver.core.format_detect import detect_format
 from memdiver.core.models import CryptoSecret
 from .enums import (ArchType, MslKeyType, MslProtocol, OSType, PageState,
-                    Protection, RegionType, SourceFormat)
+                    Protection, RegionType, SourceFormat, VasNameSource)
 from .import_sources import MappedFile, Run, RunBuilder, RunSource
 from .region_select import (REGION_NAMES_NOTE, RegionInfo, RegionSelection,
                             join_provenance_note, selection_provenance_note)
@@ -170,20 +170,42 @@ def _plan_selection(infos: List[RegionInfo],
     return _SelectionPlan(selection, infos, keep)
 
 
-def _add_vas_map_if_excluded(writer: MslWriter, plan: _SelectionPlan) -> None:
+def _add_vas_map_if_excluded(
+        writer: MslWriter, plan: _SelectionPlan,
+        name_source_for_path: int = VasNameSource.SYNTHESIZED) -> None:
     """Record the full layout (kept AND excluded) once anything was dropped.
 
     Excluded regions have a VAS entry but no MEMORY_REGION block, which is
-    how a reader tells "not captured by selection" apart.
+    how a reader tells "not captured by selection" apart. ``mapped_path``
+    is the module path; *name_source_for_path* is the NameSource written
+    for entries that have one (SOURCE_METADATA when the paths come from
+    the source's own module metadata, e.g. a minidump module stream;
+    SYNTHESIZED when derived). Entries without a path are UNSPECIFIED.
     """
     if not plan.excluded_count:
         return
     writer.add_vas_map([
         MslVasEntry(base_addr=i.base_addr, region_size=i.size,
                     protection=i.protection, region_type=i.region_type,
-                    mapped_path=i.module_path or "")
+                    mapped_path=i.module_path or "",
+                    name_source=_path_name_source(i.module_path,
+                                                  name_source_for_path))
         for i in sorted(plan.infos, key=lambda info: info.base_addr)
     ])
+
+
+def _path_name_source(path: Optional[str], source_when_set: int) -> int:
+    return int(source_when_set) if path else int(VasNameSource.UNSPECIFIED)
+
+
+def _named_vas_name_source(info: RegionInfo) -> int:
+    """NameSource for :func:`_add_named_vas_map`: the mapping name is
+    source metadata, a module path is synthesized, nothing is unspecified."""
+    if info.name:
+        return int(VasNameSource.SOURCE_METADATA)
+    if info.module_path:
+        return int(VasNameSource.SYNTHESIZED)
+    return int(VasNameSource.UNSPECIFIED)
 
 
 def _add_named_vas_map(writer: MslWriter, plan: _SelectionPlan) -> None:
@@ -191,14 +213,17 @@ def _add_named_vas_map(writer: MslWriter, plan: _SelectionPlan) -> None:
 
     Used by the ELF-core and regioned-raw importers: ``mapped_path`` is the
     full mapping name (``RegionInfo.name``, e.g. ``[anon:scudo:primary]``)
-    or else the module path. Readers trust these names only together with
-    the ``region_names=1`` provenance marker (:func:`_named_base_note`).
-    Excluded regions still have a VAS entry but no MEMORY_REGION block.
+    or else the module path. Entries carry NameSource SOURCE_METADATA for a
+    mapping name (readers trust it, spec 5.8), SYNTHESIZED for a bare
+    module path; pre-1.1 readers fall back to the ``region_names=1``
+    provenance marker (:func:`_named_base_note`). Excluded regions still
+    have a VAS entry but no MEMORY_REGION block.
     """
     writer.add_vas_map([
         MslVasEntry(base_addr=i.base_addr, region_size=i.size,
                     protection=i.protection, region_type=i.region_type,
-                    mapped_path=i.name or i.module_path or "")
+                    mapped_path=i.name or i.module_path or "",
+                    name_source=_named_vas_name_source(i))
         for i in sorted(plan.infos, key=lambda info: info.base_addr)
     ])
 
@@ -1155,7 +1180,9 @@ def import_minidump(
                 _add_minidump_region(writer, mapped, spec, page_size_log2,
                                      region.region_type)
 
-        _add_vas_map_if_excluded(writer, plan)
+        # Module paths come from the minidump's module stream: source metadata.
+        _add_vas_map_if_excluded(
+            writer, plan, name_source_for_path=VasNameSource.SOURCE_METADATA)
         hidden = _count_secrets_only_in_excluded(
             secrets, plan, lambda i: _minidump_searchable(mapped, regions[i]))
         writer.add_import_provenance(

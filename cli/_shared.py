@@ -54,6 +54,37 @@ def add_force_memory_argument(parser: argparse.ArgumentParser) -> None:
                         action="store_true", help=_FORCE_MEMORY_HELP)
 
 
+#: Allocators the heap parser understands (``auto`` lets the detector pick).
+#: Mirrors ``memdiver.heap.analyze.parse_allocator_hint``; spelled out here
+#: because this module depends only on ``core`` (parity is test-guarded).
+ALLOCATOR_CHOICES = ("auto", "ptmalloc2", "dlmalloc", "scudo",
+                     "mallocng", "jemalloc", "generic")
+
+#: ``--allocator`` choices on the consensus-backed commands: ``off`` skips the
+#: heap analysis entirely.
+PIPELINE_ALLOCATOR_CHOICES = ALLOCATOR_CHOICES + ("off",)
+
+#: ``--heap-policy`` choices (``engine.candidate_pipeline.HEAP_POLICIES``).
+HEAP_POLICY_CHOICES = ("off", "annotate", "mask")
+
+
+def add_allocator_argument(parser: argparse.ArgumentParser) -> None:
+    """Register ``--allocator`` (heap-role annotation of the consensus)."""
+    parser.add_argument(
+        "--allocator", choices=PIPELINE_ALLOCATOR_CHOICES, default="auto",
+        help="Heap allocator for the non-destructive heap-role annotation "
+             "(default: auto-detect; 'off' disables heap analysis)")
+
+
+def add_heap_policy_argument(parser: argparse.ArgumentParser) -> None:
+    """Register ``--heap-policy`` (how candidates treat allocator metadata)."""
+    parser.add_argument(
+        "--heap-policy", choices=HEAP_POLICY_CHOICES, default="annotate",
+        help="annotate (default, non-destructive): tag each candidate with its "
+             "heap chunk; mask: remove allocator metadata from the candidates "
+             "(counted in stages.heap_masked); off: no heap analysis")
+
+
 def force_memory_requested(args: argparse.Namespace) -> bool:
     """True when the operator passed ``--force-memory`` on this subcommand."""
     return bool(getattr(args, "force_memory", False))

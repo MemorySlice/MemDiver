@@ -13,6 +13,7 @@ from ._shared import (
     _write_output,
     force_memory_requested,
 )
+from .heap_report import report_consensus_heap
 
 logger = logging.getLogger("memdiver.cli")
 
@@ -114,6 +115,7 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
         on_source=_warn_tag_status,
         region_filter=region_filter,
         force=force_memory_requested(args),
+        allocator=getattr(args, "allocator", "auto"),
     )
 
     min_len = args.min_length
@@ -144,6 +146,11 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
     result["alignment"] = cm.alignment_report.to_dict()
     result["diagnostics"] = cm.alignment_report.diagnostic_dicts
     _warn_alignment_diagnostics(result["diagnostics"])
+    if cm.heap is not None:
+        # Additive, shaped like the pipeline consensus.json "heap" block; absent
+        # under --allocator off so that report is byte-identical to before.
+        result["heap"] = {"status": cm.heap.status, **cm.heap.to_dict()}
+    report_consensus_heap(cm.heap)
 
     # Alignment filtering
     if args.align:
@@ -324,6 +331,7 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         key_material_by_path=by_path,
         region_filter=region_filter,
         force=force_memory_requested(args),
+        allocator=getattr(args, "allocator", "auto"),
     )
     _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
     _write_output(result.payload, args.output)
@@ -380,6 +388,7 @@ def _cmd_consensus_regions(args: argparse.Namespace) -> int:
         key_material_by_path=by_path,
         region_filter=region_filter,
         force=force_memory_requested(args),
+        allocator=getattr(args, "allocator", "auto"),
     )
     _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
     _write_output(result.payload, args.output)

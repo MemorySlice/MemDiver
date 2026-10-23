@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -42,6 +42,9 @@ from memdiver.engine.progress import (
     noop_progress,
     safe_emit,
 )
+
+if TYPE_CHECKING:  # runtime import would pull the heap layer into every reduce
+    from memdiver.engine.consensus_heap import HeapChunkIndex, HeapRoleRuns
 
 logger = logging.getLogger("memdiver.engine.candidate_pipeline")
 
@@ -67,6 +70,14 @@ DEFAULT_ALIGNMENT = 8
 ORDER_OFFSET = "offset"
 ORDER_RANK = "rank"
 ORDERS = (ORDER_OFFSET, ORDER_RANK)
+
+#: What :func:`reduce_search_space` does with consensus heap roles; see
+#: :mod:`memdiver.engine.candidate_heap`. Without heap runs every policy is
+#: ``"off"``.
+HEAP_POLICY_OFF = "off"
+HEAP_POLICY_ANNOTATE = "annotate"
+HEAP_POLICY_MASK = "mask"
+HEAP_POLICIES = (HEAP_POLICY_OFF, HEAP_POLICY_ANNOTATE, HEAP_POLICY_MASK)
 
 #: Key-likeness weight of each ByteClass, indexed by its integer code. Evenly
 #: spaced over [0, 1] so a region's composition mean is a plain average: an
@@ -124,14 +135,23 @@ class CandidateScore:
     variance: float = 0.0
     entropy: float = 0.0
     length: float = 0.0
+    # Additive heap adjustment, set only under ``heap_policy="mask"``
+    # (:func:`memdiver.engine.candidate_heap.heap_score_adjustment`). ``None``
+    # means "not applied": it then neither enters :attr:`total` nor appears
+    # in :meth:`to_dict`, so every other policy is byte-identical to before.
+    heap: Optional[float] = None
 
     @property
     def total(self) -> float:
-        return float(sum(SCORE_WEIGHTS[name] * float(getattr(self, name))
-                         for name in SCORE_WEIGHTS))
+        weighted = float(sum(SCORE_WEIGHTS[name] * float(getattr(self, name))
+                             for name in SCORE_WEIGHTS))
+        return weighted if self.heap is None else weighted + float(self.heap)
 
     def to_dict(self) -> dict:
-        return {name: float(getattr(self, name)) for name in SCORE_WEIGHTS}
+        out = {name: float(getattr(self, name)) for name in SCORE_WEIGHTS}
+        if self.heap is not None:
+            out["heap"] = float(self.heap)
+        return out
 
 
 @dataclass
@@ -155,9 +175,14 @@ class CandidateRegion:
     # 1-based position in the score ranking, ties broken by offset. Always
     # stamped, whichever ``order`` the region list itself came back in.
     rank: int = 0
+    # Heap context (``heap_policy`` "annotate"/"mask" with heap runs):
+    # ``{role_counts, chunk, residual, agreement}``, see
+    # :func:`memdiver.engine.candidate_heap.region_heap_annotation`. ``None``
+    # otherwise, and then absent from :meth:`to_dict`.
+    heap: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "offset": int(self.offset),
             "length": int(self.length),
             "mean_entropy": float(self.mean_entropy),
@@ -168,6 +193,9 @@ class CandidateRegion:
             "score": float(self.score),
             "score_components": self.score_components.to_dict(),
         }
+        if self.heap is not None:
+            out["heap"] = self.heap
+        return out
 
 
 @dataclass
@@ -180,15 +208,22 @@ class StageCounts:
     byte_class: int = 0
     aligned: int = 0
     high_entropy: int = 0
+    # Variance survivors REMOVED by the ``heap_policy="mask"`` gate (allocator
+    # metadata). ``None`` when the gate did not run; then absent from
+    # :meth:`to_dict`, so the funnel of every other policy is unchanged.
+    heap_masked: Optional[int] = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "total_bytes": self.total_bytes,
             "variance": self.variance,
             "byte_class": self.byte_class,
             "aligned": self.aligned,
             "high_entropy": self.high_entropy,
         }
+        if self.heap_masked is not None:
+            out["heap_masked"] = self.heap_masked
+        return out
 
 
 @dataclass
@@ -450,6 +485,44 @@ def _rank_regions(
     return ranked if order == ORDER_RANK else regions
 
 
+def _validate_heap_policy(heap_policy: str) -> None:
+    if heap_policy not in HEAP_POLICIES:
+        raise ValueError(
+            f"heap_policy={heap_policy!r} is not one of {HEAP_POLICIES}"
+        )
+
+
+def _apply_heap_mask(
+    variance_mask: np.ndarray, heap_runs: "HeapRoleRuns", stages: StageCounts,
+) -> np.ndarray:
+    """AND out allocator-metadata bytes; record how many survivors that cost."""
+    from memdiver.engine.candidate_heap import metadata_mask
+
+    kept = variance_mask & ~metadata_mask(heap_runs, int(variance_mask.size))
+    stages.heap_masked = int(variance_mask.sum()) - int(kept.sum())
+    return kept
+
+
+def _heap_annotation(
+    heap_runs: "HeapRoleRuns",
+    heap_chunks: Optional["HeapChunkIndex"],
+    heap_policy: str,
+    start: int,
+    length: int,
+    components: CandidateScore,
+) -> Dict[str, Any]:
+    """Annotate one region; under ``"mask"`` also set ``components.heap``."""
+    from memdiver.engine.candidate_heap import (
+        heap_score_adjustment,
+        region_heap_annotation,
+    )
+
+    annotation = region_heap_annotation(heap_runs, heap_chunks, start, length)
+    if heap_policy == HEAP_POLICY_MASK:
+        components.heap = heap_score_adjustment(annotation, length)
+    return annotation
+
+
 def reduce_search_space(
     variance: np.ndarray,
     reference_data: bytes,
@@ -468,6 +541,9 @@ def reduce_search_space(
     order: str = ORDER_OFFSET,
     entropy_cache: dict | None = None,
     progress_callback: ProgressFn = noop_progress,
+    heap_runs: Optional["HeapRoleRuns"] = None,
+    heap_chunks: Optional["HeapChunkIndex"] = None,
+    heap_policy: str = HEAP_POLICY_ANNOTATE,
 ) -> ReductionResult:
     """Run the consensus → alignment → entropy reduction chain.
 
@@ -528,7 +604,19 @@ def reduce_search_space(
     withheld to pay for that, though — ``rank``, ``score`` and
     ``score_components`` are stamped on every row in BOTH orders, so an
     offset-ordered consumer sorts client-side and loses nothing.
+
+    ``heap_runs`` / ``heap_chunks`` are the consensus heap annotation in the
+    same slab coordinates as ``variance`` (``cm.heap.runs`` / ``.chunks``, or
+    ``heap_roles.npz``), and ``heap_policy`` says what to do with them — see
+    :mod:`memdiver.engine.candidate_heap`. ``"annotate"`` (default) stamps a
+    ``heap`` dict on every region and changes nothing else; ``"mask"`` also
+    removes allocator-metadata bytes before the reduction (counted in
+    ``stages.heap_masked``) and adds ``score_components.heap`` to each score;
+    ``"off"`` ignores them. With ``heap_runs=None`` every policy is ``"off"``:
+    the result is byte-identical to a call without these arguments.
     """
+    _validate_heap_policy(heap_policy)
+    heap_active = heap_runs is not None and heap_policy != HEAP_POLICY_OFF
     if order not in ORDERS:
         raise ValueError(
             f"order={order!r} is not one of {ORDERS}"
@@ -573,6 +661,8 @@ def reduce_search_space(
             if classes else None
         ),
     }
+    if heap_active:
+        thresholds["heap_policy"] = heap_policy
 
     safe_emit(
         progress_callback,
@@ -594,6 +684,9 @@ def reduce_search_space(
     else:
         variance_mask = _variance_mask(variance, min_variance)
     stages.variance = int(variance_mask.sum())
+    if heap_active and heap_policy == HEAP_POLICY_MASK:
+        assert heap_runs is not None  # nosec B101 - implied by heap_active
+        variance_mask = _apply_heap_mask(variance_mask, heap_runs, stages)
     safe_emit(
         progress_callback,
         ProgressEvent(
@@ -694,6 +787,11 @@ def reduce_search_space(
         components = _score_region(
             end - start, mean_variance, region_entropy, class_counts
         )
+        heap = None
+        if heap_active:
+            assert heap_runs is not None  # nosec B101 - implied by heap_active
+            heap = _heap_annotation(heap_runs, heap_chunks, heap_policy,
+                                    start, end - start, components)
         regions.append(
             CandidateRegion(
                 offset=int(start),
@@ -704,6 +802,7 @@ def reduce_search_space(
                 class_counts=class_counts,
                 score=components.total,
                 score_components=components,
+                heap=heap,
             )
         )
     regions = _rank_regions(regions, order)

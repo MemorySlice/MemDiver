@@ -89,6 +89,14 @@ from memdiver.engine.vol3_verify import (
 
 from .composition import open_dump_source, raise_if_locked
 
+from ._pipeline_heap import (
+    allocator_for_policy,
+    checked_heap_policy,
+    heap_inputs_from_consensus,
+    load_heap_beside,
+    write_consensus_heap,
+)
+
 from ._progress import (
     _cancel_bridge,
     _emit,
@@ -315,8 +323,14 @@ def search_reduce(
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
     region_filter: Optional[str] = None,
+    heap_policy: str = "annotate",
 ) -> Dict[str, Any]:
     """Reduce consensus variance to a region list via the Phase 25 filter chain.
+
+    ``heap_policy`` ("annotate" | "mask" | "off") applies the consensus heap
+    roles the consensus stage wrote beside ``variance_path``
+    (``heap_roles.npz``; see ``engine.candidate_heap``). Without that file
+    "annotate" behaves exactly as "off"; "mask" then raises PRECONDITION.
 
     ``region_filter``: the region view filter the reference is read through.
     ``None`` reuses the one the consensus stage recorded beside
@@ -365,6 +379,8 @@ def search_reduce(
     wanted_classes = resolve_byte_classes(classes) if classes else None
     region_filter = _resolve_stage_region_filter(
         region_filter, *_consensus_artifacts(variance_path))
+    heap_runs, heap_chunks = load_heap_beside(
+        variance_path, checked_heap_policy(heap_policy))
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with ExitStack() as _vstack:
@@ -398,6 +414,9 @@ def search_reduce(
             max_region=max_region,
             classes=wanted_classes,
             order=order,
+            heap_runs=heap_runs,
+            heap_chunks=heap_chunks,
+            heap_policy=heap_policy,
             **reduce_extra,
         )
         # Advisory only: a data-driven floor to consider for min_variance
@@ -756,6 +775,8 @@ def analyze_candidates(
     on_source: Optional[Callable[[Any], None]] = None,
     region_filter: Optional[str] = None,
     force: bool = False,
+    heap_policy: str = "annotate",
+    allocator: str = "auto",
 ) -> Dict[str, Any]:
     """N dumps in, a ranked candidate list out — with no oracle and no pcap.
 
@@ -814,6 +835,14 @@ def analyze_candidates(
     builds the consensus through the region view filter. The result always
     echoes ``region_filter`` (``None`` = unfiltered) because every region
     offset is then a filtered-view offset.
+
+    ``heap_policy`` ("annotate" | "mask" | "off") applies the consensus heap
+    roles (built with ``allocator``; see ``engine.candidate_heap``).
+    "annotate" adds a ``heap`` dict per region and changes nothing else;
+    "mask" drops allocator metadata and adjusts scores, and raises
+    PRECONDITION when no usable heap annotation exists; "off" skips the heap
+    analysis entirely. ``heap_status`` reports the annotation's status (absent
+    under "off").
     """
     from memdiver.engine.candidate_pipeline import (
         ORDERS,
@@ -858,17 +887,19 @@ def analyze_candidates(
             on_source(source)
 
     region_filter = _note_or_invalid(region_filter)
+    checked_heap_policy(heap_policy)
     km = _resolve_key_material(key_material, key_file, passphrase, kem_key_file)
     try:
         cm = build_consensus(
             [str(p) for p in paths], normalize=normalize,
             key_material=km, on_source=_observe, region_filter=region_filter,
-            force=force,
+            force=force, allocator=allocator_for_policy(allocator, heap_policy),
         )
     except (OSError, ValueError) as exc:
         raise CapabilityError(
             f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
         ) from exc
+    heap_runs, heap_chunks = heap_inputs_from_consensus(cm, heap_policy)
 
     try:
         result = reduce_search_space(
@@ -882,6 +913,9 @@ def analyze_candidates(
             min_region=min_region,
             max_region=max_region,
             order=order,
+            heap_runs=heap_runs,
+            heap_chunks=heap_chunks,
+            heap_policy=heap_policy,
         )
     except ValueError as exc:
         # An unsatisfiable filter combination (the clearest being an
@@ -932,7 +966,7 @@ def analyze_candidates(
         diagnostics.append(stored["diagnostic"])
 
     inline, truncated = _bounded_regions(all_regions, max_returned)
-    return {
+    response = {
         "num_dumps": cm.num_dumps,
         "size": cm.size,
         "class_counts": class_counts,
@@ -958,6 +992,9 @@ def analyze_candidates(
         # Offsets above are in this filter's view (None = unfiltered).
         "region_filter": cm.region_filter,
     }
+    if cm.heap is not None:
+        response["heap_status"] = cm.heap.status
+    return response
 
 
 # ----------------------------------------------------------------------
@@ -1951,6 +1988,7 @@ def consensus(
     is_cancelled: Optional[Callable[[], bool]] = None,
     region_filter: Optional[str] = None,
     force: bool = False,
+    allocator: str = "auto",
 ) -> Dict[str, Any]:
     """Build a per-byte consensus variance vector across N dumps.
 
@@ -1980,6 +2018,13 @@ def consensus(
     ``.msl`` inputs as if only those region categories existed (non-
     destructive view filter); other formats ignore it. Echoed (normalised)
     in the returned meta / ``consensus.json``.
+
+    ``allocator`` ("auto", an allocator name, or "off") drives the heap-role
+    annotation of the slab. Unless "off", the meta gains a ``"heap"`` block
+    (status/report/runs/chunks/per_dump summary, ``heap_roles_path``) and a
+    usable annotation is written to ``heap_roles.npz`` beside the variance for
+    ``search_reduce``'s ``heap_policy``. The incremental ``persist_welford``
+    path does not annotate.
     """
     from memdiver.core.region_view_filter import region_filter_note
     from memdiver.engine.consensus_service import build_consensus
@@ -2015,7 +2060,7 @@ def consensus(
         # "empty or mismatched dumps" below.
         cm = build_consensus(
             paths, normalize=normalize, key_material=km, on_source=_raise_if_locked,
-            region_filter=region_filter, force=force,
+            region_filter=region_filter, force=force, allocator=allocator,
         )
     except (OSError, ValueError) as exc:
         raise CapabilityError(
@@ -2048,6 +2093,9 @@ def consensus(
         "alignment": cm.alignment_report.to_dict(),
         "diagnostics": cm.alignment_report.diagnostic_dicts,
     }
+    heap_block = write_consensus_heap(cm.heap, out)
+    if heap_block is not None:
+        meta["heap"] = heap_block
     _dump_json(meta, out / "consensus.json")
     _emit(on_progress, "stage_end", stage="consensus", pct=1.0,
           msg=f"variance ready ({cm.size} bytes)",
@@ -3178,6 +3226,7 @@ def locate_key(
     kem_key_file: Optional[str] = None,
     key_material: Optional[Dict[str, Any]] = None,
     on_source: Optional[Callable[[Any], None]] = None,
+    allocator: str = "auto",
 ) -> Dict[str, Any]:
     """Locate ONE known secret across N dumps, with an honest three-valued census.
 
@@ -3220,6 +3269,11 @@ def locate_key(
     filing it there would launder one into the other for every later query that
     trusts the ledger.
 
+    ``allocator`` ("auto", an allocator name, or "off") adds heap context to
+    every hit: each dump row with hits gains ``heap``, a list parallel to
+    ``offsets`` of ``{allocator, chunk_va, chunk_size, state, offset_in_chunk,
+    role}`` (``null`` for a hit outside every chunk). "off" omits it.
+
     Returns:
         A bare dict (not a ``ServiceResult``) carrying the verdict, the six
         per-status counts, the per-dump rows in the SUPPLIED order, and
@@ -3236,8 +3290,15 @@ def locate_key(
     """
     # Function-local so the ``app`` layer does not pull ``engine`` at module
     # import time (the repo-wide idiom; see ``analyze_candidates``).
+    from memdiver.engine.heap_hits import validate_allocator
     from memdiver.engine.key_location import locate_key_across_dumps
 
+    try:
+        validate_allocator(allocator)
+    except ValueError as exc:
+        raise CapabilityError(
+            f"Invalid input: {exc}", category=ErrorCategory.INVALID_INPUT
+        ) from exc
     resolved = _resolve_key_needle(
         key_hex, keylog_line, secret, pcap_field,
         accepted_forms=LOCATE_KEY_INPUT_FORMS,
@@ -3270,6 +3331,7 @@ def locate_key(
         key_material=km,
         max_offsets=max_offsets,
         on_source=_observe,
+        allocator=allocator,
     )
     return _locate_key_payload(
         result,

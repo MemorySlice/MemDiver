@@ -26,6 +26,7 @@ server, nor any UI framework.
 
 from __future__ import annotations
 
+import logging
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, List, Mapping, Optional, Sequence, Union
@@ -34,9 +35,14 @@ from memdiver.core.dump_source import DumpSource, open_dump
 from memdiver.core.service_errors import FileNotFoundServiceError
 from memdiver.engine.consensus import ConsensusVector
 
-__all__ = ["open_consensus_sources", "build_consensus"]
+__all__ = ["open_consensus_sources", "build_consensus", "ALLOCATOR_OFF"]
 
 PathLike = Union[str, Path]
+
+logger = logging.getLogger("memdiver.engine.consensus_service")
+
+#: ``allocator`` value that skips heap annotation (``cm.heap`` stays None).
+ALLOCATOR_OFF = "off"
 
 
 @contextmanager
@@ -93,6 +99,7 @@ def build_consensus(
     region_filter: Any = None,
     force: bool = False,
     budget: Any = None,
+    allocator: str = "auto",
 ) -> ConsensusVector:
     """Open the dumps, optionally inspect each, and build a consensus vector.
 
@@ -118,8 +125,15 @@ def build_consensus(
         ``memory_budget_exceeded``).
     :param budget: Optional ``MemoryBudget`` / byte count; ``None`` resolves
         the host budget.
+    :param allocator: Heap allocator hint for the heap-role annotation
+        (``cm.heap``, see :mod:`memdiver.engine.consensus_heap`): ``"auto"``,
+        an ``AllocatorKind`` value, or ``"off"`` to skip it. An unknown name
+        raises ``ValueError`` before any dump is opened; a failure while
+        annotating is recorded in ``cm.heap.report`` and never affects the
+        consensus itself.
     :returns: The built :class:`~memdiver.engine.consensus.ConsensusVector`.
     """
+    _validate_allocator(allocator)
     with open_consensus_sources(
         dump_paths, key_material=key_material, region_filter=region_filter,
     ) as sources:
@@ -129,4 +143,30 @@ def build_consensus(
         cm = ConsensusVector()
         cm.build_from_sources(sources, normalize=normalize,
                               force=force, budget=budget)
+        if allocator != ALLOCATOR_OFF:
+            cm.heap = _annotate_heap(cm, sources, allocator)
     return cm
+
+
+def _validate_allocator(allocator: str) -> None:
+    """Reject an unknown allocator name up front (a typo is not a soft error)."""
+    if allocator == ALLOCATOR_OFF:
+        return
+    from memdiver.heap.analyze import parse_allocator_hint
+
+    parse_allocator_hint(allocator)
+
+
+def _annotate_heap(cm: ConsensusVector, sources: Sequence[DumpSource],
+                   allocator: str) -> Any:
+    """Heap roles for *cm* while *sources* are open; failures become a report."""
+    from memdiver.engine.consensus_heap import (
+        STATUS_ERROR, ConsensusHeap, compute_consensus_heap,
+    )
+
+    try:
+        return compute_consensus_heap(cm, sources, allocator)
+    except Exception as exc:  # noqa: BLE001 — annotation must never break consensus
+        logger.warning("Consensus heap annotation failed", exc_info=True)
+        return ConsensusHeap.unavailable(STATUS_ERROR, allocator=allocator,
+                                         error=f"{type(exc).__name__}: {exc}")

@@ -15,7 +15,8 @@ from .compress import decompress
 from .crypto import (RewrapMaterial, aead_decrypt, derive_cek_consumer,
                      nonce_for_cipher)
 from .decoders import (decode_connection_table, decode_connectivity_table,
-                       decode_end_of_capture, decode_handle_table,
+                       decode_end_of_capture, decode_end_of_extension,
+                       decode_handle_table,
                        decode_import_provenance, decode_key_hint,
                        decode_memory_region, decode_module_entry,
                        decode_module_list_index, decode_process_identity,
@@ -29,9 +30,10 @@ from .enums import (BLOCK_HEADER_SIZE, BLOCK_MAGIC, ENC_EXT_OFFSET,
                     FILE_HEADER_ENC_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
                     BlockFlag, BlockType, EncAlgo, Endianness, KdfType, KeyEncap,
                     TagStatus)
-from .types import (MslAuthError, MslBlockHeader, MslConnectionTable,
-                    MslConnectivityTable, MslCryptoError,
-                    MslEncryptionParams, MslEndOfCapture, MslFileHeader,
+from .types import (ExtensionSegment, MslAuthError, MslBlockHeader,
+                    MslConnectionTable, MslConnectivityTable, MslCryptoError,
+                    MslEncryptionParams, MslEndOfCapture, MslEndOfExtension,
+                    MslFileHeader,
                     MslHandleTable, MslImportProvenance, MslKeyHint,
                     MslMemoryRegion, MslModuleEntry, MslModuleListIndex,
                     MslParseError, MslPointerGraph, MslProcessIdentity,
@@ -173,12 +175,14 @@ class MslReader:
                     "_module_list_index_cache", "_processes_cache",
                     "_connections_cache", "_handles_cache",
                     "_connectivity_tables_cache",
-                    # Ext decoders (wired but speculative layouts; see decoders_ext.py)
+                    # Ext decoders (0x0011 per spec 5.7; the rest speculative)
                     "_thread_contexts_cache", "_file_descriptors_cache",
                     "_network_connections_cache", "_environment_blocks_cache",
                     "_security_tokens_cache", "_system_context_cache",
-                    # POINTER_GRAPH appendix (MemDiver extension; lives after EoC)
-                    "_pointer_graphs_cache")
+                    # Extension-segment collectors (spec 4.6); the segment
+                    # scan / verification caches they build on are reset
+                    # with them in _reset_segment_caches().
+                    "_end_of_extension_cache", "_pointer_graphs_cache")
 
     def __init__(self, path: Path, *,
                  key: Optional[bytes] = None,
@@ -221,6 +225,11 @@ class MslReader:
         self._payload_cache: Optional[Tuple[int, bytes]] = None
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
+        # Extension segments (spec 4.6): header-only framing and the
+        # per-segment verification reports; not block caches, so they are
+        # kept out of _CACHE_ATTRS and reset alongside it.
+        self._extension_segments_cache: Optional[List[ExtensionSegment]] = None
+        self._segment_reports_cache = None
 
     def open(self) -> None:
         self._file = open(self.path, "rb")
@@ -240,6 +249,8 @@ class MslReader:
         for attr in self._CACHE_ATTRS:
             setattr(self, attr, None)
         self._captured_runs_cache = None
+        self._extension_segments_cache = None
+        self._segment_reports_cache = None
         self._decompressed_lengths = {}
         self._payload_cache = None
         if isinstance(self._plaintext, DecryptedView):
@@ -533,10 +544,9 @@ class MslReader:
         """Iterate in-chain blocks without continuation merging.
 
         Stops *after* yielding the End-of-Capture block: per spec, EoC is
-        the last in-chain block, and anything past it is a MemDiver
-        appendix (e.g., POINTER_GRAPH 0x1003) that lives outside the
-        BLAKE3 prev_hash chain. The appendix is reachable via
-        ``_iter_appendix_blocks()``.
+        the last capture-segment block; extension segments after it (spec
+        4.6, e.g. a POINTER_GRAPH 0x1003) are reachable via
+        ``iter_extension_blocks()``.
 
         Reads from ``_buf``: the mmap (plaintext files) or the decrypted
         block stream (encrypted files). ``_buf`` is None for an encrypted
@@ -555,7 +565,7 @@ class MslReader:
         yields only the parsed header, so callers that need just the
         framing (offset/length/type) avoid decompressing every payload.
         Stops *after* yielding the End-of-Capture header (see
-        ``_iter_raw_blocks`` for the chain/appendix rationale).
+        ``_iter_raw_blocks``; extension segments follow the EoC).
         """
         buf = self._buf
         if buf is None:
@@ -577,61 +587,140 @@ class MslReader:
             if hdr.block_type == BlockType.END_OF_CAPTURE:
                 break
 
-    def _appendix_offset(self) -> Optional[int]:
-        """Return the file offset where any appendix region begins, or None.
+    # -- Extension segments (spec 4.6) --------------------------------------
 
-        Walks ``_iter_raw_block_headers`` (header-only, no payload
-        decompression) and records the byte just past the last in-chain
-        block. Returns None when the file has no EoC, no bytes follow EoC,
-        or block parsing fails before EoC is reached.
+    def _extension_start(self) -> Optional[int]:
+        """Buffer offset just past the End-of-Capture block, or None.
+
+        None only when the file has no EoC (or block framing fails before
+        it is reached); it may equal ``buffer_length`` when nothing follows
+        the EoC. Header-only walk, no payload decompression.
         """
         if self._buf is None:
             return None
-        end_offset: Optional[int] = None
-        saw_eoc = False
         try:
             for hdr in self._iter_raw_block_headers():
-                end_offset = hdr.file_offset + hdr.block_length
                 if hdr.block_type == BlockType.END_OF_CAPTURE:
-                    saw_eoc = True
-                    break
+                    return hdr.file_offset + hdr.block_length
         except MslParseError:
             return None
-        if not saw_eoc or end_offset is None:
-            return None
-        return end_offset if end_offset < len(self._buf) else None
+        return None
 
-    def _iter_appendix_blocks(self) -> Iterator[Tuple[MslBlockHeader, bytes]]:
-        """Iterate blocks in the post-EoC appendix region.
+    def scan_extension_segments(self) -> List[ExtensionSegment]:
+        """Frame the extension segments after the EoC (header-only, cached).
 
-        Yields raw (header, payload) tuples. Appendix blocks live outside
-        the BLAKE3 chain: their `prev_hash` is zero, and they are not
-        considered when verifying integrity via ``verify_chain``. For
-        encrypted files this reads the decrypted block stream, so the
-        appendix is recovered transparently from inside the AEAD envelope.
+        Walks blocks from :meth:`_extension_start`; each run up to and
+        including an End-of-Extension block is one segment. A run that
+        hits EOF, non-magic bytes or a block that fails framing before a
+        terminator is returned as an unterminated segment (``terminator``
+        None) and ends the scan — everything from there on is trailing
+        data. No verification happens here (see
+        :func:`integrity.verify_extension_segments`).
         """
+        if self._extension_segments_cache is not None:
+            return self._extension_segments_cache
+        segments: List[ExtensionSegment] = []
+        start = self._extension_start()
+        if start is not None:
+            offset = start
+            while offset < len(self._buf):
+                seg = self._frame_segment(len(segments), offset)
+                if seg is None:
+                    break
+                segments.append(seg)
+                offset = seg.end
+                if not seg.terminated:
+                    break
+        self._extension_segments_cache = segments
+        return segments
+
+    def _frame_segment(self, index: int, start: int) -> Optional[ExtensionSegment]:
+        """One segment starting at *start*; None when no block frames there."""
         buf = self._buf
-        if buf is None:
-            return
-        appendix_start = self._appendix_offset()
-        if appendix_start is None:
-            return
-        offset = appendix_start
-        file_size = len(buf)
-        while offset + BLOCK_HEADER_SIZE <= file_size:
+        headers: List[MslBlockHeader] = []
+        offset = start
+        terminator: Optional[MslEndOfExtension] = None
+        while offset + BLOCK_HEADER_SIZE <= len(buf):
             if buf[offset:offset + 4] != BLOCK_MAGIC:
                 break
             hdr = self._parse_block_header(offset)
-            if hdr.block_length < BLOCK_HEADER_SIZE:
-                logger.warning("Invalid appendix block length at 0x%X", offset)
-                break
             end = offset + hdr.block_length
-            if end > file_size:
-                logger.warning("Truncated appendix block at 0x%X", offset)
+            if hdr.block_length < BLOCK_HEADER_SIZE or end > len(buf):
+                logger.warning("Extension block at 0x%X fails framing", offset)
                 break
-            raw = bytes(buf[hdr.payload_offset:end])
-            yield hdr, raw
+            headers.append(hdr)
             offset = end
+            if hdr.block_type == BlockType.END_OF_EXTENSION:
+                terminator = self._decode_terminator(hdr)
+                if terminator is None:
+                    headers.pop()
+                    offset = hdr.file_offset
+                break
+        if not headers:
+            return None
+        return ExtensionSegment(index, start, offset, tuple(headers), terminator)
+
+    def _decode_terminator(self, hdr: MslBlockHeader) -> Optional[MslEndOfExtension]:
+        try:
+            return decode_end_of_extension(hdr, self.read_block_payload(hdr),
+                                           self._byte_order)
+        except (MslParseError, struct.error, IndexError, ValueError) as exc:
+            logger.warning("Malformed End-of-Extension at 0x%X: %s",
+                           hdr.file_offset, exc)
+            return None
+
+    def _segment_reports(self):
+        """Per-segment verification (cached); see integrity.verify_extension_segments."""
+        if self._segment_reports_cache is None:
+            from .integrity import verify_extension_segments
+            self._segment_reports_cache = verify_extension_segments(self)
+        return self._segment_reports_cache
+
+    def iter_extension_blocks(self, include_unverified: bool = False
+                              ) -> Iterator[Tuple[MslBlockHeader, bytes]]:
+        """Iterate ``(header, payload)`` over the extension segments' blocks.
+
+        Terminator blocks are included. By default only *verified* segments
+        (chain continuity for plaintext files, SegmentHash, BlockCount —
+        spec consumer rule 23) are yielded; *include_unverified* also walks
+        unterminated or failing segments, whose blocks MUST NOT be presented
+        as verified. Payloads are decompressed like ``iter_blocks``.
+        """
+        reports, _ = self._segment_reports()
+        verified = {r.index for r in reports if r.verified}
+        for seg in self.scan_extension_segments():
+            if seg.index not in verified and not include_unverified:
+                continue
+            for hdr in seg.headers:
+                raw = bytes(self._buf[hdr.payload_offset:
+                                      hdr.file_offset + hdr.block_length])
+                if hdr.compressed:
+                    raw = decompress(raw, hdr.comp_algo)
+                yield hdr, raw
+
+    @property
+    def trailing_bytes(self) -> int:
+        """Bytes after the last verified segment (0 when none), spec rule 14."""
+        if self._buf is None:
+            return 0
+        if self._extension_start() is None:
+            return 0
+        return self._segment_reports()[1]
+
+    def _appendix_offset(self) -> Optional[int]:
+        """Deprecated: pre-1.1 appendix locator, now a thin wrapper.
+
+        Returns :meth:`_extension_start` when bytes follow the EoC, else None.
+        """
+        start = self._extension_start()
+        if start is None or self._buf is None or start >= len(self._buf):
+            return None
+        return start
+
+    def _iter_appendix_blocks(self) -> Iterator[Tuple[MslBlockHeader, bytes]]:
+        """Deprecated: pre-1.1 appendix walk, now
+        ``iter_extension_blocks(include_unverified=True)``."""
+        return self.iter_extension_blocks(include_unverified=True)
 
     def iter_blocks(self, merge_cont: bool = True) -> Iterator[Tuple[MslBlockHeader, bytes]]:
         """Iterate blocks; merges continuation blocks when *merge_cont* is True."""
@@ -1022,9 +1111,11 @@ class MslReader:
             "_connectivity_tables_cache",
         )
 
-    # -- Ext decoder collectors (speculative layouts; see decoders_ext.py) --
+    # -- Ext decoder collectors (0x0011 is spec-defined; the rest speculative) --
 
     def collect_thread_contexts(self) -> list:
+        """THREAD_CONTEXT (0x0011) blocks per spec 5.7 (``MslThreadContext``;
+        a malformed one decodes to ``MslGenericBlock``)."""
         return self._collect(BlockType.THREAD_CONTEXT, decode_thread_context, "_thread_contexts_cache")
 
     def collect_file_descriptors(self) -> list:
@@ -1043,22 +1134,31 @@ class MslReader:
         """Collect SYSTEM_CONTEXT (0x0050) blocks per spec §6.2 Table 20."""
         return self._collect(BlockType.SYSTEM_CONTEXT, decode_system_context, "_system_context_cache")
 
-    # -- POINTER_GRAPH appendix collector (MemDiver extension) --
+    # -- Extension-segment collectors (spec 4.6) --
+
+    def collect_end_of_extension(self) -> List[MslEndOfExtension]:
+        """Decoded End-of-Extension blocks of every *verified* segment."""
+        if self._end_of_extension_cache is None:
+            self._end_of_extension_cache = [
+                decode_end_of_extension(h, p, self._byte_order)
+                for h, p in self.iter_extension_blocks()
+                if h.block_type == BlockType.END_OF_EXTENSION
+            ]
+        return self._end_of_extension_cache
 
     def collect_pointer_graphs(self) -> List[MslPointerGraph]:
-        """Collect POINTER_GRAPH appendix blocks (0x1003).
+        """Collect POINTER_GRAPH blocks (0x1003) from verified extension segments.
 
-        These blocks live OUTSIDE the in-chain region (after EoC, and in
-        Phase C after the AEAD Tag), so they are decoded from the
-        post-EoC iterator rather than ``iter_blocks()``. Returns an empty
-        list when no appendix is present — the common case for files
-        produced before the extension landed.
+        The block lives after the EoC (inside the AEAD stream when
+        encrypted), so it comes from ``iter_extension_blocks()`` rather than
+        ``iter_blocks()``. Returns an empty list when the file has no
+        verified segment carrying one — the common case.
         """
         if self._pointer_graphs_cache is not None:
             return self._pointer_graphs_cache
         cached = [
             decode_pointer_graph(h, p, self._byte_order)
-            for h, p in self._iter_appendix_blocks()
+            for h, p in self.iter_extension_blocks()
             if h.block_type == BlockType.POINTER_GRAPH
         ]
         self._pointer_graphs_cache = cached

@@ -1,0 +1,214 @@
+{
+  "mode": {
+    "name": "Heap analysis",
+    "short": "Heap",
+    "description": "Parse the dump's heap allocator and colour every byte by its role in a chunk.",
+    "badge": "Heap"
+  },
+  "allocators": {
+    "auto": "Auto-detect",
+    "ptmalloc2": "glibc ptmalloc2",
+    "dlmalloc": "dlmalloc",
+    "scudo": "Scudo",
+    "mallocng": "musl mallocng",
+    "jemalloc": "jemalloc",
+    "generic": "Generic (heuristic)",
+    "unknown": "Unknown allocator"
+  },
+  "states": {
+    "in_use": "In use",
+    "free": "Free",
+    "cached": "Cached (tcache/fastbin)",
+    "quarantined": "Quarantined",
+    "unknown": "Unknown"
+  },
+  "roles": {
+    "chunk_header": "Chunk header",
+    "user_data": "User data",
+    "free_link": "Free-list link",
+    "free_data": "Freed data",
+    "allocator_meta": "Allocator metadata",
+    "top": "Top chunk",
+    "slack": "Slack",
+    "mixed": "Mixed (dumps disagree)",
+    "uncovered": "Not covered"
+  },
+  "legend": {
+    "title": "Heap",
+    "chunkStart": "Chunk start",
+    "show": "Show heap legend",
+    "hide": "Hide heap legend",
+    "layerError": "Heap layer unavailable"
+  },
+  "layer": {
+    "toggle": "Heap layer",
+    "enable": "Show heap layer",
+    "disable": "Hide heap layer",
+    "loading": "Loading heap roles…"
+  },
+  "panels": {
+    "overview": "Heap overview",
+    "chunks": "Chunks",
+    "histogram": "Size histogram",
+    "freeLists": "Free lists",
+    "inspector": "Chunk inspector",
+    "evidence": "Evidence",
+    "regions": "Heap regions",
+    "views": "Heap views"
+  },
+  "badges": {
+    "partial": "Partial",
+    "partialHint": "Only part of this allocator's structures are parsed; chunks outside them are not listed.",
+    "heuristic": "Heuristic",
+    "heuristicHint": "Chunk boundaries were inferred heuristically, not parsed from allocator metadata.",
+    "confidence": "{{value}}% confidence",
+    "hinted": "Chosen manually"
+  },
+  "overview": {
+    "allocator": "Allocator",
+    "detectedAs": "Detected as {{allocator}}",
+    "platform": "Platform",
+    "platformValue": "{{os}} / {{arch}}, {{bits}}-bit, {{endianness}}",
+    "platformUnknown": "Unknown platform",
+    "versionHint": "Version",
+    "versionUnknown": "Unknown version",
+    "chunkCount": "Chunks",
+    "metadataBytes": "Metadata bytes",
+    "freeListCount": "Free lists",
+    "regions": "Regions",
+    "noRegions": "No heap regions found",
+    "candidates": "Other candidates",
+    "diagnostics": "Diagnostics",
+    "loading": "Analysing heap…",
+    "empty": "No heap allocator was recognised in this dump.",
+    "noDump": "Load a dump to analyse its heap.",
+    "retry": "Retry",
+    "countsByState": "Chunks by state",
+    "jumpToRegion": "Jump to region {{name}}",
+    "regionUnmapped": "That address is not mapped in the current hex view.",
+    "evidenceToggle": "Evidence ({{count}})"
+  },
+  "chunks": {
+    "columns": {
+      "va": "Address",
+      "offset": "Offset",
+      "size": "Size",
+      "state": "State",
+      "user": "User data",
+      "flags": "Flags",
+      "bin": "Bin",
+      "confidence": "Confidence"
+    },
+    "empty": "No chunks match the current filters.",
+    "pageOf": "Page {{page}} of {{pages}}",
+    "total": "{{count}} chunks",
+    "jumpTo": "Jump to chunk",
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "loading": "Loading chunks…"
+  },
+  "histogram": {
+    "xAxis": "Chunk size (bytes)",
+    "yAxis": "Chunks",
+    "bucket": "{{min}}–{{max}} bytes",
+    "empty": "No size data"
+  },
+  "freeLists": {
+    "kind": "Kind",
+    "index": "Index",
+    "head": "Head",
+    "length": "Length",
+    "cycle": "Cycle",
+    "corrupt": "Corrupt",
+    "decoded": "Pointer-decoded",
+    "unresolved": "{{count}} unresolved",
+    "empty": "No free lists found.",
+    "summary": "{{lists}} lists, {{cycles}} cycles, {{corrupt}} corrupt",
+    "loading": "Loading free lists…",
+    "lengthValue_one": "{{count}} entry",
+    "lengthValue_other": "{{count}} entries",
+    "more": "… {{count}} more"
+  },
+  "inspector": {
+    "empty": "Select a chunk to inspect it.",
+    "header": "Header",
+    "headerLength": "Header length",
+    "userRange": "User range",
+    "flags": "Flags",
+    "bin": "Bin",
+    "extra": "Allocator fields",
+    "previous": "Previous chunk",
+    "next": "Next chunk",
+    "offsetInChunk": "Offset in chunk",
+    "offsetInUser": "Offset in user data",
+    "notInChunk": "The cursor is not inside a parsed chunk."
+  },
+  "evidence": {
+    "source": "Source",
+    "detail": "Detail",
+    "weight": "Weight",
+    "empty": "No evidence recorded."
+  },
+  "filters": {
+    "title": "Filters",
+    "state": "State",
+    "allStates": "All states",
+    "role": "Role",
+    "allRoles": "All roles",
+    "minSize": "Min size",
+    "maxSize": "Max size",
+    "vaStart": "From address",
+    "vaEnd": "To address",
+    "allocator": "Allocator",
+    "apply": "Apply",
+    "reset": "Reset filters"
+  },
+  "errors": {
+    "detect": "Heap detection failed: {{detail}}",
+    "summary": "Heap summary failed: {{detail}}",
+    "chunks": "Loading heap chunks failed: {{detail}}",
+    "chunkAt": "Looking up the chunk failed: {{detail}}",
+    "freeLists": "Loading free lists failed: {{detail}}",
+    "roles": "Loading heap roles failed: {{detail}}",
+    "notFound": "No heap data for this dump: {{detail}}",
+    "generic": "Heap analysis failed: {{detail}}"
+  },
+  "overlay": {
+    "legendTitle": "Heap roles",
+    "unavailable": {
+      "no_va_coordinate": "Heap roles need a consensus aligned by virtual address; this one has no VA coordinate.",
+      "empty_consensus": "The consensus is empty, so there are no heap roles to show.",
+      "error": "The heap annotation of this consensus failed; rebuild the consensus to retry.",
+      "missing": "This consensus carries no heap annotation. Rebuild it with an allocator (not \"off\") to show heap roles."
+    },
+    "inspectorTitle": "Heap role of the inspected byte across the aligned dumps",
+    "mixedHint": "The aligned dumps hold different heap roles at this byte."
+  },
+  "candidates": {
+    "chunk": "Chunk",
+    "offsetInChunk": "In chunk",
+    "noChunk": "Not in a parsed chunk",
+    "chunkTitle": "Chunk at {{start}}, {{size}} bytes, {{state}}; {{agree}} dumps agree on it",
+    "agreement": "{{count}} dumps agree on the heap roles",
+    "agreement_one": "{{count}} dump agrees on the heap roles",
+    "residual": "Residual",
+    "residualHint": "Starts in a freed chunk: these bytes are stale leftovers, not live state.",
+    "masked": "{{count}} variance survivors removed as allocator metadata (heap policy: mask).",
+    "masked_one": "{{count}} variance survivor removed as allocator metadata (heap policy: mask).",
+    "policyRan": "Heap policy: {{policy}}",
+    "policy": {
+      "label": "Heap policy",
+      "hint": "What the reduction does with the consensus heap roles.",
+      "annotate": "Annotate",
+      "annotateHint": "Add chunk and role context to each candidate; the ranking is unchanged.",
+      "mask": "Mask metadata",
+      "maskHint": "Drop allocator-metadata bytes before reducing and adjust scores by heap role.",
+      "off": "Off",
+      "offHint": "Ignore heap roles entirely."
+    }
+  },
+  "locate": {
+    "hitHeap": "{{role}} in a {{state}} chunk at {{chunk}} (+{{offset}})",
+    "hitNoChunk": "Not in a parsed heap chunk"
+  }
+}

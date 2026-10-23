@@ -6,6 +6,81 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- MSL 1.1: EoC carries the exact block count (48-byte payload); `verify_chain` checks
+  FileHash, header/EoC counts and extension segments; files read with version `0x0101`.
+- Extension segments (`END_OF_EXTENSION` 0x0FFE): the pointer graph is now a chained,
+  verified segment; `add_extension_segment`, `iter_extension_blocks`,
+  `collect_end_of_extension`; materialize re-emits verified segments.
+- VAS Map entries carry `name_source`; the trust rule prefers it over the
+  provenance marker. Thread Context (0x0011) decoded per spec 1.1 Section 5.7.
+- `PageState.NOT_RESIDENT` (value 3) shown as such in inspect output.
+
+### Changed
+- `add_raw_appendix` raises; use `add_extension_segment`.
+- Docs: `docs/file_formats/msl_v1_1_0.md` mirrors spec 1.1.
+
+## [0.10.0] — 2026-10-23
+
+### Added
+- **Heap allocator awareness.** A new `heap/` layer detects the allocator
+  behind a dump and parses its structures into chunks, free lists, regions and
+  a role for every heap byte (`chunk_header`, `user_data`, `free_link`,
+  `free_data`, `allocator_meta`, `top`, `slack`). Built-in parsers:
+  - glibc **ptmalloc2** (L0–L3): tcache with and without safe-linking,
+    `main_arena` discovery, then fastbins and the unsorted, small and large bins;
+  - **dlmalloc** (L0–L2);
+  - **scudo** (L0–L2, partial; headers are judged on structure because the
+    checksum cookie is per-process);
+  - musl **mallocng** (L0–L2);
+  - **jemalloc** (partial: region attribution plus slot-stride inference);
+  - a **generic** boundary-tag heuristic.
+
+  Works on `.msl`, ELF cores, regioned raw dumps and flat raw dumps (with a
+  base VA), strips arm64 TBI pointer tags, and never raises on a parse failure:
+  it falls back to the next candidate and records why. Library:
+  `memdiver.analyze_heap`, `detect_allocator`, `HeapLayout`, `HeapRole`,
+  `register_allocator`.
+- **`heap.*` on every surface.** The six capabilities `heap.detect`,
+  `summary`, `chunks`, `chunk_at`, `free_lists` and `roles` are available as:
+  - CLI `memdiver heap {detect,summary,chunks,at,free-lists,roles}`, with
+    `--allocator`, `--base-va` and `--json`;
+  - REST `GET /api/heap/{detect,summary,chunks,chunk-at,free-lists,roles}`;
+  - MCP tools `heap_detect`, `heap_summary`, `heap_chunks`, `heap_chunk_at`,
+    `heap_free_lists` and `heap_roles` (56 tools in total);
+  - `memdiver.heap_*_result` producers.
+- **Allocator plugins.** The `memdiver.allocators` entry-point group lets an
+  installed package replace a built-in allocator parser. See
+  `docs/contributing/adding_allocator.md`.
+- **Heap roles in consensus.** `build_consensus(..., allocator="auto")`
+  projects every dump's heap roles onto the consensus slab and merges them.
+  Bytes where the dumps disagree become `mixed`, and a per-byte agreement count
+  measures layout stability. Raw-only corpora report `no_va_coordinate`. The
+  consensus itself is never changed. The pipeline writes `heap_roles.npz` and a
+  `"heap"` block in `consensus.json`.
+  Choose it with `--allocator` (CLI) / `allocator` (web, MCP).
+- **`heap_policy` for candidate reduction** (`annotate` by default, `mask`,
+  `off`):
+  - `annotate` adds `role_counts`, the owning chunk, `residual` (the region
+    starts in a freed chunk) and `agreement` to each region without changing
+    candidates or scores;
+  - `mask` drops allocator-owned bytes (headers, free links, metadata, top) and
+    adjusts scores;
+  - `off` reproduces the previous output byte for byte.
+  Set with `--heap-policy` on `analyze-candidates` / `search-reduce` and
+  `heap_policy` on the web candidates request and MCP tools.
+- **`locate-key` hits name their chunk:**
+  `heap: {allocator, chunk_va, chunk_size, state, offset_in_chunk, role}` per
+  offset, so a key left in a freed chunk is visible as residual.
+- **Heap mode in the web UI.** A third app mode next to verification and
+  exploration. It has an allocator overview (confidence, evidence,
+  partial/heuristic badges, regions), a chunk table with jump-to-chunk, a size
+  histogram, a free-list tree, a chunk inspector, and a hex heap layer that
+  colors bytes by role and ticks chunk starts, with a legend and a toolbar
+  toggle. The layer is drawn in all three themes.
+- **Docs:** `docs/user_guide/heap.md`, `docs/architecture/heap.md`,
+  `docs/contributing/adding_allocator.md`, plus a heap mode section in the web
+  UI tour. `MEMDIVER_REAL_HEAP_DUMPS` (with optional `<dump>.expect.json`
+  sidecars) enables opt-in tests against real captures.
 - **`capture`: one dump of a running process, locally, on a USB/Android
   device, or on a remote server.** CLI `memdiver capture <pid|name> <out>
   --tool --device local|usb|usb:<id>|remote:<host>[:<port>]`, REST
@@ -88,6 +163,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/dev/*` (except binder, `/dev/shm`, `/dev/zero`), `/dmabuf*` and
   `anon_inode:*` mappings into `runtime`, which the default selection
   excludes. Pass `--regions …,runtime` or `all` to keep them.
+- **Version 0.10.0.** Heap allocator awareness is the headline feature. The
+  `heap` CLI group brings the subcommand count to 35, and the heap router
+  brings the router count to 19. The docs landing page and architecture
+  overview now show these counts.
+
+### Fixed
+- **MCP tool count in the docs.** The docs landing page still said 48 MCP
+  tools. It now says 56, matching `mcp_server/server.py` (which includes the
+  six new `heap_*` tools).
 
 ## [0.9.5] — 2026-10-21
 

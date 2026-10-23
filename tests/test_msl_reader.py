@@ -68,7 +68,7 @@ def test_iter_blocks(msl_path):
 
 def test_header_only_iter_matches_raw_blocks(msl_path):
     """_iter_raw_block_headers yields the same framing as _iter_raw_blocks
-    without decompressing payloads (used by _appendix_offset)."""
+    without decompressing payloads (used by _extension_start)."""
     with MslReader(msl_path) as reader:
         full = [
             (h.file_offset, h.block_length, h.block_type)
@@ -90,9 +90,43 @@ def test_header_only_iter_does_not_decompress(monkeypatch, msl_path):
 
     with MslReader(msl_path) as reader:
         monkeypatch.setattr(reader_mod, "decompress", _boom)
-        # Exhaust the header iterator and exercise _appendix_offset.
+        # Exhaust the header iterator and exercise the extension-segment
+        # framing, which must stay header-only as well.
         list(reader._iter_raw_block_headers())
-        reader._appendix_offset()
+        assert reader._extension_start() == reader.buffer_length
+        assert reader.scan_extension_segments() == []
+
+
+def test_extension_start_with_nothing_after_eoc(msl_path):
+    """EoC is the last block: the extension area is empty, not absent."""
+    with MslReader(msl_path) as reader:
+        eoc = [h for h in reader._iter_raw_block_headers()
+               if h.block_type == BlockType.END_OF_CAPTURE][0]
+        assert reader._extension_start() == eoc.file_offset + eoc.block_length
+        assert reader._extension_start() == reader.buffer_length
+        assert reader.scan_extension_segments() == []
+        assert list(reader.iter_extension_blocks(include_unverified=True)) == []
+        assert reader.collect_end_of_extension() == []
+        assert reader.trailing_bytes == 0
+        # Deprecated wrapper: None when no bytes follow the EoC.
+        assert reader._appendix_offset() is None
+
+
+def test_extension_start_without_eoc_is_none(tmp_path):
+    """A file cut before its EoC has no extension area at all."""
+    data = generate_msl_file()
+    header_size = data[9]
+    # Keep only Block 0 (the walk stops before any EoC).
+    block0_len = int.from_bytes(data[header_size + 8:header_size + 12], "little")
+    p = tmp_path / "no_eoc.msl"
+    p.write_bytes(data[:header_size + block0_len])
+    with MslReader(p) as reader:
+        assert BlockType.END_OF_CAPTURE not in [
+            h.block_type for h in reader._iter_raw_block_headers()]
+        assert reader._extension_start() is None
+        assert reader.scan_extension_segments() == []
+        assert reader.trailing_bytes == 0
+        assert reader._appendix_offset() is None
 
 
 def test_collect_regions(msl_path):

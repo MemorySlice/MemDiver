@@ -51,15 +51,27 @@ class BlockType(IntEnum):
     CONNECTION_TABLE = 0x0052
     HANDLE_TABLE = 0x0053
     CONNECTIVITY_TABLE = 0x0055
+    END_OF_EXTENSION = 0x0FFE  # terminator of an extension segment (spec 4.6)
     END_OF_CAPTURE = 0x0FFF
     VAS_MAP = 0x1001
-    # POINTER_GRAPH (0x1003) is a MemDiver-driven extension: a plaintext
-    # appendix block emitted AFTER the End-of-Capture block (and after the
-    # AEAD Tag, when the container is encrypted). It is OUTSIDE the BLAKE3
-    # block chain — its `prev_hash` is zeros — so existing readers can
-    # safely stop at EoC and ignore everything that follows. Payload layout
+    # POINTER_GRAPH (0x1003) is a producer-defined Structural block whose
+    # payload the spec does not define, so it MAY only appear inside an
+    # extension segment (spec 4.6): after the End-of-Capture block, chained
+    # from it and closed by an End-of-Extension block. Readers that do not
+    # implement extension segments stop at EoC and ignore it. Payload layout
     # is documented in docs/file_formats/msl_v1_0_0.md.
     POINTER_GRAPH = 0x1003
+
+
+# Evidence block types that MUST NOT appear inside an extension segment
+# (spec 4.6): the capture segment is the evidence; a segment appended later
+# may only carry derived views (key hints, related dumps, manifests
+# 0x0059-0x005B and Structural blocks 0x1000-0x1FFF).
+EXTENSION_FORBIDDEN_TYPES = frozenset(
+    {0x0001, 0x0002, 0x0030, 0x0040, 0x0FFF}
+    | set(range(0x0010, 0x0016))
+    | set(range(0x0050, 0x0059))
+)
 
 
 class BlockFlag(IntFlag):
@@ -79,11 +91,18 @@ class CompAlgo(IntEnum):
 
 
 class PageState(IntEnum):
-    """Three-state page acquisition model (spec Table 22)."""
+    """Four-state page acquisition model (spec Table 24 / Section 7).
+
+    ``NOT_RESIDENT`` (``0b11``) is a mapped page that was never touched at
+    read time: zero content, 0 bytes of PageData, like FAILED / UNMAPPED.
+    ``RESERVED`` is kept as a backwards-compatible alias of the same value
+    (older code named it that way and treated it as FAILED).
+    """
     CAPTURED = 0b00
     FAILED = 0b01
     UNMAPPED = 0b10
-    RESERVED = 0b11  # treat as FAILED
+    NOT_RESIDENT = 0b11
+    RESERVED = 0b11  # alias (resolves to NOT_RESIDENT)
 
 
 class Protection(IntFlag):
@@ -105,6 +124,41 @@ class RegionType(IntEnum):
     ANONYMOUS = 0x05
     SHARED_MEM = 0x06
     OTHER = 0xFF
+
+
+class ThreadState(IntEnum):
+    """Scheduler state of a thread (Thread Context block, spec Table 19a)."""
+    UNKNOWN = 0x00
+    RUNNING = 0x01
+    SLEEPING = 0x02
+    STOPPED = 0x03
+    WAITING = 0x04
+    UNINTERRUPTIBLE = 0x05
+    HALTED = 0x06
+    ZOMBIE = 0x07
+
+
+# Thread Context ``Flags`` bits (spec Table 19a).
+TC_FLAG_CURRENT = 0x0001    # thread whose registers are the resumption point
+TC_FLAG_CRASHED = 0x0002    # thread that faulted
+TC_FLAG_SUSPENDED = 0x0004  # registers read from a stopped thread
+TC_FLAG_PARTIAL = 0x0008    # register file incomplete
+
+# Thread Context register ``Flags`` role bits (spec Table 19b).
+REG_ROLE_PC = 0x0001     # program counter
+REG_ROLE_SP = 0x0002     # stack pointer
+REG_ROLE_FP = 0x0004     # frame pointer
+REG_ROLE_FLAGS = 0x0008  # status / flags register
+REG_ROLE_TLS = 0x0010    # thread pointer / TLS base
+REG_ROLE_LR = 0x0020     # link register
+
+
+class VasNameSource(IntEnum):
+    """How a VAS Map entry's MappedPath was obtained (spec 5.8)."""
+    UNSPECIFIED = 0
+    LIVE = 1
+    SOURCE_METADATA = 2
+    SYNTHESIZED = 3
 
 
 class OSType(IntEnum):
@@ -212,11 +266,12 @@ class ConnRowType(IntEnum):
     MIB_COUNTER = 0x07
 
 
-# -- POINTER_GRAPH appendix (0x1003) — MemDiver extension --
+# -- POINTER_GRAPH (0x1003) — MemDiver extension-segment block --
 
 # Bit set in the POINTER_GRAPH payload header `flags` field when the
-# 32-byte BLAKE3 trailer is present. The appendix lives outside the
-# block chain, so it carries its own optional integrity hash.
+# 32-byte BLAKE3 trailer is present. Kept from the pre-1.1 appendix era
+# (when the block lived outside the chain); the segment's SegmentHash and
+# the continued PrevHash chain now cover the block as well.
 POINTER_GRAPH_INTEGRITY_FLAG = 1 << 0
 
 

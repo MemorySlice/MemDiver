@@ -77,9 +77,24 @@
   --md-hl-constraint: #8a7a00;
   --md-hl-strings: #2266aa;
 
+  /* Heap role layer (hex heap mode). Seven roles, each a distinct hue so the
+     chunk anatomy reads at a glance; hex.css mixes them at low alpha behind
+     the byte text. Freed links are the warmest (they are the exploit-relevant
+     bytes), user data the quietest. --md-hl-heap-tick is the chunk-start rule. */
+  --md-hl-heap-header: #7a50a0;
+  --md-hl-heap-user: #2a6db5;
+  --md-hl-heap-freelink: #cc2222;
+  --md-hl-heap-free: #b05a2e;
+  --md-hl-heap-meta: #8a7a00;
+  --md-hl-heap-top: #1a8a70;
+  --md-hl-heap-slack: #6a6a70;
+  --md-hl-heap-tick: #333338;
+  --md-hl-heap-mixed: #c0398a;
+
   --md-page-captured: #3d7a28;
   --md-page-failed: #cc2222;
   --md-page-unmapped: #6a6a70;
+  --md-page-not-resident: #8a94a6;
 
   --md-field-0: #3a7ec0;
   --md-field-1: #5a8a4a;
@@ -183,6 +198,17 @@
   --md-hl-constraint: #d7ba7d;
   --md-hl-strings: #9cdcfe;
 
+  /* Heap role layer -- dark-theme steps of the same seven hues. */
+  --md-hl-heap-header: #b589d6;
+  --md-hl-heap-user: #569cd6;
+  --md-hl-heap-freelink: #ff6b6b;
+  --md-hl-heap-free: #e0a458;
+  --md-hl-heap-meta: #dcdcaa;
+  --md-hl-heap-top: #4ec9b0;
+  --md-hl-heap-slack: #949ba6;
+  --md-hl-heap-tick: #d4d4d4;
+  --md-hl-heap-mixed: #e879b9;
+
   --md-page-captured: #6a9955;
   --md-page-failed: #f44747;
   /* The neutral "void" ink. It was a byte-for-byte copy of the OLD
@@ -192,6 +218,7 @@
      The hatch stripes that also use it lighten a touch, which is the same
      direction the whole dark neutral ramp moved. */
   --md-page-unmapped: #949ba6;
+  --md-page-not-resident: #8a94a6;
 
   --md-field-0: #569cd6;
   --md-field-1: #6a9955;
@@ -316,6 +343,16 @@ body {
   --md-text-secondary: #444444;
   --md-text-muted: #53585f;
   --md-focus-ring: #0044aa;
+  /* Heap role layer: deeper, more saturated hues for maximum separation. */
+  --md-hl-heap-header: #5a1f8a;
+  --md-hl-heap-user: #0050b0;
+  --md-hl-heap-freelink: #c00000;
+  --md-hl-heap-free: #a04800;
+  --md-hl-heap-meta: #6a5a00;
+  --md-hl-heap-top: #006a50;
+  --md-hl-heap-slack: #53585f;
+  --md-hl-heap-tick: #111111;
+  --md-hl-heap-mixed: #a0006a;
 }
 
 .dark.high-contrast {
@@ -331,6 +368,16 @@ body {
   --md-text-secondary: #c9cfd8;
   --md-text-muted: #b0b7c2;
   --md-focus-ring: #ffd633;
+  /* Heap role layer: brighter hues against the dark ground. */
+  --md-hl-heap-header: #dd99ff;
+  --md-hl-heap-user: #77bbee;
+  --md-hl-heap-freelink: #ff8080;
+  --md-hl-heap-free: #ffb060;
+  --md-hl-heap-meta: #ffdd55;
+  --md-hl-heap-top: #66ddbb;
+  --md-hl-heap-slack: #b0b7c2;
+  --md-hl-heap-tick: #eeeeee;
+  --md-hl-heap-mixed: #ff8ad0;
 }
 
 /* === Indeterminate progress bar === */

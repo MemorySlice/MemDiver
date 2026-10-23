@@ -99,7 +99,7 @@ def test_get_thread_contexts(client, msl_path):
     resp = client.get("/api/inspect/thread-contexts", params={"msl_path": msl_path})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["spec_reserved"] is True
+    assert data["spec_reserved"] is False
     assert "note" in data
     assert isinstance(data["entries"], list)
     assert len(data["entries"]) == 1

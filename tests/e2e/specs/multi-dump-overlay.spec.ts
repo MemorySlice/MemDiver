@@ -696,6 +696,41 @@ test.describe("aligned overlay: browse, keyboard, render modes, rail, void", () 
     expect((await paintedRampCounts()).ramp).toBe(0);
   });
 
+  // ── (c2) HEAP RENDER MODE ─────────────────────────────────────────────────
+  //
+  // The fourth mode paints the consensus heap roles from the window's
+  // `heap_roles`. Whether this fixture's consensus HAS usable roles is the
+  // backend's business (allocator detection on a small corpus), so both
+  // branches are asserted: usable roles → the heap legend replaces the class
+  // chips and no consensus class is painted; unusable → the segment is
+  // disabled and says why, and the grid stays on the class reading.
+  test("Heap mode paints roles when available and explains itself when not", async () => {
+    test.setTimeout(120_000);
+    const heap = page.getByTestId("hex-overlay-render-mode-heap");
+    await expect(heap).toBeVisible();
+    await expect(heap).toHaveText("Heap");
+
+    if (await heap.isDisabled()) {
+      expect((await heap.getAttribute("title")) ?? "").not.toBe("");
+      await expect(page.getByTestId("hex-overlay-render-mode-class")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      return;
+    }
+
+    await heap.click();
+    await expect(heap).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("hex-overlay-legend-heap")).toBeVisible();
+    await expect(page.getByTestId("hex-overlay-class-chips")).toHaveCount(0);
+    await expect
+      .poll(async () => classifiedCount(await paintedClassCounts(page)), { timeout: 20_000 })
+      .toBe(0);
+
+    await page.getByTestId("hex-overlay-render-mode-class").click();
+    await expect(page.getByTestId("hex-overlay-class-chips")).toBeVisible();
+  });
+
   // ── (d) THE RAIL ──────────────────────────────────────────────────────────
   test("solo names the dump in the footer, the eye changes bytes but not counts, and the weight cycles", async () => {
     test.setTimeout(120_000);

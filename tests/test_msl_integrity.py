@@ -40,6 +40,17 @@ def _build_block(block_type, payload, prev_hash=b'\x00' * 32):
     return bytes(hdr) + payload
 
 
+def _eoc_payload(file_hash=b'\x00' * 32, acq_end_ns=0, block_count=0):
+    """48-byte End-of-Capture payload: FileHash(32) AcqEnd(8) BlockCount(4) Reserved(4)."""
+    return struct.pack("<32sQII", file_hash, acq_end_ns, block_count, 0)
+
+
+def _set_header_block_count(file_hdr: bytes, count: int) -> bytes:
+    hdr = bytearray(file_hdr)
+    struct.pack_into("<I", hdr, 0x39, count)
+    return bytes(hdr)
+
+
 @pytest.mark.skipif(not HAS_BLAKE3, reason="blake3 not installed")
 def test_verify_chain_valid(tmp_path):
     """Valid chain with correct hashes passes."""
@@ -171,34 +182,51 @@ def test_verify_chain_truncated_block(tmp_path):
     assert any("Truncated block" in e for e in report.errors)
 
 
-def test_verify_chain_stops_at_end_of_capture(tmp_path):
-    """The walk stops immediately after an END_OF_CAPTURE block.
-
-    Anything beyond End-of-Capture is a MemDiver appendix that lives outside
-    the chain by design (see the module docstring), so a well-formed block
-    placed after it must never be counted even though it chains correctly.
-    """
+def _counts_only_capture_blocks(tmp_path, name, after_eoc: bytes):
+    """Header + a lone EoC + *after_eoc*; return the report."""
     from memdiver.msl.enums import BlockType
     from memdiver.msl.hashing import hash_bytes
     from memdiver.msl.reader import MslReader
     from memdiver.msl.integrity import verify_chain
 
     file_hdr = _build_file_header()
-    eoc_block = _build_block(BlockType.END_OF_CAPTURE, b'\xAA' * 32,
+    eoc_block = _build_block(BlockType.END_OF_CAPTURE, _eoc_payload(),
                              prev_hash=hash_bytes(file_hdr))
-    # A well-formed follow-on block that chains correctly off the EoC block.
-    # If the loop didn't break at EoC, this would be walked and counted too.
-    trailing_hash = hash_bytes(eoc_block)
-    trailing_block = _build_block(0x0001, b'\xBB' * 32, prev_hash=trailing_hash)
-
-    msl_path = tmp_path / "eoc.msl"
-    msl_path.write_bytes(file_hdr + eoc_block + trailing_block)
-
+    msl_path = tmp_path / name
+    msl_path.write_bytes(file_hdr + eoc_block + after_eoc)
     with MslReader(msl_path) as reader:
-        report = verify_chain(reader)
-    assert report.valid
+        return verify_chain(reader), eoc_block, reader.buffer_length
+
+
+def test_verify_chain_counts_only_capture_blocks(tmp_path):
+    """block_count stops at End-of-Capture (spec 4.5 / rule 13).
+
+    A well-formed block that chains correctly off the EoC but is not closed
+    by an End-of-Extension block is an *unterminated* extension segment
+    (spec 4.6): never counted as a capture block, reported as a warning and
+    as trailing bytes, and the file stays valid.
+    """
+    from memdiver.msl.hashing import hash_bytes
+
+    file_hdr = _build_file_header()
+    from memdiver.msl.enums import BlockType
+    eoc_block = _build_block(BlockType.END_OF_CAPTURE, _eoc_payload(),
+                             prev_hash=hash_bytes(file_hdr))
+    trailing_block = _build_block(0x1100, b'\xBB' * 32,
+                                  prev_hash=hash_bytes(eoc_block))
+    report, _, _ = _counts_only_capture_blocks(tmp_path, "eoc.msl", trailing_block)
+    assert report.valid, report.errors
     assert report.block_count == 1
     assert report.broken_at is None
+    assert report.capture_ok
+    assert len(report.segments) == 1
+    seg = report.segments[0]
+    assert not seg.terminated and not seg.verified
+    assert seg.chain_ok  # the block does chain from H(EoC)
+    assert seg.block_count == 1
+    assert report.trailing_bytes == len(trailing_block)
+    assert any("not terminated" in w for w in report.warnings)
+    assert any("trailing" in w for w in report.warnings)
 
 
 def test_hashing_fallback_produces_32_bytes():
@@ -324,3 +352,175 @@ def test_memdiver_writer_block0_chains_from_header(tmp_path, streaming):
     report = _verify(path)
     assert report.valid, report.errors
     assert report.block_count == 3
+
+
+# -- EoC FileHash and BlockCount (spec 4.5, consumer rule 13) --
+
+
+def _capture_file(file_hdr: bytes, eoc_payload: bytes):
+    """Header, one capture block, then an EoC carrying *eoc_payload*."""
+    from memdiver.msl.enums import BlockType
+    from memdiver.msl.hashing import hash_bytes
+    block0 = _build_block(0x0001, b'\xAA' * 32, prev_hash=hash_bytes(file_hdr))
+    eoc = _build_block(BlockType.END_OF_CAPTURE, eoc_payload,
+                       prev_hash=hash_bytes(block0))
+    return file_hdr + block0 + eoc, block0
+
+
+def _blake3(data: bytes) -> bytes:
+    from memdiver.msl.hashing import hash_bytes
+    return hash_bytes(data)
+
+
+def test_eoc_zero_file_hash_is_warning_only(tmp_path):
+    blob, _ = _capture_file(_build_file_header(), _eoc_payload())
+    report = _verify(_write(tmp_path, "zero_fh.msl", blob))
+    assert report.valid, report.errors
+    assert report.file_hash_ok is None
+    assert any("FileHash is zero" in w for w in report.warnings)
+    assert report.block_count == 2
+
+
+def test_eoc_correct_file_hash_verifies(tmp_path):
+    file_hdr = _build_file_header()
+    _, block0 = _capture_file(file_hdr, _eoc_payload())
+    file_hash = _blake3(file_hdr + block0)  # every byte before the EoC block
+    blob, _ = _capture_file(file_hdr, _eoc_payload(file_hash=file_hash))
+    report = _verify(_write(tmp_path, "good_fh.msl", blob))
+    assert report.valid, report.errors
+    assert report.file_hash_ok is True
+    assert report.warnings == []
+
+
+def test_eoc_wrong_file_hash_is_error(tmp_path):
+    blob, _ = _capture_file(_build_file_header(),
+                            _eoc_payload(file_hash=b'\x5A' * 32))
+    report = _verify(_write(tmp_path, "bad_fh.msl", blob))
+    assert not report.valid
+    assert report.file_hash_ok is False
+    assert not report.capture_ok
+    assert any("FileHash mismatch" in e for e in report.errors)
+    assert report.broken_at is None  # the PrevHash chain itself is intact
+
+
+def test_header_block_count_mismatch_is_error(tmp_path):
+    file_hdr = _set_header_block_count(_build_file_header(), 5)
+    blob, _ = _capture_file(file_hdr, _eoc_payload())
+    report = _verify(_write(tmp_path, "hdr_count.msl", blob))
+    assert not report.valid
+    assert report.block_count == 2
+    assert report.header_block_count == 5
+    assert report.block_count_ok is False
+    assert any("header BlockCount 5 != 2" in e for e in report.errors)
+
+
+def test_eoc_block_count_mismatch_is_error(tmp_path):
+    blob, _ = _capture_file(_build_file_header(), _eoc_payload(block_count=7))
+    report = _verify(_write(tmp_path, "eoc_count.msl", blob))
+    assert not report.valid
+    assert report.eoc_block_count == 7
+    assert report.block_count_ok is False
+    assert any("EoC BlockCount 7 != 2" in e for e in report.errors)
+
+
+def test_matching_block_counts_are_ok(tmp_path):
+    file_hdr = _set_header_block_count(_build_file_header(), 2)
+    blob, _ = _capture_file(file_hdr, _eoc_payload(block_count=2))
+    report = _verify(_write(tmp_path, "counts_ok.msl", blob))
+    assert report.valid, report.errors
+    assert report.header_block_count == 2
+    assert report.eoc_block_count == 2
+    assert report.block_count_ok is True
+
+
+# -- Extension segments written by MslWriter (spec 4.6) --
+
+
+def _write_pointer_graph_file(path, encryption=None):
+    from memdiver.msl.types import MslPointerGraphEdge, MslPointerGraphNode
+    from memdiver.msl.writer import MslWriter
+    w = MslWriter(path, encryption=encryption)
+    w.add_memory_region(0x1000, b"\x11" * 4096)
+    w.add_pointer_graph([MslPointerGraphNode(1, 0x1040, "n")],
+                        [MslPointerGraphEdge(0, 0, 1, "self")])
+    w.add_end_of_capture()
+    w.write()
+    return path
+
+
+def test_writer_pointer_graph_segment_verified(tmp_path):
+    report = _verify(_write_pointer_graph_file(tmp_path / "pg.msl"))
+    assert report.valid, report.errors
+    assert report.block_count == 2
+    assert len(report.segments) == 1
+    seg = report.segments[0]
+    assert seg.verified, seg.errors
+    assert seg.terminated and seg.chain_ok and seg.segment_hash_ok and seg.block_count_ok
+    assert seg.block_count == 2
+    assert report.verified_segments == [seg]
+    assert report.trailing_bytes == 0
+    assert report.warnings == []
+
+
+def test_writer_pointer_graph_tampered_payload_fails_segment_hash(tmp_path):
+    from memdiver.msl.reader import MslReader
+    path = _write_pointer_graph_file(tmp_path / "pg_tamper.msl")
+    with MslReader(path) as reader:
+        pg_hdr = reader.scan_extension_segments()[0].headers[0]
+        offset = pg_hdr.payload_offset + 4  # inside the graph payload
+    data = bytearray(path.read_bytes())
+    data[offset] ^= 0x01
+    path.write_bytes(bytes(data))
+    report = _verify(path)
+    assert not report.valid
+    assert report.capture_ok
+    seg = report.segments[0]
+    assert seg.terminated
+    # The terminator's PrevHash was computed over the untampered block, so
+    # both the chain link and the SegmentHash break.
+    assert not seg.chain_ok
+    assert seg.segment_hash_ok is False
+    assert not seg.verified
+    assert any("segment 0" in e and "SegmentHash" in e for e in report.errors)
+    assert report.trailing_bytes == len(data) - seg.start
+
+
+def test_writer_pointer_graph_truncated_terminator_is_trailing(tmp_path):
+    from memdiver.msl.reader import MslReader
+    path = _write_pointer_graph_file(tmp_path / "pg_trunc.msl")
+    with MslReader(path) as reader:
+        seg = reader.scan_extension_segments()[0]
+        term_hdr = seg.headers[-1]
+        ext_start = reader._extension_start()
+    cut = term_hdr.file_offset + term_hdr.block_length // 2  # inside the 0x0FFE block
+    data = path.read_bytes()[:cut]
+    path.write_bytes(data)
+    report = _verify(path)
+    assert report.valid, report.errors
+    assert report.capture_ok
+    assert report.segments[0].terminated is False
+    assert not report.segments[0].verified
+    assert report.trailing_bytes == len(data) - ext_start
+    assert any("not terminated" in w for w in report.warnings)
+    assert any(f"{report.trailing_bytes} trailing" in w for w in report.warnings)
+
+
+def test_encrypted_pointer_graph_segment_verified(tmp_path):
+    from memdiver.msl.enums import TagStatus
+    from memdiver.msl.integrity import verify_chain
+    from memdiver.msl.reader import MslReader
+    from memdiver.msl.writer import MslEncryptionConfig
+    key = bytes(range(32))
+    path = _write_pointer_graph_file(tmp_path / "pg_enc.msl",
+                                     encryption=MslEncryptionConfig(raw_key=key))
+    with MslReader(path, key=key) as reader:
+        assert reader.tag_status == TagStatus.VALID
+        report = verify_chain(reader)
+        assert len(reader.collect_pointer_graphs()) == 1
+    assert report.valid, report.errors
+    assert report.header_block_count == 0  # never leaked in the clear header
+    assert report.eoc_block_count == 2 == report.block_count
+    assert report.file_hash_ok is True
+    assert len(report.segments) == 1
+    assert report.segments[0].verified, report.segments[0].errors
+    assert report.trailing_bytes == 0

@@ -75,6 +75,18 @@ export const GROUND_CLASSES: ReadonlySet<string> = new Set([
   "byte-gap",
   "byte-absent",
   "byte-error",
+  // Heap role layer (`HEAP_ROLE_CLASS` in @/utils/heap-roles). The chunk-start
+  // tick (`heap-chunk-start`) is a box-shadow and is deliberately NOT here.
+  "heap-header",
+  "heap-user",
+  "heap-freelink",
+  "heap-free",
+  "heap-meta",
+  "heap-top",
+  "heap-slack",
+  // Consensus-only: the overlay's Heap render mode paints it where the
+  // aligned dumps disagree on the role (`HEAP_MIXED_CLASS`).
+  "heap-mixed",
 ]);
 
 /** The mark a selected cell carries; also the class `hex.css` keys on. */

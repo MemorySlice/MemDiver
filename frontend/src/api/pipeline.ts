@@ -12,10 +12,16 @@ import { withSessionRegionFilter } from "@/stores/region-selection-store";
 // ``StageDiagnostic`` is the ONE diagnostic shape every producer emits, so
 // the paired-field result below reuses it rather than declaring a second.
 import type { StageDiagnostic } from "./progress-events";
+import type { HeapPolicy } from "./types";
 
 // ---- request models (must match api/routers/pipeline.py) ----
 
 export interface ReduceParams {
+  /**
+   * What `search_reduce` does with the consensus heap roles. Optional and only
+   * sent once chosen; the backend defaults to `"annotate"`.
+   */
+  heap_policy?: HeapPolicy;
   alignment?: number;
   block_size?: number;
   density_threshold?: number;

@@ -19,6 +19,7 @@ import { ClassificationBasisBanner } from "@/components/analysis/ClassificationB
 import { CLASSIFICATION_BASIS_MIXED, mergeDiagnostics } from "@/api/diagnostics";
 import { CandidateFilters } from "./CandidateFilters";
 import { CandidateTable } from "./CandidateTable";
+import { CandidateHeapSummary } from "./CandidateHeapSummary";
 
 /**
  * The exploratory differential workflow, made visible.
@@ -190,6 +191,11 @@ function CandidateResult({
           {t("fallbackEntropyOnly")}
         </p>
       )}
+
+      <CandidateHeapSummary
+        policy={result.thresholds.heap_policy}
+        heapMasked={result.stages.heap_masked}
+      />
 
       {result.regions.length === 0 ? (
         <div data-testid="candidate-empty" className="space-y-1">

@@ -1,0 +1,67 @@
+{
+  "allocator": "ptmalloc2",
+  "base_va": 93824992251904,
+  "chunk_count": 8,
+  "tcache_bins": [
+    "tcache[1]",
+    "tcache[2]"
+  ],
+  "chunks": [
+    {
+      "va": 93824992251904,
+      "size": 656,
+      "state": "in_use",
+      "header_len": 16,
+      "bin": "tcache_perthread_struct"
+    },
+    {
+      "va": 93824992252560,
+      "size": 48,
+      "state": "in_use",
+      "header_len": 16,
+      "bin": null
+    },
+    {
+      "va": 93824992252608,
+      "size": 48,
+      "state": "cached",
+      "header_len": 16,
+      "bin": "tcache[1]"
+    },
+    {
+      "va": 93824992252656,
+      "size": 80,
+      "state": "in_use",
+      "header_len": 16,
+      "bin": null
+    },
+    {
+      "va": 93824992252736,
+      "size": 48,
+      "state": "cached",
+      "header_len": 16,
+      "bin": "tcache[1]"
+    },
+    {
+      "va": 93824992252784,
+      "size": 64,
+      "state": "cached",
+      "header_len": 16,
+      "bin": "tcache[2]"
+    },
+    {
+      "va": 93824992252848,
+      "size": 256,
+      "state": "in_use",
+      "header_len": 16,
+      "bin": null
+    },
+    {
+      "va": 93824992253104,
+      "size": 2896,
+      "state": "free",
+      "header_len": 16,
+      "bin": "top"
+    }
+  ]
+}

@@ -47,11 +47,16 @@ import hashlib
 import inspect
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from memdiver.core.dump_source import open_dump
+from memdiver.engine.heap_hits import (
+    ALLOCATOR_OFF,
+    heap_hit_annotations,
+    validate_allocator,
+)
 
 logger = logging.getLogger("memdiver.engine.key_location")
 
@@ -123,6 +128,12 @@ class DumpKeyLocation:
     offsets: Tuple[int, ...] = ()
     offsets_truncated: bool = False
     detail: str = ""
+    # Heap context per RETURNED offset (parallel to ``offsets``; an entry is
+    # ``None`` when that hit lies in no allocator chunk). ``None`` when heap
+    # annotation was off or the dump has no hits — then absent from
+    # :meth:`to_dict`. Excluded from eq/hash: it holds dicts.
+    heap: Optional[Tuple[Optional[Dict[str, Any]], ...]] = field(
+        default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Enforce the ``status`` / ``present`` / offsets invariants.
@@ -183,6 +194,11 @@ class DumpKeyLocation:
             raise ValueError(
                 "present " + repr(self.present) + " must carry no offsets for "
                 + repr(self.dump_path) + "; got " + repr(self.offsets))
+        if self.heap is not None and len(self.heap) != len(self.offsets):
+            raise ValueError(
+                "heap carries " + str(len(self.heap)) + " entries for "
+                + str(len(self.offsets)) + " offsets in "
+                + repr(self.dump_path) + "; it must be parallel to offsets")
 
     @property
     def searched(self) -> bool:
@@ -191,7 +207,7 @@ class DumpKeyLocation:
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-serialisable view. ``present`` stays ``None`` when NULL."""
-        return {
+        out = {
             "dump_path": self.dump_path,
             "name": self.name,
             "format_name": self.format_name,
@@ -204,6 +220,9 @@ class DumpKeyLocation:
             "offsets_truncated": self.offsets_truncated,
             "detail": self.detail,
         }
+        if self.heap is not None:
+            out["heap"] = [dict(h) if h is not None else None for h in self.heap]
+        return out
 
 
 @dataclass(frozen=True)
@@ -436,6 +455,7 @@ def locate_key_across_dumps(
     key_material: Optional[Dict[str, Any]] = None,
     max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
     on_source: Optional[Callable[[Any], None]] = None,
+    allocator: str = "auto",
 ) -> KeyLocationResult:
     """Locate *needle* in every dump in *dump_paths*, honestly.
 
@@ -456,6 +476,10 @@ def locate_key_across_dumps(
         on_source: Called with each freshly opened source BEFORE anything is
             read from it. The app layer hooks its encrypted-container lock
             check in here; anything this raises propagates (see below).
+        allocator: Heap allocator hint (``"auto"``, an ``AllocatorKind``
+            value, or ``"off"``). Unless ``"off"``, every dump WITH hits is
+            heap-parsed once (cached) and each returned offset gains a
+            ``heap`` entry (see :mod:`memdiver.engine.heap_hits`).
 
     Returns:
         A :class:`KeyLocationResult` whose per-dump rows distinguish "searched
@@ -463,7 +487,7 @@ def locate_key_across_dumps(
 
     Raises:
         ValueError: for an empty needle — unsearchable, and no absence may be
-            claimed for it.
+            claimed for it — or an unknown ``allocator`` name.
         core.service_errors.EncryptedDumpLockedError: when a locked encrypted
             container is supplied (raised by *on_source*), because then EVERY
             answer in the set is garbage.
@@ -477,6 +501,7 @@ def locate_key_across_dumps(
     if not needle:
         raise ValueError(
             "cannot locate an empty secret; no absence may be claimed for it")
+    validate_allocator(allocator)
 
     started = time.perf_counter()
     rows: List[DumpKeyLocation] = []
@@ -532,6 +557,9 @@ def locate_key_across_dumps(
                 # reported a real secret absent (see
                 # core.dump_io.find_first_offset).
                 offsets = list(source.find_all(needle, **view_kwargs))
+                kept = tuple(offsets[:max_offsets]) if offsets else ()
+                heap = (heap_hit_annotations(source, kept, searched_view, allocator)
+                        if kept and allocator != ALLOCATOR_OFF else None)
         except (OSError, ValueError) as exc:
             # NARROW ON PURPOSE. ``EncryptedDumpLockedError`` subclasses
             # ``CapabilityError(Exception)`` and NOT ``ValueError``, so it
@@ -556,7 +584,6 @@ def locate_key_across_dumps(
             continue
 
         hit_count = len(offsets)
-        kept = tuple(offsets[:max_offsets]) if offsets else ()
         rows.append(DumpKeyLocation(
             dump_path=dump_path,
             name=name,
@@ -568,6 +595,7 @@ def locate_key_across_dumps(
             hit_count=hit_count,
             offsets=kept,
             offsets_truncated=hit_count > len(kept),
+            heap=heap,
         ))
 
     return KeyLocationResult(

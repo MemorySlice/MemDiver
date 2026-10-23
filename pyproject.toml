@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "0.9.5"
+version = "0.10.0"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -237,11 +237,17 @@ memdiver = "memdiver.cli:main"
 #   [project.entry-points."memdiver.oracles"]
 #   my_resource = "my_pkg.memdiver_resource"      # module, or "...:register" callable
 #
+#   [project.entry-points."memdiver.allocators"]
+#   my_allocator = "my_pkg.memdiver_allocator"    # module, or "...:register" callable
+#
 # "memdiver.oracles" advertises verification resources (register_resource_type
 # in engine/resources/builtin_oracle.py), selected by resource_type in an oracle
 # config. An out-of-tree resource is ALWAYS loaded under the untrusted-code
 # sandbox: only first-party in-tree factories get the trusted-load exemption,
 # so installing a package can never buy unsandboxed execution.
+# "memdiver.allocators" advertises heap allocators (register_allocator in
+# heap/registry.py with an AllocatorDescriptor); a plugin replaces any
+# built-in descriptor of the same AllocatorKind.
 
 [tool.setuptools]
 package-dir = {"memdiver" = "."}
@@ -272,6 +278,8 @@ packages = [
     "memdiver.api.routers",
     "memdiver.api.ws",
     "memdiver.api.services",
+    "memdiver.heap",
+    "memdiver.heap.allocators",
 ]
 
 [tool.pytest.ini_options]
@@ -472,6 +480,28 @@ files = [
     # the orphan alive -- the failure it exists to prevent, and one nothing
     # would ever report.
     "core/process_guard.py",
+    # Wave 13 -- heap allocator layer (0.10.0). Typed from the start: every
+    # helper turns a VA into a view offset (or back), and an Optional/int slip
+    # would read a chunk header at the wrong address.
+    "heap/model.py",
+    "heap/platform.py",
+    "heap/memory.py",
+    "heap/registry.py",
+    "heap/detect.py",
+    "heap/builtin.py",
+    "heap/analyze.py",
+    "heap/allocators/ptmalloc2.py",
+    "heap/allocators/scudo.py",
+    "heap/allocators/mallocng.py",
+    "heap/allocators/jemalloc.py",
+    "heap/allocators/generic.py",
+    "app/tools_heap.py",
+    # Heap roles projected onto the consensus slab (VA -> slab interval math).
+    "engine/consensus_heap.py",
+    # Heap roles consumed by the reduction, the key locator and the pipeline.
+    "engine/candidate_heap.py",
+    "engine/heap_hits.py",
+    "app/_pipeline_heap.py",
 
 ]
 

@@ -342,3 +342,97 @@ describe("CandidatePanel empty + honesty", () => {
     expect(screen.queryByTestId("candidate-table")).not.toBeInTheDocument();
   });
 });
+
+describe("CandidatePanel heap context", () => {
+  const HEAP_REGION = region({
+    heap: {
+      role_counts: { user_data: 48 },
+      chunk: { start: 0x5a000, size: 96, state: "free", offset_in_chunk: 0x10, agree: 7 },
+      residual: true,
+      agreement: 6,
+    },
+  });
+
+  it("keeps the table it always had when no region carries heap context", async () => {
+    seedWorkspace();
+    render(<CandidatePanel />);
+    await screen.findByTestId("candidate-table");
+    expect(screen.queryByTestId("candidate-heap-chunk")).toBeNull();
+    expect(screen.queryByTestId("candidate-heap-summary")).toBeNull();
+  });
+
+  it("shows chunk state, offset in chunk and the residual badge", async () => {
+    analyzeCandidatesMock.mockResolvedValue(response({ regions: [HEAP_REGION] }));
+    seedWorkspace();
+    render(<CandidatePanel />);
+    const chunk = await screen.findByTestId("candidate-heap-chunk");
+    expect(chunk).toHaveAttribute("data-chunk-state", "free");
+    expect(chunk).toHaveTextContent("Free");
+    expect(chunk.getAttribute("title")).toMatch(/0x5a000, 96 bytes, Free; 7 dumps agree/);
+    expect(chunk.getAttribute("title")).toMatch(/6 dumps agree on the heap roles/);
+    expect(screen.getByTestId("candidate-heap-offset")).toHaveTextContent("+0x10");
+    const residual = screen.getByTestId("candidate-heap-residual");
+    expect(residual).toHaveTextContent("Residual");
+    expect(residual).toHaveAttribute(
+      "title",
+      "Starts in a freed chunk: these bytes are stale leftovers, not live state.",
+    );
+  });
+
+  it("dashes a region that is in no parsed chunk", async () => {
+    analyzeCandidatesMock.mockResolvedValue(
+      response({
+        regions: [
+          HEAP_REGION,
+          region({
+            offset: 1024,
+            heap: { role_counts: {}, chunk: null, residual: false, agreement: null },
+          }),
+        ],
+      }),
+    );
+    seedWorkspace();
+    render(<CandidatePanel />);
+    const chunks = await screen.findAllByTestId("candidate-heap-chunk");
+    expect(chunks[1]).toHaveTextContent("—");
+    expect(screen.getAllByTestId("candidate-heap-residual")).toHaveLength(1);
+  });
+
+  it("reports the policy that ran and the mask count in the summary", async () => {
+    analyzeCandidatesMock.mockResolvedValue(
+      response({
+        thresholds: { heap_policy: "mask" },
+        stages: {
+          total_bytes: 100,
+          variance: 50,
+          byte_class: 50,
+          aligned: 40,
+          high_entropy: 20,
+          heap_masked: 12,
+        },
+      }),
+    );
+    seedWorkspace();
+    render(<CandidatePanel />);
+    expect(await screen.findByTestId("candidate-heap-policy")).toHaveTextContent(
+      "Heap policy: Mask metadata",
+    );
+    expect(screen.getByTestId("candidate-heap-masked")).toHaveTextContent(
+      "12 variance survivors removed as allocator metadata",
+    );
+  });
+
+  it("sends the heap policy chosen in the filters", async () => {
+    seedWorkspace();
+    render(<CandidatePanel />);
+    await waitFor(() => expect(analyzeCandidatesMock).toHaveBeenCalledTimes(1));
+    expect(lastRequest()).not.toHaveProperty("heap_policy");
+
+    fireEvent.change(screen.getByTestId("candidate-heap-policy-select"), {
+      target: { value: "off" },
+    });
+    fireEvent.click(screen.getByTestId("candidate-apply"));
+    await waitFor(() => expect(analyzeCandidatesMock).toHaveBeenCalledTimes(2));
+    expect(lastRequest().heap_policy).toBe("off");
+  });
+});

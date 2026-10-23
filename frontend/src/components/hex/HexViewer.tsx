@@ -15,6 +15,7 @@ import { windowCount, clampWindowStart } from "./window-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
 import { useMslViewSizes } from "@/hooks/useMslViewSizes";
+import { useHeapLayer } from "@/hooks/useHeapLayer";
 
 const BYTES_PER_ROW = 16;
 
@@ -236,6 +237,16 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     dumpPath,
   ]);
 
+  // The heap role layer: `undefined` while it is off for this dump, so rows
+  // keep their memo props untouched. The visible byte range drives the
+  // aligned role-window fetches inside the hook.
+  const getHeapCellAt = useHeapLayer({
+    dumpPath,
+    view: viewMode,
+    firstOffset: firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex) * BYTES_PER_ROW,
+    endOffset: lastVisibleIndex < 0 ? -1 : (absRow(lastVisibleIndex) + 1) * BYTES_PER_ROW,
+  });
+
   // Jump-to-row lives in `useHexScrollTarget`, shared with `MultiHexViewer` so
   // bookmarks / search / CandidatePanel behave identically in both layouts.
   useHexScrollTarget(virtualizer, safeStart, totalRows);
@@ -408,6 +419,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
                 getClassificationAt={getClassificationAtStable}
                 view={viewMode}
                 getAbsenceAt={getAbsenceAtStable}
+                getHeapCellAt={getHeapCellAt}
               />
             </div>
           ))}

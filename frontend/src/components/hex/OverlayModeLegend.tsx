@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 
+import { HEAP_ROLES } from "@/api/heap";
 import { VarianceSwatch } from "@/components/common/VarianceSwatch";
 import { ABSENCE_META } from "@/utils/absence-classes";
 import {
@@ -8,6 +9,7 @@ import {
   VARIANT_RAMP_STEPS,
   variantRampClass,
 } from "@/utils/variant-ramp";
+import { HEAP_MIXED_SWATCH, HEAP_ROLE_SWATCH } from "@/utils/heap-roles";
 import type { OverlayRenderMode } from "@/stores/overlay-render-store";
 import { VarianceClassChips } from "./VarianceClassChips";
 
@@ -42,6 +44,10 @@ export function OverlayModeLegend({ mode }: { mode: OverlayRenderMode }) {
       colour key for colours the grid is not using.
     */
     return <VarianceClassChips />;
+  }
+
+  if (mode === "heap") {
+    return <HeapRoleLegend />;
   }
 
   if (mode === "variants") {
@@ -90,6 +96,36 @@ export function OverlayModeLegend({ mode }: { mode: OverlayRenderMode }) {
         <span aria-hidden="true">{GLYPH_VOID}</span>
         {t("renderMode.legendGlyphVoid")}
       </span>
+    </span>
+  );
+}
+
+/**
+ * The `heap` mode legend: the seven roles plus MIXED, each swatch reading the
+ * same `--md-hl-heap-*` token as its byte rule. No chunk-start entry: the
+ * aligned window carries roles, not chunk starts, so the grid draws no tick.
+ */
+function HeapRoleLegend() {
+  const { t } = useTranslation("heap");
+  return (
+    <span
+      data-testid="hex-overlay-legend-heap"
+      className="inline-flex flex-wrap items-center gap-2 md-text-muted"
+    >
+      <span className="font-semibold">{t("overlay.legendTitle")}</span>
+      {HEAP_ROLES.map((role) => (
+        <VarianceSwatch
+          key={role}
+          swatchTestId={`hex-overlay-legend-heap-${role}`}
+          swatchClass={HEAP_ROLE_SWATCH[role]}
+          label={t(`roles.${role}`)}
+        />
+      ))}
+      <VarianceSwatch
+        swatchTestId="hex-overlay-legend-heap-mixed"
+        swatchClass={HEAP_MIXED_SWATCH}
+        label={t("roles.mixed")}
+      />
     </span>
   );
 }

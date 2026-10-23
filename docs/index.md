@@ -62,9 +62,9 @@ Reference pages for the eight detection algorithms and nine visualization views 
 | Surface | Count | Location |
 |---|---|---|
 | Detection algorithms | **8** | `algorithms/` |
-| CLI subcommands | **33** | `cli/` |
-| FastAPI routers | **18** + WebSocket | `api/routers/` |
-| MCP tools | **48** | `mcp_server/` |
+| CLI subcommands | **35** | `cli/` |
+| FastAPI routers | **19** + WebSocket | `api/routers/` |
+| MCP tools | **56** | `mcp_server/` |
 | Exporters | YARA · JSON · Volatility3 | `architect/` |
 | Dump backends | `memslicer` · `lldb` · `fridump` | `core/dump_driver.py` |
 | Visualization views | 4 SPA + 5 research-mode (Marimo) | `frontend/` + `ui/` |
@@ -90,6 +90,7 @@ user_guide/auto_floor
 user_guide/mcp_reference
 user_guide/keylog_export
 user_guide/locate_key
+user_guide/heap
 user_guide/configuration
 ```
 
@@ -116,6 +117,7 @@ design/large_dumps_and_memory
 
 algorithms/index
 visualizations/index
+file_formats/msl_v1_1_0
 file_formats/msl_v1_0_0
 file_formats/dataset_layout
 oracle/interface

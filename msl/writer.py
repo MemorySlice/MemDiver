@@ -29,7 +29,8 @@ from .crypto import (RewrapMaterial, aead_encrypt, derive_cek_producer,
                      nonce_for_cipher, random_nonce)
 from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
                     ARGON2ID_MIN_TIME, BLOCK_HEADER_SIZE, BLOCK_MAGIC,
-                    FILE_HEADER_ENC_SIZE, FILE_HEADER_SIZE, FILE_MAGIC,
+                    EXTENSION_FORBIDDEN_TYPES, FILE_HEADER_ENC_SIZE,
+                    FILE_HEADER_SIZE, FILE_MAGIC,
                     POINTER_GRAPH_INTEGRITY_FLAG, ArchType, BlockFlag,
                     BlockType, CompAlgo, ConnRowType, EncAlgo, Endianness,
                     HashAlgo, HeaderFlag, KdfType, KeyEncap, OSType, PageState)
@@ -55,6 +56,15 @@ STREAM_CHUNK_SIZE = 16 << 20
 # Ciphertext slice size for streaming encryption (see _seal_block).
 SEAL_PIECE_SIZE = 1 << 20
 _U32_MAX = 0xFFFFFFFF
+
+# ``Producer`` written into End-of-Extension blocks (spec Table 12a).
+def _default_extension_producer() -> str:
+    try:
+        from memdiver import __version__
+    except Exception:  # pragma: no cover - import cycle / unknown version
+        __version__ = "0.0.0+unknown"
+    return f"memdiver/{__version__}"
+
 
 # Byte source for a streamed region: ``read_chunk(offset, length)`` returns
 # exactly *length* bytes starting *offset* bytes into the region's captured-
@@ -183,6 +193,31 @@ class HandleTableEntry:
     path: str = ""
 
 
+@dataclass(frozen=True)
+class ExtensionBlock:
+    """One block of an extension segment (spec 4.6) for
+    :meth:`MslWriter.add_extension_segment`.
+
+    ``payload`` is the on-disk payload (already compressed when ``flags``
+    says so); ``block_uuid`` / ``parent_uuid`` default to a fresh uuid4 /
+    zero. Used by materialize to re-emit a verified source segment with
+    its block identities intact.
+    """
+    block_type: int
+    payload: bytes
+    block_uuid: Optional[UUID] = None
+    parent_uuid: Optional[UUID] = None
+    flags: int = 0
+
+
+@dataclass
+class _ExtensionSegmentSpec:
+    """A pending extension segment: blocks + the terminator's identity."""
+    producer: str
+    blocks: List[Tuple[int, bytes, UUID, bytes, int]]
+    terminator_uuid: UUID = field(default_factory=uuid4)
+
+
 @dataclass
 class MslEncryptionConfig:
     """Producer-side AEAD encryption configuration (spec §10).
@@ -287,11 +322,17 @@ class MslWriter:
         self._system_context: Optional[Tuple[bytes, UUID, int]] = None  # (payload, uuid, table_bitmap)
         self._sc_children: List[Tuple[int, bytes, UUID, int]] = []
         self._end_of_capture: Optional[Tuple[bytes, UUID]] = None
-        # Optional POINTER_GRAPH appendix (spec §A, MemDiver extension).
-        # When set, written verbatim after EoC (and after the AEAD Tag for
-        # encrypted containers in Phase C). Lives outside the BLAKE3 chain.
-        # Tuple shape: (encoded_appendix_block_bytes, block_uuid).
-        self._pointer_graph_appendix: Optional[Tuple[bytes, UUID]] = None
+        # Extension segments (spec 4.6): emitted after EoC in registration
+        # order, each closed by an End-of-Extension block. The PrevHash
+        # chain continues from H(EoC) (zero inside an encrypted container).
+        self._extension_segments: List[_ExtensionSegmentSpec] = []
+        # Index into _extension_segments of the writer's own pointer-graph
+        # segment (add_pointer_graph replaces it instead of adding another).
+        self._pointer_graph_segment: Optional[int] = None
+        # One WrittenAt for every segment this writer emits, fixed at
+        # construction so two write() calls of the same writer are
+        # byte-identical (the streaming/in-memory equality tests rely on it).
+        self._extension_written_at_ns: int = int(time.time() * 1e9)
         # Region splitting (see REGION_BLOCK_CAP). `_region_index` holds
         # (base_addr, region_size, block_uuid) for every MEMORY_REGION block;
         # `_split_regions` maps a split region's first-block UUID to
@@ -579,14 +620,55 @@ class MslWriter:
         self._cap_bitmap |= int(bits)
 
     def add_raw_appendix(self, encoded: bytes) -> None:
-        """Emit already-encoded appendix block bytes verbatim after EoC.
+        """Deprecated: unchained post-EoC appendices no longer exist.
 
-        The appendix (e.g. a POINTER_GRAPH copied from another ``.msl``) lives
-        outside the BLAKE3 chain; mutually exclusive with add_pointer_graph().
+        Spec 1.1 (Section 4.6) replaced the appendix with extension
+        segments: blocks after EoC are chained, counted and closed by an
+        End-of-Extension block. Re-emit the blocks through
+        :meth:`add_extension_segment` instead (materialize does this for
+        verified source segments).
         """
-        if self._pointer_graph_appendix is not None:
-            raise ValueError("an appendix was already added to this writer")
-        self._pointer_graph_appendix = (bytes(encoded), _NIL_UUID)
+        raise NotImplementedError(
+            "add_raw_appendix() was removed with MSL 1.1 extension segments "
+            "(spec 4.6); use add_extension_segment(producer, blocks) instead")
+
+    def add_extension_segment(self, producer: Optional[str],
+                              blocks: Sequence[ExtensionBlock]) -> int:
+        """Register an extension segment (spec 4.6) to be emitted after EoC.
+
+        *blocks* (at least one) are written in order after the End-of-Capture
+        block and every earlier segment, then closed by an End-of-Extension
+        block carrying ``SegmentHash``, the exact ``BlockCount`` (blocks +
+        terminator) and *producer* (``None`` = ``memdiver/<version>``).
+        Block types the spec forbids in extension segments (evidence:
+        0x0001, 0x0002, 0x0010-0x0015, 0x0030, 0x0040, 0x0050-0x0058,
+        0x0FFF) and the terminator itself are rejected.
+
+        Returns the segment's index (emission order). ``write()`` requires
+        an End-of-Capture block once any segment is registered.
+        """
+        blocks = list(blocks)
+        if not blocks:
+            raise ValueError("an extension segment needs at least one block")
+        entries: List[Tuple[int, bytes, UUID, bytes, int]] = []
+        for blk in blocks:
+            btype = int(blk.block_type)
+            if btype in EXTENSION_FORBIDDEN_TYPES or btype == BlockType.END_OF_EXTENSION:
+                raise ValueError(
+                    f"block type 0x{btype:04X} may not appear in an extension "
+                    "segment (spec 4.6)")
+            parent = blk.parent_uuid.bytes if blk.parent_uuid is not None else _ZERO_UUID
+            entries.append((btype, bytes(blk.payload),
+                            blk.block_uuid if blk.block_uuid is not None else uuid4(),
+                            parent, int(blk.flags)))
+        name = producer if producer is not None else _default_extension_producer()
+        self._extension_segments.append(_ExtensionSegmentSpec(name, entries))
+        return len(self._extension_segments) - 1
+
+    @property
+    def extension_segment_count(self) -> int:
+        """Segments registered so far (emitted in this order after EoC)."""
+        return len(self._extension_segments)
 
     def add_vas_map(self, entries: Sequence[MslVasEntry]) -> UUID:
         """Add a VAS Map block (type 0x1001): the address-space layout overlay.
@@ -594,8 +676,9 @@ class MslWriter:
         Payload (mirrors ``decoders.decode_vas_map``): ``u32 entry_count``,
         ``u32 entry_size`` (0 = variable-length entries), then per entry
         ``u64 base_addr, u64 region_size, u8 protection, u8 region_type,
-        u16 path_len`` (raw length incl. NUL, 0 when no path), 4 pad bytes,
-        and the NUL-terminated path padded to 8 bytes. The format has no
+        u16 path_len`` (raw length incl. NUL, 0 when no path), ``u8
+        name_source`` (VasNameSource), 3 reserved bytes, and the
+        NUL-terminated path padded to 8 bytes. The format has no
         "captured" flag: a VAS entry without a matching MEMORY_REGION block
         is a range whose bytes were not stored.
         """
@@ -739,32 +822,40 @@ class MslWriter:
         nodes: Sequence[MslPointerGraphNode],
         edges: Sequence[MslPointerGraphEdge],
         emit_integrity: bool = True,
+        producer: Optional[str] = None,
     ) -> UUID:
-        """Register a POINTER_GRAPH appendix to be emitted after EoC.
+        """Register a POINTER_GRAPH block in its own extension segment.
 
-        The appendix is a MemDiver extension: a plaintext block of type
-        0x1003 written *after* the End-of-Capture block (and, in Phase C,
-        after the AEAD Tag for encrypted containers). It lives outside
-        the BLAKE3 in-chain `prev_hash` chain — readers that don't
-        understand the appendix stop at EoC and ignore it. The user is
-        opting in to inclusion by calling this method; `write()` checks
-        the state and emits the appendix only when set.
+        POINTER_GRAPH (0x1003) is a producer-defined Structural block, so
+        the spec (4.6) admits it only in an extension segment: it is written
+        after the End-of-Capture block, chained from it (zero PrevHash inside
+        an encrypted container) and closed by an End-of-Extension block. The
+        user opts in by calling this method; readers that do not implement
+        extension segments stop at EoC and ignore it.
 
-        When *emit_integrity* is True (default), the appendix payload is
-        followed by a 32-byte BLAKE3 trailer over (header + nodes + edges).
-        The reader surfaces the stored hash on `MslPointerGraph.appendix_hash`;
-        callers may use ``decoders_ext.verify_pointer_graph_integrity`` to
-        re-check it.
+        When *emit_integrity* is True (default), the payload is followed by
+        a 32-byte BLAKE3 trailer over (header + nodes + edges). The reader
+        surfaces the stored hash on `MslPointerGraph.appendix_hash`; callers
+        may use ``decoders_ext.verify_pointer_graph_integrity`` to re-check
+        it (the segment's SegmentHash covers the block as well).
 
-        Returns the appendix block's UUID. Calling twice replaces the
-        previous registration — only one appendix may be emitted per file.
+        Returns the block's UUID. Calling twice replaces the writer's own
+        pointer-graph segment (segments added through
+        :meth:`add_extension_segment` are untouched).
         """
         block_uuid = uuid4()
-        encoded = _build_pointer_graph_block(
-            list(nodes), list(edges),
-            block_uuid=block_uuid, emit_integrity=emit_integrity,
-        )
-        self._pointer_graph_appendix = (encoded, block_uuid)
+        payload = _build_pointer_graph_payload(
+            list(nodes), list(edges), emit_integrity=emit_integrity)
+        block = ExtensionBlock(BlockType.POINTER_GRAPH, payload, block_uuid)
+        if self._pointer_graph_segment is not None:
+            spec = self._extension_segments[self._pointer_graph_segment]
+            spec.blocks = [(int(BlockType.POINTER_GRAPH), payload, block_uuid,
+                            _ZERO_UUID, 0)]
+            if producer is not None:
+                spec.producer = producer
+        else:
+            self._pointer_graph_segment = self.add_extension_segment(
+                producer, [block])
         return block_uuid
 
     def add_connectivity_table(self, rows: Sequence[ConnectivityRow]) -> UUID:
@@ -794,7 +885,8 @@ class MslWriter:
 
         The 32-byte file_hash slot is left as zeros here; `write()`
         finalizes it with a digest covering the file header and every
-        preceding encoded block. *acq_end_ns* defaults to now.
+        preceding encoded block, and fills in the block count (the 40-byte
+        stub grows to the 48-byte EoC payload). *acq_end_ns* defaults to now.
         """
         if acq_end_ns is None:
             acq_end_ns = int(time.time() * 1e9)
@@ -839,7 +931,7 @@ class MslWriter:
         Produces the same layout as the plaintext write() path: header with
         the exact pre-computed BlockCount and CapBitmap, BLAKE3-chained
         blocks, EoC FileHash over header + every prior block, then the
-        optional POINTER_GRAPH appendix. The prev_hash chain and EoC hasher
+        registered extension segments. The prev_hash chain and EoC hasher
         are updated incrementally while bytes are written, and streamed
         region bytes are pulled in STREAM_CHUNK_SIZE pieces. Writes to a
         temp file and ``os.replace``s it on success, like write().
@@ -857,18 +949,21 @@ class MslWriter:
         file_hasher = _new_hasher()
         file_hasher.update(file_header)
         prev_hash = hash_bytes(file_header)  # §4.4: Block 0 chains from the header
+        self._require_eoc_for_extensions(ordered)
         with self._atomic_output() as f:
             f.write(file_header)
             for (block_type, payload, block_uuid, parent_uuid, flags) in ordered:
                 if block_type == BlockType.END_OF_CAPTURE:
-                    payload = _eoc_payload_with_hash(payload, file_hasher.digest())
+                    payload = _eoc_payload_with_hash(payload, file_hasher.digest(),
+                                                     len(ordered))
                 header = self._encode_block_header(block_type, len(payload), block_uuid,
                                                    parent_uuid, prev_hash, flags)
                 prev_hash = _stream_block(f, file_hasher, header, payload)
-            if self._pointer_graph_appendix is not None:
-                f.write(self._pointer_graph_appendix[0])
-        logger.info("Wrote MSL file (streaming): %s (%d blocks)",
-                    self._path, len(ordered))
+            # prev_hash is now H(EoC block): extension segments chain from it.
+            self._emit_extension_segments(f.write, prev_hash, chained=True,
+                                          hasher=hash_bytes)
+        logger.info("Wrote MSL file (streaming): %s (%d blocks%s)",
+                    self._path, len(ordered), self._extension_note())
 
     def _prepare_ordered_blocks(self) -> List[Tuple[int, bytes, UUID, bytes, int]]:
         """Finalize late-bound payloads, ensure the output dir, return blocks."""
@@ -908,7 +1003,8 @@ class MslWriter:
 
     def _write_plaintext(self, ordered: List[Tuple[int, bytes, UUID, bytes, int]]) -> None:
         """Write an unencrypted file: 64-byte header, BLAKE3-chained blocks,
-        optional plaintext POINTER_GRAPH appendix after EoC."""
+        then the registered extension segments chained from the EoC block."""
+        self._require_eoc_for_extensions(ordered)
         file_header = self._encode_base_header(encrypted=False, block_count=len(ordered))
         encoded_blocks: List[Optional[bytes]] = []
         prev_hash = hash_bytes(file_header)  # §4.4: Block 0 chains from the header
@@ -929,32 +1025,30 @@ class MslWriter:
             self._finalize_end_of_capture(
                 encoded_blocks, file_header, eoc_index, prev_hash, ordered,
             )
+            prev_hash = hash_bytes(encoded_blocks[eoc_index])
 
         with self._atomic_output() as f:
             f.write(file_header)
             for block in encoded_blocks:
                 if block is not None:
                     f.write(block)
-            # POINTER_GRAPH appendix: plaintext bytes after the chain (outside
-            # the integrity chain). Old readers stop at EoC and ignore them.
-            if self._pointer_graph_appendix is not None:
-                f.write(self._pointer_graph_appendix[0])
-        appendix_note = (
-            " + POINTER_GRAPH appendix"
-            if self._pointer_graph_appendix is not None else ""
-        )
+            # Extension segments (spec 4.6): chained from H(EoC). Readers
+            # without segment support stop at EoC and ignore them.
+            self._emit_extension_segments(f.write, prev_hash, chained=True,
+                                          hasher=hash_bytes)
         logger.info("Wrote MSL file: %s (%d blocks%s)",
-                    self._path, len(ordered), appendix_note)
+                    self._path, len(ordered), self._extension_note())
 
     def _write_encrypted(self, ordered: List[Tuple[int, bytes, UUID, bytes, int]]) -> None:
         """Write a full-container AEAD-encrypted file (spec §10).
 
-        Layout: [Header 128B | KEM ct | AEAD(block stream incl. appendix) | Tag 16B].
+        Layout: [Header 128B | KEM ct | AEAD(block stream incl. segments) | Tag 16B].
         Per §10.6: every block's PrevHash is zero, the EoC FileHash is computed
         over the plaintext, and the AAD is the 128-byte header plus KEM
-        ciphertext. The POINTER_GRAPH appendix (if any) lives inside the
-        encrypted region, after EoC.
+        ciphertext. Extension segments (if any) lie inside the encrypted
+        region after EoC, before the tag (spec 4.6), with zero PrevHash.
         """
+        self._require_eoc_for_extensions(ordered)
         cfg = self._encryption
         file_header, kem_ct, cek, nonce = self._encryption_envelope()
         aad = file_header + kem_ct
@@ -974,14 +1068,17 @@ class MslWriter:
         if eoc_entry is not None:
             eoc_payload_stub, eoc_uuid = eoc_entry
             file_hash = hash_stream((file_header, kem_ct, *pre_eoc))
-            new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash)
+            new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash,
+                                                     len(ordered))
             block_stream += self._encode_block(
                 BlockType.END_OF_CAPTURE, new_eoc_payload, eoc_uuid,
                 _ZERO_UUID, _ZERO_HASH, 0,
             )
-        # Appendix inside the encrypted region, after EoC.
-        if self._pointer_graph_appendix is not None:
-            block_stream += self._pointer_graph_appendix[0]
+        # Extension segments inside the encrypted region, after EoC.
+        segment_parts: List[bytes] = []
+        self._emit_extension_segments(segment_parts.append, _ZERO_HASH,
+                                      chained=False, hasher=hash_bytes)
+        block_stream += b"".join(segment_parts)
 
         ciphertext_and_tag = aead_encrypt(cfg.enc_algo, cek, nonce, aad, block_stream)
 
@@ -989,12 +1086,9 @@ class MslWriter:
             f.write(file_header)
             f.write(kem_ct)
             f.write(ciphertext_and_tag)
-        appendix_note = (
-            " + POINTER_GRAPH appendix"
-            if self._pointer_graph_appendix is not None else ""
-        )
         logger.info("Wrote encrypted MSL file: %s (%d blocks, %s%s)",
-                    self._path, len(ordered), cfg.enc_algo.name, appendix_note)
+                    self._path, len(ordered), cfg.enc_algo.name,
+                    self._extension_note())
 
     def _compose_ordered_blocks(self) -> List[Tuple[int, bytes, UUID, bytes, int]]:
         """Return the full block list in spec-mandated emission order.
@@ -1068,11 +1162,61 @@ class MslWriter:
             (file_header, *(b for b in encoded_blocks if b is not None))
         )
         _, eoc_payload_stub, eoc_uuid, _, _ = ordered[eoc_index]
-        new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash)
+        new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash,
+                                                 len(ordered))
         encoded_blocks[eoc_index] = self._encode_block(
             BlockType.END_OF_CAPTURE, new_eoc_payload, eoc_uuid,
             _ZERO_UUID, prev_hash, 0,
         )
+
+    # ------------------------------------------------------------------
+    # Extension segments (spec 4.6)
+    # ------------------------------------------------------------------
+
+    def _require_eoc_for_extensions(
+            self, ordered: List[Tuple[int, bytes, UUID, bytes, int]]) -> None:
+        """Segments follow the End-of-Capture block; refuse to emit without one."""
+        if not self._extension_segments:
+            return
+        if not any(bt == BlockType.END_OF_CAPTURE for bt, *_ in ordered):
+            raise ValueError(
+                "extension segments require an End-of-Capture block: call "
+                "add_end_of_capture() before write()")
+
+    def _extension_note(self) -> str:
+        n = len(self._extension_segments)
+        return f" + {n} extension segment(s)" if n else ""
+
+    def _emit_extension_segments(self, write: Callable[[bytes], object],
+                                 prev_hash: bytes, chained: bool,
+                                 hasher: Callable[[bytes], bytes]) -> bytes:
+        """Emit every registered segment through *write*; return the chain head.
+
+        *prev_hash* is the PrevHash the first segment block continues from
+        (H(EoC) in plaintext files). With *chained* False (inside an AEAD
+        container, spec 10.6) every PrevHash is written as zero instead.
+        Each segment is closed by an End-of-Extension block whose
+        SegmentHash is *hasher* over the segment's bytes before it and
+        whose BlockCount counts the terminator too.
+        """
+        for spec in self._extension_segments:
+            segment_hasher = _new_hasher()
+            for (block_type, payload, block_uuid, parent_uuid, flags) in spec.blocks:
+                block = self._encode_block(block_type, payload, block_uuid, parent_uuid,
+                                           prev_hash if chained else _ZERO_HASH, flags)
+                write(block)
+                segment_hasher.update(block)
+                prev_hash = hasher(block)
+            terminator = self._encode_block(
+                BlockType.END_OF_EXTENSION,
+                _build_end_of_extension_payload(
+                    segment_hasher.digest(), self._extension_written_at_ns,
+                    len(spec.blocks) + 1, spec.producer),
+                spec.terminator_uuid, _ZERO_UUID,
+                prev_hash if chained else _ZERO_HASH, 0)
+            write(terminator)
+            prev_hash = hasher(terminator)
+        return prev_hash
 
     def _encode_base_header(self, *, encrypted: bool, block_count: int,
                             hash_algo: int = HashAlgo.BLAKE3) -> bytes:
@@ -1151,8 +1295,10 @@ class MslWriter:
 
         One incremental AEAD (:mod:`memdiver.msl.aead_stream`) over the same
         plaintext block stream: zero PrevHash, EoC FileHash over header + KEM
-        ct + every pre-EoC block, appendix after EoC, 16-byte tag last.
+        ct + every pre-EoC block, extension segments after EoC, 16-byte tag
+        last.
         """
+        self._require_eoc_for_extensions(ordered)
         cfg = self._encryption
         file_header, kem_ct, cek, nonce = self._encryption_envelope()
         sealer = aead_stream_encryptor(cfg.enc_algo, cek, nonce, file_header + kem_ct)
@@ -1171,15 +1317,18 @@ class MslWriter:
                                                    parent_uuid, _ZERO_HASH, flags)
                 _seal_block(f, sealer, file_hasher, header, payload)
             if eoc_entry is not None:
-                eoc_payload = _eoc_payload_with_hash(eoc_entry[0], file_hasher.digest())
+                eoc_payload = _eoc_payload_with_hash(eoc_entry[0], file_hasher.digest(),
+                                                     len(ordered))
                 f.write(sealer.update(self._encode_block(
                     BlockType.END_OF_CAPTURE, eoc_payload, eoc_entry[1],
                     _ZERO_UUID, _ZERO_HASH, 0)))
-            if self._pointer_graph_appendix is not None:
-                f.write(sealer.update(self._pointer_graph_appendix[0]))
+            self._emit_extension_segments(
+                lambda data: f.write(sealer.update(data)), _ZERO_HASH,
+                chained=False, hasher=hash_bytes)
             f.write(sealer.finalize())
-        logger.info("Wrote encrypted MSL file (streaming): %s (%d blocks, %s)",
-                    self._path, len(ordered), cfg.enc_algo.name)
+        logger.info("Wrote encrypted MSL file (streaming): %s (%d blocks, %s%s)",
+                    self._path, len(ordered), cfg.enc_algo.name,
+                    self._extension_note())
 
     def _encode_enc_extension(self, cfg: "MslEncryptionConfig",
                               nonce_field: bytes, kdf_salt: bytes,
@@ -1249,10 +1398,32 @@ def _len_with_nul(s: str) -> int:
     return (len(s.encode("utf-8")) + 1) if s else 0
 
 
-def _eoc_payload_with_hash(eoc_payload_stub: bytes, file_hash: bytes) -> bytes:
-    """Return the EoC payload with *file_hash* filled in (acq_end_ns kept)."""
+def _eoc_payload_with_hash(eoc_payload_stub: bytes, file_hash: bytes,
+                           block_count: int) -> bytes:
+    """Return the 48-byte EoC payload: *file_hash* and *block_count* filled in.
+
+    Layout: FileHash(32) AcqEnd(8) BlockCount(4) Reserved(4). acq_end_ns is
+    kept from the stub; *block_count* counts every capture-segment block
+    including the EoC itself.
+    """
     acq_end_ns = struct.unpack_from("<Q", eoc_payload_stub, 32)[0]
-    return file_hash + struct.pack("<Q", acq_end_ns)
+    return file_hash + struct.pack("<QII", acq_end_ns, block_count, 0)
+
+
+def _build_end_of_extension_payload(segment_hash: bytes, written_at_ns: int,
+                                    block_count: int, producer: str) -> bytes:
+    """End-of-Extension payload (spec Table 12a).
+
+    Layout: SegmentHash(32) WrittenAt(8) BlockCount(4) Reserved(4)
+    ProducerLen(2, incl. NUL, 0 = none) Reserved(6) Producer(UTF-8, NUL, pad8).
+    Byte-identical to memslicer's ``finalize_extension``.
+    """
+    producer = producer or ""
+    if _len_with_nul(producer) > 0xFFFF:
+        producer = ""
+    head = struct.pack("<32sQIIH6x", segment_hash, written_at_ns, block_count, 0,
+                       _len_with_nul(producer))
+    return head + (_pack_padded_str(producer) if producer else b"")
 
 
 # -- Memory region splitting / streaming helpers --
@@ -1462,10 +1633,11 @@ def _build_vas_map_payload(entries: Sequence[MslVasEntry]) -> bytes:
         path = e.mapped_path or ""
         if _len_with_nul(path) > 0xFFFF:  # u16 path_len: drop, never fail
             path = ""
-        parts.append(struct.pack("<QQBBH4x", e.base_addr, e.region_size,
+        parts.append(struct.pack("<QQBBHB3x", e.base_addr, e.region_size,
                                  int(e.protection) & 0xFF,
                                  int(e.region_type) & 0xFF,
-                                 _len_with_nul(path) if path else 0))
+                                 _len_with_nul(path) if path else 0,
+                                 int(e.name_source) & 0xFF))
         parts.append(_pack_padded_str(path) if path else b"")
     return b"".join(parts)
 
@@ -1598,7 +1770,7 @@ _CONN_ROW_ENCODERS = {
 }
 
 
-# -- POINTER_GRAPH appendix encoder (MemDiver extension, block type 0x1003) --
+# -- POINTER_GRAPH encoder (MemDiver extension-segment block, type 0x1003) --
 
 
 def _encode_pointer_graph_node(node: MslPointerGraphNode) -> bytes:
@@ -1622,19 +1794,16 @@ def _encode_pointer_graph_edge(edge: MslPointerGraphEdge) -> bytes:
     return header + (_pack_padded_str(edge.metadata) if edge.metadata else b"")
 
 
-def _build_pointer_graph_block(
+def _build_pointer_graph_payload(
     nodes: Sequence[MslPointerGraphNode],
     edges: Sequence[MslPointerGraphEdge],
-    block_uuid: UUID,
     emit_integrity: bool = True,
 ) -> bytes:
-    """Encode a full POINTER_GRAPH appendix block (80-byte block header
-    + payload) ready to append after the in-chain region.
+    """Encode a POINTER_GRAPH payload (layout in docs/file_formats/msl_v1_0_0.md).
 
-    The block header carries BLOCK_MAGIC, type=0x1003, flags=0, version=1,
-    `block_uuid`, parent_uuid=zeros, and prev_hash=zeros (signals
-    "appendix, not chained" to readers). The payload follows the
-    layout documented in docs/file_formats/msl_v1_0_0.md.
+    Header (16 bytes): node_count, edge_count, flags, reserved (u32 each);
+    then the nodes, the edges and — when *emit_integrity* — a 32-byte
+    BLAKE3 trailer over everything before it.
     """
     pg_flags = POINTER_GRAPH_INTEGRITY_FLAG if emit_integrity else 0
     payload_header = struct.pack(
@@ -1644,15 +1813,29 @@ def _build_pointer_graph_block(
     edges_blob = b"".join(_encode_pointer_graph_edge(e) for e in edges)
     payload_body = payload_header + nodes_blob + edges_blob
     if emit_integrity:
-        payload = payload_body + hash_bytes(payload_body)
-    else:
-        payload = payload_body
+        return payload_body + hash_bytes(payload_body)
+    return payload_body
 
+
+def _build_pointer_graph_block(
+    nodes: Sequence[MslPointerGraphNode],
+    edges: Sequence[MslPointerGraphEdge],
+    block_uuid: UUID,
+    emit_integrity: bool = True,
+    prev_hash: bytes = _ZERO_HASH,
+) -> bytes:
+    """Encode a full POINTER_GRAPH block (80-byte header + payload).
+
+    Kept for callers that assemble segments by hand; ``MslWriter`` emits the
+    block through :meth:`MslWriter._emit_extension_segments`, which supplies
+    the chained *prev_hash*.
+    """
+    payload = _build_pointer_graph_payload(nodes, edges, emit_integrity)
     total_len = BLOCK_HEADER_SIZE + len(payload)
     block_header = struct.pack(
         "<4sHHIH2x16s16s32s",
         BLOCK_MAGIC, BlockType.POINTER_GRAPH, 0, total_len, 1,
-        block_uuid.bytes, _ZERO_UUID, _ZERO_HASH,
+        block_uuid.bytes, _ZERO_UUID, prev_hash,
     )
     return block_header + payload
 

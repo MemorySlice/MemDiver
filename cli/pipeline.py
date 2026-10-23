@@ -20,6 +20,7 @@ from ._shared import (
     force_memory_requested,
 )
 from .consensus import _load_welford_session
+from .heap_report import report_candidate_heap, report_locate_key_heap
 
 logger = logging.getLogger("memdiver.cli")
 
@@ -108,6 +109,7 @@ def _cmd_search_reduce(args: argparse.Namespace) -> int:
             passphrase=args.passphrase,
             kem_key_file=args.kem_key_file,
             on_source=_warn_tag_status,
+            heap_policy=getattr(args, "heap_policy", "annotate"),
         )
         payload = json.loads((Path(scratch) / "candidates.json").read_text())
     _write_output(payload, args.output)
@@ -152,11 +154,14 @@ def _cmd_analyze_candidates(args: argparse.Namespace) -> int:
         kem_key_file=args.kem_key_file,
         on_source=_warn_tag_status,
         force=force_memory_requested(args),
+        heap_policy=getattr(args, "heap_policy", "annotate"),
+        allocator=getattr(args, "allocator", "auto"),
     )
     for warning in payload["warnings"]:
         print(f"memdiver: WARNING — {warning}", file=sys.stderr)
     for diagnostic in payload["diagnostics"]:
         print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    report_candidate_heap(payload)
     _write_output(payload, args.output)
     return 0
 
@@ -575,6 +580,7 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
         passphrase=args.passphrase,
         kem_key_file=args.kem_key_file,
         on_source=_warn_tag_status,
+        allocator=getattr(args, "allocator", "auto"),
     )
     print(
         f"memdiver: verdict={payload['verdict']} "
@@ -584,6 +590,7 @@ def _cmd_locate_key(args: argparse.Namespace) -> int:
     )
     for diagnostic in payload["diagnostics"]:
         print(f"memdiver: {diagnostic['message']}", file=sys.stderr)
+    report_locate_key_heap(payload)
     _write_output(payload, args.output)
     return _LOCATE_KEY_EXIT.get(payload["verdict"], 2)
 
