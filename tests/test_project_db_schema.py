@@ -213,7 +213,7 @@ def _one_row(db_path, table):
     try:
         cur = conn.execute('SELECT * FROM "' + table + '"')
         names = [d[0] for d in cur.description]
-        return dict(zip(names, cur.fetchone()))
+        return dict(zip(names, cur.fetchall()[0]))
     finally:
         conn.close()
 
@@ -319,9 +319,10 @@ def test_migration_records_schema_version(tmp_path):
         pass
     conn = duckdb.connect(str(db_path))
     try:
-        row = conn.execute(
+        rows = conn.execute(
             'SELECT "value" FROM "schema_meta" WHERE "key" = $1',
-            ["schema_version"]).fetchone()
+            ["schema_version"]).fetchall()
+        row = rows[0] if rows else None
     finally:
         conn.close()
     assert row is not None
@@ -704,9 +705,10 @@ def test_newer_schema_version_warns_but_opens(tmp_path, caplog):
     # The newer stamp is preserved, not downgraded.
     conn = duckdb.connect(str(db_path))
     try:
-        row = conn.execute(
+        rows = conn.execute(
             'SELECT "value" FROM "schema_meta" WHERE "key" = $1',
-            ["schema_version"]).fetchone()
+            ["schema_version"]).fetchall()
+        row = rows[0] if rows else None
     finally:
         conn.close()
     assert row[0] == "99"

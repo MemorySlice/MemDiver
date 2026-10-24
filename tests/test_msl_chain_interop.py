@@ -5,7 +5,7 @@ Block 0 PrevHash = hash of the file header; §4.5: EoC FileHash and
 BlockCount; §4.6: extension segments), and MemDiver-written files with an
 extension segment must pass memslicer's ``verify_slice``.
 
-Skipped when the sibling ``memslicer`` package is not importable.
+Skipped when the sibling ``memslicer`` package is not importable or too old.
 """
 
 import importlib.util
@@ -17,11 +17,15 @@ import pytest
 pytest.importorskip("blake3")
 pytest.importorskip("memslicer.msl.writer")
 
-from memslicer.msl.constants import CompAlgo, PageState, VasNameSource  # noqa: E402
-from memslicer.msl.types import (FileHeader, MemoryRegion, ProcessIdentity,  # noqa: E402
-                                 RelatedDump, VasEntry)
-from memslicer.msl.verify import verify_slice  # noqa: E402
-from memslicer.msl.writer import MSLWriter  # noqa: E402
+try:
+    from memslicer.msl.constants import CompAlgo, PageState, VasNameSource  # noqa: E402
+    from memslicer.msl.types import (FileHeader, MemoryRegion, ProcessIdentity,  # noqa: E402
+                                     RelatedDump, VasEntry)
+    from memslicer.msl.verify import verify_slice  # noqa: E402
+    from memslicer.msl.writer import MSLWriter  # noqa: E402
+except ImportError as exc:
+    pytest.skip(f"installed memslicer predates this interop (needs >= 0.5): {exc}",
+                allow_module_level=True)
 
 from memdiver.msl.enums import BlockType  # noqa: E402
 from memdiver.msl.hashing import hash_bytes  # noqa: E402

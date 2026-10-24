@@ -57,7 +57,7 @@ ALIGNMENT_METHODS = (
 class NormalizedRegion:
     """A memory region identified by an ASLR-invariant key."""
     key: str
-    captured_pages: Dict[int, bytes]  # page_offset_in_region -> page_data
+    captured_pages: Mapping[int, bytes]  # page_offset_in_region -> page_data
     page_size: int
     source_base_addr: int
     region_type: int
@@ -128,7 +128,7 @@ class AlignedSlice:
     page_offset: int
     page_size: int
     source_vaddrs: List[int]
-    data: List[bytes]
+    data: Sequence[bytes]
 
 
 class LazySliceData(Sequence):
@@ -547,7 +547,7 @@ def build_dump_region_map(
     mod_starts, mod_intervals = build_module_lookup(modules)
     regions = reader.collect_regions()
     infos: List[Any] = [None] * len(regions)
-    if is_active(region_filter):
+    if region_filter is not None and is_active(region_filter):
         all_infos = stored_region_infos(reader, regions)
         kept = [(r, i) for r, i in zip(regions, all_infos)
                 if region_filter.includes(i)]
@@ -575,7 +575,8 @@ def build_dump_region_map(
             key = f"{base_key}:{ordinal}"
 
         data_source = None
-        if metadata_only:
+        captured: Mapping[int, bytes]
+        if handle is None:
             captured = _extract_captured_pages(region, reader, metadata_only=True)
         else:
             data_source = _MslRegionData(handle, region)
@@ -870,7 +871,8 @@ def build_va_page_index(
     :returns: The dump's :class:`VaPageIndex`.
     """
     from memdiver.core.region_view_filter import is_active
-    if is_active(region_filter) and getattr(source, "region_filter", None) is None:
+    if (region_filter is not None and is_active(region_filter)
+            and getattr(source, "region_filter", None) is None):
         logger.info(
             "Dump %d: region view filter %s ignored — source %s has no stored "
             "region classification", dump_index, region_filter.to_note(),

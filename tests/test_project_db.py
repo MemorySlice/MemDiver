@@ -1053,7 +1053,7 @@ def test_survival_mid_batch_failure_would_leave_a_row_without_the_transaction(tm
         with pytest.raises(duckdb.Error):
             conn.executemany('INSERT INTO s("id", "present") VALUES ($1, $2)',
                              [["a", True], ["b", "not-a-bool"]])
-        assert conn.execute("SELECT COUNT(*) FROM s").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM s").fetchall()[0][0] == 1
     finally:
         conn.close()
 

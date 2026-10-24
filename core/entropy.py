@@ -556,7 +556,7 @@ def _find_high_entropy_regions_vectorized(
 
 
 def _find_high_entropy_regions_iterative(
-    profile: List[Tuple[int, float]],
+    profile: Sequence[Tuple[int, float]],
     threshold: float = 7.5,
     min_width: int = 32,
 ) -> List[Tuple[int, int, float]]:

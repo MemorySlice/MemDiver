@@ -52,6 +52,7 @@ from memdiver.app.session import ToolSession  # noqa: E402
 from memdiver.cli import _HEAP_HANDLERS, _build_parser, _cmd_heap  # noqa: E402
 from memdiver.heap.analyze import clear_heap_cache  # noqa: E402
 from memdiver.mcp_server.server import create_server  # noqa: E402
+from tests._app_routes import iter_app_routes  # noqa: E402
 from tests.fixtures import synth_heap as sh  # noqa: E402
 
 LIBC_MODULE = (0x7F00_1000_0000, 0x2000, "/usr/lib/x86_64-linux-gnu/libc.so.6")
@@ -227,7 +228,7 @@ def test_every_declared_surface_actually_exists(case, client, mcp_tools):
     # cli: the action parses and dispatches to a handler
     assert case.cli_action in _HEAP_HANDLERS
     # web: the GET route is mounted on the app
-    paths = {getattr(r, "path", None) for r in client.app.routes}
+    paths = {path for _, path, _ in iter_app_routes(client.app)}
     assert f"/api/heap/{case.web_route}" in paths
     # mcp: the tool is registered
     assert case.mcp_tool in mcp_tools

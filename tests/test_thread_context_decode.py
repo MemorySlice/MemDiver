@@ -3,7 +3,7 @@
 decode field-for-field through MemDiver's reader, and both sides must agree
 on the ``ThreadState`` / ``TC_FLAG_*`` / ``REG_ROLE_*`` vocabularies.
 
-Skipped when the sibling ``memslicer`` package is not importable.
+Skipped when the sibling ``memslicer`` package is not importable or too old.
 """
 
 from uuid import UUID
@@ -13,25 +13,29 @@ import pytest
 pytest.importorskip("blake3")
 pytest.importorskip("memslicer.msl.writer")
 
-from memslicer.msl import constants as ms_constants  # noqa: E402
-from memslicer.msl.constants import (  # noqa: E402
-    REG_ROLE_FLAGS,
-    REG_ROLE_FP,
-    REG_ROLE_PC,
-    REG_ROLE_SP,
-    TC_FLAG_CURRENT,
-    TC_FLAG_SUSPENDED,
-    PageState,
-    ThreadState,
-)
-from memslicer.msl.types import (  # noqa: E402
-    FileHeader,
-    MemoryRegion,
-    ProcessIdentity,
-    ThreadContext,
-    ThreadRegister,
-)
-from memslicer.msl.writer import _TC_HEAD, MSLWriter, _pack_thread_register  # noqa: E402
+try:
+    from memslicer.msl import constants as ms_constants  # noqa: E402
+    from memslicer.msl.constants import (  # noqa: E402
+        REG_ROLE_FLAGS,
+        REG_ROLE_FP,
+        REG_ROLE_PC,
+        REG_ROLE_SP,
+        TC_FLAG_CURRENT,
+        TC_FLAG_SUSPENDED,
+        PageState,
+        ThreadState,
+    )
+    from memslicer.msl.types import (  # noqa: E402
+        FileHeader,
+        MemoryRegion,
+        ProcessIdentity,
+        ThreadContext,
+        ThreadRegister,
+    )
+    from memslicer.msl.writer import _TC_HEAD, MSLWriter, _pack_thread_register  # noqa: E402
+except ImportError as exc:
+    pytest.skip(f"installed memslicer predates Thread Context (needs >= 0.5): {exc}",
+                allow_module_level=True)
 
 from memdiver.msl import enums as md_enums  # noqa: E402
 from memdiver.msl.decoders_ext import decode_thread_context  # noqa: E402

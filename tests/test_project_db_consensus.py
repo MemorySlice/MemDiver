@@ -91,8 +91,11 @@ def _candidates():
 
 
 def _count(db, table):
+    # Drained with fetchall(), never fetchone(): db._conn is shared with ibis,
+    # and DuckDB 2.0 refuses further work on a connection that still holds an
+    # unfinished result (ResourceInUseException).
     return db._conn.execute(
-        'SELECT COUNT(*) FROM "' + table + '"').fetchone()[0]
+        'SELECT COUNT(*) FROM "' + table + '"').fetchall()[0][0]
 
 
 # -- round trip -----------------------------------------------------------
@@ -250,9 +253,9 @@ def test_rewriting_the_same_batch_corrects_rather_than_duplicating(tmp_path):
                           "score_entropy_component": 0.4})
         assert db.add_candidate_regions_batch(cid, ranked) == 3
 
-        total, distinct = db._conn.execute(
+        [(total, distinct)] = db._conn.execute(
             'SELECT COUNT(*), COUNT(DISTINCT ("consensus_id", "offset",'
-            ' "length")) FROM "candidate_regions"').fetchone()
+            ' "length")) FROM "candidate_regions"').fetchall()
         assert total == 3
         assert total == distinct
 
@@ -262,6 +265,47 @@ def test_rewriting_the_same_batch_corrects_rather_than_duplicating(tmp_path):
         assert last["rank"] == 3
         assert last["score"] == pytest.approx(1.25)
         assert last["score_entropy_component"] == pytest.approx(0.4)
+
+
+# -- the raw connection is shared with ibis -------------------------------
+
+@needs_duckdb
+def test_a_drained_raw_count_leaves_the_connection_usable_by_ibis(tmp_path):
+    """A raw query on ``db._conn`` followed by an ibis-backed read.
+
+    ``db._conn`` is the very connection ibis reads through. DuckDB 2.0 raises
+    ``ResourceInUseException`` on any further work while a result is still
+    unfinished, so a raw read must drain (``fetchall()``) before ibis runs.
+    """
+    with ProjectDB(tmp_path / "t.duckdb") as db:
+        cid = _consensus(db)
+        db.add_candidate_regions_batch(cid, _candidates())
+
+        [(total,)] = db._conn.execute(
+            'SELECT COUNT(*) FROM "candidate_regions"').fetchall()
+        assert total == 3
+        assert _count(db, "candidate_regions") == 3
+
+        assert [r["offset"] for r in db.candidate_regions(cid)] == [
+            370672, 1024, 2048]
+
+
+@needs_duckdb
+def test_reopening_an_existing_db_then_reading_through_ibis(tmp_path):
+    """The schema-version read at open must not leave a result pending.
+
+    Opening an EXISTING database runs ``_read_schema_version`` on the shared
+    connection; the first ibis read right after it must still work.
+    """
+    db_path = tmp_path / "t.duckdb"
+    with ProjectDB(db_path) as db:
+        cid = _consensus(db)
+        db.add_candidate_regions_batch(cid, _candidates())
+
+    with ProjectDB(db_path) as db:
+        assert db._read_schema_version() >= 1
+        assert len(db.candidate_regions(cid)) == 3
+        assert len(db.consensus_runs(project_id="proj-1")) == 1
 
 
 @needs_duckdb
@@ -478,7 +522,7 @@ def test_the_mid_batch_reproducer_is_not_vacuous(tmp_path):
         with pytest.raises(duckdb.Error):
             conn.executemany('INSERT INTO c("id", "off") VALUES ($1, $2)',
                              [["a", 1], ["b", 2 ** 70]])
-        assert conn.execute("SELECT COUNT(*) FROM c").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM c").fetchall()[0][0] == 1
     finally:
         conn.close()
 

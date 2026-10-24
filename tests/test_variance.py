@@ -224,6 +224,32 @@ def test_classify_variance_tight_thresholds_promote():
     ]
 
 
+def test_classify_variance_slabbing_matches_single_pass(monkeypatch):
+    """Slabbed classification equals one whole-array pass, including values
+    exactly on the band thresholds and a ragged final slab (50 % 7 != 0)."""
+    from memdiver.core import variance as var_mod
+
+    on_bands = [0.0, 200.0, 3000.0, 0.5, 200.5, 3000.5, 1e6]
+    rng = np.random.default_rng(7)
+    probe = np.concatenate([
+        np.array(on_bands * 4, dtype=np.float32),
+        rng.uniform(0.0, 5000.0, 22).astype(np.float32),
+    ])
+    assert len(probe) % 7 != 0
+
+    reference = np.full(len(probe), ByteClass.KEY_CANDIDATE, dtype=np.uint8)
+    var_mod._classify_slab(probe, reference, DEFAULT_THRESHOLDS)
+
+    monkeypatch.setattr(var_mod, "CLASSIFY_SLAB_POSITIONS", 7)
+    slabbed = classify_variance(probe)
+    assert np.array_equal(slabbed, reference)
+    assert list(slabbed[:7]) == [
+        ByteClass.INVARIANT, ByteClass.STRUCTURAL, ByteClass.POINTER,
+        ByteClass.STRUCTURAL, ByteClass.POINTER, ByteClass.KEY_CANDIDATE,
+        ByteClass.KEY_CANDIDATE,
+    ]
+
+
 def test_thresholds_reject_unordered_bands():
     with pytest.raises(ValueError, match="non-decreasing"):
         classify_variance(np.zeros(4, dtype=np.float32),

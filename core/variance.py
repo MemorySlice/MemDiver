@@ -70,6 +70,13 @@ ByteClassSpec = Union[ByteClass, int, Iterable[Union[ByteClass, int]]]
 # laptop RAM even for N=50, d=4 GiB.
 CHUNK_BYTES = 16 * 1024 * 1024
 
+# Slab width (positions) for classify_variance. Classification is element-wise,
+# so any width yields identical codes; 1 Mi positions bounds the bool-mask
+# temporaries to a few MiB whatever the dump size, independent of numpy's
+# temporary elision (a 16 MiB CHUNK_BYTES slab is the whole array for a
+# 16 MiB dump, so it bounded nothing there).
+CLASSIFY_SLAB_POSITIONS = 1 << 20
+
 
 def compute_variance(byte_buffers: List[bytes], min_size: int,
                      chunk_bytes: int = CHUNK_BYTES) -> np.ndarray:
@@ -223,6 +230,9 @@ def classify_variance(
             ``DEFAULT_THRESHOLDS`` (0.0 / 200.0 / 3000.0), which is what every
             caller got before the boundaries became overridable.
 
+    Positions are classified in :data:`CLASSIFY_SLAB_POSITIONS`-wide slabs,
+    so scratch memory beyond the uint8 result stays bounded.
+
     Returns:
         numpy.ndarray (uint8) of ByteClass integer codes.
     """
@@ -231,9 +241,10 @@ def classify_variance(
         variance = np.array(variance, dtype=np.float32)
     result = np.full(len(variance), ByteClass.KEY_CANDIDATE, dtype=np.uint8)
     # Element-wise, so classifying slab by slab is identical to one pass and
-    # keeps the bool-mask temporaries O(CHUNK_BYTES) instead of O(size).
-    for start in range(0, len(variance), CHUNK_BYTES):
-        end = start + CHUNK_BYTES
+    # keeps the bool-mask temporaries O(CLASSIFY_SLAB_POSITIONS) instead of
+    # O(size) -- also for dumps smaller than CHUNK_BYTES.
+    for start in range(0, len(variance), CLASSIFY_SLAB_POSITIONS):
+        end = start + CLASSIFY_SLAB_POSITIONS
         _classify_slab(variance[start:end], result[start:end], bands)
     return result
 

@@ -40,6 +40,10 @@ env/
 # would pass every local test and then be missing for everyone else -- the
 # candidates.json failure above, repeated.
 !/tests/fixtures/needle_vectors.json
+# Same for the region-name classification vectors, shared byte-identical with
+# memslicer's tests/data/region_name_vectors.json: untracked, five test modules
+# pass locally and are a FileNotFoundError at collection in CI.
+!/tests/fixtures/region_name_vectors.json
 # Generated-once, committed test fixtures (each dir has a generate.py whose
 # docstring says the output is committed). Tests open these directly, so an
 # ignored copy passes locally and is a FileNotFoundError in CI.

@@ -37,6 +37,7 @@ from memdiver.api.security import (
     enforce_bind_guardrail,
     guard_notebook_websocket,
 )
+from tests._app_routes import iter_app_routes
 
 API_TOKEN = "s3cr3t-token"
 
@@ -429,30 +430,10 @@ def test_check_ws_token_returns_false_for_none_and_empty_candidates():
 
 
 # Lower bound on the routes the walk below must see. The real app registers
-# well over a hundred; a walk that stops at the top level (a plain loop over
-# ``app.routes`` on FastAPI versions with lazy ``_IncludedRouter`` entries)
-# sees only a handful, so this catches a walk that "passes" by checking nothing.
+# well over a hundred; a walk that stops at the top level sees only a handful
+# (see ``tests._app_routes``), so this catches a walk that "passes" by
+# checking nothing.
 _MIN_EXPECTED_ROUTES = 100
-
-
-def _iter_app_routes(app):
-    """Yield ``(route, path, methods)`` for every endpoint on *app*, flattened.
-
-    Newer FastAPI keeps each ``include_router`` call as one lazy
-    ``_IncludedRouter`` entry in ``app.routes`` (prefix applied on the fly);
-    its public ``fastapi.routing.iter_route_contexts`` expands those into one
-    context per real endpoint with the prefixed path. Older FastAPI has no
-    such helper because ``include_router`` already copied every route,
-    prefix and all, straight into ``app.routes``.
-    """
-    try:
-        from fastapi.routing import iter_route_contexts
-    except ImportError:  # older FastAPI: app.routes is already flat
-        for route in app.routes:
-            yield route, getattr(route, "path", None), getattr(route, "methods", None)
-        return
-    for context in iter_route_contexts(app.routes):
-        yield context.original_route, context.path, context.methods
 
 
 def test_all_routes_are_protected_or_intentionally_open():
@@ -469,7 +450,7 @@ def test_all_routes_are_protected_or_intentionally_open():
     """
     app = create_app()
     seen_paths = set()
-    for route, path, methods in _iter_app_routes(app):
+    for route, path, methods in iter_app_routes(app):
         seen_paths.add(path)
         if isinstance(route, Mount):
             # The static SPA bundle mounted at the root — intentionally

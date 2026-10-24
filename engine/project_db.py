@@ -1311,11 +1311,19 @@ class ProjectDB:
         self._set_schema_version(_SCHEMA_VERSION)
 
     def _read_schema_version(self) -> int:
-        """Recorded schema version, or ``1`` for a pre-``schema_meta`` database."""
-        row = self._conn.execute(
+        """Recorded schema version, or ``1`` for a pre-``schema_meta`` database.
+
+        Drains the result with ``fetchall()`` rather than ``fetchone()``: this
+        connection is shared with ibis, and DuckDB 2.0 refuses any further work
+        on a connection that still holds an unfinished result
+        (``ResourceInUseException``), so a half-read result here would break the
+        first ibis read after :meth:`open`.
+        """
+        rows = self._conn.execute(
             'SELECT "value" FROM "schema_meta" WHERE "key" = $1',
             ["schema_version"],
-        ).fetchone()
+        ).fetchall()
+        row = rows[0] if rows else None
         if not row or row[0] is None:
             return 1
         try:
