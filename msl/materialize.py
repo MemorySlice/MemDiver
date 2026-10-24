@@ -27,7 +27,14 @@ survives:
   block by block with its block identities, flags and on-disk payloads
   intact under the source segment's producer, closed by a fresh
   End-of-Extension block re-chained after the new EoC. Unverified or
-  unterminated source segments (trailing data) are dropped and counted.
+  unterminated source segments (trailing data) are dropped and counted;
+* every verified *sealed* source segment (spec 10.8) is folded into an
+  ordinary extension segment after them, in SegIndex order, keeping its
+  blocks, producer and WrittenAt: re-chained in a plaintext copy, inside
+  the new primary ciphertext (zero PrevHash) in a re-encrypted one. The
+  copy carries no sealed segments; unverified sealed bytes are trailing
+  data and never copied. The provenance note records the fold
+  (``sealed_segments_folded=N``, only when N > 0).
 
 Region bytes are streamed from the source mmap; a compressed (or
 continuation-merged) source region is decoded one block at a time.
@@ -63,6 +70,8 @@ _RECOMPUTED_CAPS = CapBit.MEMORY_REGIONS | CapBit.CRYPTO_HINTS
 _RECREATED_TYPES = frozenset({BlockType.KEY_HINT, BlockType.VAS_MAP,
                               BlockType.IMPORT_PROVENANCE,
                               BlockType.END_OF_CAPTURE})
+# Provenance note key: sealed source segments folded into ordinary ones.
+SEALED_FOLDED_KEY = "sealed_segments_folded"
 
 
 @dataclass
@@ -83,6 +92,7 @@ class MaterializeStats:
     dropped_key_hints: int = 0
     extension_segments_written: int = 0
     dropped_extension_segments: int = 0
+    sealed_segments_folded: int = 0
 
 
 def stored_regions(reader, source_format: Optional[int]) -> List[StoredRegion]:
@@ -343,12 +353,16 @@ class _Materializer:
             parts.append(REGION_NAMES_NOTE)
         if self._eoc is not None and any(self._eoc.file_hash):
             parts.append(f"{ORIG_EOC_HASH_KEY}={self._eoc.file_hash.hex()}")
+        folded = len(self._foldable_sealed_segments())
+        if folded:
+            parts.append(f"{SEALED_FOLDED_KEY}={folded}")
         base = join_provenance_note(self._provenance.note if self._provenance
                                     else "", ";".join(parts))
         return join_provenance_note(base, self._selection_note)
 
     def _add_end_and_extensions(self) -> None:
-        """EoC, then every verified source extension segment (spec 4.6)."""
+        """EoC, every verified source extension segment (spec 4.6), then
+        every verified sealed one (spec 10.8) folded in-stream."""
         acq_end = self._eoc.acq_end_ns if self._eoc is not None else None
         self._writer.add_end_of_capture(acq_end_ns=acq_end)
         reports, _ = verify_extension_segments(self._reader)
@@ -358,26 +372,54 @@ class _Materializer:
                 self._copy_extension_segment(seg)
             else:
                 self._drop_extension_segment(seg)
+        self._fold_sealed_segments()
+
+    def _foldable_sealed_segments(self) -> list:
+        """Verified sealed source segments with at least one block to copy."""
+        return [sealed.segment for sealed in self._reader.sealed_segments()
+                if len(sealed.segment.headers) > 1]
+
+    def _fold_sealed_segments(self) -> None:
+        """Re-emit each verified sealed segment as an ordinary segment."""
+        for seg in self._foldable_sealed_segments():
+            self._copy_extension_segment(seg, seg.terminator.written_at_ns)
+            self.stats.sealed_segments_folded += 1
+        if self.stats.sealed_segments_folded:
+            logger.info("folded %d sealed extension segment(s) into ordinary "
+                        "extension segments", self.stats.sealed_segments_folded)
 
     # Deprecated name, kept for callers of the pre-1.1 appendix copy.
     _add_end_and_appendix = _add_end_and_extensions
 
-    def _copy_extension_segment(self, seg) -> None:
-        """Re-emit *seg*'s blocks (not its terminator) under its producer."""
+    def _copy_extension_segment(self, seg,
+                                written_at_ns: Optional[int] = None) -> None:
+        """Re-emit *seg*'s blocks (not its terminator) under its producer.
+
+        *written_at_ns* keeps the source terminator's WrittenAt (None =
+        the writer's own timestamp, as for in-stream segments).
+        """
         blocks = [self._extension_block(hdr) for hdr in seg.headers
                   if hdr.block_type != BlockType.END_OF_EXTENSION]
         if not blocks:
             self._drop_extension_segment(seg)
             return
-        self._writer.add_extension_segment(producer=seg.producer, blocks=blocks)
+        self._writer.add_extension_segment(producer=seg.producer, blocks=blocks,
+                                           written_at_ns=written_at_ns)
         self.stats.extension_segments_written += 1
 
     def _extension_block(self, hdr: MslBlockHeader) -> ExtensionBlock:
         """On-disk payload (still compressed when flagged), identity kept."""
-        payload = self._reader.read_bytes(hdr.payload_offset, hdr.payload_length)
+        payload = self._raw_payload(hdr)
         parent = hdr.parent_uuid if hdr.parent_uuid.int else None
         return ExtensionBlock(hdr.block_type, payload, block_uuid=hdr.block_uuid,
                               parent_uuid=parent, flags=hdr.flags)
+
+    def _raw_payload(self, hdr: MslBlockHeader) -> bytes:
+        """*hdr*'s stored payload; a sealed block's comes from its plaintext."""
+        if not hdr.seal_index:
+            return self._reader.read_bytes(hdr.payload_offset, hdr.payload_length)
+        buf = self._reader._block_buffer(hdr)
+        return bytes(buf[hdr.payload_offset:hdr.payload_offset + hdr.payload_length])
 
     def _drop_extension_segment(self, seg) -> None:
         state = "unterminated" if not seg.terminated else "unverified"

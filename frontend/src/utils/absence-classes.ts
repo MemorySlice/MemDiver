@@ -90,24 +90,29 @@ export const ABSENCE_META: Record<AbsenceKind, AbsenceMeta> = {
     swatchClass: "absence-error",
     labelKey: "absence.legendError",
   },
-  // The two MSL page states keep their existing tints and their existing
+  // The MSL page states keep their existing tints and their existing
   // behaviour: the byte IS there (the backend zero-fills a non-captured page),
   // so it is still printed and still classified.
+  //
+  // Their legend text is the `pageState.*` vocabulary the CoverageMap already
+  // speaks, so the hex legend and the coverage strip cannot name one page state
+  // two different ways. `titleKey` only surfaces on VOID cells (see `HexRow`),
+  // so for these tint-only kinds it is the legend entry's tooltip.
   unmapped: {
     cellClass: "page-unmapped",
     glyph: null,
     voids: false,
-    titleKey: null,
-    swatchClass: null,
-    labelKey: null,
+    titleKey: "pageState.unmappedTitle",
+    swatchClass: "absence-page-unmapped",
+    labelKey: "pageState.unmapped",
   },
   failed: {
     cellClass: "page-failed",
     glyph: null,
     voids: false,
-    titleKey: null,
-    swatchClass: null,
-    labelKey: null,
+    titleKey: "pageState.failedTitle",
+    swatchClass: "absence-page-failed",
+    labelKey: "pageState.failed",
   },
   // MSL 1.1 NotResident: a never-touched anonymous page whose content is known
   // to be zero; printed like the other page states, tinted so it is not read
@@ -116,18 +121,35 @@ export const ABSENCE_META: Record<AbsenceKind, AbsenceMeta> = {
     cellClass: "page-not-resident",
     glyph: null,
     voids: false,
-    titleKey: null,
-    swatchClass: null,
-    labelKey: null,
+    titleKey: "pageState.notResidentTitle",
+    swatchClass: "absence-page-not-resident",
+    labelKey: "pageState.notResident",
   },
 };
+
+/**
+ * The MSL page-state kinds, in the spec's order (Failed, Unmapped,
+ * NotResident). Only a viewer that actually consults `getPageStateAt` can
+ * paint them, so a legend shows them only there — see `AbsenceLegend`.
+ */
+export const PAGE_STATE_ABSENCES: readonly AbsenceKind[] = [
+  "failed",
+  "unmapped",
+  "not-resident",
+];
 
 /** The legend entries, in the order a reader meets them in the grid. */
 export const ABSENCE_LEGEND: readonly AbsenceKind[] = [
   "no-correspondence",
   "not-in-dump",
   "error",
+  ...PAGE_STATE_ABSENCES,
 ];
+
+/** Whether `kind` is one of the MSL page-state tints rather than a void cause. */
+export function isPageStateAbsence(kind: AbsenceKind): boolean {
+  return PAGE_STATE_ABSENCES.includes(kind);
+}
 
 /**
  * An `.msl` PAGE STATE, as an absence kind — or `undefined` when the page says
@@ -155,4 +177,32 @@ export function absenceForPageState(
   if (pageState === "UNMAPPED") return "unmapped";
   if (pageState === "NOT_RESIDENT") return "not-resident";
   return undefined;
+}
+
+/**
+ * THE absence answer for one cell, given the store's byte absence and the MSL
+ * page state the aligned window reports there. One resolver, so the
+ * side-by-side panes and the overlay cannot rank the two differently.
+ *
+ * Precedence, and why:
+ *
+ *  1. a HELD byte (`byteAbsence === null`) → no absence. A byte we have is not
+ *     explained by a page state; the backend never lists one inside
+ *     `bytes_valid`, and a tint over it would contradict the presence mask.
+ *  2. `loading` / `error` win next — they are facts about this client's
+ *     request, and the page state of a window that has not (or could not)
+ *     arrive is not known either.
+ *  3. a non-captured page state → its tint (`failed` / `unmapped` /
+ *     `not-resident`). It is the more specific reason: "the alignment holds
+ *     nothing here" is true BECAUSE the anchor never captured this page.
+ *  4. otherwise the byte absence as it was (`no-correspondence` /
+ *     `not-in-dump`).
+ */
+export function resolveAbsence(
+  byteAbsence: ByteAbsence | null,
+  pageState: string | undefined | null,
+): AbsenceKind | undefined {
+  if (byteAbsence === null) return undefined;
+  if (byteAbsence === "loading" || byteAbsence === "error") return byteAbsence;
+  return absenceForPageState(pageState) ?? byteAbsence;
 }

@@ -26,7 +26,8 @@ from memdiver.core.install_hints import (missing_package_message,
                                         native_runtime_message)
 
 from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
-                    ARGON2ID_MIN_TIME, CIPHER_NONCE_LEN, KEM_CIPHERTEXT_LEN,
+                    ARGON2ID_MIN_TIME, CIPHER_LEN_OFFSET, CIPHER_LEN_SIZE,
+                    CIPHER_NONCE_LEN, KEM_CIPHERTEXT_LEN,
                     MSL_CEK_INFO, EncAlgo, KdfType, KeyEncap)
 from .types import MslAuthError, MslCryptoError
 
@@ -117,6 +118,26 @@ def kem_unavailable_hint(mech: KeyEncap) -> str:
 
 # ---------------------------------------------------------------------- AEAD
 
+def header_without_cipher_len(header: bytes) -> bytes:
+    """*header* with bytes ``0x78``-``0x7F`` (``CipherLen``) set to zero.
+
+    Spec 1.1.1 §10.2 / §10.7: the AAD and the EoC ``FileHash`` both cover the
+    header with ``CipherLen`` zeroed, so a producer may record (or patch) the
+    ciphertext length without invalidating either. Headers shorter than the
+    field (64-byte plaintext headers) are returned unchanged.
+    """
+    end = CIPHER_LEN_OFFSET + CIPHER_LEN_SIZE
+    if len(header) < end:
+        return bytes(header)
+    return (bytes(header[:CIPHER_LEN_OFFSET]) + b"\x00" * CIPHER_LEN_SIZE
+            + bytes(header[end:]))
+
+
+def encryption_aad(header: bytes, kem_ct: bytes) -> bytes:
+    """Primary AEAD associated data: zeroed-``CipherLen`` header + KEM ct."""
+    return header_without_cipher_len(header) + bytes(kem_ct)
+
+
 def aead_encrypt(algo: EncAlgo, key: bytes, nonce: bytes, aad: bytes,
                  plaintext: bytes) -> bytes:
     """Encrypt *plaintext*, returning ``ciphertext || 16-byte tag``.
@@ -193,25 +214,51 @@ def hkdf_blake3(ikm: bytes, salt: bytes, info: bytes,
     return okm[:length]
 
 
+def argon2id_below_minimum(time_cost: int, memory_kib: int, lanes: int) -> bool:
+    """True when any Argon2id parameter is below the spec §10.5 minimum."""
+    return (time_cost < ARGON2ID_MIN_TIME or memory_kib < ARGON2ID_MIN_MEMORY_KIB
+            or lanes < ARGON2ID_MIN_LANES)
+
+
+def clamp_argon2id_params(time_cost: int, memory_kib: int,
+                          lanes: int) -> Tuple[int, int, int]:
+    """Raise each Argon2id parameter to at least the spec §10.5 minimum."""
+    return (max(time_cost, ARGON2ID_MIN_TIME),
+            max(memory_kib, ARGON2ID_MIN_MEMORY_KIB),
+            max(lanes, ARGON2ID_MIN_LANES))
+
+
 def derive_key_argon2id(passphrase: bytes, salt: bytes,
                         time_cost: int = ARGON2ID_MIN_TIME,
                         memory_kib: int = ARGON2ID_MIN_MEMORY_KIB,
-                        lanes: int = ARGON2ID_MIN_LANES) -> bytes:
+                        lanes: int = ARGON2ID_MIN_LANES, *,
+                        enforce_minimum: bool = True) -> bytes:
     """Derive a 32-byte CEK from a passphrase via Argon2id (spec §10.5).
 
-    Enforces the spec minimums (time=3, memory=65536 KiB, lanes=4); callers
-    requesting weaker parameters are silently raised to the minimum.
+    Producers (``enforce_minimum=True``, the default) never derive below the
+    spec minimums (time=3, memory=65536 KiB, lanes=4): weaker parameters are
+    raised to the minimum. Consumers pass ``enforce_minimum=False`` to derive
+    with exactly the parameters stored in the file header; weak parameters
+    are then only logged, because a forensic tool must still open evidence.
     """
     try:
         from argon2.low_level import Type, hash_secret_raw
     except ImportError:
         raise MslCryptoError(_ARGON2_MISSING)
+    if enforce_minimum:
+        time_cost, memory_kib, lanes = clamp_argon2id_params(
+            time_cost, memory_kib, lanes)
+    elif argon2id_below_minimum(time_cost, memory_kib, lanes):
+        logger.warning(
+            "Argon2id parameters below the spec minimum (t=%d, m=%d KiB, "
+            "lanes=%d); deriving with them as stored in the header",
+            time_cost, memory_kib, lanes)
     return hash_secret_raw(
         secret=passphrase,
         salt=salt,
-        time_cost=max(time_cost, ARGON2ID_MIN_TIME),
-        memory_cost=max(memory_kib, ARGON2ID_MIN_MEMORY_KIB),
-        parallelism=max(lanes, ARGON2ID_MIN_LANES),
+        time_cost=time_cost,
+        memory_cost=memory_kib,
+        parallelism=lanes,
         hash_len=CEK_SIZE,
         type=Type.ID,
     )
@@ -342,7 +389,8 @@ def kem_generate_keypair(mech: KeyEncap) -> Tuple[bytes, bytes]:
 
 def _local_cek(kdf_type: KdfType, raw_key: Optional[bytes],
                passphrase: Optional[bytes], kdf_salt: Optional[bytes],
-               kdf_time: int, kdf_memory: int, kdf_lanes: int) -> bytes:
+               kdf_time: int, kdf_memory: int, kdf_lanes: int,
+               enforce_minimum: bool = True) -> bytes:
     """Derive the CEK for KeyEncap=NONE (raw key or passphrase)."""
     if kdf_type == KdfType.NONE:
         if raw_key is None or len(raw_key) != CEK_SIZE:
@@ -355,7 +403,8 @@ def _local_cek(kdf_type: KdfType, raw_key: Optional[bytes],
             raise MslCryptoError("KdfType.ARGON2ID requires a passphrase")
         if not kdf_salt:
             raise MslCryptoError("KdfType.ARGON2ID requires a KDF salt")
-        return derive_key_argon2id(passphrase, kdf_salt, kdf_time, kdf_memory, kdf_lanes)
+        return derive_key_argon2id(passphrase, kdf_salt, kdf_time, kdf_memory,
+                                   kdf_lanes, enforce_minimum=enforce_minimum)
     raise MslCryptoError(f"Unsupported KDF type: {kdf_type}")
 
 
@@ -402,11 +451,17 @@ def derive_cek_consumer(
     kdf_lanes: int = ARGON2ID_MIN_LANES,
     recipient_private: Optional[bytes] = None,
     kem_ciphertext: bytes = b"",
+    enforce_minimum: bool = False,
 ) -> bytes:
-    """Consumer-side: derive the CEK to decrypt a container."""
+    """Consumer-side: derive the CEK to decrypt a container.
+
+    Argon2id runs with exactly the header-stored parameters unless
+    ``enforce_minimum`` is set (legacy-file fallback, see the reader).
+    """
     if key_encap == KeyEncap.NONE:
         return _local_cek(kdf_type, raw_key, passphrase, kdf_salt,
-                          kdf_time, kdf_memory, kdf_lanes)
+                          kdf_time, kdf_memory, kdf_lanes,
+                          enforce_minimum=enforce_minimum)
     if recipient_private is None:
         raise MslCryptoError(f"{key_encap.name} requires a recipient private key")
     shared = kem_decapsulate(key_encap, recipient_private, kem_ciphertext)

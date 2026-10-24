@@ -25,20 +25,22 @@ from uuid import UUID, uuid4
 
 from .compress import compress
 from .aead_stream import aead_stream_encryptor
-from .crypto import (RewrapMaterial, aead_encrypt, derive_cek_producer,
-                     nonce_for_cipher, random_nonce)
+from .crypto import (RewrapMaterial, aead_encrypt, clamp_argon2id_params,
+                     derive_cek_producer, encryption_aad, nonce_for_cipher, random_nonce)
 from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
                     ARGON2ID_MIN_TIME, BLOCK_HEADER_SIZE, BLOCK_MAGIC,
-                    EXTENSION_FORBIDDEN_TYPES, FILE_HEADER_ENC_SIZE,
+                    CIPHER_LEN_OFFSET, CIPHER_LEN_SIZE, EXTENSION_FORBIDDEN_TYPES, FILE_HEADER_ENC_SIZE,
                     FILE_HEADER_SIZE, FILE_MAGIC,
                     POINTER_GRAPH_INTEGRITY_FLAG, ArchType, BlockFlag,
                     BlockType, CompAlgo, ConnRowType, EncAlgo, Endianness,
-                    HashAlgo, HeaderFlag, KdfType, KeyEncap, OSType, PageState)
+                    HashAlgo, HeaderFlag, KdfType, KeyEncap, OSType, PageState,
+                    ThreadState)
 from .hashing import _new_hasher, hash_bytes, hash_file, hash_stream
 from .types import (ConnectivityRow, MslConnArpEntry, MslConnIfaceStats,
                     MslConnIPv4Route, MslConnIPv6Route, MslConnMibCounter,
                     MslConnPacketSocket, MslConnSocketFamilyAgg,
-                    MslPointerGraphEdge, MslPointerGraphNode, MslVasEntry)
+                    MslPointerGraphEdge, MslPointerGraphNode, MslThreadRegister,
+                    MslVasEntry)
 
 logger = logging.getLogger("memdiver.msl.writer")
 
@@ -216,6 +218,8 @@ class _ExtensionSegmentSpec:
     producer: str
     blocks: List[Tuple[int, bytes, UUID, bytes, int]]
     terminator_uuid: UUID = field(default_factory=uuid4)
+    # WrittenAt of the terminator; None = the writer's own timestamp.
+    written_at_ns: Optional[int] = None
 
 
 @dataclass
@@ -251,6 +255,15 @@ class MslEncryptionConfig:
     kdf_salt: Optional[bytes] = None    # 16-byte salt; None -> CSPRNG when Argon2id
     rewrap_material: Optional[RewrapMaterial] = field(default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        # A new Argon2id container never stores parameters weaker than the
+        # spec §10.5 minimum: the header must hold exactly the parameters the
+        # producer derives with, so any reader can open it. Re-wrap configs
+        # keep the source's parameters (the CEK is reused, not re-derived).
+        if self.kdf_type == KdfType.ARGON2ID and self.rewrap_material is None:
+            self.kdf_time, self.kdf_memory, self.kdf_lanes = clamp_argon2id_params(
+                self.kdf_time, self.kdf_memory, self.kdf_lanes)
+
     @classmethod
     def rewrap(cls, material: RewrapMaterial) -> "MslEncryptionConfig":
         """Config that re-encrypts under *material*'s key wrapping (fresh nonce)."""
@@ -276,8 +289,9 @@ class MslWriter:
         the file header; CapBit.SYSTEM_CONTEXT is OR'd into the
         capability bitmap; and any Process/Connection/Handle table blocks
         are emitted as children with parent_uuid = system context UUID.
-      * Memory regions, key hints, related dumps, and any other generic
-        blocks follow in the order their add_* method was called.
+      * Thread contexts, memory regions, key hints, related dumps, and any
+        other generic blocks follow in the order their add_* method was
+        called (add thread contexts first so they precede the regions).
       * End-of-Capture, if added, is always emitted last and its file_hash
         is finalized over the actual on-disk byte stream.
     """
@@ -596,6 +610,36 @@ class MslWriter:
         self._cap_bitmap |= CapBit.MODULE_LIST
         return index_uuid
 
+    def add_thread_context(self, thread_id: int,
+                           registers: Sequence[MslThreadRegister], *,
+                           flags: int,
+                           state: int = ThreadState.STOPPED,
+                           arch: int = 0, name: str = "",
+                           start_time: int = 0,
+                           parent_uuid: Optional[UUID] = None) -> UUID:
+        """Queue a Thread Context block (spec §5.7, type 0x0011).
+
+        *flags* carries the ``TC_FLAG_*`` bits, *state* a ``ThreadState``
+        code (default Stopped: a core / minidump thread is a stopped
+        snapshot) and *arch* 0 for "same as the header ArchType". Register
+        names are written lowercase. The block lands in call order among
+        the generic blocks, so call this before the first
+        ``add_memory_region*`` (spec: SHOULD precede the first Memory
+        Region). *parent_uuid* may name the Process Identity block.
+
+        Raises ``ValueError`` on an empty / over-long register name, a
+        width outside 1..255, a value not exactly *width* bytes, or a
+        state / arch that does not fit u8.
+        """
+        payload = _build_thread_context_payload(
+            thread_id, start_time, flags, state, arch, name, registers)
+        block_uuid = uuid4()
+        parent = parent_uuid.bytes if parent_uuid is not None else _ZERO_UUID
+        self._blocks.append((BlockType.THREAD_CONTEXT, payload, block_uuid,
+                             parent, 0))
+        self._cap_bitmap |= CapBit.THREAD_CONTEXTS
+        return block_uuid
+
     def add_raw_block(self, block_type: int, payload: bytes,
                       block_uuid: Optional[UUID] = None,
                       parent_uuid: Optional[UUID] = None,
@@ -633,13 +677,16 @@ class MslWriter:
             "(spec 4.6); use add_extension_segment(producer, blocks) instead")
 
     def add_extension_segment(self, producer: Optional[str],
-                              blocks: Sequence[ExtensionBlock]) -> int:
+                              blocks: Sequence[ExtensionBlock],
+                              written_at_ns: Optional[int] = None) -> int:
         """Register an extension segment (spec 4.6) to be emitted after EoC.
 
         *blocks* (at least one) are written in order after the End-of-Capture
         block and every earlier segment, then closed by an End-of-Extension
         block carrying ``SegmentHash``, the exact ``BlockCount`` (blocks +
         terminator) and *producer* (``None`` = ``memdiver/<version>``).
+        *written_at_ns* sets the terminator's ``WrittenAt`` (``None`` = this
+        writer's own timestamp); materialize keeps a source segment's value.
         Block types the spec forbids in extension segments (evidence:
         0x0001, 0x0002, 0x0010-0x0015, 0x0030, 0x0040, 0x0050-0x0058,
         0x0FFF) and the terminator itself are rejected.
@@ -662,7 +709,8 @@ class MslWriter:
                             blk.block_uuid if blk.block_uuid is not None else uuid4(),
                             parent, int(blk.flags)))
         name = producer if producer is not None else _default_extension_producer()
-        self._extension_segments.append(_ExtensionSegmentSpec(name, entries))
+        self._extension_segments.append(
+            _ExtensionSegmentSpec(name, entries, written_at_ns=written_at_ns))
         return len(self._extension_segments) - 1
 
     @property
@@ -1047,11 +1095,15 @@ class MslWriter:
         over the plaintext, and the AAD is the 128-byte header plus KEM
         ciphertext. Extension segments (if any) lie inside the encrypted
         region after EoC, before the tag (spec 4.6), with zero PrevHash.
+
+        Spec 1.1.1: the one-shot ciphertext length is known before writing,
+        so the final ``CipherLen`` goes straight into the on-disk header;
+        the AAD and FileHash still cover it as zero (§10.2, §10.7).
         """
         self._require_eoc_for_extensions(ordered)
         cfg = self._encryption
         file_header, kem_ct, cek, nonce = self._encryption_envelope()
-        aad = file_header + kem_ct
+        aad = encryption_aad(file_header, kem_ct)
 
         # Encode non-EoC blocks with zero PrevHash (§10.6), then EoC with a
         # FileHash over the plaintext (header + KEM ct + preceding blocks).
@@ -1083,7 +1135,7 @@ class MslWriter:
         ciphertext_and_tag = aead_encrypt(cfg.enc_algo, cek, nonce, aad, block_stream)
 
         with self._atomic_output() as f:
-            f.write(file_header)
+            f.write(_header_with_cipher_len(file_header, len(block_stream)))
             f.write(kem_ct)
             f.write(ciphertext_and_tag)
         logger.info("Wrote encrypted MSL file: %s (%d blocks, %s%s)",
@@ -1187,6 +1239,12 @@ class MslWriter:
         n = len(self._extension_segments)
         return f" + {n} extension segment(s)" if n else ""
 
+    def _segment_written_at(self, spec: _ExtensionSegmentSpec) -> int:
+        """WrittenAt for *spec*'s terminator (its own, else the writer's)."""
+        if spec.written_at_ns is not None:
+            return spec.written_at_ns
+        return self._extension_written_at_ns
+
     def _emit_extension_segments(self, write: Callable[[bytes], object],
                                  prev_hash: bytes, chained: bool,
                                  hasher: Callable[[bytes], bytes]) -> bytes:
@@ -1210,7 +1268,7 @@ class MslWriter:
             terminator = self._encode_block(
                 BlockType.END_OF_EXTENSION,
                 _build_end_of_extension_payload(
-                    segment_hasher.digest(), self._extension_written_at_ns,
+                    segment_hasher.digest(), self._segment_written_at(spec),
                     len(spec.blocks) + 1, spec.producer),
                 spec.terminator_uuid, _ZERO_UUID,
                 prev_hash if chained else _ZERO_HASH, 0)
@@ -1296,12 +1354,14 @@ class MslWriter:
         One incremental AEAD (:mod:`memdiver.msl.aead_stream`) over the same
         plaintext block stream: zero PrevHash, EoC FileHash over header + KEM
         ct + every pre-EoC block, extension segments after EoC, 16-byte tag
-        last.
+        last. The header is written with ``CipherLen=0`` and patched once
+        after the tag (spec 1.1.1 §10.7; the temp output is seekable).
         """
         self._require_eoc_for_extensions(ordered)
         cfg = self._encryption
         file_header, kem_ct, cek, nonce = self._encryption_envelope()
-        sealer = aead_stream_encryptor(cfg.enc_algo, cek, nonce, file_header + kem_ct)
+        sealer = aead_stream_encryptor(cfg.enc_algo, cek, nonce,
+                                       encryption_aad(file_header, kem_ct))
         file_hasher = _new_hasher()
         file_hasher.update(file_header)
         file_hasher.update(kem_ct)
@@ -1325,7 +1385,9 @@ class MslWriter:
             self._emit_extension_segments(
                 lambda data: f.write(sealer.update(data)), _ZERO_HASH,
                 chained=False, hasher=hash_bytes)
+            cipher_len = f.tell() - len(file_header) - len(kem_ct)
             f.write(sealer.finalize())
+            _patch_cipher_len(f, cipher_len)
         logger.info("Wrote encrypted MSL file (streaming): %s (%d blocks, %s%s)",
                     self._path, len(ordered), cfg.enc_algo.name,
                     self._extension_note())
@@ -1335,7 +1397,8 @@ class MslWriter:
                               kem_ct_len: int) -> bytes:
         # Encryption extension header (spec Table 5, 64 bytes at 0x40-0x7F).
         # EncAlgo(1) KDFType(1) KeyEncap(1) Rsv(1) KDFTime(4) KDFMemory(4)
-        # KDFLanes(1) Rsv2(1) KEMCtLen(2) Nonce(24) KDFSalt(16) Rsv3(8) = 64.
+        # KDFLanes(1) Rsv2(1) KEMCtLen(2) Nonce(24) KDFSalt(16) CipherLen(8) = 64.
+        # CipherLen is written as 0 here; the encrypted write paths fill it in.
         nonce_field = nonce_field.ljust(24, b"\x00")[:24]
         kdf_salt = kdf_salt.ljust(16, b"\x00")[:16]
         return struct.pack(
@@ -1396,6 +1459,25 @@ def build_import_provenance_payload(source_format: int, tool_name: str,
 def _len_with_nul(s: str) -> int:
     """Length of UTF-8 bytes plus NUL terminator (0 if empty)."""
     return (len(s.encode("utf-8")) + 1) if s else 0
+
+
+def _pack_cipher_len(cipher_len: int) -> bytes:
+    """Header ``CipherLen`` field (spec 1.1.1 Table 5): u64 little-endian."""
+    return struct.pack("<Q", cipher_len)
+
+
+def _header_with_cipher_len(header: bytes, cipher_len: int) -> bytes:
+    """Return the 128-byte encrypted *header* with ``CipherLen`` filled in."""
+    end = CIPHER_LEN_OFFSET + CIPHER_LEN_SIZE
+    return header[:CIPHER_LEN_OFFSET] + _pack_cipher_len(cipher_len) + header[end:]
+
+
+def _patch_cipher_len(f, cipher_len: int) -> None:
+    """One-time ``CipherLen`` patch after the tag (spec 1.1.1 §10.7)."""
+    resume = f.tell()
+    f.seek(CIPHER_LEN_OFFSET)
+    f.write(_pack_cipher_len(cipher_len))
+    f.seek(resume)
 
 
 def _eoc_payload_with_hash(eoc_payload_stub: bytes, file_hash: bytes,
@@ -1623,6 +1705,46 @@ def _encode_page_state_map(page_states: Sequence[int]) -> bytes:
         shift = 6 - 2 * (i % 4)
         buf[byte_idx] |= (bits << shift)
     return bytes(buf)
+
+
+# Thread Context (spec Tables 19a/19b): ThreadID(8) StartTime(8) Flags(2)
+# ThreadState(1) Arch(1) RegCount(4) NameLen(2) Reserved(6), ThreadName
+# (pad8, omitted when NameLen=0); then per register NameLen(1) Width(1)
+# Flags(2) Reserved(4) + Name (pad8) + Value (pad8).
+_THREAD_CONTEXT_HEAD = "<QQHBBIH6x"
+_THREAD_REGISTER_HEAD = "<BBH4x"
+_U8_MAX = 0xFF
+
+
+def _build_thread_context_payload(thread_id: int, start_time: int,
+                                  flags: int, state: int, arch: int,
+                                  name: str,
+                                  registers: Sequence[MslThreadRegister]) -> bytes:
+    """Encode a Thread Context payload (spec Tables 19a/19b)."""
+    for field_name, value in (("ThreadState", state), ("Arch", arch)):
+        if not 0 <= int(value) <= _U8_MAX:
+            raise ValueError(f"Thread Context {field_name} {value} must fit u8")
+    regs = list(registers)
+    head = struct.pack(_THREAD_CONTEXT_HEAD, thread_id, start_time, flags,
+                       int(state), int(arch), len(regs), _len_with_nul(name))
+    name_bytes = _pack_padded_str(name) if name else b""
+    return head + name_bytes + b"".join(_pack_thread_register(r) for r in regs)
+
+
+def _pack_thread_register(register: MslThreadRegister) -> bytes:
+    """Encode one Table 19b register entry (lowercase name, pad8 fields)."""
+    name = register.name.lower()
+    raw_name_len = _len_with_nul(name)
+    if not name or raw_name_len > _U8_MAX:
+        raise ValueError(f"Thread register name {name!r} must be 1..254 bytes")
+    if not 1 <= register.width <= _U8_MAX or len(register.value) != register.width:
+        raise ValueError(
+            f"Thread register {name!r}: width {register.width} must be 1..255 "
+            f"and equal the value length {len(register.value)}")
+    head = struct.pack(_THREAD_REGISTER_HEAD, raw_name_len, register.width,
+                       register.flags)
+    value = bytes(register.value).ljust(_pad8(register.width), b"\x00")
+    return head + _pack_padded_str(name) + value
 
 
 def _build_vas_map_payload(entries: Sequence[MslVasEntry]) -> bytes:

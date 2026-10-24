@@ -446,8 +446,9 @@ export interface FormatSuggestion {
 // --- AEAD tag status (spec §10) ---
 export type TagStatus = "not_encrypted" | "valid" | "corrupted" | "missing_key";
 
-// --- MSL three-state page model (CAPTURED/FAILED/UNMAPPED) ---
-export type PageState = "CAPTURED" | "FAILED" | "UNMAPPED";
+// --- MSL page model (CAPTURED/FAILED/UNMAPPED, plus 1.1 NOT_RESIDENT) ---
+/** NOT_RESIDENT (MSL 1.1): mapped but never touched; content is known zero. */
+export type PageState = "CAPTURED" | "FAILED" | "UNMAPPED" | "NOT_RESIDENT";
 
 export interface PageStateInterval {
   va: number;

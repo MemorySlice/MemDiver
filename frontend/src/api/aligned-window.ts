@@ -30,7 +30,7 @@
 
 import { request } from "./client";
 import type { Diagnostic } from "./diagnostics";
-import type { HeapRoleCode, HeapRoleNameLegend, HeapWindowStatus } from "./types";
+import type { HeapRoleCode, HeapRoleNameLegend, HeapWindowStatus, PageState } from "./types";
 import { useDumpStore } from "@/stores/dump-store";
 
 /** Which coordinate space the caller is navigating in. */
@@ -200,6 +200,12 @@ export interface AlignedWindowSegment {
   }[];
 }
 
+/** A page state the aligned window reports — CAPTURED is never on the wire. */
+export type AlignedWindowPageState = Exclude<PageState, "CAPTURED">;
+
+/** `[windowOffset, runLength, state]`, in window index space. */
+export type AlignedWindowPageStateRun = [number, number, AlignedWindowPageState];
+
 export interface AlignedWindowDump {
   dump_index: number;
   dump_path: string;
@@ -209,6 +215,15 @@ export interface AlignedWindowDump {
   bytes: string | null;
   /** Present-byte runs as `[start, runLength]`. THE presence mask. */
   bytes_valid: [number, number][];
+  /**
+   * This dump's non-captured MSL page states, as `[start, runLength, state]`
+   * runs in WINDOW index space (the space of `bytes_valid`): ascending,
+   * merged, CAPTURED never listed, and never overlapping `bytes_valid` — those
+   * bytes are zero-filled and absent. `[]` for a non-`.msl` dump or a non-"va"
+   * window. In practice only the ANCHOR carries runs (across the whole window,
+   * gaps included). Optional only because older servers omit it.
+   */
+  page_states?: AlignedWindowPageStateRun[];
   key_status: {
     decrypted: boolean;
     hint: string | null;

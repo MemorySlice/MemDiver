@@ -16,6 +16,7 @@ import pytest
 
 from memdiver.core.format_detect import detect_format
 from memdiver.core.binary_formats.minidump_reader import (
+    EXCEPTION_STREAM,
     MEM_COMMIT,
     MEM_IMAGE,
     MEM_PRIVATE,
@@ -45,6 +46,9 @@ _MEMINFO_LIST_HDR = struct.Struct("<IIQ")     # 16 bytes
 _MEMINFO = struct.Struct("<QQIIQIIII")        # 48 bytes
 _MISC = struct.Struct("<III")                 # 12 bytes
 _THREAD = struct.Struct("<IIIIQQIIII")        # 48 bytes (MINIDUMP_THREAD)
+# MINIDUMP_EXCEPTION_STREAM: ThreadId, __alignment, MINIDUMP_EXCEPTION (152),
+# ThreadContext location (8) -> 168 bytes; only ThreadId is populated.
+_EXCEPTION_STREAM_SIZE = 168
 
 # A MINIDUMP_MEMORY_INFO tuple mirrors the reader's decode order:
 # (base, alloc_base, alloc_protect, region_size, state, protect, type).
@@ -67,12 +71,19 @@ def _build_minidump(
     os_major: int = 10,
     os_minor: int = 0,
     threads: Optional[Sequence[ThreadSpec]] = None,
+    thread_contexts: Optional[Sequence[Optional[bytes]]] = None,
+    exception_thread_id: Optional[int] = None,
 ) -> bytes:
     """Assemble a minimal minidump image and return its bytes.
 
     ``descriptors`` is a list of ``(start_va, blob)`` — each blob's file
     RVA is computed so it lands in a contiguous data region after every
     stream body, matching the Memory64List contiguous-payload convention.
+
+    ``thread_contexts`` (parallel to ``threads``; ``None`` entries mean "no
+    CONTEXT") embeds each raw CONTEXT blob after the memory blobs and points
+    the thread's ``ThreadContext`` location at it. ``exception_thread_id``
+    adds an ExceptionStream naming that thread.
     """
     # -- Decide the stream set and pre-compute each stream body's size. --
     mem_body_size = (
@@ -93,6 +104,8 @@ def _build_minidump(
         streams.append((MISC_INFO_STREAM, _MISC.size))
     if threads is not None:
         streams.append((THREAD_LIST_STREAM, 4 + len(threads) * _THREAD.size))
+    if exception_thread_id is not None:
+        streams.append((EXCEPTION_STREAM, _EXCEPTION_STREAM_SIZE))
 
     num_streams = len(streams)
     dir_rva = _HEADER.size
@@ -106,6 +119,8 @@ def _build_minidump(
     for _start, blob in descriptors:
         blob_rvas.append(blob_start + len(blob_region))
         blob_region += blob
+    # CONTEXT blobs follow the memory payloads (keeps Memory64 contiguous).
+    ctx_locations = _append_contexts(blob_region, blob_start, thread_contexts)
 
     # -- Build stream bodies + directory entries in lockstep. --
     bodies = bytearray()
@@ -115,7 +130,9 @@ def _build_minidump(
         directory += _DIRECTORY.pack(stream_type, size, cursor)
         bodies += _stream_body(stream_type, size, descriptors, blob_rvas,
                                blob_start, mem_infos, arch, os_major, os_minor,
-                               pid, use_memory64, threads)
+                               pid, use_memory64, threads,
+                               ctx_locations=ctx_locations,
+                               exception_thread_id=exception_thread_id)
         cursor += size
     assert len(bodies) == total_body
 
@@ -123,9 +140,22 @@ def _build_minidump(
     return bytes(header + directory + bodies + blob_region)
 
 
+def _append_contexts(blob_region: bytearray, blob_start: int,
+                     thread_contexts) -> List[Tuple[int, int]]:
+    """Append CONTEXT blobs to *blob_region*; return ``(size, rva)`` each."""
+    locations: List[Tuple[int, int]] = []
+    for ctx in thread_contexts or ():
+        if not ctx:
+            locations.append((0, 0))
+            continue
+        locations.append((len(ctx), blob_start + len(blob_region)))
+        blob_region += ctx
+    return locations
+
+
 def _stream_body(stream_type, size, descriptors, blob_rvas, blob_start,
                  mem_infos, arch, os_major, os_minor, pid, use_memory64,
-                 threads=None):
+                 threads=None, *, ctx_locations=(), exception_thread_id=None):
     """Serialize one stream body given the pre-computed blob RVAs."""
     if stream_type in (MEMORY_LIST_STREAM, MEMORY64_LIST_STREAM):
         if use_memory64:
@@ -154,11 +184,17 @@ def _stream_body(stream_type, size, descriptors, blob_rvas, blob_start,
         return _MISC.pack(_MISC.size, MINIDUMP_MISC1_PROCESS_ID, pid)
     if stream_type == THREAD_LIST_STREAM:
         out = bytearray(struct.pack("<I", len(threads)))
-        for tid, teb, stack_start, stack_size in threads:
-            # Stack.Memory.Rva / ThreadContext left zero: not decoded.
+        for i, (tid, teb, stack_start, stack_size) in enumerate(threads):
+            # Stack.Memory.Rva left zero (not decoded); ThreadContext points
+            # at the embedded CONTEXT blob when one was supplied.
+            ctx_size, ctx_rva = (ctx_locations[i] if i < len(ctx_locations)
+                                 else (0, 0))
             out += _THREAD.pack(tid, 0, 0, 0, teb, stack_start, stack_size,
-                                0, 0, 0)
+                                0, ctx_size, ctx_rva)
         return bytes(out)
+    if stream_type == EXCEPTION_STREAM:
+        return (struct.pack("<I", exception_thread_id)
+                + b"\x00" * (_EXCEPTION_STREAM_SIZE - 4))
     raise AssertionError(f"unhandled stream type {stream_type}")
 
 

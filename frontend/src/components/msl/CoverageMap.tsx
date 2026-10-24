@@ -9,11 +9,27 @@ interface Props {
   mslPath: string;
 }
 
-const STATE_ORDER: PageState[] = ["CAPTURED", "FAILED", "UNMAPPED"];
+const STATE_ORDER: PageState[] = ["CAPTURED", "FAILED", "UNMAPPED", "NOT_RESIDENT"];
 
-/** Lowercased state -> the shared swatch/overlay CSS class in hex.css. */
+/** Legend/title label key (`hex` namespace) for each state. */
+const STATE_LABEL_KEY: Record<PageState, string> = {
+  CAPTURED: "pageState.captured",
+  FAILED: "pageState.failed",
+  UNMAPPED: "pageState.unmapped",
+  NOT_RESIDENT: "pageState.notResident",
+};
+
+/** Optional legend-chip tooltip for states whose label needs explaining. */
+const STATE_DESCRIPTION_KEY: Partial<Record<PageState, string>> = {
+  NOT_RESIDENT: "pageState.notResidentTitle",
+};
+
+/**
+ * State -> the shared swatch/overlay CSS class in hex.css. Lowercased with
+ * underscores mapped to hyphens (NOT_RESIDENT -> page-state-not-resident).
+ */
 function stateClass(state: PageState): string {
-  return `page-state-${state.toLowerCase()}`;
+  return `page-state-${state.toLowerCase().replace(/_/g, "-")}`;
 }
 
 export function CoverageMap({ mslPath }: Props) {
@@ -53,6 +69,7 @@ export function CoverageMap({ mslPath }: Props) {
       CAPTURED: 0,
       FAILED: 0,
       UNMAPPED: 0,
+      NOT_RESIDENT: 0,
     };
     if (!data) return acc;
     for (const region of data.regions) {
@@ -84,15 +101,23 @@ export function CoverageMap({ mslPath }: Props) {
       </h3>
 
       <div className="flex items-center gap-3 flex-wrap">
-        {STATE_ORDER.map((state) => (
-          <span key={state} className="flex items-center gap-1">
+        {STATE_ORDER.map((state) => {
+          const descriptionKey = STATE_DESCRIPTION_KEY[state];
+          return (
             <span
-              className={`inline-block w-3 h-3 rounded-sm ${stateClass(state)}`}
-            />
-            <span>{t(`pageState.${state.toLowerCase()}`)}</span>
-            <span className="md-text-muted">({counts[state]})</span>
-          </span>
-        ))}
+              key={state}
+              className="flex items-center gap-1"
+              title={descriptionKey ? t(descriptionKey) : undefined}
+              data-testid={`page-state-legend-${state}`}
+            >
+              <span
+                className={`inline-block w-3 h-3 rounded-sm ${stateClass(state)}`}
+              />
+              <span>{t(STATE_LABEL_KEY[state])}</span>
+              <span className="md-text-muted">({counts[state]})</span>
+            </span>
+          );
+        })}
       </div>
 
       <div className="space-y-1">
@@ -104,7 +129,7 @@ export function CoverageMap({ mslPath }: Props) {
               const title = t("pageState.intervalTitle", {
                 va: iv.va.toString(16),
                 end: (iv.va + iv.length).toString(16),
-                state: t(`pageState.${iv.state.toLowerCase()}`),
+                state: t(STATE_LABEL_KEY[iv.state]),
                 count: iv.page_count,
               });
               return (

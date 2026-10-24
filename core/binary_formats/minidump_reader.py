@@ -10,9 +10,12 @@ extraction and region enumeration:
   (:class:`MinidumpMemoryInfo`), matching ``VirtualQuery``.
 - ``SystemInfoStream`` -> processor architecture and OS version.
 - ``MiscInfoStream`` -> the recorded process id.
-- ``ThreadListStream`` -> per-thread id, TEB and stack range
-  (:class:`MinidumpThread`). Malformed thread records are skipped
-  (logged) rather than raising, since they are optional enrichment.
+- ``ThreadListStream`` -> per-thread id, TEB, stack range and the
+  location of its saved ``CONTEXT`` (:class:`MinidumpThread`; raw bytes via
+  :meth:`MinidumpReader.read_thread_context`). Malformed thread records are
+  skipped (logged) rather than raising, since they are optional enrichment.
+- ``ExceptionStream`` -> the id of the thread that raised the exception
+  (``MinidumpInfo.exception_thread_id``).
 
 The reader never slurps the whole file: all I/O goes through a single
 ``mmap`` view opened in :meth:`MinidumpReader.open`. Minidumps are
@@ -42,6 +45,7 @@ MDMP_MAGIC = b"MDMP"
 THREAD_LIST_STREAM = 3
 MODULE_LIST_STREAM = 4
 MEMORY_LIST_STREAM = 5
+EXCEPTION_STREAM = 6
 SYSTEM_INFO_STREAM = 7
 MEMORY64_LIST_STREAM = 9
 MISC_INFO_STREAM = 15
@@ -118,12 +122,18 @@ class MinidumpSystemInfo:
 
 @dataclass(frozen=True)
 class MinidumpThread:
-    """One MINIDUMP_THREAD entry (id, TEB and saved stack range)."""
+    """One MINIDUMP_THREAD entry (id, TEB, saved stack range, CONTEXT location).
+
+    ``ctx_rva``/``ctx_size`` locate the thread's raw ``CONTEXT`` record
+    (``ThreadContext`` location descriptor); both are 0 when absent.
+    """
 
     thread_id: int
     teb: int
     stack_start: int
     stack_size: int
+    ctx_rva: int = 0
+    ctx_size: int = 0
 
 
 @dataclass
@@ -137,6 +147,7 @@ class MinidumpInfo:
     pid: Optional[int] = None
     has_memory_info_list: bool = False
     threads: List[MinidumpThread] = field(default_factory=list)
+    exception_thread_id: Optional[int] = None
 
 
 # struct formats (minidump, little-endian) -----------------------------------
@@ -181,6 +192,9 @@ _MISC_INFO_SIZE = _MISC_INFO.size  # 12
 # ThreadContext (MINIDUMP_LOCATION_DESCRIPTOR: DataSize, Rva).
 _THREAD = struct.Struct("<IIIIQQIIII")
 _THREAD_SIZE = _THREAD.size  # 48
+
+# MINIDUMP_EXCEPTION_STREAM starts with ThreadId (u32).
+_EXCEPTION_THREAD_ID = struct.Struct("<I")
 
 
 class MinidumpReader:
@@ -266,6 +280,23 @@ class MinidumpReader:
         self._check_range(rva, size, "read")
         return self._mmap[rva:rva + size]
 
+    def read_thread_context(self, thread: MinidumpThread) -> bytes:
+        """Raw ``CONTEXT`` bytes of ``thread`` (``b""`` when absent or invalid).
+
+        Thread contexts are optional enrichment, so an out-of-range
+        location is logged and yields ``b""`` instead of raising.
+        """
+        if thread.ctx_size == 0:
+            return b""
+        try:
+            return self.read_at(thread.ctx_rva, thread.ctx_size)
+        except ValueError:
+            logger.warning(
+                "Thread %#x CONTEXT out of range (rva=%d size=%d)",
+                thread.thread_id, thread.ctx_rva, thread.ctx_size,
+            )
+            return b""
+
     # -- Parsing ------------------------------------------------------------
 
     def _check_range(self, rva: int, size: int, what: str) -> None:
@@ -325,6 +356,8 @@ class MinidumpReader:
             self._parse_misc_info(rva, data_size, info)
         elif stream_type == THREAD_LIST_STREAM:
             self._parse_thread_list(rva, data_size, info)
+        elif stream_type == EXCEPTION_STREAM:
+            self._parse_exception(rva, data_size, info)
         else:
             logger.debug("Skipping stream type %d (rva=%d)", stream_type, rva)
 
@@ -473,10 +506,26 @@ class MinidumpReader:
             count = fits
         for i in range(count):
             (thread_id, _suspend, _prio_class, _prio, teb, stack_start,
-             stack_size, _stack_rva, _ctx_size, _ctx_rva) = _THREAD.unpack_from(
+             stack_size, _stack_rva, ctx_size, ctx_rva) = _THREAD.unpack_from(
                 buf, base + i * _THREAD_SIZE,
             )
             info.threads.append(MinidumpThread(
                 thread_id=thread_id, teb=teb,
                 stack_start=stack_start, stack_size=stack_size,
+                ctx_rva=ctx_rva, ctx_size=ctx_size,
             ))
+
+    def _parse_exception(
+        self, rva: int, data_size: int, info: MinidumpInfo,
+    ) -> None:
+        """Record the faulting ThreadId of a MINIDUMP_EXCEPTION_STREAM.
+
+        Optional enrichment: a malformed stream is logged and skipped.
+        """
+        buf = self._mmap
+        assert buf is not None
+        size = _EXCEPTION_THREAD_ID.size
+        if rva < 0 or data_size < size or rva + size > len(buf):
+            logger.warning("Skipping malformed exception stream at rva=%d", rva)
+            return
+        info.exception_thread_id = _EXCEPTION_THREAD_ID.unpack_from(buf, rva)[0]

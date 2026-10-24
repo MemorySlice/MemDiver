@@ -9,7 +9,7 @@ import pytest
 
 from memdiver.msl import crypto
 from memdiver.msl.decoders import decode_end_of_capture
-from memdiver.msl.enums import (ENC_EXT_OFFSET, FILE_HEADER_ENC_SIZE,
+from memdiver.msl.enums import (CIPHER_LEN_OFFSET, ENC_EXT_OFFSET,
                                 BlockType, EncAlgo, KdfType, KeyEncap,
                                 TagStatus)
 from memdiver.msl.hashing import hash_stream
@@ -55,10 +55,12 @@ CASES = ["raw", "raw-xchacha", "passphrase", "x25519", "mlkem768", "hybrid"]
 
 
 def _eoc_hash_ok(reader) -> bool:
-    """EoC FileHash == BLAKE3(header + KEM ct + plaintext blocks before EoC)."""
+    """EoC FileHash == BLAKE3(header + KEM ct + plaintext blocks before EoC),
+    with the header's CipherLen (0x78-0x7F) hashed as zero (spec 1.1.1)."""
     hs = reader.file_header.header_size
     kem_len = reader._enc_params.kem_ct_len if reader._enc_params else 0
-    head = bytes(reader._mmap[0:hs + kem_len])
+    head = (crypto.header_without_cipher_len(reader._mmap[0:hs])
+            + bytes(reader._mmap[hs:hs + kem_len]))
     pieces, eoc = [], None
     for hdr in reader._iter_raw_block_headers():
         start = hdr.payload_offset - (hdr.block_length - hdr.payload_length)
@@ -82,11 +84,12 @@ def test_reencrypted_copy_opens_with_same_material(tmp_path, name):
     assert DECRYPTED_OUTPUT_WARNING not in result.warnings
     src_bytes, out_bytes = src.read_bytes(), out.read_bytes()
     assert out_bytes[_NONCE_FIELD] != src_bytes[_NONCE_FIELD]  # fresh nonce
-    # Same key wrapping: everything in the extension except the nonce matches.
+    # Same key wrapping: everything in the extension except the nonce and the
+    # per-file CipherLen (spec 1.1.1, the copy is smaller) matches.
     assert (out_bytes[ENC_EXT_OFFSET:_NONCE_FIELD.start]
             == src_bytes[ENC_EXT_OFFSET:_NONCE_FIELD.start])
-    assert (out_bytes[_NONCE_FIELD.stop:FILE_HEADER_ENC_SIZE]
-            == src_bytes[_NONCE_FIELD.stop:FILE_HEADER_ENC_SIZE])
+    assert (out_bytes[_NONCE_FIELD.stop:CIPHER_LEN_OFFSET]
+            == src_bytes[_NONCE_FIELD.stop:CIPHER_LEN_OFFSET])
     with MslReader(out) as locked:
         assert locked.tag_status is TagStatus.MISSING_KEY
     with MslReader(src, **km) as s, MslReader(out, **km) as r:

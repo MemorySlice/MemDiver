@@ -191,7 +191,7 @@ describe("hex.css selection survives a tinted cell", () => {
   });
 
   it("marks a selected page-state cell", () => {
-    for (const cls of ["page-failed", "page-unmapped"]) {
+    for (const cls of ["page-failed", "page-unmapped", "page-not-resident"]) {
       expect(cellStyle(["hex-byte", "selected", cls]).outline, cls).toBe(SELECTION_OUTLINE);
     }
   });

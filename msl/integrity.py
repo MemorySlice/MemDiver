@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
+from .crypto import header_without_cipher_len
 from .enums import BLOCK_HEADER_SIZE, BLOCK_MAGIC, BlockType, HashAlgo
 from .hashing import _new_hasher, hash_bytes
 from .types import MslParseError
@@ -38,6 +39,9 @@ class SegmentReport:
     segment_hash_ok: bool = False
     block_count_ok: bool = False
     errors: List[str] = field(default_factory=list)
+    # 1-based SegIndex for a sealed segment (spec 10.8; start/end are then
+    # file offsets of its SealHeader and just past its tag), else 0.
+    seal_index: int = 0
 
     @property
     def verified(self) -> bool:
@@ -71,6 +75,10 @@ class IntegrityReport:
     # True when the capture segment alone (header .. EoC) verified cleanly;
     # ``valid`` additionally requires every terminated segment to verify.
     capture_ok: bool = True
+    # Sealed extension segments after the primary AEAD tag (spec 10.8):
+    # only verified ones are listed; bytes after the last are trailing.
+    sealed_segments: List[SegmentReport] = field(default_factory=list)
+    sealed_trailing_bytes: int = 0
 
     @property
     def verified_segments(self) -> List[SegmentReport]:
@@ -258,9 +266,12 @@ def _check_file_hash(reader, report: IntegrityReport, eoc_header) -> None:
         return
     h = factory()
     if reader.file_header.encrypted:
-        # Header + KEM ciphertext (plaintext on disk), then the decrypted
-        # blocks before the EoC.
-        h.update(bytes(reader._mmap[0:reader._ciphertext_start()]))
+        # Header (CipherLen 0x78-0x7F hashed as zero, spec 1.1.1 §10.7) +
+        # KEM ciphertext (plaintext on disk), then the decrypted blocks
+        # before the EoC.
+        hs = reader.file_header.header_size
+        h.update(header_without_cipher_len(reader._mmap[0:hs]))
+        h.update(bytes(reader._mmap[hs:reader._ciphertext_start()]))
     buf = reader._buf
     for off in range(0, eoc_header.file_offset, _HASH_CHUNK):
         h.update(bytes(buf[off:min(off + _HASH_CHUNK, eoc_header.file_offset)]))
@@ -290,6 +301,17 @@ def _verify_segments_into(reader, report: IntegrityReport, hasher) -> None:
     if trailing:
         report.warnings.append(
             f"{trailing} trailing byte(s) after the last verified segment")
+    _sealed_segments_into(reader, report)
+
+
+def _sealed_segments_into(reader, report: IntegrityReport) -> None:
+    """Record the verified sealed segments (spec 10.8) and the bytes after them."""
+    report.sealed_segments = [s.report for s in reader.sealed_segments()]
+    report.sealed_trailing_bytes = reader.sealed_trailing_bytes
+    if report.sealed_trailing_bytes:
+        report.warnings.append(
+            f"{report.sealed_trailing_bytes} trailing byte(s) after the "
+            "primary AEAD tag and the last verified sealed segment")
 
 
 def verify_extension_segments(reader, hasher=None

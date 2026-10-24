@@ -87,6 +87,7 @@ class MslEncryptionParams:
     kem_ct_len: int
     nonce: bytes        # 24-byte Nonce field (cipher uses a prefix)
     kdf_salt: bytes     # 16-byte KDF salt
+    cipher_len: int = 0  # CipherLen (0x78, u64): primary ciphertext length; 0 = not recorded
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,10 @@ class MslBlockHeader:
     prev_hash: bytes
     file_offset: int  # computed: absolute offset in file
     payload_offset: int  # computed: file_offset + 80
+    # Sealed extension segment (spec 10.8) this block came from, 1-based;
+    # 0 = the reader buffer. Non-zero offsets are into that segment's
+    # decrypted plaintext, not the file / primary block stream.
+    seal_index: int = 0
 
     @property
     def payload_length(self) -> int:
@@ -234,6 +239,9 @@ class ExtensionSegment:
     end: int
     headers: Tuple[MslBlockHeader, ...]
     terminator: Optional[MslEndOfExtension]
+    # 1-based SegIndex of a sealed segment (spec 10.8), 0 for a segment
+    # inside the block stream; non-zero start/end are plaintext offsets.
+    seal_index: int = 0
 
     @property
     def terminated(self) -> bool:

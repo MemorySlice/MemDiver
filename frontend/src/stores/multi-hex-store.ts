@@ -33,7 +33,7 @@
 import { create } from "zustand";
 import { decodeBase64 } from "@/utils/hex-codec";
 import { fetchAlignedWindow, keysForPaths } from "@/api/aligned-window";
-import type { AlignedWindowResponse } from "@/api/aligned-window";
+import type { AlignedWindowPageState, AlignedWindowResponse } from "@/api/aligned-window";
 import { readableFailure } from "@/api/client";
 import { withMemoryBudgetOverride, withForceMemory } from "@/api/memory-budget";
 import { selectionKey } from "@/stores/consensus-store";
@@ -45,6 +45,12 @@ import {
   offsetToChunkStart,
   prefetchChunksForPaneCount,
 } from "@/components/hex/multi-window-utils";
+import {
+  decodePageStateRuns,
+  PAGE_STATE_RUN_COST_BYTES,
+  pageStateInRuns,
+  type PageStateRun,
+} from "@/utils/page-state-runs";
 
 /**
  * The byte ceiling for the WHOLE cache, side maps included.
@@ -110,6 +116,14 @@ export interface PaneChunk {
   data: Uint8Array;
   /** Per-byte 0/1 presence mask, same length as `data`. */
   valid: Uint8Array;
+  /**
+   * This dump's non-captured MSL page states in this chunk, as runs RELATIVE
+   * TO THE CHUNK START (window index space, like `valid`). Optional because a
+   * chunk built before the field existed — or by a test — simply has none.
+   * Lives on the chunk so it is evicted, pruned and identity-checked with the
+   * bytes it describes, with no second cache to keep in step.
+   */
+  pageStates?: PageStateRun[];
   fetchedAt: number;
 }
 
@@ -274,6 +288,13 @@ export interface MultiHexState {
    * about what it is looking at. See `ByteAbsence`.
    */
   absenceAt(path: string, offset: number): ByteAbsence | null;
+  /**
+   * The non-captured MSL page state `path` reports at window index `offset`,
+   * or `undefined` (captured, not an `.msl`, not a "va" window, or the chunk
+   * is not held under the live identity). Answered from the aligned window's
+   * own `page_states`, so it needs no VA arithmetic and survives re-anchoring.
+   */
+  pageStateAt(path: string, offset: number): AlignedWindowPageState | undefined;
   getClassAt(offset: number): number | undefined;
   /**
    * How many DISTINCT byte values the present dumps hold at `offset`.
@@ -388,7 +409,8 @@ function cancelAllRetryTimers(): void {
 
 /** Bytes a PANE chunk costs: the window bytes plus its same-length presence mask. */
 function chunkCost(chunk: PaneChunk): number {
-  return chunk.data.byteLength + chunk.valid.byteLength;
+  const runCost = (chunk.pageStates?.length ?? 0) * PAGE_STATE_RUN_COST_BYTES;
+  return chunk.data.byteLength + chunk.valid.byteLength + runCost;
 }
 
 /**
@@ -889,6 +911,12 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
     return chunk.valid[index] === 1 ? null : "not-in-dump";
   },
 
+  pageStateAt: (path, offset) => {
+    const chunk = currentChunk(get(), path, offset);
+    if (!chunk?.pageStates || chunk.pageStates.length === 0) return undefined;
+    return pageStateInRuns(chunk.pageStates, offset - chunk.offset);
+  },
+
   getClassAt: (offset) => classAt(chunkWindowAt(get(), offset), offset),
 
   getChunkError: (offset) => get().getChunkFailure(offset)?.message ?? null,
@@ -1285,9 +1313,10 @@ function applyResponse(
     const valid = dump.bytes
       ? decodeRunsToMask(dump.bytes_valid, data.length)
       : new Uint8Array(response.length);
+    const pageStates = decodePageStateRuns(dump.page_states, data.length);
     const cache = byPath.get(dump.dump_path) ?? emptyCache();
     const chunks = new Map(cache.chunks);
-    chunks.set(chunkOffset, { offset: chunkOffset, data, valid, fetchedAt });
+    chunks.set(chunkOffset, { offset: chunkOffset, data, valid, pageStates, fetchedAt });
     const lockedHint = dump.bytes === null ? dump.key_status.hint : null;
     // A successful chunk REPLACES this pane's error rather than merging with
     // it: a pane that has just handed us bytes is not in a failed state, so a

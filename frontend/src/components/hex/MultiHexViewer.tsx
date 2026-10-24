@@ -10,7 +10,8 @@ import {
 } from "@/hooks/useAlignedPanes";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
-import type { AbsenceKind } from "@/utils/absence-classes";
+import { useAlignedPageStateTintsActive } from "@/hooks/usePageStateTintsActive";
+import { resolveAbsence, type AbsenceKind } from "@/utils/absence-classes";
 import { useConsensusStore } from "@/stores/consensus-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -123,6 +124,10 @@ export function MultiHexViewer() {
   // other dumps" are different facts and need different sentences.
   const consensusId = useConsensusStore((s) => s.consensusId);
 
+  // Whether the panes can paint MSL page-state tints, so the legend explains
+  // them exactly when they can be on screen. See the hook for the gate choice.
+  const pageStateTintsActive = useAlignedPageStateTintsActive();
+
   useHexKeyboard(containerRef);
 
   const selectedIds = useMemo(() => selected.map((d) => d.id), [selected]);
@@ -223,8 +228,16 @@ export function MultiHexViewer() {
         if (!store.isPresentAt(pane.path, offset)) return undefined;
         return store.getByteAt(pane.path, offset);
       };
-      const absence = (offset: number) =>
-        useMultiHexStore.getState().absenceAt(pane.path, offset) ?? undefined;
+      // The byte absence and the pane's own page state, ranked by the ONE
+      // shared resolver. Both are read in window index space (invariant W1):
+      // the page-state runs arrive per dump, already placed by the backend.
+      const absence = (offset: number) => {
+        const store = useMultiHexStore.getState();
+        return resolveAbsence(
+          store.absenceAt(pane.path, offset),
+          store.pageStateAt(pane.path, offset),
+        );
+      };
       const entry = { version, errorKey: chunkErrorKey, read, absence };
       cache.set(pane.path, entry);
       readers.set(pane.path, entry);
@@ -334,12 +347,14 @@ export function MultiHexViewer() {
         would have been a private notation. It carries the ABSENCE vocabulary
         only: these panes paint no consensus class, and a class legend over a
         grid that never shows one teaches a colour the analyst will not find.
+        The MSL page states belong to that vocabulary too, and are listed
+        exactly while the panes can paint them (an .msl anchor in "va").
       */}
       <div
         data-testid="multi-hex-legend"
         className="flex items-center gap-3 px-3 py-1 text-xs border-b border-[var(--md-border)] md-bg-secondary"
       >
-        <AbsenceLegend />
+        <AbsenceLegend pageStates pageStatesActive={pageStateTintsActive} />
       </div>
 
       {/*

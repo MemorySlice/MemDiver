@@ -3,7 +3,7 @@
 All notable changes to MemDiver are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.0.0] — 2026-10-24
 
 ### Added
 - MSL 1.1: EoC carries the exact block count (48-byte payload); `verify_chain` checks
@@ -14,6 +14,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - VAS Map entries carry `name_source`; the trust rule prefers it over the
   provenance marker. Thread Context (0x0011) decoded per spec 1.1 Section 5.7.
 - `PageState.NOT_RESIDENT` (value 3) shown as such in inspect output.
+- Thread Context (0x0011) written: `MslWriter.add_thread_context` (sets CapBitmap
+  bit 2); ELF-core (x86_64/aarch64) and minidump (AMD64/ARM64) imports emit one
+  block per thread before the first Memory Region (`msl/import_threads.py`).
+- Materialize folds every verified sealed extension segment (spec 10.8) into an
+  ordinary segment of the copy (after the in-stream ones; blocks, Producer and
+  WrittenAt kept; re-chained in plaintext copies, inside the new ciphertext in
+  re-encrypted ones); provenance note gains `sealed_segments_folded=N`.
+  `add_extension_segment(..., written_at_ns=)` sets a segment's WrittenAt.
 
 ### Changed
 - `add_raw_appendix` raises; use `add_extension_segment`.

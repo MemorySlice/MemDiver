@@ -11,7 +11,7 @@ import {
 } from "@/hooks/useAlignedPanes";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
-import { absenceForPageState, type AbsenceKind } from "@/utils/absence-classes";
+import { resolveAbsence, type AbsenceKind } from "@/utils/absence-classes";
 import { useConsensusRun, useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
@@ -48,7 +48,7 @@ import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
  *                        view uses, so the analyst learns one legend, not two
  *   3. cross-dump differs - an inset ring, not a background, so it composes
  *                        with the class colour rather than replacing it
- *   4. page state    - unchanged from the single view
+ *   4. page state    - the single view's tints, read from the aligned window
  *
  * Layer 2 has THREE readings, chosen with the `Class | Variants | Glyph` switch
  * in the toolbar (`overlay-render-store`): the consensus bands, the count of
@@ -78,7 +78,6 @@ export function HexOverlayPane() {
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
   const availableViews = useHexStore((s) => s.availableViews);
-  const pageStateVersion = useHexStore((s) => s.pageStateVersion);
   const setCursor = useHexStore((s) => s.setCursor);
   const startSelection = useHexStore((s) => s.startSelection);
   const extendSelection = useHexStore((s) => s.extendSelection);
@@ -228,19 +227,22 @@ export function HexOverlayPane() {
   );
 
   /**
-   * WHY the anchor has no byte here — the store first, the page state second.
+   * WHY the stream has no byte here: the store's byte absence and the page
+   * state, ranked by the shared `resolveAbsence` (the same ranking the
+   * side-by-side panes use).
    *
-   * The store knows the specific causes (this window failed, this window has
-   * not arrived, the alignment holds nothing here, this dump does not hold it)
-   * and they outrank a page state, which can only say something about a byte
-   * the anchor DOES have. The page-state lookup stays gated on the "va"
-   * coordinate because `getPageStateAt` reads `vaSpanStart + offset`; feeding
-   * it a "vas" or "raw" offset would tint a byte by another byte's page.
+   * The page state comes from the ALIGNED WINDOW's own `page_states` for the
+   * dump on screen (the solo dump, else the anchor), in window index space —
+   * not from `hex-store.getPageStateAt`. That store clears its page states on
+   * every re-anchor (`setDumpPath`) and nothing in the N-pane layouts refetched
+   * them, so the tints vanished after the first re-anchor. The window's runs
+   * arrive with every chunk, for whichever dump is the anchor now, and the
+   * backend sends them only in the "va" coordinate, so no client-side
+   * coordinate gate (and no VA arithmetic) is needed.
    */
   const getAbsenceAt = useCallback(
     (offset: number): AbsenceKind | undefined => {
       void anchorVersion;
-      void pageStateVersion;
       // The FAILURE half of the same question. `anchorVersion` moves only when
       // a response lands, so on its own it can never rotate this getter for a
       // window whose request failed — and rotating THIS getter is enough to
@@ -250,24 +252,13 @@ export function HexOverlayPane() {
       // Solo asks the one dump on screen; the overlay asks the whole included
       // set, because a byte three dumps hold and the anchor does not is real
       // data that the plurality paints — so it must not also report an absence.
+      const store = useMultiHexStore.getState();
       const absence = soloPath
-        ? useMultiHexStore.getState().absenceAt(soloPath, offset)
+        ? store.absenceAt(soloPath, offset)
         : overlayAbsenceAt(offset, includedPaths);
-      if (absence) return absence;
-      if (viewMode !== "va") return undefined;
-      // `undefined` on fall-through, NOT "loading": the store has already said
-      // the byte is present, so hatching it would void a byte the grid prints.
-      return absenceForPageState(useHexStore.getState().getPageStateAt(offset));
+      return resolveAbsence(absence, store.pageStateAt(soloPath ?? anchorPath, offset));
     },
-    [
-      anchorPath,
-      anchorVersion,
-      chunkErrorKey,
-      includedPaths,
-      pageStateVersion,
-      soloPath,
-      viewMode,
-    ],
+    [anchorPath, anchorVersion, chunkErrorKey, includedPaths, soloPath],
   );
 
   const handleMouseDown = useCallback(

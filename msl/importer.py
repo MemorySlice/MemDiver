@@ -28,6 +28,8 @@ from memdiver.core.models import CryptoSecret
 from .enums import (ArchType, MslKeyType, MslProtocol, OSType, PageState,
                     Protection, RegionType, SourceFormat, VasNameSource)
 from .import_sources import MappedFile, Run, RunBuilder, RunSource
+from .import_threads import (add_thread_contexts, elf_thread_contexts,
+                             minidump_thread_contexts)
 from .region_select import (REGION_NAMES_NOTE, RegionInfo, RegionSelection,
                             join_provenance_note, selection_provenance_note)
 from .types import MslVasEntry
@@ -622,6 +624,8 @@ def import_elf_core(
         )
 
         _add_module_index(writer, info.file_mappings)
+        # Thread contexts precede the first Memory Region (spec §5.7).
+        add_thread_contexts(writer, elf_thread_contexts(info))
         plan = _elf_selection_plan(reader, page_size_log2, selection)
 
         regions_written = 0
@@ -1175,6 +1179,8 @@ def import_minidump(
         )
         plan = _minidump_selection_plan(info, regions, page_size_log2,
                                         selection)
+        # Thread contexts precede the first Memory Region (spec §5.7).
+        add_thread_contexts(writer, minidump_thread_contexts(reader, info))
         for spec, region, keep in zip(regions, plan.infos, plan.keep):
             if keep:
                 _add_minidump_region(writer, mapped, spec, page_size_log2,

@@ -65,6 +65,16 @@ per SEGMENT per dump, not one scalar per dump: under ``module_offset``
 alignment two adjacent slab pages can carry different relocation deltas, so a
 single peer offset would be wrong in a way that reads as plausible bytes.
 
+Page states per dump
+--------------------
+``dumps[].page_states`` is ``[[offset, length, state], ...]`` in WINDOW
+coordinates (the space of ``bytes_valid``): that dump's FAILED /
+NOT_RESIDENT / UNMAPPED bytes, CAPTURED never listed, adjacent same-state runs
+merged. Only an ``.msl`` read in its ``"va"`` view can carry any. A peer is
+tinted only inside segments it corresponds in; the anchor of a ``"va"`` window
+is tinted across the whole window, gaps included. See
+:mod:`memdiver.app.page_state_runs`.
+
 Why the peer bytes are re-read here
 -----------------------------------
 ``engine.consensus_service.build_consensus`` closes its sources before it
@@ -708,6 +718,10 @@ def _read_dump_window(
         "view": view,
         "bytes": None,
         "bytes_valid": [],
+        # Non-CAPTURED page-state runs ``[[offset, length, state]]`` in window
+        # space; empty unless this is an ``.msl`` read in its "va" view (see
+        # :mod:`memdiver.app.page_state_runs`).
+        "page_states": [],
         "key_status": key.to_dict(),
         "offsets": {},
     }
@@ -748,11 +762,76 @@ def _read_dump_window(
             if stop > begin:
                 valid.append((segment.window_offset + begin, stop - begin))
     block["bytes_valid"] = [list(v) for v in valid]
+    block["page_states"] = _window_page_states(
+        source, view, projection, offsets, valid)
     block["offsets"] = offsets
     if not include_bytes:
         return block, None, []
     block["bytes"] = base64.b64encode(bytes(buffer)).decode("ascii")
     return block, bytes(buffer), valid
+
+
+def _window_page_states(
+    source: Any,
+    view: str,
+    projection: WindowProjection,
+    offsets: Dict[int, int],
+    valid: Sequence[Tuple[int, int]],
+) -> List[List[Any]]:
+    """This dump's non-CAPTURED page-state runs, in WINDOW coordinates.
+
+    Only segments the dump has a correspondence in (``offsets``) are looked
+    at, so a gap is never tinted — it is already an absence. Empty for any
+    source/view without page states (non-``.msl``, or a ``"vas"``/``"raw"``
+    read, whose bytes are all captured or container bytes).
+    """
+    from .page_state_runs import has_page_states, window_page_state_runs
+
+    if not has_page_states(source, view):
+        return []
+    segment_reads = {
+        segment.window_offset: (offsets[segment.window_offset], segment.length)
+        for segment in projection.segments
+        if segment.window_offset in offsets
+    }
+    return window_page_state_runs(
+        source, _va_span_start(source), segment_reads, valid)
+
+
+def _extend_anchor_page_states(
+    anchor: Dict[str, Any],
+    coordinate: str,
+    selected: Sequence[Tuple[int, str]],
+    sources: Sequence[Any],
+    reads: Sequence[Tuple[Dict[str, Any], Any, Any]],
+    length: int,
+) -> None:
+    """Tint the ANCHOR's whole window, gaps included, in a VA-linear window.
+
+    A peer's page states are only knowable where the consensus put it in
+    correspondence (a segment). The anchor needs no correspondence: in a
+    ``"va"`` window index ``i`` IS the anchor's ``anchor.offset + i`` by
+    construction. That matters because an aligned layout only has rows every
+    dump CAPTURED, so the anchor's own FAILED / NOT_RESIDENT / UNMAPPED pages
+    always fall in ``gaps`` and per-segment runs would never show them.
+    A ``"vas"`` anchor's stream holds captured bytes only — nothing to add.
+    """
+    from .page_state_runs import has_page_states, window_page_state_runs
+
+    if anchor["kind"] != "dump" or coordinate != COORDINATE_ALIGNED:
+        return
+    if anchor["view"] != "va":
+        return
+    for position, (index, _path) in enumerate(selected):
+        if index != anchor["dump_index"]:
+            continue
+        source, block = sources[position], reads[position][0]
+        if not has_page_states(source, "va"):
+            return
+        block["page_states"] = window_page_state_runs(
+            source, _va_span_start(source), {0: (int(anchor["offset"]), length)},
+            block["bytes_valid"])
+        return
 
 
 def _segment_offset_in(
@@ -1006,7 +1085,9 @@ def _resolve_anchor(
 
     anchor_runs = _vas_run_table(source)
     va = _translate_va(source, anchor_view, runs=anchor_runs, offset=int(offset))
-    if va is None or not _va_is_addressable(source, va, anchor_runs):
+    if va is None or not _anchor_offset_in_index_space(
+        source, anchor_view, int(offset), va, anchor_runs,
+    ):
         raise OffsetOutOfRangeError(
             "anchor offset does not name an addressable byte",
             details={"offset": offset, "view": anchor_view,
@@ -1016,6 +1097,47 @@ def _resolve_anchor(
         "dump", anchor_path, index, anchor_view, int(offset), int(va),
         span_start, -1,
     ), anchor_runs
+
+
+def _anchor_offset_in_index_space(
+    source: Any,
+    view: str,
+    offset: int,
+    va: int,
+    runs: Sequence[Tuple[int, int, int]],
+) -> bool:
+    """Whether a window may START at the anchor's ``offset`` in ``view``.
+
+    The question is "does this offset exist in the anchor's index space", NOT
+    "did the anchor capture this byte". For an ``.msl`` ``"va"`` view the index
+    space is the whole VA span ``[0, size_for("va"))``: the single-dump view
+    shows every byte of it, an inter-region gap as UNMAPPED and a FAILED /
+    NOT_RESIDENT / UNMAPPED page as itself. A window starting on such a byte is
+    still a well-formed window — :meth:`ConsensusVector.project_va_window`
+    walks VA-linearly, reports the uncaptured stretch as ``gaps`` and picks up
+    the first aligned row inside the window as a segment. Refusing it used to
+    fail a whole 8 KiB chunk and hide exactly the page-state tints the view
+    exists to show.
+
+    Every other anchor keeps the captured-run test: a ``"vas"`` stream holds
+    captured bytes only, so an offset outside every run is past its end.
+    """
+    span = _va_view_span_size(source) if view == "va" else None
+    if span is not None:
+        return 0 <= offset < span
+    return _va_is_addressable(source, va, runs)
+
+
+def _va_view_span_size(source: Any) -> Optional[int]:
+    """Size of an ``.msl``'s sparse ``"va"`` view, or ``None`` for any other.
+
+    Only ``.msl`` serves a ``"va"`` view whose positions are all displayable
+    (padded, page-state tinted); gcore / regioned sources reject the view in
+    ``size_for``, so they never reach it.
+    """
+    if getattr(source, "format_name", "") != "msl":
+        return None
+    return int(source.size_for("va"))
 
 
 def _va_is_addressable(
@@ -1228,6 +1350,8 @@ def aligned_window_from_vector(
             )
             for (index, path), source, runs in zip(selected, sources, peer_runs)
         ]
+        _extend_anchor_page_states(
+            anchor, coordinate, selected, sources, reads, window_length)
 
     blocks = [block for block, _buffer, _valid in reads]
     anchor["slab_offset"] = (

@@ -62,6 +62,7 @@ export const GROUND_CLASSES: ReadonlySet<string> = new Set([
   // MSL page-state tints (the byte IS there; the backend zero-filled it).
   "page-failed",
   "page-unmapped",
+  "page-not-resident",
   // Consensus classes — only INVARIANT carries a tint; the other three are
   // text colour alone.
   "consensus-invariant",

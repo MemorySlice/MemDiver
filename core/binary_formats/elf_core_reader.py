@@ -7,7 +7,9 @@ Parses enough of an ``ET_CORE`` ELF64 file to drive the
 - ``PT_NOTE`` segments, with special treatment for ``NT_FILE`` (module
   map) and ``NT_PRSTATUS`` (the recorded PID plus one
   :class:`ThreadInfo` per thread, carrying its stack pointer when the
-  architecture is known).
+  architecture is known, the raw ``pr_reg`` bytes and ``pr_cursig``).
+  An ``NT_ARM_TLS`` note is attached to the thread whose ``NT_PRSTATUS``
+  precedes it.
 
 The reader never slurps the whole file: all I/O goes through a single
 ``mmap`` view opened in :meth:`ElfCoreReader.open`. Byte order is
@@ -21,7 +23,7 @@ from __future__ import annotations
 import logging
 import mmap
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
@@ -43,8 +45,14 @@ PT_NOTE = 4
 
 # Linux note types for core files.
 NT_PRSTATUS = 1
+# aarch64 TLS register note (tpidr_el0 [, tpidr2_el0]); follows its PRSTATUS.
+NT_ARM_TLS = 0x401
 # NT_FILE is "FILE" interpreted as little-endian u32; kernel emits 0x46494c45.
 NT_FILE = 0x46494C45
+
+# Core-dumping fault signals (Linux x86_64/aarch64 numbering): SIGQUIT,
+# SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV, SIGSYS. Stop signals are excluded.
+CRASH_SIGNALS = frozenset({3, 4, 6, 7, 8, 11, 31})
 
 # PF_* program-header flags (lowest 3 bits).
 PF_X = 0x1
@@ -88,10 +96,20 @@ class ThreadInfo:
 
     ``sp`` is the saved stack pointer, or ``None`` when the machine's
     register layout is not decoded or the note is too short.
+
+    ``pr_reg`` is the raw register file (``user_regs_struct`` /
+    ``user_pt_regs``; empty when the machine is not decoded), ``arm_tls``
+    the raw ``NT_ARM_TLS`` desc (aarch64 only) and ``cursig`` the signal
+    that stopped the thread (``pr_cursig``; non-zero for the crashing
+    thread). These raw fields are excluded from equality so a thread still
+    compares by ``(tid, sp)``.
     """
 
     tid: int
     sp: Optional[int]
+    pr_reg: bytes = field(default=b"", compare=False, repr=False)
+    arm_tls: Optional[bytes] = field(default=None, compare=False, repr=False)
+    cursig: int = field(default=0, compare=False)
 
 
 @dataclass
@@ -103,6 +121,17 @@ class ElfCoreInfo:
     file_mappings: List[NtFileEntry] = field(default_factory=list)
     machine: int = 0  # ELF e_machine (EM_*)
     threads: List[ThreadInfo] = field(default_factory=list)
+
+    def crashed_thread(self) -> Optional[ThreadInfo]:
+        """First thread stopped by a fault signal (``cursig`` in
+        ``CRASH_SIGNALS``), if any.
+
+        The kernel writes the dumping thread's ``NT_PRSTATUS`` first and gives
+        every thread the same ``cursig``; gdb ``gcore`` records stop signals
+        such as SIGSTOP/SIGTRAP for threads that never crashed, so those do not
+        count.
+        """
+        return next((t for t in self.threads if t.cursig in CRASH_SIGNALS), None)
 
 
 # struct formats (ELF64 little-endian) ---------------------------------------
@@ -129,6 +158,10 @@ _NHDR_SIZE = struct.calcsize(_NHDR_FMT)
 _PRSTATUS_PR_PID_OFFSET = 32
 _PRSTATUS_PR_PID_SIZE = 4
 
+# pr_cursig (short) directly follows the 12-byte struct elf_siginfo.
+_PRSTATUS_CURSIG_OFFSET = 12
+_PRSTATUS_CURSIG_SIZE = 2
+
 # pr_reg follows pr_pid/pr_ppid/pr_pgrp/pr_sid (4 * int = 16) and four
 # struct timevals (pr_utime/stime/cutime/cstime, 4 * 16 = 64):
 # 32 + 16 + 64 = 112 on 64-bit Linux (x86_64 and aarch64 alike).
@@ -140,6 +173,12 @@ _PRSTATUS_REG_SIZE = 8
 _PRSTATUS_SP_REG_INDEX = {
     EM_X86_64: 19,
     EM_AARCH64: 31,
+}
+# Number of u64 slots in pr_reg, per machine: x86_64 user_regs_struct has
+# 27, aarch64 user_pt_regs has 34 (regs[31], sp, pc, pstate).
+_PRSTATUS_REG_COUNT = {
+    EM_X86_64: 27,
+    EM_AARCH64: 34,
 }
 
 
@@ -328,6 +367,8 @@ class ElfCoreReader:
             desc_bytes = bytes(buf[desc_start:desc_end])
             if n_type == NT_PRSTATUS:
                 self._record_prstatus(desc_bytes, info)
+            elif n_type == NT_ARM_TLS:
+                self._attach_arm_tls(desc_bytes, info)
             elif n_type == NT_FILE and not info.file_mappings:
                 info.file_mappings = _parse_nt_file(desc_bytes)
             # Advance past the desc with 4-byte alignment padding.
@@ -343,7 +384,21 @@ class ElfCoreReader:
             return
         info.threads.append(ThreadInfo(
             tid=tid, sp=_parse_prstatus_sp(desc, info.machine),
+            pr_reg=_parse_prstatus_pr_reg(desc, info.machine),
+            cursig=_parse_prstatus_cursig(desc),
         ))
+
+    @staticmethod
+    def _attach_arm_tls(desc: bytes, info: ElfCoreInfo) -> None:
+        """Attach an ``NT_ARM_TLS`` desc to the most recently recorded thread.
+
+        Linux emits a thread's NT_ARM_TLS after its NT_PRSTATUS, so it
+        belongs to the last thread; a thread already carrying TLS is left
+        alone (its own PRSTATUS was unparseable, so the owner is unknown).
+        """
+        if not info.threads or info.threads[-1].arm_tls is not None:
+            return
+        info.threads[-1] = replace(info.threads[-1], arm_tls=desc)
 
 
 # Helper functions ------------------------------------------------------------
@@ -377,6 +432,27 @@ def _parse_prstatus_sp(desc: bytes, machine: int) -> Optional[int]:
     if len(desc) < off + _PRSTATUS_REG_SIZE:
         return None
     return int.from_bytes(desc[off:off + _PRSTATUS_REG_SIZE], "little")
+
+
+def _parse_prstatus_pr_reg(desc: bytes, machine: int) -> bytes:
+    """Raw ``pr_reg`` bytes for a decoded machine (``b""`` if unknown).
+
+    A short note yields a truncated slice; the register decoders reject it.
+    """
+    count = _PRSTATUS_REG_COUNT.get(machine)
+    if count is None:
+        return b""
+    off = _PRSTATUS_PR_REG_OFFSET
+    return bytes(desc[off:off + count * _PRSTATUS_REG_SIZE])
+
+
+def _parse_prstatus_cursig(desc: bytes) -> int:
+    """Extract ``pr_cursig`` (0 when the note is too short)."""
+    off = _PRSTATUS_CURSIG_OFFSET
+    size = _PRSTATUS_CURSIG_SIZE
+    if len(desc) < off + size:
+        return 0
+    return int.from_bytes(desc[off:off + size], "little", signed=True)
 
 
 def machine_to_arch_type(machine: int) -> ArchType:

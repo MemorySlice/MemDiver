@@ -25,14 +25,16 @@ from __future__ import annotations
 
 import json
 import struct
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple, Union
 
 from memdiver.core.binary_formats.elf_core_reader import (
     ELF_MAGIC,
     ELFCLASS64,
     ELFDATA2LSB,
     ET_CORE,
+    NT_ARM_TLS,
     NT_FILE,
     NT_PRSTATUS,
     PF_R,
@@ -45,6 +47,8 @@ from memdiver.core.binary_formats.elf_core_reader import (
     _PHDR64_FMT,
     _PHDR64_SIZE,
     _PRSTATUS_PR_PID_OFFSET,
+    _PRSTATUS_CURSIG_OFFSET,
+    _PRSTATUS_CURSIG_SIZE,
     _PRSTATUS_PR_PID_SIZE,
     _PRSTATUS_PR_REG_OFFSET,
     _PRSTATUS_REG_SIZE,
@@ -66,8 +70,27 @@ _PRSTATUS_DESC_SIZE = {_EM_X86_64: 336, _EM_AARCH64: 392}
 # Stack-pointer index within pr_reg, mirrored from kernel struct layouts.
 _SP_REG_INDEX = {_EM_X86_64: 19, _EM_AARCH64: 31}
 
-# (tid, stack pointer) per synthetic thread.
-ThreadSpec = Tuple[int, int]
+
+
+@dataclass(frozen=True)
+class SynthThread:
+    """A synthetic thread with distinct register contents.
+
+    ``regs`` maps a ``pr_reg`` u64 slot index to its value and is applied
+    after ``sp`` (so it wins on the SP slot). ``cursig`` sets ``pr_cursig``;
+    ``arm_tls`` (raw desc bytes) emits an ``NT_ARM_TLS`` note right after
+    this thread's ``NT_PRSTATUS``, as Linux does.
+    """
+
+    tid: int
+    sp: int = 0
+    regs: Mapping[int, int] = field(default_factory=dict)
+    cursig: int = 0
+    arm_tls: Optional[bytes] = None
+
+
+# (tid, stack pointer) per synthetic thread, or a full :class:`SynthThread`.
+ThreadSpec = Union[Tuple[int, int], SynthThread]
 
 # A handful of plausible file-backed mappings for the NT_FILE note. The first
 # entry's VA range coincides with the first PT_LOAD segment so the module map
@@ -117,7 +140,8 @@ def _build_core_bytes(
     """Assemble the full synthetic ELF64 ``ET_CORE`` byte stream.
 
     With ``threads=None`` the legacy single short PRSTATUS (pid only) is
-    emitted; otherwise one full-size PRSTATUS note per ``(tid, sp)``.
+    emitted; otherwise one full-size PRSTATUS note per ``(tid, sp)`` tuple
+    or :class:`SynthThread` (plus its optional ``NT_ARM_TLS`` note).
     """
     note_payload = _build_note_payload(machine, threads)
 
@@ -212,12 +236,43 @@ def _build_note_payload(
         prstatus = _pack_note(NT_PRSTATUS, b"CORE\x00", _build_prstatus_desc())
     else:
         prstatus = b"".join(
-            _pack_note(NT_PRSTATUS, b"CORE\x00",
-                       _build_thread_prstatus_desc(machine, tid, sp))
-            for tid, sp in threads
+            _build_thread_notes(machine, _as_synth_thread(spec))
+            for spec in threads
         )
     nt_file = _pack_note(NT_FILE, b"CORE\x00", _build_nt_file_desc())
     return prstatus + nt_file
+
+
+def _as_synth_thread(spec: ThreadSpec) -> SynthThread:
+    """Normalise a legacy ``(tid, sp)`` tuple into a :class:`SynthThread`."""
+    if isinstance(spec, SynthThread):
+        return spec
+    tid, sp = spec
+    return SynthThread(tid=tid, sp=sp)
+
+
+def _build_thread_notes(machine: int, thread: SynthThread) -> bytes:
+    """One thread's NT_PRSTATUS note, followed by NT_ARM_TLS when requested."""
+    notes = _pack_note(NT_PRSTATUS, b"CORE\x00",
+                       _build_synth_prstatus_desc(machine, thread))
+    if thread.arm_tls is not None:
+        notes += _pack_note(NT_ARM_TLS, b"LINUX\x00", thread.arm_tls)
+    return notes
+
+
+def _build_synth_prstatus_desc(machine: int, thread: SynthThread) -> bytes:
+    """A full-size elf_prstatus desc carrying ``thread``'s cursig and regs."""
+    desc = bytearray(_build_thread_prstatus_desc(machine, thread.tid, thread.sp))
+    end = _PRSTATUS_CURSIG_OFFSET + _PRSTATUS_CURSIG_SIZE
+    desc[_PRSTATUS_CURSIG_OFFSET:end] = thread.cursig.to_bytes(
+        _PRSTATUS_CURSIG_SIZE, "little", signed=True,
+    )
+    for index, value in thread.regs.items():
+        off = _PRSTATUS_PR_REG_OFFSET + index * _PRSTATUS_REG_SIZE
+        desc[off:off + _PRSTATUS_REG_SIZE] = value.to_bytes(
+            _PRSTATUS_REG_SIZE, "little",
+        )
+    return bytes(desc)
 
 
 def _pack_note(n_type: int, name: bytes, desc: bytes) -> bytes:

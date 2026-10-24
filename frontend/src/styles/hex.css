@@ -473,6 +473,18 @@
   background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
   box-shadow: inset 0 -2px 0 0 var(--md-page-failed);
 }
+/* The MSL page-state tints: the SAME 30% wash of the SAME `--md-page-*` token
+   as the `.hex-byte.page-*` rules above, and no hatch, because these cells
+   still print their (zero-filled) byte -- they tint, they do not void. */
+.md-variance-swatch.absence-page-failed {
+  background: color-mix(in srgb, var(--md-page-failed) 30%, transparent);
+}
+.md-variance-swatch.absence-page-unmapped {
+  background: color-mix(in srgb, var(--md-page-unmapped) 30%, transparent);
+}
+.md-variance-swatch.absence-page-not-resident {
+  background: color-mix(in srgb, var(--md-page-not-resident) 30%, transparent);
+}
 
 /* --- Absence: WHY there is no byte here (multi-dump aligned viewers) --- */
 /* The design's rule, made visual: a byte present in some dumps and absent in

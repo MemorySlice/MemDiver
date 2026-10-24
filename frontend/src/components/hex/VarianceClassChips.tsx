@@ -10,6 +10,7 @@ import {
 import { NON_INVARIANT_UNION } from "@/api/consensus-regions";
 import type { ByteClassName } from "@/api/candidates";
 import { VARIANCE_CATEGORIES, VARIANCE_META } from "@/utils/variance-classes";
+import { useAlignedPageStateTintsActive } from "@/hooks/usePageStateTintsActive";
 import { AbsenceLegend } from "./AbsenceLegend";
 
 /**
@@ -119,6 +120,9 @@ export function VarianceClassChips() {
   const windowScoped = useVarianceRegionsStore((s) => s.windowScoped);
   const selectCategory = useVarianceRegionsStore((s) => s.selectCategory);
   const setTab = useOverlayDetailStore((s) => s.setTab);
+  // The overlay reads its page states from the aligned window, so its legend
+  // is gated on the aligned panes' rule, not on `hex-store`'s.
+  const pageStateTintsActive = useAlignedPageStateTintsActive();
 
   // Only meaningful while `differs` is the loaded category — the runs are
   // derived from the byte cache, so there is nothing to count otherwise.
@@ -184,8 +188,10 @@ export function VarianceClassChips() {
         present in some dumps and absent in others is a finding of its own, and
         the one thing it must never be confused with is a mismatch. It is not
         clickable because there is no server-side enumeration of it to browse.
+        The overlay pane consults the MSL page states, so it explains their
+        tints too (shown only while they can actually be on screen).
       */}
-      <AbsenceLegend />
+      <AbsenceLegend pageStates pageStatesActive={pageStateTintsActive} />
       <VarianceColourLegend />
     </div>
   );

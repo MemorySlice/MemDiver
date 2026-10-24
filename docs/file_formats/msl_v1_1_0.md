@@ -213,7 +213,7 @@ Spec §5.7, Tables 19a / 19b. One block per captured thread: TID, start time, fl
 
 Thread Context is **evidence**: it MUST be in the capture segment, never in an extension segment, and SHOULD precede the first Memory Region. Consumers MUST preserve registers they do not recognise and MAY use stack-pointer entries to attribute regions to threads. Importers MAY emit it from ELF core `NT_PRSTATUS` notes or minidump thread lists. Full field tables: spec §5.7 (Tables 19a and 19b).
 
-**MemDiver 1.1 migration.** The reader decodes the block; the 1.0 enum row (`THREAD_CONTEXT`, "per-thread register snapshot") was a placeholder with no payload. Importers do not yet emit it; the ELF-core and minidump stack identification described under "Region types written by importers" uses the same thread records and is the natural source when they do.
+**MemDiver 1.1 migration.** The reader decodes the block; the 1.0 enum row (`THREAD_CONTEXT`, "per-thread register snapshot") was a placeholder with no payload. `MslWriter.add_thread_context()` encodes it (lowercase names, pad8, sets CapBitmap bit 2), and the ELF-core (x86_64, aarch64 incl. `NT_ARM_TLS` → `tpidr_el0`) and minidump (AMD64 with TEB → `gs_base`, ARM64) importers emit one block per thread right after Block 0 / the module list, before the first Memory Region. Flags: `Suspended` always; `Partial` when the CONTEXT lacks register groups; `Crashed`+`Current` on the ELF crashed thread (first non-zero `pr_cursig`) or the minidump exception thread, else `Current` on the first emitted thread. Threads whose registers fail to decode or lack PC/SP are skipped; other architectures emit none. `ThreadState` is written as Stopped.
 
 ## Page state map (four states)
 

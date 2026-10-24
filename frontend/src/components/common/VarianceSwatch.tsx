@@ -26,6 +26,8 @@ export interface VarianceSwatchProps {
   className?: string;
   /** Extra classes on the chip (e.g. `mt-0.5 shrink-0` for a list row). */
   swatchExtraClass?: string;
+  /** Native tooltip on the wrapper, for an entry whose label needs explaining. */
+  title?: string;
 }
 
 export function VarianceSwatch({
@@ -35,11 +37,16 @@ export function VarianceSwatch({
   testId,
   className,
   swatchExtraClass,
+  title,
 }: VarianceSwatchProps) {
   const wrapper = "inline-flex items-center gap-1";
   const chip = `md-variance-swatch ${swatchClass}${swatchExtraClass ? ` ${swatchExtraClass}` : ""}`;
   return (
-    <span data-testid={testId} className={className ? `${wrapper} ${className}` : wrapper}>
+    <span
+      data-testid={testId}
+      className={className ? `${wrapper} ${className}` : wrapper}
+      title={title}
+    >
       <span aria-hidden="true" data-testid={swatchTestId} className={chip} />
       {label}
     </span>

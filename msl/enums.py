@@ -16,6 +16,11 @@ BLOCK_HEADER_SIZE = 80
 ENC_EXT_OFFSET = 0x40          # encryption extension starts here when Encrypted
 ENC_EXT_SIZE = 64             # extension header is 64 bytes (0x40..0x7F)
 AEAD_TAG_SIZE = 16            # both cipher suites use a 16-byte tag
+# Header CipherLen (spec 1.1.1 Table 5, formerly Reserved3): u64 LE byte length
+# of the primary AEAD ciphertext; 0 = not recorded. Excluded from the AAD
+# (§10.2) and hashed as zero by FileHash (§10.7).
+CIPHER_LEN_OFFSET = 0x78
+CIPHER_LEN_SIZE = 8
 # HKDF-BLAKE3 context (spec §10.4): info string for content-encryption-key derivation
 MSL_CEK_INFO = b"MSL-CEK-v1"
 

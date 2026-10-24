@@ -12,8 +12,8 @@ from .aead_seek import (TAG_LEN, DecryptedView, FileGuard, FileIdentity,
                         SeekableDecryptor, oneshot_requested,
                         verify_tag_streaming)
 from .compress import decompress
-from .crypto import (RewrapMaterial, aead_decrypt, derive_cek_consumer,
-                     nonce_for_cipher)
+from .crypto import (RewrapMaterial, aead_decrypt, argon2id_below_minimum,
+                     derive_cek_consumer, encryption_aad, nonce_for_cipher)
 from .decoders import (decode_connection_table, decode_connectivity_table,
                        decode_end_of_capture, decode_end_of_extension,
                        decode_handle_table,
@@ -207,6 +207,10 @@ class MslReader:
         # tag-verified decrypt; wiped on close. See _rewrap_material().
         self._rewrap: Optional[RewrapMaterial] = None
         self.tag_status: TagStatus = TagStatus.NOT_ENCRYPTED
+        # First byte after the primary AEAD tag (spec 1.1.1 §10.2), set once
+        # the tag verifies: where sealed extension segments (§10.8) and then
+        # trailing data begin. None for plaintext / unverified files.
+        self._post_tag_offset: Optional[int] = None
         # Block-region source: for plaintext files the mmap (blocks start at
         # header_size); for decrypted files the plaintext buffer (base 0).
         self._buf = None
@@ -230,6 +234,9 @@ class MslReader:
         # kept out of _CACHE_ATTRS and reset alongside it.
         self._extension_segments_cache: Optional[List[ExtensionSegment]] = None
         self._segment_reports_cache = None
+        # Sealed extension segments after the primary tag (spec 10.8):
+        # (verified segments, trailing offset); opened lazily, reset on close.
+        self._sealed_cache = None
 
     def open(self) -> None:
         self._file = open(self.path, "rb")
@@ -251,12 +258,14 @@ class MslReader:
         self._captured_runs_cache = None
         self._extension_segments_cache = None
         self._segment_reports_cache = None
+        self._sealed_cache = None
         self._decompressed_lengths = {}
         self._payload_cache = None
         if isinstance(self._plaintext, DecryptedView):
             self._plaintext.close()  # releases its mmap view before the close
         self._plaintext = None
         self._buf = None
+        self._post_tag_offset = None
         if self._rewrap is not None:
             self._rewrap.wipe()
             self._rewrap = None
@@ -354,10 +363,13 @@ class MslReader:
         kem_ct_len = struct.unpack_from(f"{bo}H", buf, off + 0x0E)[0]
         nonce = bytes(buf[off + 0x10:off + 0x28])   # 24 bytes
         kdf_salt = bytes(buf[off + 0x28:off + 0x38])  # 16 bytes
+        # +0x38 CipherLen (spec 1.1.1; formerly Reserved3), u64
+        cipher_len = struct.unpack_from(f"{bo}Q", buf, off + 0x38)[0]
         return MslEncryptionParams(
             enc_algo=enc_algo, kdf_type=kdf_type, key_encap=key_encap,
             kdf_time=kdf_time, kdf_memory=kdf_memory, kdf_lanes=kdf_lanes,
             kem_ct_len=kem_ct_len, nonce=nonce, kdf_salt=kdf_salt,
+            cipher_len=cipher_len,
         )
 
     def _has_key_material(self, ep: MslEncryptionParams) -> bool:
@@ -392,22 +404,25 @@ class MslReader:
             return
 
         try:
-            cek = derive_cek_consumer(
-                key_encap=KeyEncap(ep.key_encap), kdf_type=KdfType(ep.kdf_type),
-                dump_uuid_bytes=self._file_header.dump_uuid.bytes,
-                raw_key=self._key, passphrase=self._passphrase,
-                kdf_salt=ep.kdf_salt, kdf_time=ep.kdf_time,
-                kdf_memory=ep.kdf_memory, kdf_lanes=ep.kdf_lanes,
-                recipient_private=self._kem_private, kem_ciphertext=kem_ct,
-            )
-            aad = bytes(buf[0:hs]) + kem_ct
-            algo = EncAlgo(ep.enc_algo)
-            nonce = nonce_for_cipher(algo, ep.nonce)
-            if oneshot_requested():
-                self._decrypt_oneshot(algo, cek, nonce, aad)
-            else:
-                self._verify_and_seek(algo, cek, nonce, aad, kem_ct)
+            cek = self._derive_cek(ep, kem_ct, enforce_minimum=False)
+            try:
+                self._decrypt_with_cek(ep, cek, kem_ct)
+            except MslAuthError:
+                if not self._weak_argon2id_params(ep):
+                    raise
+                # Backward compatibility: earlier MemDiver writers stored the
+                # configured (weak) Argon2id params in the header but derived
+                # the CEK with params clamped to the spec minimum. Retry once
+                # with the clamped params before reporting CORRUPTED.
+                self._drop_decryption_state()
+                cek = self._derive_cek(ep, kem_ct, enforce_minimum=True)
+                self._decrypt_with_cek(ep, cek, kem_ct)
+                logger.warning(
+                    "%s: decrypted with Argon2id params clamped to the spec "
+                    "minimum (legacy MemDiver file; header stores weaker ones)",
+                    self.path)
             self.tag_status = TagStatus.VALID
+            self._post_tag_offset = self._ciphertext_end() + TAG_LEN
             self._buf = self._plaintext
             self._buf_base = 0
             if self._rewrap is None:
@@ -429,8 +444,66 @@ class MslReader:
             self.tag_status = TagStatus.CORRUPTED
             self._drop_decryption_state()
 
+    def _derive_cek(self, ep: MslEncryptionParams, kem_ct: bytes, *,
+                    enforce_minimum: bool) -> bytes:
+        """Derive the CEK from the header params (exactly, unless clamped)."""
+        return derive_cek_consumer(
+            key_encap=KeyEncap(ep.key_encap), kdf_type=KdfType(ep.kdf_type),
+            dump_uuid_bytes=self._file_header.dump_uuid.bytes,
+            raw_key=self._key, passphrase=self._passphrase,
+            kdf_salt=ep.kdf_salt, kdf_time=ep.kdf_time,
+            kdf_memory=ep.kdf_memory, kdf_lanes=ep.kdf_lanes,
+            recipient_private=self._kem_private, kem_ciphertext=kem_ct,
+            enforce_minimum=enforce_minimum,
+        )
+
+    def _decrypt_with_cek(self, ep: MslEncryptionParams, cek: bytes,
+                          kem_ct: bytes) -> None:
+        """Verify the AEAD tag with *cek*; raises MslAuthError on mismatch."""
+        hs = self._file_header.header_size
+        aad = encryption_aad(bytes(self._mmap[0:hs]), kem_ct)
+        algo = EncAlgo(ep.enc_algo)
+        nonce = nonce_for_cipher(algo, ep.nonce)
+        if oneshot_requested():
+            self._decrypt_oneshot(algo, cek, nonce, aad)
+        else:
+            self._verify_and_seek(algo, cek, nonce, aad, kem_ct)
+
+    @staticmethod
+    def _weak_argon2id_params(ep: MslEncryptionParams) -> bool:
+        """True for a passphrase container whose header params are below
+        the spec minimum (candidate for the legacy clamped-params retry)."""
+        return (ep.key_encap == KeyEncap.NONE
+                and ep.kdf_type == KdfType.ARGON2ID
+                and argon2id_below_minimum(ep.kdf_time, ep.kdf_memory,
+                                           ep.kdf_lanes))
+
     def _ciphertext_start(self) -> int:
         return self._file_header.header_size + self._enc_params.kem_ct_len
+
+    def _ciphertext_end(self) -> int:
+        """End of the primary ciphertext == offset of its 16-byte tag.
+
+        Spec 1.1.1 §10.2 "Locating the tag": ``CipherLen=0`` puts the tag in
+        the final 16 bytes; otherwise it follows ``CipherLen`` ciphertext
+        bytes. Raises :class:`MslAuthError` (-> CORRUPTED) when the tag
+        cannot fit, including ``CipherLen > size - HeaderSize - KEMCtLen - 16``.
+        """
+        start = self._ciphertext_start()
+        room = len(self._mmap) - start - TAG_LEN
+        cipher_len = self._enc_params.cipher_len
+        if room < 0:
+            raise MslAuthError("AEAD tag missing (container truncated)")
+        if cipher_len > room:
+            raise MslAuthError(
+                f"CipherLen {cipher_len} exceeds the {room} ciphertext bytes "
+                "available before a 16-byte tag (truncated or corrupt)")
+        return start + (cipher_len if cipher_len else room)
+
+    @property
+    def post_tag_offset(self) -> Optional[int]:
+        """File offset just past the verified primary AEAD tag, else None."""
+        return self._post_tag_offset
 
     def _decrypt_oneshot(self, algo: EncAlgo, cek: bytes, nonce: bytes,
                          aad: bytes) -> None:
@@ -440,7 +513,8 @@ class MslReader:
         buffer), so peak RAM is ~1x the block stream, not 2x. PyNaCl demands
         ``bytes``, so XChaCha20 still copies. Released in finally.
         """
-        ct_view = memoryview(self._mmap)[self._ciphertext_start():]
+        tag_end = self._ciphertext_end() + TAG_LEN
+        ct_view = memoryview(self._mmap)[self._ciphertext_start():tag_end]
         try:
             ciphertext_and_tag = (ct_view if algo == EncAlgo.AES_256_GCM
                                   else bytes(ct_view))
@@ -460,10 +534,8 @@ class MslReader:
         """
         identity = FileIdentity.of_fd(self._file.fileno())
         start = self._ciphertext_start()
-        end = len(self._mmap) - TAG_LEN
-        if end < start:
-            raise MslAuthError("AEAD tag missing (container truncated)")
-        tag = bytes(self._mmap[end:])
+        end = self._ciphertext_end()
+        tag = bytes(self._mmap[end:end + TAG_LEN])
         ct_view = memoryview(self._mmap)[start:end]
         try:
             verify_tag_streaming(algo, cek, nonce, aad, ct_view, tag)
@@ -685,6 +757,10 @@ class MslReader:
         spec consumer rule 23) are yielded; *include_unverified* also walks
         unterminated or failing segments, whose blocks MUST NOT be presented
         as verified. Payloads are decompressed like ``iter_blocks``.
+        Blocks of verified sealed segments (spec 10.8, encrypted files)
+        follow, in SegIndex order, with ``hdr.seal_index`` set; sealed
+        segments that fail are never yielded, not even when unverified
+        segments are requested.
         """
         reports, _ = self._segment_reports()
         verified = {r.index for r in reports if r.verified}
@@ -697,6 +773,53 @@ class MslReader:
                 if hdr.compressed:
                     raw = decompress(raw, hdr.comp_algo)
                 yield hdr, raw
+        for sealed in self.sealed_segments():
+            for hdr in sealed.segment.headers:
+                yield hdr, self.read_block_payload(hdr)
+
+    # -- Sealed extension segments (spec 10.8) -------------------------------
+
+    def sealed_segments(self) -> list:
+        """Verified sealed segments after the primary AEAD tag (cached).
+
+        Only for a tag-verified container with ``CipherLen != 0``; empty
+        otherwise. Each is a :class:`memdiver.msl.sealed.SealedSegment`
+        whose tag and plaintext segment both verified; their blocks follow
+        the in-stream segments' in :meth:`iter_extension_blocks`.
+        """
+        return self._open_sealed()[0]
+
+    @property
+    def sealed_trailing_bytes(self) -> int:
+        """Bytes after the primary tag not covered by a verified sealed segment."""
+        if self._post_tag_offset is None or self._mmap is None:
+            return 0
+        return len(self._mmap) - self._open_sealed()[1]
+
+    def _open_sealed(self):
+        if self._sealed_cache is None:
+            self._sealed_cache = self._compute_sealed()
+        return self._sealed_cache
+
+    def _compute_sealed(self):
+        start = self._post_tag_offset
+        if (start is None or self._rewrap is None
+                or not self._enc_params.cipher_len):
+            return [], start or 0
+        from .sealed import open_sealed_segments
+        return open_sealed_segments(self._seal_context(), self._mmap, start,
+                                    len(self.scan_extension_segments()))
+
+    def _seal_context(self):
+        from .sealed import SealContext
+        hs = self._file_header.header_size
+        tag_end = self._post_tag_offset
+        return SealContext(
+            algo=EncAlgo(self._enc_params.enc_algo),
+            cek=bytes(self._rewrap._cek), header=bytes(self._mmap[0:hs]),
+            kem_ct=bytes(self._mmap[hs:self._ciphertext_start()]),
+            primary_tag=bytes(self._mmap[tag_end - TAG_LEN:tag_end]),
+            hash_algo=self._file_header.hash_algo, byte_order=self._byte_order)
 
     @property
     def trailing_bytes(self) -> int:
@@ -860,14 +983,28 @@ class MslReader:
             at = payload.find(needle, at + 1, hi)
 
     def read_block_payload(self, hdr: MslBlockHeader) -> bytes:
-        """Read and decompress a block's payload bytes."""
-        if self._buf is None:
+        """Read and decompress a block's payload bytes.
+
+        A block of a sealed segment (``hdr.seal_index``) is read from that
+        segment's verified plaintext.
+        """
+        buf = self._block_buffer(hdr)
+        if buf is None:
             return b""
-        end = min(hdr.file_offset + hdr.block_length, len(self._buf))
-        raw = bytes(self._buf[hdr.payload_offset:end])
+        end = min(hdr.file_offset + hdr.block_length, len(buf))
+        raw = bytes(buf[hdr.payload_offset:end])
         if hdr.compressed:
             raw = decompress(raw, hdr.comp_algo)
         return raw
+
+    def _block_buffer(self, hdr: MslBlockHeader):
+        """The buffer *hdr*'s offsets refer to (reader buffer or sealed plaintext)."""
+        if not hdr.seal_index:
+            return self._buf
+        sealed = self.sealed_segments()
+        if hdr.seal_index > len(sealed):
+            return None
+        return sealed[hdr.seal_index - 1].plaintext
 
     def iter_blocks_of_type(self, *block_types) -> Iterator[Tuple[MslBlockHeader, bytes]]:
         """Like :meth:`iter_blocks`, but reads payloads only for *block_types*.
