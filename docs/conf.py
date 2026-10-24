@@ -119,7 +119,7 @@ add_module_names = False
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
-    "pydantic": ("https://docs.pydantic.dev/latest/", None),
+    "pydantic": ("https://pydantic.dev/docs/validation/latest/", None),
 }
 extlinks = {
     "gh": ("https://github.com/MemorySlice/MemDiver/blob/main/%s", "%s"),

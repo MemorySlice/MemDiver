@@ -79,7 +79,7 @@ def _dynamic_roots() -> Iterator[str]:
         loaded = get_tool_session().dataset_root
         if loaded is not None:
             yield str(loaded)
-    except Exception:  # pragma: no cover - session not initialised
+    except Exception:  # pragma: no cover  # nosec B110 - session not initialised
         pass
     from memdiver.core.constants import memdiver_home
 

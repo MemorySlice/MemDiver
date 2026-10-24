@@ -26,6 +26,7 @@ from memdiver.msl.region_select import (RegionCategory as C, RegionSelection,
 from memdiver.msl.types import MslVasEntry
 from memdiver.msl.writer import MslWriter
 
+from tests.fixtures.vas_segment_msl import HEAP_BASE, vas_entry, write_vas_msl
 from tests.fixtures.android.generate_app_process_bin import (
     MAPS_PATH, ZYGOTE_SPACE, maps_entry_names, write_app_process_bin)
 
@@ -333,6 +334,30 @@ def test_untrusted_names_without_provenance(tmp_path, imported, with_vas):
         assert msl_classification_context(reader)[1:] == (None, False)
     (info,) = preview_import(path).regions
     assert info.category is C.HEAP and info.name is None
+
+
+# -- effective (last) VAS map; segment maps (spec 5.8 rule 25) -----------------
+
+
+def test_unspecified_segment_map_is_not_trusted(tmp_path):
+    """The pre-1.1 inference covers capture-segment maps only: an
+    all-UNSPECIFIED segment map on a live file is never trusted, even
+    though the capture map it supersedes alone would be."""
+    path = write_vas_msl(tmp_path / "seg.msl", [[vas_entry("[heap]")]],
+                         [[vas_entry("[anon:dalvik-zygote space]")]])
+    with MslReader(path) as reader:
+        assert msl_classification_context(reader)[1:] == (None, False)
+
+
+def test_live_segment_map_is_trusted_and_supersedes(tmp_path):
+    path = write_vas_msl(
+        tmp_path / "seg.msl", [[vas_entry("[heap]")]],
+        [[vas_entry("[anon:dalvik-zygote space]",
+                    name_source=VasNameSource.LIVE)]])
+    with MslReader(path) as reader:
+        _, names, live = msl_classification_context(reader)
+    assert live
+    assert names.name_for(HEAP_BASE) == "[anon:dalvik-zygote space]"
 
 
 def test_materialized_live_capture_keeps_names_trusted(tmp_path):

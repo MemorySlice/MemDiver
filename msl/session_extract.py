@@ -93,16 +93,15 @@ def extract_session_report(
     hints = reader.collect_key_hints()
     identities = reader.collect_process_identity()
     related = reader.collect_related_dumps()
-    vas_maps = reader.collect_vas_map()
+    vas_map = reader.effective_vas_map()  # last one wins (spec 5.8)
 
     total_region_size = sum(r.region_size for r in regions)
     captured_pages = sum(
         count_captured_pages(r.page_states) for r in regions
     )
 
-    vas_entries: List[MslVasEntry] = []
-    for vm in vas_maps:
-        vas_entries.extend(vm.entries)
+    vas_entries: List[MslVasEntry] = (
+        list(vas_map.entries) if vas_map is not None else [])
 
     key_hints_by_type = dict(Counter(
         _safe_enum_name(MslKeyType, h.key_type) for h in hints

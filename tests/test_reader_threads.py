@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 from pathlib import Path
 
@@ -76,7 +77,7 @@ def test_parse_prstatus_sp_too_short() -> None:
 
 
 def test_thread_info_is_frozen() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         ThreadInfo(1, 2).tid = 3  # type: ignore[misc]
 
 

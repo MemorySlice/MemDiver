@@ -466,8 +466,14 @@ def msl_classification_context(reader) -> Tuple[
     * MSL 1.1 entries carry a NameSource (spec 5.8): names are trusted as
       soon as ANY entry is LIVE or SOURCE_METADATA; entries that are all
       SYNTHESIZED (derived, e.g. from module coverage) are not trusted;
+    * the entries are those of the EFFECTIVE map
+      (:meth:`MslReader.effective_vas_map` — the last one in file order,
+      extension segments included); none means no names;
     * when every entry has NameSource UNSPECIFIED (files written before
-      1.1) the pre-1.1 inference applies unchanged: with
+      1.1) and the effective map is in the capture segment, the pre-1.1
+      inference applies unchanged (spec 5.8 restricts it to
+      capture-segment entries; an all-UNSPECIFIED segment map is never
+      trusted): with
       IMPORT_PROVENANCE, names are trusted only when its note carries the
       ``region_names=1`` marker (written by MemDiver's ELF / regioned
       importers and propagated by materialize); without provenance and
@@ -479,24 +485,25 @@ def msl_classification_context(reader) -> Tuple[
     (:func:`region_names.legacy_live_region_type`). Reads only provenance
     and VAS_MAP payloads, never region payloads.
     """
-    from .decoders import decode_import_provenance, decode_vas_map
+    from .decoders import decode_import_provenance
 
-    provenance, entries, has_provenance = None, [], False
+    provenance, has_provenance = None, False
     for hdr, payload in reader.iter_blocks_of_type(
-            BlockType.IMPORT_PROVENANCE, BlockType.VAS_MAP):
+            BlockType.IMPORT_PROVENANCE):
+        has_provenance = True
         try:
-            if hdr.block_type == BlockType.VAS_MAP:
-                entries.extend(decode_vas_map(hdr, payload,
-                                              reader._byte_order).entries)
-            elif not has_provenance:
-                has_provenance = True
-                provenance = decode_import_provenance(hdr, payload,
-                                                      reader._byte_order)
+            provenance = decode_import_provenance(hdr, payload,
+                                                  reader._byte_order)
         except (ValueError, IndexError, OverflowError):
-            continue  # best-effort metadata only
+            pass  # best-effort metadata only
+        break  # only the first provenance block counts
+    vas_map = reader.effective_vas_map()
+    entries = vas_map.entries if vas_map is not None else []
     imported = bool(reader.file_header.flags & HeaderFlag.IMPORTED)
     if any(e.name_source for e in entries):
         trusted = _names_trusted_by_source(entries)
+    elif reader.collect_extension_vas_maps():
+        trusted = False  # Unspecified inference: capture-segment maps only
     elif has_provenance:
         trusted = provenance is not None and \
             parse_provenance_note(provenance.note).region_names

@@ -982,7 +982,7 @@ class MslWriter:
         registered extension segments. The prev_hash chain and EoC hasher
         are updated incrementally while bytes are written, and streamed
         region bytes are pulled in STREAM_CHUNK_SIZE pieces. Writes to a
-        temp file and ``os.replace``s it on success, like write().
+        temp file and calls ``os.replace`` on it on success, like write().
 
         Encrypted writers stream too (:meth:`_write_streaming_encrypted`):
         the output is byte-identical to the in-memory encrypted write() for

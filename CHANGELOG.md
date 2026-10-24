@@ -3,6 +3,13 @@
 All notable changes to MemDiver are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1] — 2026-10-24
+
+### Fixed
+- VAS Map: the last map in file order wins (spec 1.1 §5.8), including maps in verified
+  extension and sealed segments (`MslReader.effective_vas_map`); maps are no longer merged.
+  Applies to classification, `inspect vas`/session, heap names; materialize keeps it effective.
+
 ## [1.0.0] — 2026-10-24
 
 ### Added

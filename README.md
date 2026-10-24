@@ -304,10 +304,19 @@ Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## Citation
 
-A formal citation (DOI) will be minted when the accompanying study is
-published. Until then, please cite the GitHub Releases page for the specific
-MemDiver version you used:
+If you use MemDiver or the Memory Slice (`.msl`) format in your research,
+please cite the accompanying paper:
 
-  https://github.com/MemorySlice/MemDiver/releases
+```bibtex
+@article{baier2026memory,
+  title={Memory Slice: A Process-Centric Dump Format for Differential Memory Analysis and Volatility 3 Plugin Synthesis},
+  author={Baier, Daniel and Lambertz, Martin},
+  journal={Digital Threats: Research and Practice},
+  year={2026},
+  publisher={ACM, New York, NY}
+}
+```
 
-and reference the project URL `https://github.com/MemorySlice/MemDiver`.
+GitHub's **"Cite this repository"** button in the repository sidebar
+(generated from [`CITATION.cff`](CITATION.cff)) provides the same reference
+in APA and BibTeX format.

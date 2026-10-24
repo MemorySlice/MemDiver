@@ -24,7 +24,8 @@ import logging
 import mmap
 import os
 import re
-import subprocess
+# Fixed argv (vm_stat / sysctl), no shell.
+import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Union
@@ -141,7 +142,7 @@ def _read_text(path: str) -> Optional[str]:
 
 def _run_command(argv: Sequence[str]) -> Optional[str]:
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # nosec B603
             list(argv), capture_output=True, text=True,
             timeout=_COMMAND_TIMEOUT_S, check=False,
         )

@@ -216,7 +216,7 @@ def _msl_map(source: Any) -> Optional[List[MappedRegion]]:
 
 
 def _msl_vas_entries(reader: Any) -> List[Tuple[int, int, str]]:
-    """``(start, end, mapped_path)`` of every VAS_MAP entry, sorted by start.
+    """``(start, end, mapped_path)`` of every effective VAS_MAP entry, sorted.
 
     :func:`stored_region_infos` only names regions when the VAS_MAP passes
     the *classification* trust rule (``msl_classification_context``), so an
@@ -232,7 +232,9 @@ def _msl_vas_entries(reader: Any) -> List[Tuple[int, int, str]]:
 
 
 def _msl_vas_maps(reader: Any) -> list:
-    return list(reader.collect_vas_map())
+    """The effective VAS map (last one wins, spec 5.8) as a 0/1-item list."""
+    vas_map = reader.effective_vas_map()
+    return [vas_map] if vas_map is not None else []
 
 
 def _vas_name(vas: List[Tuple[int, int, str]], va: int, end: int) -> str:

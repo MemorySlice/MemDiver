@@ -16,24 +16,32 @@ survives:
   -> parent) stay valid without remapping;
 * KEY_HINT blocks are re-created against the new region UUIDs (located by
   virtual address); hints into excluded regions are dropped and counted;
-* a fresh, complete VAS_MAP replaces any source VAS_MAP (source entries plus
-  every source region, kept or excluded); when the source's mapping names
-  are trusted the copy's note carries ``region_names=1`` so they stay so
-  (a live memslicer capture gains provenance here, see
-  :func:`import_preview.msl_classification_context`);
+* a fresh, complete VAS_MAP replaces every source VAS_MAP: the entries of
+  the source's *effective* map (spec 5.8: the last one in file order,
+  including maps in verified extension / sealed segments, see
+  :meth:`MslReader.effective_vas_map`) plus every source region it does not
+  cover, kept or excluded. Capture-segment VAS_MAP blocks are not copied and
+  the VAS_MAP blocks of re-emitted or folded segments are skipped (counted in
+  ``superseded_vas_maps``), so the fresh map stays the copy's effective one;
+  when the source's mapping names are trusted the copy's note carries
+  ``region_names=1`` so they stay so (a live memslicer capture gains
+  provenance here, see :func:`import_preview.msl_classification_context`);
 * one IMPORT_PROVENANCE records the rewrite (see :func:`_provenance_note`);
 * END_OF_CAPTURE is recomputed by the writer; every *verified* source
   extension segment (spec 4.6, e.g. the POINTER_GRAPH segment) is re-emitted
   block by block with its block identities, flags and on-disk payloads
   intact under the source segment's producer, closed by a fresh
   End-of-Extension block re-chained after the new EoC. Unverified or
-  unterminated source segments (trailing data) are dropped and counted;
+  unterminated source segments (trailing data) are dropped and counted; a
+  verified segment that held only superseded VAS maps is omitted (not
+  counted as dropped);
 * every verified *sealed* source segment (spec 10.8) is folded into an
   ordinary extension segment after them, in SegIndex order, keeping its
   blocks, producer and WrittenAt: re-chained in a plaintext copy, inside
   the new primary ciphertext (zero PrevHash) in a re-encrypted one. The
   copy carries no sealed segments; unverified sealed bytes are trailing
-  data and never copied. The provenance note records the fold
+  data and never copied. A sealed segment holding only superseded VAS maps
+  is not folded. The provenance note records the fold
   (``sealed_segments_folded=N``, only when N > 0).
 
 Region bytes are streamed from the source mmap; a compressed (or
@@ -46,7 +54,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .decoders import (decode_end_of_capture, decode_import_provenance,
-                       decode_key_hint, decode_memory_region, decode_vas_map)
+                       decode_key_hint, decode_memory_region)
 from .enums import (BlockFlag, BlockType, HeaderFlag, SourceFormat, TagStatus,
                     VasNameSource)
 from .import_preview import (_module_for, _msl_modules,
@@ -70,6 +78,10 @@ _RECOMPUTED_CAPS = CapBit.MEMORY_REGIONS | CapBit.CRYPTO_HINTS
 _RECREATED_TYPES = frozenset({BlockType.KEY_HINT, BlockType.VAS_MAP,
                               BlockType.IMPORT_PROVENANCE,
                               BlockType.END_OF_CAPTURE})
+# Segment blocks never re-emitted: the terminator is rebuilt by the writer,
+# VAS maps are superseded by the fresh map (spec 5.8).
+_SEGMENT_SKIPPED_TYPES = frozenset({BlockType.END_OF_EXTENSION,
+                                    BlockType.VAS_MAP})
 # Provenance note key: sealed source segments folded into ordinary ones.
 SEALED_FOLDED_KEY = "sealed_segments_folded"
 
@@ -85,7 +97,15 @@ class StoredRegion:
 
 @dataclass
 class MaterializeStats:
-    """What :func:`materialize_msl` wrote."""
+    """What :func:`materialize_msl` wrote.
+
+    ``dropped_extension_segments`` counts source segments that were not
+    re-emitted because they failed verification or were unterminated (or,
+    verified, had no block at all). A verified segment omitted because it
+    held only VAS maps is not "dropped": its maps are represented in the
+    fresh VAS_MAP and counted in ``superseded_vas_maps``, the number of
+    VAS_MAP blocks skipped in verified in-stream and sealed segments.
+    """
 
     regions_written: int = 0
     key_hints_written: int = 0
@@ -93,6 +113,7 @@ class MaterializeStats:
     extension_segments_written: int = 0
     dropped_extension_segments: int = 0
     sealed_segments_folded: int = 0
+    superseded_vas_maps: int = 0
 
 
 def stored_regions(reader, source_format: Optional[int]) -> List[StoredRegion]:
@@ -198,7 +219,6 @@ class _Materializer:
         )
         self._writer.add_capabilities(fh.cap_bitmap & ~_RECOMPUTED_CAPS)
         self._hint_headers: List[MslBlockHeader] = []
-        self._vas_entries: List[MslVasEntry] = []
         self._provenance: Optional[MslImportProvenance] = None
         self._eoc: Optional[MslEndOfCapture] = None
         # Source names trusted -> the copy keeps them trusted (marker).
@@ -256,12 +276,12 @@ class _Materializer:
         if hdr.block_type == BlockType.KEY_HINT:
             self._hint_headers.append(hdr)
             return
+        if hdr.block_type == BlockType.VAS_MAP:
+            return  # superseded by the fresh map (see _add_vas_map)
         payload = self._reader.read_block_payload(hdr)
         bo = self._reader._byte_order
         try:
-            if hdr.block_type == BlockType.VAS_MAP:
-                self._vas_entries.extend(decode_vas_map(hdr, payload, bo).entries)
-            elif hdr.block_type == BlockType.IMPORT_PROVENANCE:
+            if hdr.block_type == BlockType.IMPORT_PROVENANCE:
                 if self._provenance is None:
                     self._provenance = decode_import_provenance(hdr, payload, bo)
             elif hdr.block_type == BlockType.END_OF_CAPTURE:
@@ -316,8 +336,13 @@ class _Materializer:
         self.stats.key_hints_written += 1
 
     def _add_vas_map(self) -> None:
-        """Source VAS entries plus every source region not already covered."""
-        entries = list(self._vas_entries)
+        """Effective source VAS entries plus every source region not covered.
+
+        A malformed source map is skipped by the reader, so an earlier
+        well-formed one (or none) is effective instead.
+        """
+        effective = self._reader.effective_vas_map()
+        entries = list(effective.entries) if effective is not None else []
         for stored in self._regions:
             info = stored.info
             if not any(e.base_addr <= info.base_addr < e.base_addr + e.region_size
@@ -369,21 +394,25 @@ class _Materializer:
         verified = {r.index for r in reports if r.verified}
         for seg in self._reader.scan_extension_segments():
             if seg.index in verified:
-                self._copy_extension_segment(seg)
+                self._copy_verified_segment(seg)
             else:
                 self._drop_extension_segment(seg)
         self._fold_sealed_segments()
 
     def _foldable_sealed_segments(self) -> list:
-        """Verified sealed source segments with at least one block to copy."""
+        """Verified sealed source segments with at least one block to copy
+        (superseded VAS maps and the terminator do not count)."""
         return [sealed.segment for sealed in self._reader.sealed_segments()
-                if len(sealed.segment.headers) > 1]
+                if _copyable_headers(sealed.segment)]
 
     def _fold_sealed_segments(self) -> None:
         """Re-emit each verified sealed segment as an ordinary segment."""
-        for seg in self._foldable_sealed_segments():
-            self._copy_extension_segment(seg, seg.terminator.written_at_ns)
-            self.stats.sealed_segments_folded += 1
+        for sealed in self._reader.sealed_segments():
+            seg = sealed.segment
+            self.stats.superseded_vas_maps += _count_vas_maps(seg)
+            if _copyable_headers(seg):
+                self._copy_extension_segment(seg, seg.terminator.written_at_ns)
+                self.stats.sealed_segments_folded += 1
         if self.stats.sealed_segments_folded:
             logger.info("folded %d sealed extension segment(s) into ordinary "
                         "extension segments", self.stats.sealed_segments_folded)
@@ -391,15 +420,25 @@ class _Materializer:
     # Deprecated name, kept for callers of the pre-1.1 appendix copy.
     _add_end_and_appendix = _add_end_and_extensions
 
+    def _copy_verified_segment(self, seg) -> None:
+        """Re-emit verified in-stream *seg* minus its superseded VAS maps."""
+        superseded = _count_vas_maps(seg)
+        self.stats.superseded_vas_maps += superseded
+        if superseded and not _copyable_headers(seg):
+            logger.info("omitting extension segment %d at 0x%X: it held only "
+                        "superseded VAS map(s)", seg.index, seg.start)
+            return
+        self._copy_extension_segment(seg)
+
     def _copy_extension_segment(self, seg,
                                 written_at_ns: Optional[int] = None) -> None:
-        """Re-emit *seg*'s blocks (not its terminator) under its producer.
+        """Re-emit *seg*'s blocks under its producer (not its terminator,
+        nor its VAS maps: the fresh map supersedes them).
 
         *written_at_ns* keeps the source terminator's WrittenAt (None =
         the writer's own timestamp, as for in-stream segments).
         """
-        blocks = [self._extension_block(hdr) for hdr in seg.headers
-                  if hdr.block_type != BlockType.END_OF_EXTENSION]
+        blocks = [self._extension_block(hdr) for hdr in _copyable_headers(seg)]
         if not blocks:
             self._drop_extension_segment(seg)
             return
@@ -426,6 +465,17 @@ class _Materializer:
         logger.warning("dropping %s extension segment %d at 0x%X (%d block(s))",
                        state, seg.index, seg.start, len(seg.headers))
         self.stats.dropped_extension_segments += 1
+
+
+def _copyable_headers(seg) -> List[MslBlockHeader]:
+    """*seg*'s blocks a copy re-emits (see ``_SEGMENT_SKIPPED_TYPES``)."""
+    return [hdr for hdr in seg.headers
+            if hdr.block_type not in _SEGMENT_SKIPPED_TYPES]
+
+
+def _count_vas_maps(seg) -> int:
+    """VAS_MAP blocks in *seg* (superseded by the copy's fresh map)."""
+    return sum(hdr.block_type == BlockType.VAS_MAP for hdr in seg.headers)
 
 
 def _synthesized_name_source(info: RegionInfo) -> int:

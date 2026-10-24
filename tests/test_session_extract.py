@@ -170,3 +170,15 @@ def test_safe_enum_name_valid():
 def test_safe_enum_name_invalid():
     """Unknown enum value returns UNKNOWN."""
     assert _safe_enum_name(OSType, 0x9999) == "UNKNOWN"
+
+
+def test_session_report_uses_last_vas_map_only(tmp_path):
+    """Two capture VAS maps: only the last one's entries (spec 5.8)."""
+    from tests.fixtures.vas_segment_msl import vas_entry, write_vas_msl
+
+    path = write_vas_msl(tmp_path / "two.msl",
+                         [[vas_entry("old")], [vas_entry("new")]])
+    with MslReader(path) as reader:
+        report = extract_session_report(reader)
+    assert [e.mapped_path for e in report.vas_entries] == ["new"]
+    assert sum(report.vas_coverage.values()) == 1

@@ -782,13 +782,11 @@ def _():
                 report = extract_session_report(reader)
                 file_view_sections["Session Overview"] = render_session_view(mo, report)
 
-                # VAS map
-                vas_maps = reader.collect_vas_map()
-                if vas_maps:
+                # VAS map: the effective one (last wins, spec 5.8)
+                vas_map = reader.effective_vas_map()
+                if vas_map is not None:
                     from memdiver.ui.views.vas_view import render_vas_map, render_vas_table
-                    all_vas_entries = []
-                    for vm in vas_maps:
-                        all_vas_entries.extend(vm.entries)
+                    all_vas_entries = list(vas_map.entries)
                     regions = reader.collect_regions()
                     file_view_sections["Virtual Address Space"] = mo.vstack([
                         render_vas_map(mo, all_vas_entries, regions),

@@ -107,6 +107,18 @@ def test_memory_map_msl(android_msl):
         0x7A00000000, 4096, "rw-", True)
 
 
+def test_memory_map_msl_segment_vas_map_wins(tmp_path):
+    """The effective (last) VAS map names regions: a segment map naming
+    ``[heap]`` supersedes a capture map naming something else (spec 5.8)."""
+    from tests.fixtures.vas_segment_msl import vas_entry, write_vas_msl
+
+    path = write_vas_msl(tmp_path / "seg.msl", [[vas_entry("[anon:old]")]],
+                         [[vas_entry("[heap]")]])
+    with MslDumpSource(path) as src:
+        (region,) = memory_map_of(src)
+    assert region.name == "[heap]"
+
+
 def test_memory_map_regioned(gdb_raw):
     regions = memory_map_of(gdb_raw)
     assert len(regions) == len(synth_raw_regions._REGION_SPECS)

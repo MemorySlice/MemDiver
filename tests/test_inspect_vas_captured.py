@@ -88,3 +88,14 @@ def test_captured_key_omitted_when_encrypted_without_key(session, tmp_path):
     # Today the VAS_MAP is sealed too, so nothing is listed; should it ever be
     # readable while the regions are not, the flag must stay absent.
     assert all("captured" not in e for e in entries)
+
+
+def test_only_last_vas_map_entries_are_listed(session, tmp_path):
+    """Two capture VAS maps: the last supersedes (no merged duplicates)."""
+    from tests.fixtures.vas_segment_msl import vas_entry, write_vas_msl
+
+    msl = write_vas_msl(tmp_path / "two.msl",
+                        [[vas_entry("old")], [vas_entry("new")]])
+    result = tools_inspect.vas_regions_result(session, str(msl))
+    assert [e["mapped_path"] for e in result.payload["vas_entries"]] == ["new"]
+    assert result.payload["region_count"] == 1

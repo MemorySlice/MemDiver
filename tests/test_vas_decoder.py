@@ -231,3 +231,60 @@ def test_decode_memory_region_short_payload_raises():
     payload = b"\x00" * 0x10
     with pytest.raises(MslParseError):
         decode_memory_region(hdr, payload, "<")
+
+
+# -- effective VAS map: last one wins, segments included (spec 5.8) --
+
+from memdiver.msl.reader import MslReader
+from tests.fixtures.vas_segment_msl import vas_entry, write_vas_msl
+
+
+def _effective_paths(path):
+    with MslReader(path) as reader:
+        vas_map = reader.effective_vas_map()
+        return None if vas_map is None else [e.mapped_path for e in vas_map.entries]
+
+
+def test_effective_vas_map_none(tmp_path):
+    assert _effective_paths(write_vas_msl(tmp_path / "a.msl")) is None
+
+
+def test_effective_vas_map_single_capture_map(tmp_path):
+    path = write_vas_msl(tmp_path / "a.msl", [[vas_entry("[heap]")]])
+    assert _effective_paths(path) == ["[heap]"]
+
+
+def test_effective_vas_map_last_capture_map_wins(tmp_path):
+    path = write_vas_msl(tmp_path / "a.msl",
+                         [[vas_entry("old")], [vas_entry("new")]])
+    assert _effective_paths(path) == ["new"]
+    with MslReader(path) as reader:  # raw capture list stays unchanged
+        assert [vm.entries[0].mapped_path
+                for vm in reader.collect_vas_map()] == ["old", "new"]
+        assert reader.collect_extension_vas_maps() == []
+
+
+def test_effective_vas_map_segment_map_wins(tmp_path):
+    path = write_vas_msl(tmp_path / "a.msl", [[vas_entry("capture")]],
+                         [[vas_entry("segment")]])
+    assert _effective_paths(path) == ["segment"]
+    with MslReader(path) as reader:
+        assert len(reader.collect_vas_map()) == 1
+        seg_maps = reader.collect_extension_vas_maps()
+        assert reader.collect_extension_vas_maps() is seg_maps  # cached
+        (seg_map,) = seg_maps
+        assert seg_map.entries[0].mapped_path == "segment"
+
+
+def test_effective_vas_map_ignores_unverified_segment(tmp_path):
+    path = write_vas_msl(tmp_path / "a.msl", [[vas_entry("capture")]],
+                         [[vas_entry("segment")]])
+    with MslReader(path) as reader:
+        (seg,) = reader.scan_extension_segments()
+        flip_at = seg.headers[0].payload_offset + 0x10  # inside entry 0
+    raw = bytearray(path.read_bytes())
+    raw[flip_at] ^= 0xFF
+    path.write_bytes(raw)
+    with MslReader(path) as reader:
+        assert reader.collect_extension_vas_maps() == []
+    assert _effective_paths(path) == ["capture"]

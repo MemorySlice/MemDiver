@@ -228,7 +228,7 @@ def test_mode_switching(page):
     page.screenshot(path=f"{SCREENSHOT_DIR}/04_verification.png", full_page=True)
 
     # Entropy tab should be hidden in verification
-    entropy_tab = page.locator('button').filter(has_text="entropy")
+    entropy_tab = page.get_by_test_id("tab-entropy")
     entropy_visible = entropy_tab.count() > 0 and entropy_tab.first.is_visible()
     assert not entropy_visible, "Entropy tab should be hidden in Verification"
 
@@ -237,7 +237,7 @@ def test_mode_switching(page):
     assert desc.count() > 0, "Verification description not found"
 
     # Switch to Exploration
-    exploration_btn = page.locator('button').filter(has_text="Exploration")
+    exploration_btn = page.get_by_test_id("mode-exploration")
     if exploration_btn.count() > 0:
         exploration_btn.first.click()
     page.wait_for_timeout(500)
@@ -249,7 +249,7 @@ def test_mode_switching(page):
     assert "exploration" in badge_after, f"Mode should be exploration, got: {badge_after}"
 
     # Entropy tab now visible
-    entropy_after = page.locator('button').filter(has_text="entropy")
+    entropy_after = page.get_by_test_id("tab-entropy")
     assert entropy_after.count() > 0, "Entropy tab should be visible in Exploration"
 
     # Exploration description

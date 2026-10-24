@@ -130,7 +130,7 @@ def test_pairwise_leaves_sum_equals_numpy_sum():
     rng = np.random.default_rng(5)
     for size in (1, 129, 1000, 10_007):
         v = (rng.random(size, dtype=np.float32) * 1e4).astype(np.float32)
-        total = pairwise_leaves_sum(size, lambda s, e: np.add.reduce(v[s:e]), 128)
+        total = pairwise_leaves_sum(size, lambda s, e, v=v: np.add.reduce(v[s:e]), 128)
         assert total == np.add.reduce(v)
     with pytest.raises(ValueError):
         pairwise_leaves_sum(10, lambda s, e: None, 64)

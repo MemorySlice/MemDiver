@@ -10,7 +10,8 @@ import pytest
 
 from memdiver.core.models import CryptoSecret
 from memdiver.msl.enums import (BlockType, CompAlgo, HeaderFlag, Protection,
-                                RegionType, SourceFormat)
+                                RegionType, SourceFormat,
+                                VasNameSource)
 from memdiver.msl.import_preview import preview_import
 from memdiver.msl.importer import (import_dump, import_msl_passthrough,
                                    import_run_directory)
@@ -25,7 +26,8 @@ from memdiver.msl.types import (MslPointerGraphEdge, MslPointerGraphNode,
 from memdiver.msl.writer import (CapBit, ConnectionTableEntry,
                                  ExtensionBlock, HandleTableEntry,
                                  ModuleEntrySpec, MslEncryptionConfig,
-                                 MslWriter, ProcessTableEntry)
+                                 MslWriter, ProcessTableEntry,
+                                 _build_vas_map_payload)
 
 from tests.fixtures import generate_msl_fixtures as gen
 from tests.fixtures import synth_elf_core
@@ -453,3 +455,72 @@ def test_writer_raw_block_capabilities_and_appendix(tmp_path):
         assert reader.collect_end_of_extension()[0].producer == "t/1"
     assert [(h.block_uuid, h.parent_uuid, h.flags) for h in headers] == [
         (UUID(int=1), UUID(int=0), 0), (child, parent, 0x10)]
+
+
+# -- VAS map supersession (spec 5.8) -----------------------------------------
+
+_SEG_HEAP = MslVasEntry(0x10000000, 2 * PAGE, 0x03, RegionType.HEAP,
+                        "[segment-heap]", VasNameSource.SOURCE_METADATA)
+_OPAQUE = ExtensionBlock(0x1100, b"x\0\0\0\0\0\0\0", block_uuid=UUID(int=11))
+
+
+def _segment_vas_msl(tmp_path: Path, with_other_block: bool) -> Path:
+    """Heap + stack, a superseded capture map, then a segment VAS map."""
+    path = tmp_path / "segvas.msl"
+    w = MslWriter(path, pid=1)
+    w.add_memory_region(0x10000000, b"\x44" * (2 * PAGE),
+                        region_type=RegionType.HEAP)
+    w.add_memory_region(0x7FFF0000, b"\x55" * PAGE, region_type=RegionType.STACK)
+    w.add_vas_map([MslVasEntry(0x400000, PAGE, 0x05, RegionType.IMAGE,
+                               "/usr/bin/app")])
+    blocks = [_OPAQUE] if with_other_block else []
+    blocks.append(ExtensionBlock(BlockType.VAS_MAP,
+                                 _build_vas_map_payload([_SEG_HEAP])))
+    w.add_extension_segment("memdiver/test", blocks)
+    w.add_end_of_capture()
+    w.write()
+    return path
+
+
+def _materialize_all(src: Path, out: Path):
+    with MslReader(src) as reader:
+        assert reader.effective_vas_map().entries == [_SEG_HEAP]
+        regions = stored_regions(reader, None)
+        return materialize_msl(reader, src, out, regions,
+                               [True] * len(regions), "selection=all")
+
+
+def _assert_effective_map(copy) -> None:
+    """Segment entry kept, uncovered stack synthesized, capture map gone."""
+    entries = copy.effective_vas_map().entries
+    assert [e.base_addr for e in entries] == [0x10000000, 0x7FFF0000]
+    assert entries[0] == _SEG_HEAP
+    assert copy.collect_extension_vas_maps() == []
+    assert len(copy.collect_vas_map()) == 1
+    assert verify_chain(copy).valid
+
+
+def test_segment_vas_map_supersedes_and_is_not_reemitted(tmp_path):
+    out = tmp_path / "mat.msl"
+    stats = _materialize_all(_segment_vas_msl(tmp_path, True), out)
+    assert stats.superseded_vas_maps == 1
+    assert stats.extension_segments_written == 1
+    assert stats.dropped_extension_segments == 0
+    with MslReader(out) as copy:
+        _assert_effective_map(copy)
+        (seg,) = copy.scan_extension_segments()
+        assert [(h.block_type, h.block_uuid) for h in seg.headers[:-1]] == [
+            (0x1100, UUID(int=11))]
+        assert verify_chain(copy).segments[0].verified
+
+
+def test_segment_with_only_vas_map_is_omitted(tmp_path):
+    out = tmp_path / "mat.msl"
+    stats = _materialize_all(_segment_vas_msl(tmp_path, False), out)
+    assert stats.superseded_vas_maps == 1
+    assert stats.extension_segments_written == 0
+    assert stats.dropped_extension_segments == 0
+    with MslReader(out) as copy:
+        _assert_effective_map(copy)
+        assert copy.scan_extension_segments() == []
+        assert copy.trailing_bytes == 0

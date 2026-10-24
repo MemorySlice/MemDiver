@@ -605,7 +605,8 @@ def vas_regions_result(
     (base_addr / region_size / region_type / protection / mapped_path),
     unlike the reduced three-field copy in :func:`session_info_result`.
 
-    Reads the VAS map directly (``collect_vas_map``) rather than the full
+    Reads the effective VAS map directly (``effective_vas_map``: the last
+    one in file order, spec 5.8) rather than the full
     :func:`~memdiver.msl.session_extract.extract_session_report` — the extra
     module/key-hint/identity passes that report makes are unused here. The
     ``region_count`` / ``total_region_size`` summary describes THESE VAS
@@ -626,7 +627,8 @@ def vas_regions_result(
 
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     with open_msl_reader(msl_path, km) as reader:
-        entries = [e for vm in reader.collect_vas_map() for e in vm.entries]
+        vas_map = reader.effective_vas_map()
+        entries = vas_map.entries if vas_map is not None else []
         captured_index = _CapturedIntervals.from_reader(reader)
         vas_entries = []
         for e in entries:

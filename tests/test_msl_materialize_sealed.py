@@ -13,12 +13,16 @@ from uuid import uuid4
 
 import pytest
 
-from memdiver.msl.enums import KdfType, TagStatus
+from memdiver.msl.enums import (BlockType, KdfType, RegionType, TagStatus,
+                                VasNameSource)
 from memdiver.msl.importer import import_dump
 from memdiver.msl.integrity import verify_chain
+from memdiver.msl.materialize import materialize_msl, stored_regions
 from memdiver.msl.reader import MslReader
 from memdiver.msl.sealed import seal_segment
-from memdiver.msl.writer import ExtensionBlock, MslEncryptionConfig, MslWriter
+from memdiver.msl.types import MslVasEntry
+from memdiver.msl.writer import (ExtensionBlock, MslEncryptionConfig, MslWriter,
+                                 _build_vas_map_payload)
 
 from tests.test_msl_materialize import HEAP_STACK, _writer_built_msl
 
@@ -192,3 +196,52 @@ def _source_segments_or_none(src, km):
     with MslReader(src, **km) as r:
         assert r.sealed_segments() == []
         return _segments(r)
+
+
+# -- sealed VAS maps (spec 5.8 + 10.8) ----------------------------------------
+
+_SEALED_HEAP = MslVasEntry(0x10000000, 0x2000, 0x03, RegionType.HEAP,
+                           "[sealed-heap]", VasNameSource.SOURCE_METADATA)
+
+
+def _vas_block(entries):
+    return ExtensionBlock(BlockType.VAS_MAP, _build_vas_map_payload(entries))
+
+
+def _sealed_vas_source(tmp_path):
+    """Sealed #1: only a VAS map; sealed #2: a manifest + the last VAS map."""
+    cfg, km = _cases()["raw"]
+    src = _writer_built_msl(tmp_path, encryption=cfg)
+    old = _vas_block([MslVasEntry(0x10000000, 0x1000, 0x03, RegionType.HEAP,
+                                  "[old]")])
+    specs = [("vas/1.0", 1, [old]),
+             ("vas/2.0", 2, [*_sealed_blocks([b"D" * 16]),
+                             _vas_block([_SEALED_HEAP])])]
+    _seal_onto(src, km, [_segment_plaintext(tmp_path, p, at, b)
+                         for p, at, b in specs])
+    return src, km
+
+
+def test_sealed_vas_maps_are_superseded_not_folded(tmp_path):
+    src, km = _sealed_vas_source(tmp_path)
+    out = tmp_path / "plain.msl"
+    with MslReader(src, **km) as r:
+        assert len(r.sealed_segments()) == 2
+        assert r.effective_vas_map().entries == [_SEALED_HEAP]
+        regions = stored_regions(r, None)
+        stats = materialize_msl(r, src, out, regions, [True] * len(regions),
+                                "selection=all", decrypt_output=True)
+    assert stats.superseded_vas_maps == 2
+    assert stats.sealed_segments_folded == 1
+    assert stats.dropped_extension_segments == 0
+    with MslReader(out) as r:
+        assert verify_chain(r).valid
+        assert r.collect_extension_vas_maps() == []
+        entries = r.effective_vas_map().entries
+        assert _SEALED_HEAP in entries
+        assert all(e.mapped_path != "[old]" for e in entries)
+        producers = [s.producer for s in r.scan_extension_segments()]
+        assert "vas/1.0" not in producers and producers[-1] == "vas/2.0"
+        assert [h.block_type for h in r.scan_extension_segments()[-1].headers
+                ] == [_MANIFEST, BlockType.END_OF_EXTENSION]
+        assert "sealed_segments_folded=1" in _provenance_note(r)

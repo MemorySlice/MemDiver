@@ -182,7 +182,8 @@ class MslReader:
                     # Extension-segment collectors (spec 4.6); the segment
                     # scan / verification caches they build on are reset
                     # with them in _reset_segment_caches().
-                    "_end_of_extension_cache", "_pointer_graphs_cache")
+                    "_end_of_extension_cache", "_pointer_graphs_cache",
+                    "_extension_vas_cache")
 
     def __init__(self, path: Path, *,
                  key: Optional[bytes] = None,
@@ -1216,6 +1217,11 @@ class MslReader:
         return self._collect(BlockType.PROCESS_IDENTITY, decode_process_identity, "_process_identity_cache")
 
     def collect_vas_map(self) -> List[MslVasMap]:
+        """Capture-segment VAS_MAP blocks, raw and in file order.
+
+        For the map the file actually asserts (last one wins, extension
+        segments included — spec 5.8) use :meth:`effective_vas_map`.
+        """
         return self._collect(BlockType.VAS_MAP, decode_vas_map, "_vas_cache")
 
     def collect_related_dumps(self) -> List[MslRelatedDump]:
@@ -1300,3 +1306,36 @@ class MslReader:
         ]
         self._pointer_graphs_cache = cached
         return cached
+
+    def collect_extension_vas_maps(self) -> List[MslVasMap]:
+        """Collect VAS_MAP blocks (0x1001) from verified extension segments.
+
+        In-stream segments then verified sealed ones, in file order (via
+        ``iter_extension_blocks()``). A malformed block is skipped with a
+        warning, as in :meth:`_collect`.
+        """
+        if self._extension_vas_cache is not None:
+            return self._extension_vas_cache
+        cached: List[MslVasMap] = []
+        for h, p in self.iter_extension_blocks():
+            if h.block_type != BlockType.VAS_MAP:
+                continue
+            try:
+                cached.append(decode_vas_map(h, p, self._byte_order))
+            except (MslParseError, struct.error, IndexError, OverflowError) as exc:
+                logger.warning("Skipping malformed segment VAS_MAP block at 0x%X: %s",
+                               h.file_offset, exc)
+        self._extension_vas_cache = cached
+        return cached
+
+    def effective_vas_map(self) -> Optional[MslVasMap]:
+        """The VAS map the file says applies, or ``None`` when it has none.
+
+        Spec 5.8 / consumer rule 25: the LAST VAS map in file order
+        supersedes earlier ones, including maps in verified extension
+        (4.6) and sealed (10.8) segments. Segment maps always follow
+        capture-segment ones, so the result came from a segment exactly
+        when :meth:`collect_extension_vas_maps` is non-empty.
+        """
+        maps = self.collect_vas_map() + self.collect_extension_vas_maps()
+        return maps[-1] if maps else None

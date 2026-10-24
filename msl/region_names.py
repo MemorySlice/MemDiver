@@ -71,7 +71,8 @@ _ICU_PREFIXES = ("/system/usr/icu/", "/apex/com.android.i18n/etc/icu/")
 
 _ASHMEM_PREFIX = "/dev/ashmem/"
 _JIT_MEMFD_PREFIX = "/memfd:jit-"
-_UNTOUCHED_DEVICE_PREFIXES = ("/dev/shm/", "/memfd:")
+# Region-name classifier prefix, not a path we create.
+_UNTOUCHED_DEVICE_PREFIXES = ("/dev/shm/", "/memfd:")  # nosec B108
 _RUNTIME_PSEUDO_PREFIXES = ("/dev/", "/dmabuf", "anon_inode:")
 
 # Strong Android markers for :func:`looks_android` (never seen on Linux).

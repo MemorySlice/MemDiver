@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use MemDiver, please cite the paper below."
+title: MemDiver
+type: software
+authors:
+  - family-names: Baier
+    given-names: Daniel
+  - family-names: Lambertz
+    given-names: Martin
+version: 1.0.1
+license: Apache-2.0
+repository-code: "https://github.com/MemorySlice/MemDiver"
+url: "https://memoryslice.github.io/MemDiver/"
+keywords:
+  - memory forensics
+  - differential memory analysis
+  - Memory Slice
+  - Volatility 3
+preferred-citation:
+  type: article
+  title: "Memory Slice: A Process-Centric Dump Format for Differential Memory Analysis and Volatility 3 Plugin Synthesis"
+  authors:
+    - family-names: Baier
+      given-names: Daniel
+    - family-names: Lambertz
+      given-names: Martin
+  journal: "Digital Threats: Research and Practice"
+  year: 2026
+  publisher:
+    name: ACM
+    city: New York
+    region: NY
