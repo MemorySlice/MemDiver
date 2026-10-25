@@ -237,9 +237,24 @@ def _navigable_view(source: Any) -> str:
     """
     if getattr(source, "format_name", "") == "msl":
         return "va"
+    if _image_view_serves_va(source):
+        return "va"
     if getattr(source, "supports_va_alignment", False):
         return "vas"
     return "raw"
+
+
+def _is_image_view_source(source: Any) -> bool:
+    from .page_state_runs import is_image_view_source as _is_image_view
+
+    return _is_image_view(source)
+
+
+def _image_view_serves_va(source: Any) -> bool:
+    """An ``.mdview`` image view that offers ``"va"`` (not a >2^53 kernel view)."""
+    from .page_state_runs import image_view_serves_va
+
+    return image_view_serves_va(source)
 
 
 def _peer_view(source: Any, coordinate: str) -> str:
@@ -249,6 +264,11 @@ def _peer_view(source: Any, coordinate: str) -> str:
     if coordinate == COORDINATE_FLAT:
         # `_build_raw` compared `source.read_all()`, i.e. each source's own
         # default stream: "vas" for `.msl`, "raw" for a flat dump.
+        # An image view's `read_all()` default is "vas", so that is the stream
+        # the flat consensus compared. It must NOT read "raw" (the image FILE):
+        # the overlay would paint bytes that were never compared.
+        if _is_image_view_source(source):
+            return "vas"
         return "raw" if _navigable_view(source) == "raw" else "vas"
     return _navigable_view(source)
 
@@ -1135,7 +1155,7 @@ def _va_view_span_size(source: Any) -> Optional[int]:
     (padded, page-state tinted); gcore / regioned sources reject the view in
     ``size_for``, so they never reach it.
     """
-    if getattr(source, "format_name", "") != "msl":
+    if getattr(source, "format_name", "") != "msl" and not _image_view_serves_va(source):
         return None
     return int(source.size_for("va"))
 

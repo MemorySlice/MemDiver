@@ -53,7 +53,7 @@ import {
 } from "@/stores/overlay-detail-store";
 import { HexOverlay } from "@/components/hex/HexOverlay";
 import { HexComparison } from "@/components/hex/HexComparison";
-import { useHexStore } from "@/stores/hex-store";
+import { IMAGE_VIEW_FORMAT, useHexStore } from "@/stores/hex-store";
 import { NeighborhoodOverlayPanel } from "@/components/hex/NeighborhoodOverlayPanel";
 import { useDumpStore } from "@/stores/dump-store";
 import { useActiveDump } from "@/hooks/useActiveDump";
@@ -79,6 +79,10 @@ import { NewSessionDialog } from "@/components/session/NewSessionDialog";
 import { persistSession } from "@/utils/session-persistence";
 import { HeapOverview } from "@/components/heap/HeapOverview";
 import { HeapPanel } from "@/components/heap/HeapPanel";
+import { ImagePanel } from "@/components/image/ImagePanel";
+import { Vol3Panel } from "@/components/vol3/Vol3Panel";
+import { isMdview } from "@/components/image/open-view-in-workspace";
+import { useImageStore } from "@/stores/image-store";
 import { useHeapModeLayer } from "@/hooks/useHeapModeLayer";
 
 function ResizeHandle({ orientation = "vertical" }: { orientation?: "horizontal" | "vertical" }) {
@@ -149,7 +153,7 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3";
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
 
 const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
@@ -159,8 +163,16 @@ const HEAP_SIDE_TABS: readonly SideTab[] = [...BASE_SIDE_TABS, "heap"];
 function Sidebar() {
   const { t } = useTranslation("layout");
   const mode = useAppStore((s) => s.mode);
-  const [sideTab, setSideTab] = useState<SideTab>(mode === "heap" ? "heap" : "bookmarks");
-  const sideTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
+  const imagePath = useImageStore((s) => s.imagePath);
+  const detectedFormat = useHexStore((s) => s.detectedFormat);
+  const activeViewPath = useActiveDump()?.path ?? "";
+  // The Image panel serves full memory images: one picked in the wizard, or
+  // an open `.mdview` image view.
+  const showImageTab = imagePath !== "" || detectedFormat === IMAGE_VIEW_FORMAT || isMdview(activeViewPath);
+  const [sideTab, setSideTab] = useState<SideTab>(
+    imagePath ? "image" : mode === "heap" ? "heap" : "bookmarks");
+  const baseTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
+  const sideTabs = showImageTab ? [...baseTabs, "image" as const, "vol3" as const] : baseTabs;
   // Entering heap mode opens its overview; leaving it drops a tab that no
   // longer exists. Adjusted during render, guarded by the last mode seen.
   const [prevMode, setPrevMode] = useState(mode);
@@ -169,6 +181,13 @@ function Sidebar() {
     if (mode === "heap") setSideTab("heap");
     else if (!sideTabs.includes(sideTab)) setSideTab("bookmarks");
   }
+  // A freshly picked image opens its panel; a vanished image drops the tab.
+  const [prevImagePath, setPrevImagePath] = useState(imagePath);
+  if (prevImagePath !== imagePath) {
+    setPrevImagePath(imagePath);
+    if (imagePath) setSideTab("image");
+  }
+  if ((sideTab === "image" || sideTab === "vol3") && !showImageTab) setSideTab("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const { bookmarks, addBookmark, removeBookmarkEntry, jumpToBookmark, multiView } = useHexStore(
@@ -279,6 +298,8 @@ function Sidebar() {
         {sideTab === "sessions" && <SessionManager />}
         {sideTab === "import" && <FileUpload />}
         {sideTab === "heap" && <HeapOverview dumpPath={dumpPath} />}
+        {sideTab === "image" && <ImagePanel />}
+        {sideTab === "vol3" && <Vol3Panel />}
       </div>
     </div>
   );

@@ -25,7 +25,7 @@ interface Spec {
   pageStates?: AlignedWindowPageStateRun[];
 }
 
-function body(specs: Spec[], length = CHUNK_SIZE): AlignedWindowResponse {
+function body(specs: Spec[], length = CHUNK_SIZE, spanStart = 0): AlignedWindowResponse {
   return {
     consensus_id: "c1",
     classified: true,
@@ -44,7 +44,7 @@ function body(specs: Spec[], length = CHUNK_SIZE): AlignedWindowResponse {
       view: "va",
       offset: 0,
       va: 0,
-      va_span_start: 0,
+      va_span_start: spanStart,
       slab_offset: 0,
     },
     requested_length: length,
@@ -200,5 +200,34 @@ describe("pageStateAt", () => {
     await flush();
     useMultiHexStore.getState().reset();
     expect(useMultiHexStore.getState().pageStateAt(ANCHOR, 0)).toBeUndefined();
+  });
+});
+
+
+describe("anchorVaLabel", () => {
+  it("keeps the server-given va_span_start of a va window under the live identity", async () => {
+    respondWith(() => body([{ path: ANCHOR, valid: [[0, CHUNK_SIZE]] }], CHUNK_SIZE, 0x7f0000001000));
+    load([ANCHOR]);
+    await flush();
+    const state = useMultiHexStore.getState();
+    expect(state.anchorVaLabel).toEqual({ identity: state.identity, spanStart: 0x7f0000001000 });
+  });
+
+  it("is cleared by reset", async () => {
+    respondWith(() => body([{ path: ANCHOR, valid: [[0, CHUNK_SIZE]] }], CHUNK_SIZE, 0x1000));
+    load([ANCHOR]);
+    await flush();
+    useMultiHexStore.getState().reset();
+    expect(useMultiHexStore.getState().anchorVaLabel).toBeNull();
+  });
+
+  it("ignores a slab anchor's -1", async () => {
+    respondWith(() => {
+      const r = body([{ path: ANCHOR, valid: [[0, CHUNK_SIZE]] }]);
+      return { ...r, anchor: { ...r.anchor, kind: "slab", va_span_start: -1 } };
+    });
+    load([ANCHOR]);
+    await flush();
+    expect(useMultiHexStore.getState().anchorVaLabel).toBeNull();
   });
 });

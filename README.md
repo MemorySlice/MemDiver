@@ -234,6 +234,7 @@ Newer subcommands at a glance:
 - `annotations` — versioned, append-only analysis record per capture (`list`, `add`, `supersede`, `retract`; `--case` required), e.g. `memdiver annotations list --case ./case --capture <id>`
 - `case` — the case data lake: Parquet tables, read-only SQL and `locate_context` (`init`, `status`, `schema`, `query`, `context-at`, `export`), e.g. `memdiver case query --case ./case --sql "SELECT name, count(*) FROM annotations GROUP BY 1"`
 - `image` — memory-image views via Volatility 3 (`probe`, `profile`, `open`, `processes`, `extract`), e.g. `memdiver image open alma-9.lime --view process --pid 22176 --case ./case`
+- `vol3` — run Volatility 3 plugins over a `.mdview` into a case and query them (`list`, `describe`, `run`, `query`, `annotate`, `scaffold`, `check`, `import`, `write-config`), e.g. `memdiver vol3 run --view p.mdview --plugin linux.pslist --case ./case`
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -274,7 +275,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 71 tools exposed to AI assistants
+mcp_server/     MCP server — 86 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

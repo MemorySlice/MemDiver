@@ -566,7 +566,7 @@ class ConsensusVector:
             result = build_msl_consensus_result(sources, force=force,
                                                 budget=budget)
             self._adopt_aligned(result, ALIGNMENT_MODULE_OFFSET)
-        elif all(supports_va_alignment(s) for s in sources):
+        elif _aligns_by_va(sources):
             from .consensus_va import build_va_consensus
             result = build_va_consensus(sources, force=force, budget=budget)
             self._adopt_aligned(result, ALIGNMENT_VIRTUAL_ADDRESS)
@@ -1447,6 +1447,30 @@ def sources_region_filter_note(sources: List) -> Union[str, None]:
         if selection is not None and hasattr(selection, "to_note"):
             return selection.to_note()
     return None
+
+
+def _aligns_by_va(sources) -> bool:
+    """Every source VA-alignable; an ``.msl`` joins only beside an image view.
+
+    An image view (``.mdview``) is an address space like an ``.msl``, so
+    ``.msl`` + ``.mdview`` align by absolute VA. That includes an IMPORTED
+    ``.msl``: the one ``image extract`` writes from that very view is imported
+    by definition (MSL spec: image-derived), and comparing it with its view is
+    the workspace's main use. A native-``.msl``-only set never reaches here
+    (module+offset runs first) and an imported ``.msl`` WITHOUT an image view
+    keeps its flat fallback.
+    """
+    if all(supports_va_alignment(s) for s in sources):
+        return True
+    has_image = any(callable(getattr(s, "layer_runs", None))
+                    and supports_va_alignment(s) for s in sources)
+    return has_image and all(
+        supports_va_alignment(s) or _is_msl(s) for s in sources)
+
+
+def _is_msl(source) -> bool:
+    """Any ``.msl`` source, native or imported."""
+    return getattr(source, "format_name", "") == "msl"
 
 
 def _is_native_msl(source) -> bool:

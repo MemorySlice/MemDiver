@@ -250,6 +250,13 @@ export interface MultiHexState {
   windowVersion: number;
 
   alignment: AlignedWindowResponse["alignment"] | null;
+  /**
+   * The server-given virtual address of the anchor's offset 0, kept ONLY to
+   * label the offset gutter in the "va" coordinate. Display only: it is never
+   * added to a read offset (invariant W1). Recorded under the identity it was
+   * delivered for and ignored once the live identity moved on.
+   */
+  anchorVaLabel: { identity: string; spanStart: number } | null;
   truncated: boolean;
   budgetBytes: number;
 
@@ -744,6 +751,7 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
   chunkIdentity: new Map(),
   windowVersion: 0,
   alignment: null,
+  anchorVaLabel: null,
   truncated: false,
   budgetBytes: DEFAULT_BUDGET_BYTES,
 
@@ -1041,6 +1049,7 @@ export const useMultiHexStore = create<MultiHexState>((set, get) => ({
       // 0 would hand it back the number it already had.
       windowVersion: get().windowVersion + 1,
       alignment: null,
+      anchorVaLabel: null,
       truncated: false,
       // The byte budget too: it is a tuning knob, not accumulated data, and a
       // reset that leaves a previously narrowed ceiling in place hands the next
@@ -1288,6 +1297,17 @@ function scheduleRetry(
 }
 
 
+/** The anchor's `va_span_start` for a "va" window of a real dump, else `null`. */
+function vaLabelFrom(
+  response: AlignedWindowResponse,
+  identity: string,
+): { identity: string; spanStart: number } | null {
+  const { anchor } = response;
+  if (anchor.kind !== "dump" || anchor.view !== "va") return null;
+  if (!Number.isFinite(anchor.va_span_start) || anchor.va_span_start < 0) return null;
+  return { identity, spanStart: anchor.va_span_start };
+}
+
 /**
  * Fold one aligned-window response into the cache.
  *
@@ -1396,6 +1416,7 @@ function applyResponse(
     // window is not the window it was. See `windowVersion`.
     windowVersion: prev.windowVersion + 1,
     alignment: response.alignment,
+    anchorVaLabel: vaLabelFrom(response, identity) ?? prev.anchorVaLabel,
     truncated: response.truncated,
     heapStatus: response.heap_status ?? null,
     ...pruned,

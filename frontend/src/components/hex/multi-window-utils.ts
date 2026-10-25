@@ -6,6 +6,7 @@
  * posture, and `BYTES_PER_ROW` is imported from there rather than respelled.
  */
 
+import { OFFSET_DIGITS_DEFAULT, offsetGutterWidthPx } from "@/utils/hex-codec";
 import { BYTES_PER_ROW } from "./window-utils";
 
 /**
@@ -41,6 +42,11 @@ export const CHUNK_SIZE = 8192;
  */
 export const PANE_ROW_CONTENT_WIDTH_PX = 76 + 22 * BYTES_PER_ROW + 16 + 8 * BYTES_PER_ROW;
 export const PANE_COLUMN_WIDTH_PX = PANE_ROW_CONTENT_WIDTH_PX + 16;
+
+/** The pane column width when the offset gutter holds `digits` hex digits (588 at the default 8). */
+export function paneColumnWidthPx(digits: number = OFFSET_DIGITS_DEFAULT): number {
+  return PANE_COLUMN_WIDTH_PX + offsetGutterWidthPx(digits) - offsetGutterWidthPx();
+}
 
 /**
  * How many extra chunks to prefetch on each side of the visible rows.

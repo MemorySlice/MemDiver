@@ -1,0 +1,76 @@
+{
+  "tab": "image",
+  "title": "Memory image",
+  "pathLabel": "Image file",
+  "pathPlaceholder": "/path/to/memory.lime",
+  "probe": {
+    "action": "Probe",
+    "loading": "Probing image...",
+    "format": "Format",
+    "size": "Size",
+    "sha256": "SHA-256",
+    "sha256Unknown": "not hashed yet",
+    "banner": "Kernel banner",
+    "bannerNone": "none scanned",
+    "scanBanners": "Scan banners",
+    "profile": "Profile",
+    "tools": "Tools",
+    "toolMissing": "not installed"
+  },
+  "profile": {
+    "found": "Found ({{origin}})",
+    "missing": "No kernel profile found",
+    "unknown": "Not resolved yet",
+    "extract": "Extract profile with pakunoda",
+    "running": "Extracting profile...",
+    "done": "Profile ready: {{isf}}",
+    "useIsf": "Use ISF file",
+    "isfPlaceholder": "/path/to/kernel.json.xz",
+    "isfApply": "Use",
+    "isfLabel": "ISF file"
+  },
+  "case": {
+    "label": "Case directory",
+    "placeholder": "optional, default ~/.memdiver/cases/<name>"
+  },
+  "views": {
+    "openKernel": "Open kernel view",
+    "openPhysical": "Open physical view",
+    "opening": "Opening view...",
+    "opened": "Opened {{path}}"
+  },
+  "processes": {
+    "title": "Processes",
+    "loading": "Listing processes...",
+    "empty": "No process matches the filter.",
+    "needKernelView": "Open the kernel view to list processes.",
+    "filter": "Filter by pid or name",
+    "count": "{{shown}} of {{total}} processes",
+    "col": {
+      "pid": "PID",
+      "ppid": "PPID",
+      "comm": "Name",
+      "uid": "UID",
+      "actions": "Actions"
+    },
+    "openProcess": "Open process view",
+    "extract": "Extract to .msl",
+    "select": "Select process (links the Vol3 tables)"
+  },
+  "extract": {
+    "running": "Extracting process {{pid}}...",
+    "done": "Extracted {{regions}} regions to {{path}}",
+    "open": "Open"
+  },
+  "progress": "{{pct}}%",
+  "error": {
+    "title": "Memory image error",
+    "installHint": "Install the optional image support: pip install \"memdiver[image]\""
+  },
+  "wizard": {
+    "choice": "Memory image",
+    "choiceDesc": "A full LiME / ELF core / raw image. Opens the Image panel (probe, profile, process list) instead of importing a dump.",
+    "pathNotFile": "This path is not a file.",
+    "open": "Open Image panel"
+  }
+}

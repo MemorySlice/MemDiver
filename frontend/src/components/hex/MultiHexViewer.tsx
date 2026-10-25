@@ -27,7 +27,8 @@ import { WindowErrorBanner } from "./WindowErrorBanner";
 import { chunkErrorSignature } from "./chunk-error-signal";
 import { ConsensusErrorBanner } from "./ConsensusErrorBanner";
 import { buildRegionIndex, regionsForView } from "./highlight-utils";
-import { MAX_PANES, PANE_COLUMN_WIDTH_PX, visiblePanes } from "./multi-window-utils";
+import { MAX_PANES, paneColumnWidthPx, visiblePanes } from "./multi-window-utils";
+import { useAlignedGutterAddressing } from "@/hooks/useGutterAddressing";
 import { BYTES_PER_ROW, clampWindowStart, windowCount } from "./window-utils";
 
 /**
@@ -101,6 +102,8 @@ export function MultiHexViewer() {
   const toggleDumpVisibility = useDumpStore((s) => s.toggleDumpVisibility);
 
   const viewMode = useHexStore((s) => s.viewMode);
+  const gutter = useAlignedGutterAddressing();
+  const paneWidthPx = paneColumnWidthPx(gutter.addressDigits);
   const storeFileSize = useHexStore((s) => s.fileSize);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
@@ -334,7 +337,7 @@ export function MultiHexViewer() {
     );
   }
 
-  const gridWidth = panes.length * PANE_COLUMN_WIDTH_PX;
+  const gridWidth = panes.length * paneWidthPx;
   const cappedOut = openIds.length - paneIds.length;
 
   return (
@@ -374,6 +377,7 @@ export function MultiHexViewer() {
       */}
       <WindowErrorBanner
         testIdPrefix="multi-hex"
+        rebuildPaths={selectedPaths}
         firstRow={firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex)}
         lastRow={lastVisibleIndex < 0 ? -1 : absRow(lastVisibleIndex)}
       />
@@ -450,7 +454,7 @@ export function MultiHexViewer() {
                 dump={pane}
                 isOrigin={pane.id === originDumpId}
                 isFocused={pane.id === activeDumpId}
-                widthPx={PANE_COLUMN_WIDTH_PX}
+                widthPx={paneWidthPx}
                 error={byPath.get(pane.path)?.error ?? null}
                 onFocus={() => setActiveDump(pane.id)}
                 onCollapse={() => toggleDumpVisibility(pane.id)}
@@ -478,7 +482,7 @@ export function MultiHexViewer() {
                       data-testid={`hex-pane-${pane.id}`}
                       className="shrink-0"
                       style={{
-                        width: PANE_COLUMN_WIDTH_PX,
+                        width: paneWidthPx,
                         borderRight: "1px solid var(--md-border)",
                         borderLeft:
                           pane.id === activeDumpId
@@ -495,6 +499,8 @@ export function MultiHexViewer() {
                         selectionEnd={selectionEnd}
                         regionIndex={regionIndexByPath.get(pane.path)!}
                         view={viewMode}
+                        offsetBase={gutter.offsetBase}
+                        addressDigits={gutter.addressDigits}
                       />
                     </div>
                   ))}

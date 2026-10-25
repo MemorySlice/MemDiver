@@ -33,6 +33,7 @@ from memdiver.core.image.profiles import (
     ProfileChain,
     ProfileResolution,
     default_chain,
+    plausible_banners_first,
     scan_linux_banners,
 )
 from memdiver.core.image.view_descriptor import (
@@ -144,7 +145,8 @@ def image_probe_result(image_path: str, banners: bool = False,
         "profile": _probe_profile(image, isf_file), "versions": _tool_versions()}
     if banners:
         payload["banners"] = [b.decode("utf-8", errors="replace")
-                              for b in scan_linux_banners(image, PROBE_BANNER_LIMIT)]
+                              for b in plausible_banners_first(
+                                  scan_linux_banners(image, PROBE_BANNER_LIMIT))]
     return ServiceResult.ok(payload)
 
 

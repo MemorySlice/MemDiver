@@ -1,4 +1,4 @@
-import { useAlignedSelection } from "@/hooks/useAlignedPanes";
+import { useAlignedSelection, useAnchorServesPageStates } from "@/hooks/useAlignedPanes";
 import { useHexStore } from "@/stores/hex-store";
 
 /**
@@ -17,7 +17,7 @@ export function usePageStateTintsActive(): boolean {
  * panes (side-by-side and overlay) can paint page-state tints right now.
  *
  * They read the aligned window's own `page_states`, not `hex-store`, and the
- * backend sends runs only for an `.msl` anchor in the "va" coordinate. Gating
+ * backend sends runs only for an `.msl` or `.mdview` anchor in the "va" coordinate. Gating
  * on exactly that — rather than on "some window has delivered runs" — is known
  * before the first window lands and does not move while scrolling, so the
  * legend neither flickers in on arrival nor out on a window that happens to be
@@ -26,5 +26,6 @@ export function usePageStateTintsActive(): boolean {
 export function useAlignedPageStateTintsActive(): boolean {
   const { anchor } = useAlignedSelection();
   const viewMode = useHexStore((s) => s.viewMode);
-  return anchor?.format === "msl" && viewMode === "va";
+  const servesPageStates = useAnchorServesPageStates(anchor);
+  return servesPageStates && viewMode === "va";
 }

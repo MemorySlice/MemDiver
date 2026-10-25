@@ -97,6 +97,7 @@ from .heap import _cmd_heap, add_heap_parser
 from .annotations import _cmd_annotations, add_annotations_parser
 from .case import _cmd_case, add_case_parser
 from .image import _cmd_image, add_image_parser
+from .vol3 import _cmd_vol3, add_vol3_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
     DEFAULT_AUTO_EXPORT_CONTEXT,
@@ -1074,6 +1075,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # image — memory-image views over app.tools_image (same producers as
     # /api/image and the MCP image_* tools).
     add_image_parser(sub)
+
+    # vol3 — Volatility 3 plugins over app.tools_vol3 / app.tools_vol3_dev (same
+    # producers as /api/vol3 and the MCP vol3_* tools).
+    add_vol3_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1174,7 +1179,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # inspect page-states
     ips = insp_sub.add_parser("page-states", parents=[dp],
                               help="MSL three-state page model (MSL only)")
-    ips.add_argument("msl_path", help=".msl file path")
+    ips.add_argument("msl_path", help=".msl file path (or .mdview image view)")
+    ips.add_argument("--view", choices=["va", "vas"], default="va",
+                     help="'vas' = only the VA -> packed-offset map (kernel image views)")
     ips.add_argument("-o", "--output", help="Output JSON file")
     ips.add_argument("-v", "--verbose", action="store_true")
     # inspect session-info
@@ -1281,6 +1288,7 @@ def main():
         "annotations": _cmd_annotations,
         "case": _cmd_case,
         "image": _cmd_image,
+        "vol3": _cmd_vol3,
     }
     handler = handlers.get(args.command)
     if handler is None:

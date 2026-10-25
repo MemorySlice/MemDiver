@@ -660,16 +660,25 @@ def page_states_result(
     key_file: Optional[str] = None,
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
+    view: str = "va",
 ) -> "ServiceResult":
     """ServiceResult producer for :func:`get_page_states`.
 
     An ``.mdview`` image view answers from its run table instead of an
     ``.msl`` page map (see :func:`_image_page_states_result`); the response
     shape is identical, so the workspace needs no image-specific branch.
+
+    ``view`` names the view the caller will place addresses in. ``"va"`` (the
+    default, what the hex viewer asks for) is refused by an image view that does
+    not offer it; ``"vas"`` asks only for the VA -> packed-offset map, which every
+    image view has — a kernel view's VAs exceed 2^53, so its caller must parse the
+    body losslessly. An ``.msl`` serves the same table for either.
     """
+    if view not in ("va", "vas"):
+        raise UnsupportedFormatError(f"page states describe the 'va' or 'vas' view, not {view!r}")
     if Path(msl_path).suffix == IMAGE_VIEW_SUFFIX:
         return _image_page_states_result(
-            msl_path, key_material_kwargs(key_file, passphrase, kem_key_file))
+            msl_path, key_material_kwargs(key_file, passphrase, kem_key_file), view)
     _require_msl_path(msl_path)
 
     from memdiver.msl.enums import PageState
@@ -730,8 +739,8 @@ def page_states_result(
 IMAGE_VIEW_SUFFIX = ".mdview"
 
 
-def _image_page_states_result(path_str: str, km: dict) -> "ServiceResult":
-    """Page states of an image view's ``"va"`` view, from its run table."""
+def _image_page_states_result(path_str: str, km: dict, view: str = "va") -> "ServiceResult":
+    """Page states of an image view, from its run table (``view``: see the caller)."""
     from memdiver.app.page_state_runs import image_page_states_payload
 
     if not Path(path_str).is_file():
@@ -740,7 +749,7 @@ def _image_page_states_result(path_str: str, km: dict) -> "ServiceResult":
         if getattr(source, "format_name", "") != "image_view":
             raise UnsupportedFormatError(f"Not an image view: {path_str}")
         # A view whose addresses a browser cannot hold exactly offers no "va".
-        _require_supported_view(source, "va")
+        _require_supported_view(source, view)
         payload = image_page_states_payload(source.layer_runs())
         return _finalize_inspect(payload, source, view=None)
 

@@ -87,7 +87,15 @@ def create_server():
     # Agents get a smaller default row cap than the 1000 of CLI/REST: a SQL
     # result lands in the model's context window.
     MCP_CASE_QUERY_LIMIT = 200
-    from memdiver.app import tools_annotations, tools_case, tools_heap, tools_image
+    from memdiver.app import (
+        tools_annotations, tools_case, tools_heap, tools_image, tools_vol3, tools_vol3_dev,
+        tools_vol3_fixtures, tools_vol3_sources,
+    )
+    # An agent's vol3_run echoes few rows (they land in its context) and has a
+    # bounded budget: there is no TaskManager in this stdio process.
+    MCP_VOL3_MAX_ROWS = 200
+    MCP_VOL3_ROW_LIMIT = 10_000
+    MCP_VOL3_TIMEOUT_S = 120.0
     # Same reason: the heap walk cap and chunk page size an agent sees
     # advertised must be the producer's numbers.
     from memdiver.app.tools_heap import (
@@ -684,6 +692,204 @@ def create_server():
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_image.image_extract_process_result(view_path, out_path)))
 
+    # -- vol3.* : Volatility 3 plugins over a .mdview. Runs inline and blocks
+    # (no TaskManager in this stdio process). A ``source`` plugin runs
+    # UNSANDBOXED in this process (D7); its sha256 is logged.
+    @mcp.tool()
+    def vol3_plugins(os_family: str = "linux") -> str:
+        """List the bundled Volatility 3 plugins of an OS family (name, description, version)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3.vol3_plugins_result(os_family)))
+
+    @mcp.tool()
+    def vol3_describe(plugin: str = "", source: Optional[str] = None,
+                      source_name: Optional[str] = None,
+                      case_dir: Optional[str] = None) -> str:
+        """A plugin's user requirements (``args`` for ``vol3_run``).
+
+        ``plugin`` names a bundled plugin (``linux.pslist``); ``source`` is the
+        text of a user plugin, which is EXECUTED unsandboxed in this process;
+        ``source_name`` (with ``case_dir``) names one stored by ``vol3_source_put``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3.vol3_describe_result(
+                plugin, source, source_name=source_name, case_dir=case_dir)))
+
+    @mcp.tool()
+    def vol3_run(
+        view_path: str, plugin: str = "", args: Optional[dict] = None,
+        case_dir: Optional[str] = None, limit: int = MCP_VOL3_ROW_LIMIT,
+        timeout_s: float = MCP_VOL3_TIMEOUT_S, max_rows: int = MCP_VOL3_MAX_ROWS,
+        column_map: Optional[dict] = None, source: Optional[str] = None,
+        out_dir: Optional[str] = None, source_name: Optional[str] = None,
+    ) -> str:
+        """Run a Volatility 3 plugin over a ``.mdview`` view; blocks until done.
+
+        ``args`` maps plugin argument names to values (see ``vol3_describe``); a
+        process view scopes ``pid`` automatically. With ``case_dir`` the rows
+        are registered as the case table ``vol3__<os>_<plugin>`` (standard
+        columns ``addr``/``size``/``space``), queryable with ``vol3_query`` /
+        ``case_query``. ``limit`` caps rows collected, ``max_rows`` the rows
+        echoed; ``timeout_s`` stops the run (``truncated``/``stop_reason``).
+        ``source`` is a user plugin (EXECUTED unsandboxed in-process);
+        ``source_name`` runs one stored in ``case_dir`` (``vol3_source_put``).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3.vol3_run_result(
+                view_path, plugin, args, case_dir=case_dir, limit=limit,
+                timeout_s=timeout_s, max_rows=max_rows, column_map=column_map,
+                source=source, out_dir=out_dir, source_name=source_name)))
+
+    @mcp.tool()
+    def vol3_query(
+        case_dir: str, sql: Optional[str] = None, saved: Optional[str] = None,
+        params: Optional[List[Any]] = None, limit: int = MCP_CASE_QUERY_LIMIT,
+    ) -> str:
+        """Run read-only ``sql`` or a built-in ``saved`` query over a case.
+
+        With neither, returns the list of saved queries (name, description, SQL,
+        and the plugin tables each needs). A saved query whose tables are missing
+        fails naming the plugin to run.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3.vol3_query_result(case_dir, sql, saved, params, limit)))
+
+    @mcp.tool()
+    def vol3_annotate(
+        case_dir: str, table: str, run_id: str, column: str,
+        rows: Optional[List[int]] = None, label_column: Optional[str] = None,
+        author: str = "agent",
+    ) -> str:
+        """File one ``plugin_row`` annotation per row of a registered run.
+
+        ``column`` must be a location column of ``table`` (see ``case_schema``);
+        ``rows`` are row indexes (default: all). Rows with no address are skipped.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3.vol3_annotate_result(
+                case_dir, table, run_id, column, rows=rows,
+                label_column=label_column, author=author)))
+
+    @mcp.tool()
+    def vol3_scaffold(name: str, os_family: str = "linux", description: str = "",
+                      per_process: bool = True) -> str:
+        """Source text of a new Volatility 3 plugin (kernel module, optional ``pid`` filter)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_dev.vol3_scaffold_result(
+                name, os_family=os_family, description=description,
+                per_process=per_process)))
+
+    @mcp.tool()
+    def vol3_check(source: Optional[str] = None, view_path: Optional[str] = None,
+                   source_name: Optional[str] = None,
+                   case_dir: Optional[str] = None) -> str:
+        """Load plugin ``source`` or a stored ``source_name`` (EXECUTED unsandboxed) and report it.
+
+        Returns ``ok`` with the plugin description, or a structured failure
+        (error type, line). With ``view_path`` also lists the requirements the
+        view leaves unsatisfied.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_dev.vol3_check_result(
+                source, view_path, source_name=source_name, case_dir=case_dir)))
+
+    @mcp.tool()
+    def vol3_import(
+        case_dir: str, path: str, table: str, capture_id: str,
+        image_sha256: Optional[str] = None, locations: Optional[dict] = None,
+        format: str = "auto",  # noqa: A002
+    ) -> str:
+        """Register an external vol3 output (Parquet/CSV/JSON) as a run of ``table``.
+
+        ``table`` must start with ``vol3__``. ``locations`` maps address columns
+        to spaces; omitted, they are guessed (``locations_guessed``).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_dev.vol3_import_parquet_result(
+                case_dir, path, table=table, capture_id=capture_id,
+                image_sha256=image_sha256, locations=locations, format=format)))
+
+    @mcp.tool()
+    def vol3_write_config(view_path: str, out_path: str,
+                          plugin: str = "linux.pslist.PsList",
+                          source: Optional[str] = None,
+                          source_name: Optional[str] = None,
+                          case_dir: Optional[str] = None) -> str:
+        """Write a ``vol`` ``config.json`` reproducing the view's layer stack for ``plugin``.
+
+        ``source`` (plugin text) or ``source_name`` (stored in ``case_dir``) writes it for a
+        user plugin instead — UNSANDBOXED, sha256 logged — so stock ``vol -c`` can run it.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_dev.vol3_write_config_result(
+                view_path, out_path, plugin, source=source, source_name=source_name,
+                case_dir=case_dir)))
+
+    @mcp.tool()
+    def vol3_source_list(case_dir: str) -> str:
+        """List the user plugin sources stored in a case (name, sha256, size, updated, version)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_sources.vol3_source_list_result(case_dir)))
+
+    @mcp.tool()
+    def vol3_source_get(case_dir: str, name: str) -> str:
+        """One stored plugin source with its metadata; ``modified_externally`` flags a hand edit."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_sources.vol3_source_get_result(case_dir, name)))
+
+    @mcp.tool()
+    def vol3_source_put(case_dir: str, name: str, source: str,
+                        view_path: Optional[str] = None) -> str:
+        """Store plugin ``source`` as ``name`` in the case, then check it (EXECUTED unsandboxed).
+
+        An overwrite keeps the previous version under ``plugins/history``. The
+        reply carries the ``vol3_check`` outcome; a plugin that fails to load is
+        still saved. Run it later with ``vol3_run(source_name=name, case_dir=...)``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_sources.vol3_source_put_result(
+                case_dir, name, source, view_path)))
+
+    @mcp.tool()
+    def vol3_fixture_put(
+        case_dir: str, name: str, view_path: str, expect: List[dict],
+        plugin: str = "", source_name: Optional[str] = None, args: Optional[dict] = None,
+    ) -> str:
+        """Store a plugin fixture: a plugin (bundled ``plugin`` or stored ``source_name``),
+        a view and row predicates in ``expect``.
+
+        Predicates: ``{"min_rows": N}``, ``{"max_rows": N}``,
+        ``{"row_where": {"COMM": "sshd", "PID": 22176}, "count_at_least": 1}``,
+        ``{"column_all": {"column": "PID", "op": ">=", "value": 0}}`` (also ``column_any``).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_fixtures.vol3_fixture_put_result(
+                case_dir, name, view_path=view_path, expect=expect, plugin=plugin,
+                source_name=source_name, args=args)))
+
+    @mcp.tool()
+    def vol3_fixture_list(case_dir: str) -> str:
+        """List the plugin fixtures stored in a case."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_fixtures.vol3_fixture_list_result(case_dir)))
+
+    @mcp.tool()
+    def vol3_fixture_run(
+        case_dir: str, name: str, view_path: Optional[str] = None,
+        limit: int = MCP_VOL3_ROW_LIMIT, timeout_s: float = MCP_VOL3_TIMEOUT_S,
+        register_run: bool = False,
+    ) -> str:
+        """Run a fixture: verdict ``pass`` / ``fail`` / ``indeterminate`` with per-predicate results.
+
+        ``indeterminate`` means nothing was proven (truncated or timed-out run, view
+        unreadable). The verdict is filed as a ``fixture_verdict`` annotation of the
+        view's capture; ``register_run`` also files the plugin table and links it.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_vol3_fixtures.vol3_fixture_run_result(
+                case_dir, name, view_path=view_path, limit=limit, timeout_s=timeout_s,
+                register_run=register_run)))
+
     @mcp.resource("memdiver://case/{case_dir}/schema",
                   name="case_schema", mime_type="application/json",
                   description="Schema of a case; URL-encode the case directory.",
@@ -1267,10 +1473,15 @@ def create_server():
     def get_page_states(
         msl_path: str, key_file: Optional[str] = None,
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
+        view: str = "va",
     ) -> str:
-        """Surface the MSL three-state page model (CAPTURED/FAILED/UNMAPPED)."""
+        """Surface the MSL three-state page model (CAPTURED/FAILED/UNMAPPED).
+
+        ``view`` is ``"va"`` (default) or ``"vas"`` (only the VA -> packed-offset
+        map; what a kernel ``.mdview`` offers for navigation).
+        """
         return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.page_states_result(
-            _session, msl_path, key_file, passphrase, kem_key_file,
+            _session, msl_path, key_file, passphrase, kem_key_file, view=view,
         )))
 
     # ------------------------------------------------------------------

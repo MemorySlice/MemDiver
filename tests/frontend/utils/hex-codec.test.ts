@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 
-import { byteToHex, byteToAscii, offsetToHex, decodeBase64 } from "@/utils/hex-codec";
+import {
+  byteToHex,
+  byteToAscii,
+  offsetToHex,
+  decodeBase64,
+  addressDigitsFor,
+  gutterLabel,
+  isAbsoluteGutter,
+  offsetGutterWidthPx,
+} from "@/utils/hex-codec";
 
 describe("byteToHex", () => {
   it("pads to two lowercase hex digits", () => {
@@ -53,5 +62,41 @@ describe("decodeBase64", () => {
   it("decodes non-ASCII byte values", () => {
     // 0x00 0xFF 0x80 -> "AP+A"
     expect(Array.from(decodeBase64("AP+A"))).toEqual([0x00, 0xff, 0x80]);
+  });
+});
+
+describe("gutterLabel", () => {
+  it("is view-relative without a base", () => {
+    expect(gutterLabel(0x10, null)).toBe("00000010");
+    expect(gutterLabel(0x10, undefined)).toBe("00000010");
+  });
+
+  it("adds the base and pads to the requested digits", () => {
+    expect(gutterLabel(0x20, 0x7f0000001000, 12)).toBe("7f0000001020");
+    expect(gutterLabel(0, 0x1000)).toBe("00001000");
+    expect(gutterLabel(0, 0x1000, 16)).toBe("0000000000001000");
+  });
+
+  it("falls back to the relative label when the sum is not a safe integer", () => {
+    expect(gutterLabel(16, Number.MAX_SAFE_INTEGER, 16)).toBe("0000000000000010");
+    expect(isAbsoluteGutter(16, Number.MAX_SAFE_INTEGER)).toBe(false);
+    expect(isAbsoluteGutter(16, 0x1000)).toBe(true);
+    expect(isAbsoluteGutter(16, null)).toBe(false);
+  });
+});
+
+describe("addressDigitsFor / offsetGutterWidthPx", () => {
+  it("steps 8 -> 12 -> 16 digits", () => {
+    expect(addressDigitsFor(0xffffffff)).toBe(8);
+    expect(addressDigitsFor(0x100000000)).toBe(12);
+    expect(addressDigitsFor(0x7fffffffffff)).toBe(12);
+    expect(addressDigitsFor(0x1000000000000)).toBe(16);
+    expect(addressDigitsFor(Number.NaN)).toBe(8);
+  });
+
+  it("keeps the default gutter at 76px and grows 8px per digit", () => {
+    expect(offsetGutterWidthPx()).toBe(76);
+    expect(offsetGutterWidthPx(12)).toBe(108);
+    expect(offsetGutterWidthPx(16)).toBe(140);
   });
 });

@@ -49,6 +49,7 @@ from .experiment import (
 from .annotations import _cmd_annotations, add_annotations_parser
 from .case import _cmd_case, add_case_parser
 from .image import _cmd_image, add_image_parser
+from .vol3 import _cmd_vol3, add_vol3_parser
 from .heap import (
     _HEAP_HANDLERS,
     _cmd_heap,
@@ -192,6 +193,9 @@ __all__ = [
     # image
     "add_image_parser",
     "_cmd_image",
+    # vol3
+    "add_vol3_parser",
+    "_cmd_vol3",
     # heap
     "_HEAP_HANDLERS",
     "add_heap_parser",

@@ -345,11 +345,14 @@ def get_page_states(
     passphrase: str | None = None,
     key_hex: str | None = None,
     kem_key_hex: str | None = None,
+    # "vas": only the VA -> packed-offset map (Vol3 navigation in a kernel view).
+    view: Literal["va", "vas"] = "va",
     session: ToolSession = Depends(get_tool_session),
 ):
     """Surface the MSL three-state page model (CAPTURED/FAILED/UNMAPPED)."""
     with key_material_scope(decode_key_material(passphrase, key_hex, kem_key_hex)):
-        return _http_inspect(lambda: tools_inspect.page_states_result(session, msl_path))
+        return _http_inspect(lambda: tools_inspect.page_states_result(
+            session, msl_path, view=view))
 
 
 @router.get("/blocks")

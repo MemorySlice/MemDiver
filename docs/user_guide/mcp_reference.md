@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **71 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **86 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -119,6 +119,21 @@ Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip 
 | `image_open_view` | Write a `.mdview` for a `physical`, `kernel` or `process` (needs `pid`) view. |
 | `image_processes` | `pslist` of a kernel or process view (pid, ppid, comm, uid, has_mm, `kernel_va` Location); zero tasks is an error. |
 | `image_extract_process` | Extract a process view into an `.msl` file. |
+| `vol3_plugins` | Bundled Volatility 3 plugins of an OS family. |
+| `vol3_describe` | A plugin's user requirements (bundled name, or `source` text). |
+| `vol3_run` | Run a plugin over a `.mdview` inline (blocks; no TaskManager in the stdio process); `case_dir` registers the table `vol3__<os>_<plugin>`. `limit`, `timeout_s`, `max_rows`, `column_map`. `source` plugins run **unsandboxed in-process** (SHA-256 logged). |
+| `vol3_query` | Read-only `sql` or a `saved` query over a case; neither lists the saved queries. |
+| `vol3_annotate` | One `plugin_row` annotation per row of a registered run's location column. |
+| `vol3_scaffold` | Source text of a new plugin (kernel module, optional `pid` filter). |
+| `vol3_check` | Load plugin `source` (unsandboxed) and report its description or a structured failure; with `view_path` also the unsatisfied requirements. |
+| `vol3_import` | Register an external vol3 output (Parquet/CSV/JSON) as a run of a `vol3__*` table. |
+| `vol3_write_config` | Write a `vol` `config.json` reproducing the view's layer stack. |
+| `vol3_source_list` | Stored user plugin sources of a case (name, sha256, size, updated, version). |
+| `vol3_source_get` | One stored plugin source; `modified_externally` flags a hand edit. |
+| `vol3_source_put` | Store plugin source as `<case>/plugins/<name>.py` (previous version kept in `plugins/history`) and return the `vol3_check` outcome. `vol3_run`/`vol3_describe`/`vol3_check` accept `source_name` + `case_dir` instead of `source`. |
+| `vol3_fixture_put` | Store a plugin fixture (plugin or stored source, view, args, row predicates) under `<case>/fixtures/vol3/`. |
+| `vol3_fixture_list` | Stored plugin fixtures of a case. |
+| `vol3_fixture_run` | Run a fixture: verdict `pass`/`fail`/`indeterminate` with per-predicate results, filed as a `fixture_verdict` annotation. |
 
 ## Format conversion
 

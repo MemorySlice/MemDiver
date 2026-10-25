@@ -2,9 +2,22 @@ import { memo, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import type { RegionIndex } from "./highlight-utils";
 import { getRegionForOffset, regionHighlightClass } from "./highlight-utils";
-import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
+import {
+  OFFSET_DIGITS_DEFAULT,
+  byteToHex,
+  byteToAscii,
+  gutterLabel,
+  isAbsoluteGutter,
+  offsetGutterWidthPx,
+} from "@/utils/hex-codec";
 import type { HexViewMode } from "@/stores/hex-store";
-import { ABSENCE_META, type AbsenceKind } from "@/utils/absence-classes";
+import {
+  ABSENCE_META,
+  PAGE_STATE_ABSENT_ASCII,
+  PAGE_STATE_ABSENT_HEX,
+  isPageStateAbsence,
+  type AbsenceKind,
+} from "@/utils/absence-classes";
 import { markRings } from "./ground-classes";
 import {
   HEAP_CHUNK_START_BIT,
@@ -185,6 +198,15 @@ interface HexRowProps {
    * over them. Omitted (the layer is off), nothing changes.
    */
   getHeapCellAt?: (offset: number) => number;
+  /**
+   * The virtual address of offset 0, when the rows are addressed in the "va"
+   * coordinate: the gutter then prints `offsetBase + rowOffset`. DISPLAY ONLY —
+   * every read still uses the view-relative offset. Omitted (or when the sum
+   * would not be an exact integer) the gutter stays view-relative.
+   */
+  offsetBase?: number | null;
+  /** Hex digits of the gutter; widen for addresses above 32 bits. */
+  addressDigits?: number;
 }
 
 export const HexRow = memo(function HexRow({
@@ -206,6 +228,8 @@ export const HexRow = memo(function HexRow({
   renderMode = "class",
   soloUnderline = false,
   getHeapCellAt,
+  offsetBase = null,
+  addressDigits = OFFSET_DIGITS_DEFAULT,
 }: HexRowProps) {
   const { t } = useTranslation("hex");
   const hexCells: ReactElement[] = [];
@@ -357,6 +381,10 @@ export const HexRow = memo(function HexRow({
     // genuinely no byte; a page-state cause tints the zero-filled byte the
     // backend did send, exactly as it did before.
     const absencePainted = absenceMeta !== undefined && (!absenceMeta.voids || !loaded);
+    // A page-state cause means the dump holds NO byte here (the backend
+    // zero-fills the slot), so the value is never printed: `00` would read as
+    // captured zero data. The tint stays; the glyph is the non-colour cue.
+    const pageStateAbsent = absencePainted && isPageStateAbsence(absence!);
     if (absencePainted) {
       classes.push(absenceMeta.cellClass);
     }
@@ -436,9 +464,11 @@ export const HexRow = memo(function HexRow({
      */
     let printed: string;
     if (glyphMode) {
-      printed = isVoidCell
-        ? GLYPH_VOID
-        : (glyphFor(variantCount) ?? (loaded ? HEX_BYTE[byteVal] : "--"));
+      if (isVoidCell) printed = GLYPH_VOID;
+      else if (pageStateAbsent) printed = PAGE_STATE_ABSENT_HEX;
+      else printed = glyphFor(variantCount) ?? (loaded ? HEX_BYTE[byteVal] : "--");
+    } else if (pageStateAbsent) {
+      printed = PAGE_STATE_ABSENT_HEX;
     } else {
       printed = loaded ? HEX_BYTE[byteVal] : (absenceMeta?.glyph ?? "--");
     }
@@ -467,14 +497,25 @@ export const HexRow = memo(function HexRow({
         className={`hex-char ${classStr}`}
         title={tooltip || undefined}
       >
-        {loaded ? ASCII_BYTE[byteVal] : "."}
+        {loaded && !pageStateAbsent ? ASCII_BYTE[byteVal] : PAGE_STATE_ABSENT_ASCII}
       </span>
     );
   }
 
+  const offsetStyle =
+    addressDigits === OFFSET_DIGITS_DEFAULT
+      ? undefined
+      : { width: `${offsetGutterWidthPx(addressDigits)}px` };
+
   return (
     <div className="hex-row">
-      <span className="hex-offset">{offsetToHex(rowOffset)}</span>
+      <span
+        className="hex-offset"
+        style={offsetStyle}
+        title={isAbsoluteGutter(rowOffset, offsetBase) ? t("row.virtualAddress") : undefined}
+      >
+        {gutterLabel(rowOffset, offsetBase, addressDigits)}
+      </span>
       <span className="hex-bytes">{hexCells}</span>
       <span className="hex-separator" />
       <span className="hex-ascii">{asciiCells}</span>

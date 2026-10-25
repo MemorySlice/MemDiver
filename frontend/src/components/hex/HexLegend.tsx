@@ -6,8 +6,13 @@ import type { HighlightType } from "@/utils/highlight-types";
 import { selectHeapLayerEnabled, useHeapStore } from "@/stores/heap-store";
 import { PAGE_STATE_ABSENCES } from "@/utils/absence-classes";
 import { usePageStateTintsActive } from "@/hooks/usePageStateTintsActive";
+import { kindSlot } from "./highlight-utils";
+import { QUERY_HIGHLIGHT_PLUGIN } from "@/components/vol3/vol3-highlights";
 import { HeapLegend } from "./HeapLegend";
 import { AbsenceLegend } from "./AbsenceLegend";
+
+const VOL3_PREFIX = "vol3:";
+const isVol3Kind = (kind: string | undefined) => kind?.startsWith(VOL3_PREFIX) ?? false;
 
 export function HexLegend() {
   const { t } = useTranslation("hex");
@@ -22,12 +27,23 @@ export function HexLegend() {
   const activeTypes = useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of regions) {
+      if (isVol3Kind(r.kind)) continue;
       counts.set(r.type, (counts.get(r.type) ?? 0) + 1);
     }
     return counts;
   }, [regions]);
 
-  if (activeTypes.size === 0 && !heapLayerOn && !pageStateTintsActive) return null;
+  // Vol3 rows paint their own palette slot, so they get their own entries
+  // (one per plugin) instead of being counted as "Pattern Match".
+  const vol3Kinds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of regions) {
+      if (r.kind && isVol3Kind(r.kind)) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+    }
+    return counts;
+  }, [regions]);
+
+  if (activeTypes.size === 0 && vol3Kinds.size === 0 && !heapLayerOn && !pageStateTintsActive) return null;
 
   return (
     <div className="flex items-center gap-1 px-2 py-0.5 border-b border-[var(--md-border)] text-[10px] md-text-secondary">
@@ -50,6 +66,23 @@ export function HexLegend() {
                   style={{ background: `var(--md-hl-${type})` }}
                 />
                 <span>{meta.label}</span>
+                <span className="md-text-muted">({count})</span>
+              </span>
+            );
+          })}
+          {Array.from(vol3Kinds.entries()).map(([kind, count]) => {
+            const plugin = kind.slice(VOL3_PREFIX.length);
+            return (
+              <span key={kind} data-testid="hex-legend-vol3" className="flex items-center gap-1">
+                <span
+                  className={`inline-block w-3 h-3 rounded-sm highlight-kind-${kindSlot(kind)}`}
+                  style={{ background: `var(--md-hl-kind-${kindSlot(kind)})` }}
+                />
+                <span>
+                  {plugin === QUERY_HIGHLIGHT_PLUGIN
+                    ? t("legend.vol3Query")
+                    : t("legend.vol3Rows", { plugin })}
+                </span>
                 <span className="md-text-muted">({count})</span>
               </span>
             );

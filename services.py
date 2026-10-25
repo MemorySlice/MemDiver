@@ -163,6 +163,31 @@ from memdiver.app.tools_image import (
     image_profile_result,
 )
 
+# --- Volatility 3 plugins over a .mdview (run / query / annotate / dev tools) --
+from memdiver.app.tools_vol3 import (
+    vol3_annotate_result,
+    vol3_describe_result,
+    vol3_plugins_result,
+    vol3_query_result,
+    vol3_run_result,
+)
+from memdiver.app.tools_vol3_dev import (
+    vol3_check_result,
+    vol3_import_parquet_result,
+    vol3_scaffold_result,
+    vol3_write_config_result,
+)
+from memdiver.app.tools_vol3_fixtures import (
+    vol3_fixture_list_result,
+    vol3_fixture_put_result,
+    vol3_fixture_run_result,
+)
+from memdiver.app.tools_vol3_sources import (
+    vol3_source_get_result,
+    vol3_source_list_result,
+    vol3_source_put_result,
+)
+
 __all__ = [
     # session
     "ToolSession",
@@ -272,4 +297,20 @@ __all__ = [
     "image_open_view_result",
     "image_processes_result",
     "image_extract_process_result",
+    # Volatility 3 — plugins over a .mdview into a case, saved queries, dev tools.
+    "vol3_plugins_result",
+    "vol3_describe_result",
+    "vol3_run_result",
+    "vol3_query_result",
+    "vol3_annotate_result",
+    "vol3_scaffold_result",
+    "vol3_check_result",
+    "vol3_import_parquet_result",
+    "vol3_write_config_result",
+    "vol3_source_list_result",
+    "vol3_source_get_result",
+    "vol3_source_put_result",
+    "vol3_fixture_put_result",
+    "vol3_fixture_list_result",
+    "vol3_fixture_run_result",
 ]

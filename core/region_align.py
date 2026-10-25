@@ -845,6 +845,29 @@ def va_page_key(page_va: int) -> str:
     return f"va:{page_va:016x}"
 
 
+def _aligns_by_run_table(source: Any) -> bool:
+    """True for a source that publishes ``captured_runs`` for VA alignment.
+
+    ``.msl`` and image views (``.mdview``) hand over ``(va, length,
+    vas_offset)`` per CAPTURED run, to be read back through the ``"vas"``
+    stream. Gcore / regioned sources keep their ``iter_ranges`` + raw-offset
+    contract. FAILED / NOT_RESIDENT / unmapped addresses are in no run, so
+    they never enter the alignment and are never compared as zeros.
+    """
+    return (getattr(source, "va_alignment_by_runs", False)
+            or getattr(source, "format_name", "") == "msl") and \
+        callable(getattr(source, "captured_runs", None))
+
+
+def _va_alignment_ranges(source: Any, view: str):
+    """``(start_va, end_va, offset)`` per captured range, plus the read view."""
+    if _aligns_by_run_table(source):
+        ranges = ((int(va), int(va) + int(n), int(off))
+                  for va, n, off in source.captured_runs())
+        return ranges, "vas"
+    return source.iter_ranges(view), "raw"
+
+
 def build_va_page_index(
     dump_index: int, source: Any, *,
     page_size: int = VA_PAGE_SIZE, view: str = "vas",
@@ -880,9 +903,10 @@ def build_va_page_index(
         )
     regions: Dict[str, NormalizedRegion] = {}
     file_offsets: Dict[str, int] = {}
-    pages = _VaPageData(source, file_offsets)
+    ranges, read_view = _va_alignment_ranges(source, view)
+    pages = _VaPageData(source, file_offsets, read_view)
 
-    for start_va, end_va, file_offset in source.iter_ranges(view):
+    for start_va, end_va, file_offset in ranges:
         start_va, end_va, file_offset = int(start_va), int(end_va), int(file_offset)
         va = start_va
         while va < end_va:
@@ -930,7 +954,9 @@ def read_va_slab(
                 f"dump {index.region_map.dump_index} has no page for "
                 f"aligned key {aslice.key!r}"
             )
-        chunks.append(source.read_range(offset, aslice.page_size, view))
+        chunks.append(source.read_range(
+            offset, aslice.page_size,
+            "vas" if _aligns_by_run_table(source) else view))
     return b"".join(chunks)
 
 

@@ -147,8 +147,10 @@ class KernelAdapter(_LayerReader):
 
     def _runs_locked(self) -> Sequence[LayerRun]:
         kernel = self._ctx.kernel
-        text = kernel.get_absolute_symbol_address("_text")
-        end = kernel.get_absolute_symbol_address("_end")
+        # Symbol addresses are masked to the VA width (as in stock vol3); the
+        # view's coordinates are canonical kernel VAs.
+        text = self._ctx.canonical_kernel_va(kernel.get_absolute_symbol_address("_text"))
+        end = self._ctx.canonical_kernel_va(kernel.get_absolute_symbol_address("_end"))
         runs = list(classify(self._layer, text, end - text, missing=None))
         base = self._page_offset_base()
         for seg in physical_runs(self._physical):

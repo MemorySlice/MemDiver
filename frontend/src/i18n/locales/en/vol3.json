@@ -1,0 +1,223 @@
+{
+  "title": "Volatility 3",
+  "plugin": {
+    "search": "Search plugins",
+    "count": "{{shown}} of {{total}} plugins",
+    "none": "No plugin matches."
+  },
+  "args": {
+    "none": "This plugin takes no arguments.",
+    "optional": "optional",
+    "required": "required",
+    "listPlaceholder": "comma-separated",
+    "integerPlaceholder": "decimal or 0x hex",
+    "choiceNone": "(default)",
+    "pidAuto": "Left empty, this is filled with the process view's pid.",
+    "error": {
+      "required": "This argument is required.",
+      "integer": "Enter a whole number (decimal or 0x hex)."
+    },
+    "pidSelected": "Prefilled from the selected process (pid {{pid}})."
+  },
+  "run": {
+    "limit": "Row limit",
+    "timeout": "Timeout (s)",
+    "async": "Run as a background job",
+    "caseDir": "Case directory (optional, registers the run)",
+    "casePlaceholder": "/path/to/case",
+    "button": "Run plugin",
+    "cancel": "Cancel",
+    "cancelled": "Run cancelled.",
+    "running": "Running plugin...",
+    "progress": "({{pct}}%)",
+    "needView": "Open a memory image view (.mdview) in the workspace to run plugins."
+  },
+  "result": {
+    "rows": "{{returned}} of {{total}} rows",
+    "elapsed": "{{s}} s",
+    "truncated": "Truncated: the run stopped early ({{reason}}). These rows are NOT the complete result.",
+    "stopReason": {
+      "row_limit": "row limit reached",
+      "timeout": "timeout reached",
+      "unknown": "unknown reason"
+    },
+    "rowCap": "Showing {{returned}} of {{total}} rows; the rest were not sent.",
+    "defaultsApplied": "Arguments filled in for you: {{args}}"
+  },
+  "table": {
+    "absentUnknown": "no value",
+    "approximate": "Rounded by the transport; the low bits are unreliable.",
+    "highlightAs": "Treat {{column}} as",
+    "rowLabel": "Row {{n}}",
+    "empty": "The plugin returned no rows.",
+    "reRunHint": "Column reinterpretation applies on the next run.",
+    "space": {
+      "auto": "auto",
+      "none": "not an address",
+      "physical": "physical",
+      "kernel_va": "kernel VA",
+      "process_va": "process VA"
+    },
+    "objectSize_one": "{{count}} byte highlighted",
+    "objectSize_other": "{{count}} bytes highlighted",
+    "spaceBadge": {
+      "physical": "phys",
+      "kernel_va": "kva",
+      "process_va": "pva"
+    }
+  },
+  "nav": {
+    "unsupportedSpace": "Cannot show a {{space}} address in this view.",
+    "viewUnknown": "The active view's address space is not known yet.",
+    "spaceMismatch": "This is a {{space}} address; the open view is a {{view}} view.",
+    "rowNoPid": "This row has no pid, so its process address cannot be placed.",
+    "viewPidUnknown": "Row pid {{pid}} cannot be compared: this process view's pid is not known (run a plugin with a pid argument).",
+    "pidMismatch": "This address belongs to pid {{pid}}; the open view is for pid {{viewPid}}.",
+    "rawView": "Switch the hex viewer to the va or vas view to jump to an address.",
+    "pageStatesPending": "The view's page map is still loading or unavailable.",
+    "outOfView": "The address lies outside the open view.",
+    "notCaptured": "The address is not captured in this view ({{state}}).",
+    "noAddress": "This row has no address that can be shown."
+  },
+  "actions": {
+    "noAddress": "This result has no address columns to highlight.",
+    "column": "Address column",
+    "highlight": "Highlight column"
+  },
+  "annotate": {
+    "labelColumn": "Label column",
+    "noLabel": "(no label)",
+    "save": "Save as annotations",
+    "needCase": "Run with a case directory to enable saving annotations.",
+    "done": "Filed {{n}} annotations."
+  },
+  "mode": {
+    "label": "Mode",
+    "run": "Run",
+    "editor": "Editor",
+    "processes": "Processes",
+    "query": "Query"
+  },
+  "editor": {
+    "warning": "Plugins run unsandboxed inside the MemDiver process, with the server's privileges. Run only code you trust.",
+    "externalEdit": "This source was changed outside MemDiver since it was last saved. What you see is the file as it is now.",
+    "name": "Plugin name",
+    "perProcess": "Per-process",
+    "scaffold": "New from scaffold",
+    "load": "Load stored source",
+    "noStored": "No stored sources",
+    "save": "Save to case",
+    "run": "Run source",
+    "needCase": "Set a case directory to save sources and fixtures.",
+    "unsaved": "Unsaved changes: running uses the text in the editor, not the stored copy.",
+    "sourceLabel": "Plugin source",
+    "errorLine": "Error on line {{n}}",
+    "check": {
+      "button": "Check",
+      "ok": "Loads: {{name}} (version {{version}})",
+      "noRequirements": "No user requirements.",
+      "requirements": "Requirements: {{list}}",
+      "viewSatisfied": "The active view satisfies every requirement.",
+      "unsatisfied": "Unsatisfied by the active view:",
+      "failed": "{{type}}",
+      "failedAt": "{{type}} on line {{line}}"
+    },
+    "fixtures": {
+      "title": "Fixtures",
+      "needCase": "Set a case directory to use fixtures.",
+      "none": "No fixtures in this case.",
+      "notRun": "not run",
+      "run": "Run fixture",
+      "create": "New fixture for this plugin",
+      "createButton": "Create fixture",
+      "name": "Fixture name",
+      "kind": "Predicate",
+      "column": "Column",
+      "value": "Value",
+      "op": "Operator",
+      "count": "Row count",
+      "countAtLeast": "Count at least (default 1)",
+      "needSave": "Save the plugin to the case first: fixtures target the stored source.",
+      "predOk": "met",
+      "predFail": "not met",
+      "kinds": {
+        "min_rows": "At least N rows",
+        "max_rows": "At most N rows",
+        "row_where": "Rows where column = value",
+        "column_all": "Every row: column op value"
+      },
+      "verdict": {
+        "pass": "Pass",
+        "fail": "Fail",
+        "indeterminate": "Indeterminate"
+      },
+      "error": {
+        "count": "Enter a non-negative whole number.",
+        "columnValue": "Enter a column and a value."
+      }
+    }
+  },
+  "selection": {
+    "filter": "Only rows of the selected pid ({{pid}})",
+    "filterNone": "Select a process to filter rows by pid"
+  },
+  "tree": {
+    "load": "Load process tree",
+    "empty": "No process listing yet. Run pslist, pstree or psscan, or load the tree.",
+    "search": "Search by name or pid",
+    "label": "Process tree",
+    "collapse": "Collapse pid {{pid}}",
+    "expand": "Expand pid {{pid}}",
+    "select": "Select process {{comm}} (pid {{pid}})",
+    "noName": "(no name)",
+    "threads_one": "{{count}} thread",
+    "threads_other": "{{count}} threads",
+    "orphan": "orphan",
+    "orphanHint": "Parent pid {{ppid}} is not in this listing",
+    "cycle": "parent cycle",
+    "noMatch": "No process matches the search."
+  },
+  "rules": {
+    "title": "Highlight rules",
+    "builtIn": "built-in",
+    "disable": "Disable",
+    "add": "Add rule",
+    "table": "Table (plugin)",
+    "column": "Column",
+    "op": "Operator",
+    "value": "Value",
+    "styleLabel": "Style",
+    "needCase": "Set a case directory and open a view to save rules.",
+    "ops": {
+      "eq": "equals",
+      "ne": "differs from",
+      "lt": "less than",
+      "gt": "greater than",
+      "contains": "contains",
+      "regex": "matches regex",
+      "in": "is one of (comma list)"
+    },
+    "style": {
+      "danger": "Danger",
+      "warn": "Warning",
+      "info": "Info",
+      "ok": "OK"
+    },
+    "invalid": {
+      "regex": "This is not a valid regular expression.",
+      "fields": "Enter a table and a column."
+    }
+  },
+  "query": {
+    "needCase": "Set a case directory to query its tables.",
+    "saved": "Saved queries",
+    "savedPlaceholder": "Saved queries...",
+    "sql": "Read-only SQL",
+    "sqlPlaceholder": "SELECT * FROM ...",
+    "run": "Run query",
+    "rows": "{{shown}} of {{total}} rows",
+    "truncated": "Truncated: these rows are NOT the complete result.",
+    "send": "Send rows to highlights",
+    "placed": "Highlighted {{placed}} rows; {{skipped}} could not be placed in this view."
+  }
+}

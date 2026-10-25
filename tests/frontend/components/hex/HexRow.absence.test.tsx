@@ -249,7 +249,8 @@ describe("HexRow absence is coordinate-independent", () => {
    * The single-dump viewer's behaviour, unchanged: its adapter maps
    * FAILED/UNMAPPED onto the tints and CAPTURED (or a not-yet-resolved page
    * state) onto `loading`, which is exactly what the old `"va"`-gated block
-   * did — a zero-filled non-captured byte still prints and still tints.
+   * did — a zero-filled non-captured byte still tints, but no longer prints
+   * its fabricated `00`: it prints `--` (hex) and `.` (ASCII).
    */
   it("keeps the single-dump va behaviour byte for byte", () => {
     const { container } = renderRow({
@@ -263,13 +264,61 @@ describe("HexRow absence is coordinate-independent", () => {
     });
 
     expect(hexCell(container, 0)).toHaveClass("page-failed");
-    expect(hexCell(container, 0)).toHaveTextContent("00");
+    expect(hexCell(container, 0)).toHaveTextContent("--");
     expect(hexCell(container, 1)).toHaveClass("page-unmapped");
-    expect(hexCell(container, 1)).toHaveTextContent("00");
+    expect(hexCell(container, 1)).toHaveTextContent("--");
     // A captured byte whose chunk has not arrived: the faint placeholder, as
     // before — and no hatch, because a slow fetch is not a finding.
     const pending = hexCell(container, 2);
     expect(pending).toHaveClass("hex-loading");
     expect([...pending.classList]).not.toContain("byte-absent");
+  });
+});
+
+/**
+ * A page-state-absent byte arrives as a zero the backend filled in. It must
+ * never print as a value (`00` reads as captured zeros) in either column, for
+ * an `.msl` and an `.mdview` image view alike - the row cannot tell them apart.
+ */
+describe("HexRow page-state-absent bytes", () => {
+  const PAGE_STATES = ["failed", "unmapped", "not-resident"] as const;
+
+  it.each(PAGE_STATES)("prints -- and . for a loaded byte in state %s", (state) => {
+    const { container } = renderRow({
+      view: "va",
+      getByteAt: () => 0x00,
+      getAbsenceAt: () => state,
+    });
+    const hex = hexCell(container, 0);
+    const ascii = container.querySelector('[data-col="ascii"][data-offset="0"]');
+    expect(hex).toHaveTextContent("--");
+    expect(hex).not.toHaveTextContent("00");
+    expect(ascii).toHaveTextContent(".");
+  });
+
+  it("keeps the tint alongside the glyph so colour is not the only cue", () => {
+    const { container } = renderRow({ getByteAt: () => 0, getAbsenceAt: () => "failed" });
+    expect(hexCell(container, 0)).toHaveClass("page-failed");
+  });
+
+  it("never prints a non-zero value either", () => {
+    const { container } = renderRow({ getByteAt: () => 0x41, getAbsenceAt: () => "unmapped" });
+    expect(hexCell(container, 0)).toHaveTextContent("--");
+    expect(container.querySelector('[data-col="ascii"][data-offset="0"]')).toHaveTextContent(".");
+  });
+
+  it("still prints a captured byte normally", () => {
+    const { container } = renderRow({ getByteAt: () => 0x41, getAbsenceAt: () => undefined });
+    expect(hexCell(container, 0)).toHaveTextContent("41");
+    expect(container.querySelector('[data-col="ascii"][data-offset="0"]')).toHaveTextContent("A");
+  });
+
+  it("prints -- in glyph render mode too", () => {
+    const { container } = renderRow({
+      getByteAt: () => 0,
+      getAbsenceAt: () => "failed",
+      renderMode: "glyph",
+    });
+    expect(hexCell(container, 0)).toHaveTextContent("--");
   });
 });

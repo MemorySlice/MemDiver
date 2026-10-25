@@ -6,6 +6,7 @@ tests send the exact requests the frontend sends (``getPageStates``,
 a ``Vol3LayerSource`` driven by a fake layer adapter (no Volatility).
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -176,6 +177,64 @@ def test_kernel_view_drops_va_and_refuses_it_as_a_capability_error(client, make_
     assert "bytes" not in refused
     states = client.get("/api/inspect/page-states", params={"msl_path": path}).json()
     assert "'va' is not available" in states["error"]
+
+
+def test_kernel_view_serves_its_vas_navigation_map_on_request(client, make_view):
+    """Found in the browser (phase gate): Vol3 row navigation / column highlights in
+    a kernel view's ``vas`` need the VA -> packed-offset map, which the default
+    (``va``) request refuses. ``view=vas`` serves it; VAs stay exact integers."""
+    kernel_base = 0xFF424DB6C0000000
+    runs = [LayerRun(kernel_base, PAGE, C), LayerRun(kernel_base + PAGE, PAGE, F),
+            LayerRun(kernel_base + 3 * PAGE, 2 * PAGE, C)]
+    path = make_view(runs, kind=ViewKind.KERNEL)
+    resp = client.get("/api/inspect/page-states", params={"msl_path": path, "view": "vas"})
+    body = json.loads(resp.text)
+    assert "error" not in body, body
+    ivs = [iv for r in body["regions"] for iv in r["intervals"]]
+    assert [(iv["va"], iv["state"], iv.get("vas_offset")) for iv in ivs] == [
+        (kernel_base, "CAPTURED", 0), (kernel_base + PAGE, "FAILED", None),
+        (kernel_base + 3 * PAGE, "CAPTURED", PAGE)]
+    assert '"va":%d' % kernel_base in resp.text.replace(" ", "")
+
+
+def _kernel_vas_view(make_view):
+    base = 0xFF424DB6C0000000
+    runs = [LayerRun(base, PAGE, C), LayerRun(base + 3 * PAGE, PAGE, C)]
+    return base, make_view(runs, kind=ViewKind.KERNEL)
+
+
+def test_cli_page_states_serves_the_vas_map_of_a_kernel_view(make_view, tmp_path):
+    """Parity: ``inspect page-states --view vas`` == the REST ``view=vas``."""
+    import argparse
+
+    from memdiver.cli import _cmd_inspect_page_states
+
+    base, path = _kernel_vas_view(make_view)
+    out = tmp_path / "vas.json"
+    args = argparse.Namespace(msl_path=path, output=str(out), view="vas")
+    assert _cmd_inspect_page_states(args) == 0
+    ivs = [iv for r in json.loads(out.read_text())["regions"] for iv in r["intervals"]]
+    assert [(iv["va"], iv.get("vas_offset")) for iv in ivs] == [(base, 0), (base + 3 * PAGE, PAGE)]
+    args.view = "va"
+    _cmd_inspect_page_states(args)
+    assert "'va' is not available" in json.loads(out.read_text())["error"]
+
+
+def test_mcp_get_page_states_accepts_view_vas(make_view):
+    from memdiver.mcp_server.server import create_server
+
+    base, path = _kernel_vas_view(make_view)
+    tool = create_server()._tool_manager._tools["get_page_states"]
+    body = json.loads(tool.fn(msl_path=path, view="vas"))
+    assert "error" not in body, body
+    assert body["regions"][0]["intervals"][0]["va"] == base
+    assert "'va' is not available" in json.loads(tool.fn(msl_path=path))["error"]
+
+
+def test_page_states_refuses_the_raw_view(client, make_view):
+    path = make_view(USER_RUNS)
+    body = client.get("/api/inspect/page-states", params={"msl_path": path, "view": "raw"})
+    assert body.status_code == 422
 
 
 def test_view_overrides_do_not_outlive_a_reopen(make_view):

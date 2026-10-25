@@ -78,6 +78,40 @@ memdiver image processes ./case/views/alma-9.process.pid22176.mdview
 memdiver image extract ./case/views/alma-9.process.pid22176.mdview --out sshd.msl
 ```
 
+## Volatility 3 plugins
+
+`vol3` runs Volatility 3 plugins over a `.mdview` (needs `pip install
+"memdiver[image]"`). `run --case` files the rows as the case table
+`vol3__<os>_<plugin>` with the standard `addr`/`size`/`space` columns; `query`
+runs SQL or a built-in `--saved` query over those tables (neither flag lists
+the saved queries); `annotate` files one annotation per row; `scaffold`,
+`check`, `write-config` and `import` support writing your own plugin or
+importing an external `vol` output. A plugin given with `--source FILE` runs
+**unsandboxed in this process** (its SHA-256 is logged); only run source you
+trust. REST runs inline up to `timeout_s` 30 / `limit` 10000 and as a task
+beyond that (or with `async`); the MCP server always runs inline.
+
+```bash
+memdiver vol3 list
+memdiver vol3 run --view ./case/views/alma-9.kernel.mdview --plugin linux.pslist --case ./case
+memdiver vol3 run --view p.mdview --plugin linux.psscan --arg pid=[1,2] --case ./case
+memdiver vol3 query --case ./case --saved hidden_processes
+memdiver vol3 scaffold my_plugin > scaffold.json
+memdiver vol3 check --source my_plugin.py --view p.mdview
+memdiver vol3 source put my_plugin --case ./case --file my_plugin.py
+memdiver vol3 source list --case ./case
+memdiver vol3 run --view p.mdview --source-name my_plugin --case ./case
+memdiver vol3 fixture put sshd_alive --case ./case --view p.mdview --plugin linux.pslist \
+  --expect '{"row_where": {"COMM": "sshd", "PID": 22176}}'
+memdiver vol3 fixture run sshd_alive --case ./case
+```
+
+`source put|get|list` keep plugin sources in the case (`plugins/<name>.py`, never
+deleted: an overwrite archives the old text). `fixture put|list|run` check a
+plugin against declarative row predicates (`min_rows`, `max_rows`, `row_where`,
+`column_all`, `column_any`) and file a `pass`/`fail`/`indeterminate` verdict
+(`fixture_verdict`) in the analysis record.
+
 ## Looking at the heap
 
 `heap` finds the allocator that owns a dump's heap (glibc ptmalloc2,

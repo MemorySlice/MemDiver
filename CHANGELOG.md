@@ -3,6 +3,27 @@
 All notable changes to MemDiver are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Full memory images (semantic workbench P1/P2): `.mdview` physical / kernel / process
+  views over LiME/ELF/raw images through Volatility 3 (LA57 5-level paging supported),
+  profile chain with optional pakunoda ISF extraction, process extraction to `.msl`,
+  analysis record, case data lake (`case query`, `context-at`).
+- Volatility 3 inside MemDiver: `memdiver vol3 list|describe|run|query|annotate|scaffold|
+  check|import|write-config|source|fixture` on CLI, REST and MCP; plugin rows become case
+  tables with address coordinate systems, annotations and hex highlights; saved queries
+  (hidden processes, sockets, rwx mappings, …); web Image and Vol3 panels, plugin editor.
+- `vol3 write-config` writes a `vol -c` config reproducing MemDiver's stack, so stock `vol`
+  runs on LA57 images where its own automagic finds nothing.
+- Hex view: bytes without captured content print `--` (both `.msl` and image views); the
+  gutter shows absolute virtual addresses in the `va` view; image views work in
+  side-by-side and overlay panes.
+
+### Fixed
+- `--pid` narrowing of emitted plugins proven end-to-end on a real kernel image
+  (`tests/test_vol3_pid_real_image.py`).
+
 ## [1.0.1] — 2026-10-24
 
 ### Fixed
@@ -517,6 +538,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
       process-layer scan after it, which need a real kernel memory image plus a
       matching ISF that neither this repository nor the development machine has.
       Do not read the new tests as end-to-end `--pid` coverage.
+      *Update (Unreleased, semantic workbench P2):* `--pid` narrowing is now proven
+      end-to-end on a real LA57 kernel image — `tests/test_vol3_pid_real_image.py`.
   - **(c) The plugin scanned the wrong layer — the default scan target is now
     the physical/file layer.** MemDiver's raw dumps begin with `7f 45 4c 46` and
     have `e_type = ET_DYN`, so they *look* like an ELF to vol3's `LayerStacker`

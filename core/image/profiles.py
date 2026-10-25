@@ -18,6 +18,7 @@ Cache layout: ``<cache_dir()>/<image sha256>/<name>.isf.json`` plus a
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
@@ -187,6 +188,16 @@ def scan_linux_banners(image_path: Path, limit: int = _BANNER_CANDIDATES) -> Lis
                 break
             carry = data[-_BANNER_MAX:]
     return found
+
+
+#: A real kernel banner: ``Linux version <release> (<builder>) ...``. Source-code
+#: comments and format strings that merely contain "Linux version " do not match.
+_PLAUSIBLE_BANNER = re.compile(rb"^Linux version \d+\.\d+\S* \(")
+
+
+def plausible_banners_first(banners: Sequence[bytes]) -> List[bytes]:
+    """``banners`` with real kernel banners first; scan order kept within each group."""
+    return sorted(banners, key=lambda b: _PLAUSIBLE_BANNER.match(b) is None)
 
 
 def _collect_banners(data: bytes, found: List[bytes], limit: int) -> None:

@@ -670,6 +670,13 @@ export interface ImportPreview {
   runtime_bytes?: number;
   /** `.mdview` image views only: which address space the view exposes. */
   view_kind?: "process" | "kernel" | "physical";
+  /** `.mdview` only: the descriptor's kind, pid (null unless a process view), capture and path. */
+  view?: {
+    kind: "process" | "kernel" | "physical";
+    pid: number | null;
+    capture_id: string | null;
+    view_path: string;
+  } | null;
   /**
    * `.mdview` image views only: `false` for a physical / kernel view, which has
    * no process mappings to choose between (the UI explains instead of listing).

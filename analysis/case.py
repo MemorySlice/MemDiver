@@ -65,6 +65,13 @@ def cases_root() -> Path:
     return memdiver_home() / "cases"
 
 
+def case_path(dir_or_name: "str | Path") -> Path:
+    """Where a case lives: a bare name means ``cases_root()/<name>``, else the path."""
+    text = str(dir_or_name)
+    bare = os.sep not in text and "/" not in text and not text.startswith((".", "~"))
+    return cases_root() / text if bare else Path(text).expanduser()
+
+
 def __getattr__(name: str) -> Any:  # pragma: no cover - trivial
     if name == "CASES_ROOT":  # resolved lazily so XDG_DATA_HOME changes apply
         return cases_root()
@@ -113,10 +120,13 @@ class TableRef:
     path: str
     row_count: int
     locations: Dict[str, str] = field(default_factory=dict)
+    truncated: bool = False
+    stop_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "run_id": self.run_id, "path": self.path,
-                "row_count": self.row_count, "locations": dict(self.locations)}
+                "row_count": self.row_count, "locations": dict(self.locations),
+                "truncated": self.truncated, "stop_reason": self.stop_reason}
 
 
 def _json_safe(value: Any) -> Any:
@@ -268,9 +278,7 @@ class Case:
     @classmethod
     def init(cls, dir_or_name: "str | Path") -> "Case":
         """Create (or re-open) a case. A bare name means ``cases_root()/<name>``."""
-        text = str(dir_or_name)
-        bare = os.sep not in text and "/" not in text and not text.startswith(".")
-        root = cases_root() / text if bare else Path(text).expanduser()
+        root = case_path(dir_or_name)
         root.mkdir(parents=True, exist_ok=True)
         for sub in _SUBDIRS:
             (root / sub).mkdir(exist_ok=True)
@@ -284,6 +292,9 @@ class Case:
     def open(cls, directory: "str | Path") -> "Case":
         """Open an existing case; ``case.json`` must exist."""
         root = Path(directory).expanduser()
+        if not (root / MANIFEST).is_file():
+            # A bare name opens the case `init` filed under cases_root().
+            root = case_path(directory)
         if not (root / MANIFEST).is_file():
             raise _invalid(f"not a case directory (no {MANIFEST}): {root}",
                            "case.not_a_case")
@@ -341,7 +352,9 @@ class Case:
                    "columns": table.column_names, "locations": locs}
         _atomic_write_text(path.with_name(f"{stem}.meta.json"),
                            json.dumps(sidecar, indent=2) + "\n")
-        return TableRef(name, run_id, str(path), table.num_rows, locs)
+        extra = info.get("meta") or {}
+        return TableRef(name, run_id, str(path), table.num_rows, locs,
+                        bool(extra.get("truncated")), extra.get("stop_reason"))
 
     # -- listing ---------------------------------------------------------
     def tables(self) -> List[str]:
@@ -359,9 +372,12 @@ class Case:
             data = json.loads(side.read_text(encoding="utf-8"))
             parquet = side.with_name(side.name[: -len(".meta.json")] + ".parquet")
             if parquet.is_file():
+                extra = data.get("meta") or {}
                 refs.append(TableRef(name, data["run_id"], str(parquet),
                                      int(data["row_count"]),
-                                     dict(data.get("locations", {}))))
+                                     dict(data.get("locations", {})),
+                                     bool(extra.get("truncated")),
+                                     extra.get("stop_reason")))
         return refs
 
     def schema(self) -> Dict[str, Any]:
@@ -377,7 +393,9 @@ class Case:
         arrow = pq.read_schema(runs[-1].path)
         return {"columns": [{"name": f.name, "type": str(f.type)} for f in arrow],
                 "locations": dict(runs[-1].locations), "runs": len(runs),
-                "rows": sum(r.row_count for r in runs)}
+                "rows": sum(r.row_count for r in runs),
+                "truncated_runs": [{"run_id": r.run_id, "stop_reason": r.stop_reason}
+                                   for r in runs if r.truncated]}
 
     def _annotations_schema(self) -> Dict[str, Any]:
         files = sorted((self.dir / "annotations").glob("*.jsonl"))

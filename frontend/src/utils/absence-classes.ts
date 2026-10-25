@@ -146,6 +146,14 @@ export const ABSENCE_LEGEND: readonly AbsenceKind[] = [
   ...PAGE_STATE_ABSENCES,
 ];
 
+/**
+ * What a page-state-absent byte prints: `--` in the hex column (the same
+ * glyph a never-captured byte gets) and `.` in the ASCII column (what an
+ * unloaded byte prints there), so the three viewers agree.
+ */
+export const PAGE_STATE_ABSENT_HEX = "--";
+export const PAGE_STATE_ABSENT_ASCII = ".";
+
 /** Whether `kind` is one of the MSL page-state tints rather than a void cause. */
 export function isPageStateAbsence(kind: AbsenceKind): boolean {
   return PAGE_STATE_ABSENCES.includes(kind);

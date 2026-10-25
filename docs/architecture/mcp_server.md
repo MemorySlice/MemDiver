@@ -1,6 +1,6 @@
 # mcp_server/
 
-Model Context Protocol server built on `MCPServer` (`mcp.server.mcpserver`, official Python SDK 2.x — the successor of v1's `FastMCP`). Exposes 71 tools and one resource template (`memdiver://case/{case_dir}/schema`) — no prompts.
+Model Context Protocol server built on `MCPServer` (`mcp.server.mcpserver`, official Python SDK 2.x — the successor of v1's `FastMCP`). Exposes 86 tools and one resource template (`memdiver://case/{case_dir}/schema`) — no prompts.
 
 - `server.py` — registers `@mcp.tool` handlers, delegating to the surface-agnostic **producers** in the [`app/`](app.md) layer.
 - `presenters.py` — the MCP presenter: turns a producer's `ServiceResult` into the MCP tool response (inlining any lock diagnostic with the MCP parameter names).

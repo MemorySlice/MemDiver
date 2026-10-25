@@ -155,6 +155,7 @@ def _cmd_inspect_page_states(args: argparse.Namespace) -> int:
     from memdiver.mcp_server.tools_inspect import page_states_result
     machine_payload, _exit_code, _stderr_msg = _present_inspect_cli_call(
         lambda: page_states_result(_new_tool_session(), args.msl_path,
+                                   view=getattr(args, "view", "va"),
                                    **_inspect_key_kwargs(args)))
     return _emit_inspect(machine_payload, args.output)
 

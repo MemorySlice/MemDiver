@@ -358,6 +358,40 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("image.extract_process", "memdiver.app.tools_image.image_extract_process_result",
          ("library", "cli", "web", "mcp")),
+    # -- Volatility 3 plugins over a .mdview (T2.2). User plugin source runs
+    # UNSANDBOXED in-process (D7; 127.0.0.1-bound, sha256 logged). vol3.run is
+    # inline on CLI/MCP and a job above 30 s / 10000 rows on REST.
+    _cap("vol3.plugins", "memdiver.app.tools_vol3.vol3_plugins_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.describe", "memdiver.app.tools_vol3.vol3_describe_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.run", "memdiver.app.tools_vol3.vol3_run_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.query", "memdiver.app.tools_vol3.vol3_query_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.annotate", "memdiver.app.tools_vol3.vol3_annotate_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.scaffold", "memdiver.app.tools_vol3_dev.vol3_scaffold_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.check", "memdiver.app.tools_vol3_dev.vol3_check_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.write_config", "memdiver.app.tools_vol3_dev.vol3_write_config_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.import", "memdiver.app.tools_vol3_dev.vol3_import_parquet_result",
+         ("library", "cli", "web", "mcp")),
+    # -- Stored user plugin sources (T2.5) and plugin fixtures (T2.8, D13).
+    _cap("vol3.source_list", "memdiver.app.tools_vol3_sources.vol3_source_list_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.source_get", "memdiver.app.tools_vol3_sources.vol3_source_get_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.source_put", "memdiver.app.tools_vol3_sources.vol3_source_put_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.fixture_put", "memdiver.app.tools_vol3_fixtures.vol3_fixture_put_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.fixture_list", "memdiver.app.tools_vol3_fixtures.vol3_fixture_list_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.fixture_run", "memdiver.app.tools_vol3_fixtures.vol3_fixture_run_result",
+         ("library", "cli", "web", "mcp")),
 )
 
 

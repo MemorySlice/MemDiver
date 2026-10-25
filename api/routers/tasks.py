@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
 from memdiver.api.dependencies import task_manager_or_503 as _manager_or_503
-from memdiver.api.services.task_manager import TERMINAL_STATUSES
+from memdiver.api.services.artifact_store import ArtifactStoreError
+from memdiver.api.services.task_manager import TERMINAL_STATUSES, TaskStatus
 
 logger = logging.getLogger("memdiver.api.routers.tasks")
 
@@ -34,9 +37,30 @@ def get_task(task_id: str):
     return record.to_dict()
 
 
+def _result_payload(mgr, record) -> Optional[Any]:
+    """The full parsed ``<kind>_result`` JSON artifact of a succeeded task, else ``None``.
+
+    The task WebSocket delivers a result already parsed by ``JSON.parse`` (integers
+    above 2**53 are rounded); this is the exact, losslessly-parseable copy.
+    """
+    if record.status is not TaskStatus.SUCCEEDED:
+        return None
+    spec = next((a for a in record.artifacts if a.name == f"{record.kind}_result"
+                 and a.media_type == "application/json"), None)
+    if spec is None:
+        return None
+    try:
+        path = mgr.artifact_store._resolve(record.task_id, spec.relpath, require_file=True)
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ArtifactStoreError, OSError, ValueError):
+        logger.warning("task %s: result artifact unreadable", record.task_id)
+        return None
+
+
 @router.get("/{task_id}/result")
 def get_task_result(task_id: str):
-    """Alias for ``GET /{task_id}`` retained for the old frontend contract."""
+    """The task record once terminal (``result``), plus ``payload``: the job's full
+    result document for a succeeded job that stored one (``vol3`` runs)."""
     mgr = _manager_or_503()
     record = mgr.get(task_id)
     if record is None:
@@ -45,6 +69,7 @@ def get_task_result(task_id: str):
         "task_id": task_id,
         "status": record.status.value,
         "result": record.to_dict() if record.status in TERMINAL_STATUSES else None,
+        "payload": _result_payload(mgr, record),
     }
 
 

@@ -14,6 +14,7 @@ import { StepRegions, type WizardDecryption } from "@/components/wizard/StepRegi
 import { applyRegionSelection } from "@/components/wizard/apply-region-selection";
 import { useRegionSelectionStore } from "@/stores/region-selection-store";
 import { notifyError } from "@/utils/errorNotifier";
+import { useImageStore } from "@/stores/image-store";
 import i18n from "@/i18n";
 
 const ALGO_AVAILABLE_PENDING: AlgorithmAvailability = { available: true, reason: null };
@@ -59,6 +60,23 @@ function StepIndicator({ steps, current }: { steps: string[]; current: number })
   );
 }
 
+/** "Memory image": the path is a full image for the Image panel, not a dump to import. */
+function MemoryImageChoice() {
+  const { t } = useTranslation("image");
+  const on = useImageStore((s) => s.wizardImageMode);
+  const setOn = useImageStore((s) => s.setWizardImageMode);
+  return (
+    <label className="flex items-start gap-2 text-sm cursor-pointer">
+      <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)}
+        data-testid="wizard-memory-image" className="mt-0.5 accent-[var(--md-accent-blue)]" />
+      <span>
+        <span className="font-medium">{t("wizard.choice")}</span>
+        <span className="block text-xs md-text-muted">{t("wizard.choiceDesc")}</span>
+      </span>
+    </label>
+  );
+}
+
 function StepSelectData({ error }: { error: string | null }) {
   const { t } = useTranslation("wizard");
   const { inputPath, setInputPath, keylogFilename } = useAppStore(
@@ -99,6 +117,8 @@ function StepSelectData({ error }: { error: string | null }) {
           {t("step.selectData.open")}
         </button>
       </div>
+
+      <MemoryImageChoice />
 
       {error && <p className="text-sm" style={{ color: "var(--md-accent-red)" }}>{error}</p>}
 
@@ -394,6 +414,9 @@ export function Wizard() {
   const [validating, setValidating] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
+  const imageMode = useImageStore((s) => s.wizardImageMode);
+  // The "Memory image" choice must not outlive the wizard (Back to sessions).
+  useEffect(() => () => useImageStore.getState().setWizardImageMode(false), []);
   const [regionPreview, setRegionPreview] = useState<ImportPreview | null>(null);
   // Encrypted-.msl key inputs: component state only (outlives the Regions
   // step, never persisted), sent in the import-path POST body.
@@ -404,12 +427,14 @@ export function Wizard() {
   // path to preview, so it only appears once the path is known to exist.
   const isDirectory = pathInfo?.is_directory ?? false;
   const hasRegions = pathInfo?.exists === true;
-  const steps = [
-    "Select Data",
-    ...(hasRegions ? ["Regions"] : []),
-    ...(isDirectory ? ["Directory Type"] : []),
-    "Analysis",
-  ];
+  const steps = imageMode
+    ? ["Select Data"]
+    : [
+        "Select Data",
+        ...(hasRegions ? ["Regions"] : []),
+        ...(isDirectory ? ["Directory Type"] : []),
+        "Analysis",
+      ];
 
   // Map wizard step index to component
   const currentStepName = steps[wizardStep] ?? steps[0];
@@ -433,12 +458,40 @@ export function Wizard() {
     }
   }, [setWizardStep, setAppView]);
 
+  /** A memory image skips the dump flow: validate the file, then open the Image panel. */
+  const openImageEntry = useCallback(async (path: string) => {
+    const info = await getPathInfo(path);
+    if (!info.exists || !info.is_file) {
+      setPathError(info.exists ? i18n.t("image:wizard.pathNotFile")
+        : t("validation.pathNotExist", { path }));
+      return;
+    }
+    useImageStore.getState().setImagePath(path);
+    useImageStore.getState().setWizardImageMode(false);
+    // The image is NOT the workspace's input: left as `inputPath` under the default
+    // "dataset" mode, the main area treated the image file as a dataset root
+    // (404s on /api/dataset/runs + /phases, "Failed to load runs"). The workspace
+    // starts empty in file mode; opening a view fills it (openViewInWorkspace).
+    const app = useAppStore.getState();
+    app.setInputMode("file");
+    app.setPathInfo(info);
+    app.setInputPath("");
+    // The image route skips the Analysis step, so nothing chose "auto": without
+    // this the first opened view (a whole kernel VAS) got a full analysis run.
+    app.setAnalysisApproach("inspect");
+    app.completeWizard();
+  }, [t]);
+
   const validateAndAdvance = useCallback(async () => {
     const path = useAppStore.getState().inputPath.trim();
     if (!path) return;
     setValidating(true);
     setPathError(null);
     try {
+      if (useImageStore.getState().wizardImageMode) {
+        await openImageEntry(path);
+        return;
+      }
       const info = await getPathInfo(path);
       const store = useAppStore.getState();
       store.setPathInfo(info);
@@ -459,7 +512,7 @@ export function Wizard() {
     } finally {
       setValidating(false);
     }
-  }, [setWizardStep, t]);
+  }, [setWizardStep, t, openImageEntry]);
 
   /**
    * Apply the Regions choice, then enter the workspace. A conversion or
@@ -574,7 +627,9 @@ export function Wizard() {
               background: nextDisabled ? "var(--md-text-muted)" : "var(--md-accent-blue)",
             }}
           >
-            {validating || finishing ? "\u23F3" : isLast ? t(finalActionKey) : t("common:next")}
+            {validating || finishing
+              ? "\u23F3"
+              : imageMode ? i18n.t("image:wizard.open") : isLast ? t(finalActionKey) : t("common:next")}
           </button>
         </div>
       </div>

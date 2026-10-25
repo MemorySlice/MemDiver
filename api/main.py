@@ -228,6 +228,7 @@ def create_app() -> FastAPI:
         annotations,
         case,
         image,
+        vol3,
         architect,
         consensus,
         dataset,
@@ -283,6 +284,10 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         image.router, prefix="/api/image", tags=["image"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        vol3.router, prefix="/api/vol3", tags=["vol3"],
         dependencies=_read_path_policy,
     )
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])

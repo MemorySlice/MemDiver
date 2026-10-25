@@ -1,7 +1,9 @@
 {
   "legend": {
     "show": "Show legend",
-    "hide": "Hide legend"
+    "hide": "Hide legend",
+    "vol3Rows": "Vol3 rows: {{plugin}}",
+    "vol3Query": "Vol3 query rows"
   },
   "comparison": {
     "loadError": "Failed to load comparison data",
@@ -85,7 +87,8 @@
       "notInDump": "Not in this dump - the page was not captured or not mapped here",
       "error": "Could not be loaded - the request for this window failed"
     },
-    "variants": "{{n}} distinct values across dumps"
+    "variants": "{{n}} distinct values across dumps",
+    "virtualAddress": "Virtual address"
   },
   "ndump": {
     "dumpsLabel": "Dumps ({{active}}/{{total}}):",
@@ -184,7 +187,13 @@
     "collapse": "Collapse {{name}}",
     "restore": "Show {{name}}",
     "size": "{{size}} KB",
-    "collapsedLabel": "Collapsed panes"
+    "collapsedLabel": "Collapsed panes",
+    "view": {
+      "physical": "Physical",
+      "kernel": "Kernel",
+      "process": "Process"
+    },
+    "viewProcess": "Process {{pid}}"
   },
   "multiHex": {
     "label": "Side-by-side hex panes",
@@ -194,6 +203,7 @@
     "paneError": "Could not load {{name}}: {{error}}",
     "windowError": "Some bytes in this window could not be loaded: {{error}}",
     "windowErrorRetry": "Retry",
+    "windowErrorRebuild": "Rebuild consensus",
     "windowErrorMany": "Bytes in {{chunks}} windows on screen could not be loaded: {{error}}"
   },
   "overlayPane": {

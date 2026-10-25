@@ -259,6 +259,7 @@ packages = [
     "memdiver",
     "memdiver.core",
     "memdiver.engine",
+    "memdiver.engine.resources",
     "memdiver.presentation",
     "memdiver.algorithms",
     "memdiver.algorithms.known_key",
@@ -284,6 +285,7 @@ packages = [
     "memdiver.api.ws",
     "memdiver.api.services",
     "memdiver.analysis",
+    "memdiver.analysis.queries",
     "memdiver.heap",
     "memdiver.heap.allocators",
 ]

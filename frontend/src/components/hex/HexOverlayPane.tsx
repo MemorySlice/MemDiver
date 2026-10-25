@@ -11,6 +11,7 @@ import {
 } from "@/hooks/useAlignedPanes";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
+import { useAlignedGutterAddressing } from "@/hooks/useGutterAddressing";
 import { resolveAbsence, type AbsenceKind } from "@/utils/absence-classes";
 import { useConsensusRun, useConsensusStore } from "@/stores/consensus-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -72,6 +73,7 @@ export function HexOverlayPane() {
   useMslPaneCoordinate(anchor);
 
   const viewMode = useHexStore((s) => s.viewMode);
+  const gutter = useAlignedGutterAddressing();
   const storeFileSize = useHexStore((s) => s.fileSize);
   const windowStartRow = useHexStore((s) => s.windowStartRow);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
@@ -365,6 +367,7 @@ export function HexOverlayPane() {
 
       <WindowErrorBanner
         testIdPrefix="hex-overlay"
+        rebuildPaths={selectedPaths}
         firstRow={firstVisibleIndex < 0 ? -1 : absRow(firstVisibleIndex)}
         lastRow={lastVisibleIndex < 0 ? -1 : absRow(lastVisibleIndex)}
       />
@@ -472,6 +475,8 @@ export function HexOverlayPane() {
                   soloUnderline={soloPath !== null}
                   view={viewMode}
                   getAbsenceAt={getAbsenceAt}
+                  offsetBase={gutter.offsetBase}
+                  addressDigits={gutter.addressDigits}
                 />
               </div>
             ))}

@@ -14,6 +14,7 @@ import { buildRegionIndex, regionsForView } from "./highlight-utils";
 import { windowCount, clampWindowStart } from "./window-utils";
 import { useHexKeyboard } from "@/hooks/useHexKeyboard";
 import { useHexScrollTarget } from "@/hooks/useHexScrollTarget";
+import { useSingleGutterAddressing } from "@/hooks/useGutterAddressing";
 import { useMslViewSizes } from "@/hooks/useMslViewSizes";
 import { useHeapLayer } from "@/hooks/useHeapLayer";
 
@@ -49,6 +50,7 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // An image view is only recognised once the view probe answers; the effect
   // below must re-run then, or a persisted "va" would never ask for page states.
   const detectedFormat = useHexStore((s) => s.detectedFormat);
+  const gutter = useSingleGutterAddressing();
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
@@ -87,6 +89,17 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   useEffect(() => {
     setDumpPath(dumpPath, fileSize, format);
   }, [dumpPath, fileSize, format, setDumpPath]);
+
+  // The store resets windowStartRow when the dump changes, but the scroll
+  // element keeps its DOM scrollTop — a new dump would open a few rows in.
+  // Reset it on a real dump change only (a remount for the same dump keeps
+  // whatever restore behaviour it already had).
+  const shownDump = useRef(dumpPath);
+  useEffect(() => {
+    if (shownDump.current === dumpPath) return;
+    shownDump.current = dumpPath;
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [dumpPath]);
 
   // For MSL dumps, probe the backend once to learn both the raw file
   // size and the VAS projection size so the toolbar toggle and the
@@ -423,6 +436,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
                 view={viewMode}
                 getAbsenceAt={getAbsenceAtStable}
                 getHeapCellAt={getHeapCellAt}
+                offsetBase={gutter.offsetBase}
+                addressDigits={gutter.addressDigits}
               />
             </div>
           ))}

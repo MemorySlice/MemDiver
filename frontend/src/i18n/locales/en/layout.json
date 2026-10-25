@@ -16,7 +16,9 @@
     "structures": "structures",
     "sessions": "sessions",
     "import": "import",
-    "heap": "heap"
+    "heap": "heap",
+    "image": "image",
+    "vol3": "vol3"
   },
   "bottomTabs": {
     "variance": "variance",

@@ -14,7 +14,7 @@ import { useMslViewSizes } from "@/hooks/useMslViewSizes";
 import { consensusCoversSelection, useConsensusStore } from "@/stores/consensus-store";
 import { DEFAULT_DUMP_WEIGHT, useDumpRailStore } from "@/stores/dump-rail-store";
 import { useDumpStore, type DumpEntry } from "@/stores/dump-store";
-import { useHexStore } from "@/stores/hex-store";
+import { servesPageStates, useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 
 export interface AlignedSelection {
@@ -272,14 +272,41 @@ export function useMslPaneCoordinate(anchor: DumpEntry | null): void {
   const mainView = useDumpStore((s) => s.mainView);
   const viewMode = useHexStore((s) => s.viewMode);
   const setViewMode = useHexStore((s) => s.setViewMode);
-  const format = anchor?.format ?? "raw";
+  const needsVasCoordinate = useAnchorNeedsVasCoordinate(anchor);
 
   useEffect(() => {
     if (mainView !== "sideBySide" && mainView !== "overlay") return;
-    if (format !== "msl") return;
+    if (!needsVasCoordinate) return;
     if (viewMode !== "raw") return;
     setViewMode(MSL_PANE_VIEW);
-  }, [mainView, format, viewMode, setViewMode]);
+  }, [mainView, needsVasCoordinate, viewMode, setViewMode]);
+}
+
+/**
+ * Does the anchor serve page states — an `.msl`, or an `.mdview` image view?
+ *
+ * An `.mdview` is a plain "raw" dump by extension, so the dump entry alone
+ * cannot say; what the backend DETECTED lives in `hex-store`, which the aligned
+ * loader keeps pointed at the anchor. A detection recorded for another path is
+ * not an answer for this one. Reuses `servesPageStates`, the single predicate
+ * the single-dump viewer already fetches page states by.
+ */
+export function useAnchorServesPageStates(anchor: DumpEntry | null): boolean {
+  const detectedFormat = useHexStore((s) =>
+    anchor !== null && s.dumpPath === anchor.path ? s.detectedFormat : "",
+  );
+  return anchor !== null && servesPageStates(anchor.format, detectedFormat);
+}
+
+/**
+ * Must the anchor leave the "raw" coordinate for the panes? An `.msl` always
+ * (the backend refuses raw peer reads); an image view only when it offers the
+ * "vas" projection to move to.
+ */
+function useAnchorNeedsVasCoordinate(anchor: DumpEntry | null): boolean {
+  const serves = useAnchorServesPageStates(anchor);
+  const hasVas = useHexStore((s) => s.availableViews.includes("vas"));
+  return anchor?.format === "msl" || (serves && hasVas);
 }
 
 /**

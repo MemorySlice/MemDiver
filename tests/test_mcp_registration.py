@@ -116,11 +116,17 @@ EXPECTED_TOOLS = {
     # T1.7: memory-image views (probe/profile/open/processes/extract).
     "image_probe", "image_profile", "image_open_view", "image_processes",
     "image_extract_process",
+    # T2.2: Volatility 3 plugins over a .mdview, run into a case.
+    "vol3_plugins", "vol3_describe", "vol3_run", "vol3_query", "vol3_annotate",
+    "vol3_scaffold", "vol3_check", "vol3_import", "vol3_write_config",
+    # T2.5/T2.8: stored plugin sources and plugin fixtures.
+    "vol3_source_list", "vol3_source_get", "vol3_source_put",
+    "vol3_fixture_put", "vol3_fixture_list", "vol3_fixture_run",
 }
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 71
+EXPECTED_TOOL_COUNT = 86
 
 
 def _registered_tool_names(server) -> set:

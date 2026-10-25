@@ -200,3 +200,43 @@ def test_delete_terminal_task_is_409(client):
     r = client.delete(f"/api/tasks/{record.task_id}")
     assert r.status_code == 409
     assert "terminal" in r.json()["detail"].lower()
+
+
+def test_task_result_returns_the_full_job_payload_with_exact_big_ints(client):
+    """A succeeded vol3 job's stored result is returned whole, ints above 2**53 intact."""
+    from memdiver.api.services.artifact_store import ArtifactSpec
+    from memdiver.api.services.task_manager import (
+        get_task_manager,
+        TaskRecord,
+        TaskStatus,
+    )
+
+    mgr = get_task_manager()
+    big = 0xFFFF_8880_1234_5679  # not representable as a double
+    task_id = "vol3-result-fixture-task"
+    out = mgr.artifact_store.root / task_id / "vol3" / "result.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f'{{"rows": [[{big}]]}}', encoding="utf-8")
+    record = TaskRecord(
+        task_id=task_id, kind="vol3", status=TaskStatus.SUCCEEDED, ended_at=time.time(),
+        artifacts=[ArtifactSpec("vol3_result", "vol3/result.json", "application/json")])
+    with mgr._lock:  # noqa: SLF001 — test-only direct registration
+        mgr._records[task_id] = record
+
+    r = client.get(f"/api/tasks/{task_id}/result")
+    assert r.status_code == 200 and r.json()["payload"] == {"rows": [[big]]}
+    assert str(big) in r.text
+
+
+def test_task_result_payload_is_null_without_a_result_artifact(client):
+    from memdiver.api.services.task_manager import (
+        get_task_manager,
+        TaskRecord,
+        TaskStatus,
+    )
+
+    mgr = get_task_manager()
+    record = TaskRecord(task_id="no-artifact-task", kind="vol3", status=TaskStatus.SUCCEEDED)
+    with mgr._lock:  # noqa: SLF001
+        mgr._records[record.task_id] = record
+    assert client.get(f"/api/tasks/{record.task_id}/result").json()["payload"] is None

@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 
+import { useImageViewBadge } from "@/hooks/useImageViewBadge";
 import type { DumpEntry } from "@/stores/dump-store";
 
 /**
@@ -32,6 +33,12 @@ export function HexPaneHeader({
   error = null,
 }: HexPaneHeaderProps) {
   const { t } = useTranslation("hex");
+  const viewBadge = useImageViewBadge(dump.path);
+  const formatLabel = viewBadge
+    ? viewBadge.kind === "process" && viewBadge.pid !== null
+      ? t("pane.viewProcess", { pid: viewBadge.pid })
+      : t(`pane.view.${viewBadge.kind}`)
+    : dump.format;
   const sizeKb = Math.max(1, Math.round(dump.size / 1024));
 
   return (
@@ -69,7 +76,7 @@ export function HexPaneHeader({
           className="px-1 rounded text-[9px] font-semibold uppercase shrink-0"
           style={{ background: "var(--md-bg-tertiary)" }}
         >
-          {dump.format}
+          {formatLabel}
         </span>
         {isOrigin && (
           <span

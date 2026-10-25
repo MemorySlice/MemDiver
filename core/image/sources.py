@@ -82,7 +82,23 @@ class Vol3LayerSource:
         self._adapter: Optional[LayerAdapter] = None
         self._index: Optional[RunIndex] = None
 
+    #: ``core.region_align`` aligns this source from ``captured_runs()`` and
+    #: reads the pages back through the ``"vas"`` stream.
+    va_alignment_by_runs: bool = True
+
     # -- identity -----------------------------------------------------------
+    @property
+    def supports_va_alignment(self) -> bool:
+        """Aligns by virtual address: a PROCESS view that offers ``"va"``.
+
+        A physical view's ``"va"`` coordinate is a physical address — aligning it
+        with process VAs would compare unrelated pages (review finding: a
+        physical + process pair reported ``method='virtual_address'``). A kernel
+        view past 2^53-1 dropped ``"va"`` (see
+        :meth:`_restrict_views_to_exact_addresses`) and keeps the flat path.
+        """
+        return "va" in self.SUPPORTED_VIEWS and self.descriptor.view is ViewKind.PROCESS
+
     @property
     def path(self) -> Path:
         return self._path

@@ -160,9 +160,72 @@ def merge_runs(runs: List[List[Any]]) -> List[List[Any]]:
     return merged
 
 
+def is_image_view_source(source: Any) -> bool:
+    """True for a source that exposes a run table (``.mdview`` image view).
+
+    Duck-typed on the public ``layer_runs()`` rather than a format string. A
+    kernel view that dropped ``"va"`` from its ``SUPPORTED_VIEWS`` (span past
+    2^53-1) is still an image view here; whether it can serve ``"va"`` is a
+    separate question, see :func:`image_view_serves_va`.
+    """
+    return callable(getattr(source, "layer_runs", None))
+
+
+def image_view_serves_va(source: Any) -> bool:
+    """True for an image view whose ``"va"`` view is actually offered."""
+    from memdiver.core.dump_source import supported_views
+
+    return is_image_view_source(source) and "va" in supported_views(source)
+
+
 def has_page_states(source: Any, view: str) -> bool:
     """True when ``source`` read in ``view`` can carry non-CAPTURED bytes."""
-    return view == "va" and getattr(source, "format_name", "") == "msl"
+    if view != "va":
+        return False
+    return getattr(source, "format_name", "") == "msl" or image_view_serves_va(source)
+
+
+#: Per-source cache of an image view's non-CAPTURED VA table, validated on the
+#: identity of the run tuple ``layer_runs()`` returns (stable while open).
+_IMAGE_TABLE_CACHE: "weakref.WeakKeyDictionary[Any, Tuple[Any, Tuple[StateRun, ...]]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def image_state_table(source: Any) -> Tuple[StateRun, ...]:
+    """Non-CAPTURED VA runs of an image view, gaps inside the span as UNMAPPED.
+
+    Same semantics as :func:`build_state_table`: FAILED / NOT_RESIDENT keep
+    their own state, addresses no run covers are UNMAPPED, CAPTURED is never
+    reported.
+    """
+    layer_runs = source.layer_runs()
+    with _TABLE_LOCK:
+        hit = _IMAGE_TABLE_CACHE.get(source)
+        if hit is not None and hit[0] is layer_runs:
+            return hit[1]
+    runs = sorted(
+        ((r.start, r.start + r.length,
+          None if r.state.name == "CAPTURED"
+          else _IMAGE_STATE_NAMES.get(r.state.name, "FAILED"))
+         for r in layer_runs),
+        key=lambda run: run[0],
+    )
+    table: List[StateRun] = []
+    covered_end: Optional[int] = None
+    for start, end, state in runs:
+        if covered_end is not None and start > covered_end:
+            table.append((covered_end, start, "UNMAPPED"))
+        if state is not None:
+            table.append((start, end, state))
+        covered_end = end if covered_end is None else max(covered_end, end)
+    built = tuple(table)
+    with _TABLE_LOCK:
+        try:
+            _IMAGE_TABLE_CACHE[source] = (layer_runs, built)
+        except TypeError:  # not weak-referenceable: skip the cache
+            pass
+    return built
 
 
 def window_page_state_runs(
@@ -181,7 +244,10 @@ def window_page_state_runs(
     """
     if span_start is None or not segment_reads:
         return []
-    table = cached_state_table(source.get_reader())
+    if is_image_view_source(source):
+        table = image_state_table(source)
+    else:
+        table = cached_state_table(source.get_reader())
     starts = [run[0] for run in table]
     runs: List[List[Any]] = []
     for window_offset, (read_at, length) in segment_reads.items():

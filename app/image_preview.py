@@ -63,6 +63,13 @@ def _vma_regions(vmas: Sequence[Any], layer_runs: Sequence[Any]) -> List[_RawReg
     return regions
 
 
+def view_block(descriptor: ViewDescriptor, path: "str | Path") -> Dict[str, Any]:
+    """The active view of an ``.mdview``: ``kind``, descriptor ``pid`` (or ``None``),
+    ``capture_id`` and ``view_path`` — so a UI knows the view's pid without a pid argument."""
+    return {"kind": descriptor.view.value, "pid": descriptor.pid,
+            "capture_id": descriptor.capture_id, "view_path": str(path)}
+
+
 def _payload(kind: ViewKind, regions: List[Any],
              selection: Optional[RegionSelection]) -> Dict[str, Any]:
     preview = ImportPreview(format=IMAGE_VIEW_FORMAT, is_msl=False, regions=regions,
@@ -85,12 +92,14 @@ def image_view_preview(path: "str | Path",
     Only a process view is opened (its VMAs are the regions); the other two are
     answered from the descriptor, so previewing never pays an ISF load.
     """
-    kind = ViewDescriptor.read(Path(path)).view
+    descriptor = ViewDescriptor.read(Path(path))
+    kind = descriptor.view
     if kind is not ViewKind.PROCESS:
-        return _payload(kind, [], selection)
+        return {**_payload(kind, [], selection), "view": view_block(descriptor, path)}
     with open_dump_source(str(path), {}) as source:
         raw = _vma_regions(source.vmas(), source.layer_runs())
-    return _payload(kind, region_infos(raw, ()), selection)
+    return {**_payload(kind, region_infos(raw, ()), selection),
+            "view": view_block(descriptor, path)}
 
 
 def is_image_view_path(path: "str | Path") -> bool:

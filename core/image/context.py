@@ -31,6 +31,10 @@ from memdiver.core.service_errors import CapabilityError, ErrorCategory
 VOL3_IMAGE_MISSING = missing_package_message("volatility3 (memory-image views)", extra="image")
 #: Kernel module name every ImageContext registers its kernel under.
 KERNEL_MODULE = "kernel"
+#: Symbol table of the registered kernel (addresses masked to the layer's VA width).
+KERNEL_TABLE = "kernel_isf"
+#: Unmasked table used only while the paging depth is unknown (KASLR + self-test).
+PROBE_TABLE = "kernel_isf_probe"
 
 
 def cache_dir() -> Path:
@@ -163,23 +167,40 @@ def _load_kernel(ctx: Any, physical: str, isf_path: Path,
                  va_bits_hint: Optional[int], dtb: Optional[int]) -> Any:
     from volatility3.framework import contexts
     from volatility3.framework.automagic.linux import LinuxIntelStacker
-    from volatility3.framework.symbols.linux import LinuxKernelIntermedSymbols
 
     from memdiver.core.image.paging import choose_kernel_layer
-    table = LinuxKernelIntermedSymbols(ctx, "temporary.kernel_isf", name="kernel_isf",
-                                       isf_url=isf_path.resolve().as_uri())
-    ctx.symbol_space.append(table)
-    kaslr_shift, aslr_shift = LinuxIntelStacker.find_aslr(ctx, "kernel_isf", physical)
+    _add_symbol_table(ctx, isf_path, PROBE_TABLE)
+    kaslr_shift, aslr_shift = LinuxIntelStacker.find_aslr(ctx, PROBE_TABLE, physical)
     # find_aslr registers a throwaway module on the PHYSICAL layer under the same
     # symbol table; vol3's get_module_from_volobj_type would later pick it (e.g.
     # VMA file names then fail in vfsmount._get_real_mnt). Drop it.
-    for stray in list(ctx.modules.get_modules_by_symbol_tables("kernel_isf")):
+    for stray in list(ctx.modules.get_modules_by_symbol_tables(PROBE_TABLE)):
         del ctx.modules[stray]
-    paging = choose_kernel_layer(ctx, physical, "kernel_isf", kaslr_shift, aslr_shift,
+    paging = choose_kernel_layer(ctx, physical, PROBE_TABLE, kaslr_shift, aslr_shift,
                                  dtb=dtb, va_bits_hint=va_bits_hint)
+    # The kernel's table masks symbol addresses to the chosen layer's VA width,
+    # as vol3's own LinuxSymbolFinder automagic does. Unmasked (canonical
+    # 0xffffffff8...) symbols make vol3 code that canonicalizes symbol + offset
+    # overflow 64 bits — linux.psscan failed with struct.error on alma-9.
+    # The mask needs the depth, so the probe table above stays unmasked.
+    _add_symbol_table(ctx, isf_path, KERNEL_TABLE,
+                      symbol_mask=ctx.layers[paging.layer_name].address_mask)
+    ctx.symbol_space.remove(PROBE_TABLE)
     contexts.Module.create(ctx, KERNEL_MODULE, paging.layer_name, aslr_shift,
-                           symbol_table_name="kernel_isf")
+                           symbol_table_name=KERNEL_TABLE)
     return paging
+
+
+def _add_symbol_table(ctx: Any, isf_path: Path, name: str, symbol_mask: int = 0) -> None:
+    from volatility3.framework.symbols.linux import LinuxKernelIntermedSymbols
+    config_path = f"temporary.{name}"
+    # Into the context config BEFORE construction, like vol3's symbol finder:
+    # the table's format delegate copies its config branch at construction, so
+    # the constructor's own ``symbol_mask`` argument never reaches it.
+    ctx.config[f"{config_path}.symbol_mask"] = symbol_mask
+    ctx.symbol_space.append(LinuxKernelIntermedSymbols(
+        ctx, config_path, name=name, isf_url=isf_path.resolve().as_uri(),
+        symbol_mask=symbol_mask))
 
 
 def _layer_chain(image_ctx: ImageContext) -> list:

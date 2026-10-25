@@ -152,3 +152,14 @@ def test_vol3_provider_matches_banner(monkeypatch, tmp_path, image):
 
 def test_scan_linux_banners(image):
     assert profiles.scan_linux_banners(image) == [BANNER.rstrip(b"\n")]
+
+
+def test_plausible_banners_first_puts_real_kernel_banner_ahead_of_source_strings():
+    """Found on the alma-9 LiME: the first two hits were C comments, not the banner."""
+    from memdiver.core.image.profiles import plausible_banners_first
+    comment = b"Linux version of this file.  */"
+    fmt = b"Linux version %d.%d.%d"
+    real = (b"Linux version 5.14.0-611.45.1.el9_7.x86_64 (mockbuild@x64) "
+            b"(gcc 11.5.0) #1 SMP PREEMPT_DYNAMIC")
+    assert plausible_banners_first([comment, fmt, real]) == [real, comment, fmt]
+    assert plausible_banners_first([comment, fmt]) == [comment, fmt]
