@@ -1,6 +1,6 @@
 # CLI quickstart
 
-MemDiver exposes a single console script `memdiver` with 36 subcommands. The most common entry points:
+MemDiver exposes a single console script `memdiver` with 37 subcommands. The most common entry points:
 
 ```bash
 # One-shot analysis on a library directory
@@ -76,6 +76,89 @@ memdiver image profile alma-9.lime
 memdiver image open alma-9.lime --view process --pid 22176 --case ./case
 memdiver image processes ./case/views/alma-9.process.pid22176.mdview
 memdiver image extract ./case/views/alma-9.process.pid22176.mdview --out sshd.msl
+```
+
+## YARA rule editor
+
+`yara` is the editor backend. `yara check RULE.yar` compiles a rule and prints its names, or the failing line
+(`errors: [{line, message}]`, exit 1). `yara scan RULE.yar DUMP` scans only the
+**captured** bytes of one `.msl`, `.mdview` or flat file, optionally a window
+(`--view`, `--offset`, `--length`), so a pattern straddling a capture gap is never
+found in invented zeros. Each row carries its coordinate system (`addr` + `space`,
+`va`, `vas_offset`), and the result reports `coverage` and `truncated` (a cut by
+`--limit`), plus a `warnings` entry when a wildcard string is wider than libyara
+will verify (such a rule matches nothing). `scan-yara` is the many-dump census;
+the web UI's YARA tab drives the same two producers.
+
+```bash
+memdiver yara check rule.yar
+memdiver yara scan rule.yar dump.msl --limit 100
+```
+
+Rules can be stored and reused by name. `yara rules put NAME [FILE]` (stdin by default) saves a rule in
+the per-user library (`~/.memdiver/yara_rules`) or, with `--scope case --case DIR`, in the case's
+`yara_rules/`; a draft that does not compile is saved and flagged (`compiles: false`). `rules list` shows
+both scopes (a case rule `shadows` a library one), `rules get NAME` prints the source, and `rules delete NAME`
+removes it while keeping the last source under `history/`. `--scope` is explicit: `put`/`delete` default to
+`case` when `--case` is given (else `library`) and `delete` touches exactly the scope it names; `get --scope
+library|case|auto` (default `auto`: case first). `rules list` with a missing case keeps the library rows and
+sets `case_error`. `check` and `scan` take `--rule-name NAME`
+(+ `--case DIR`) instead of a file (giving both is an error); the result echoes `rule_name` and `scope`.
+
+```bash
+memdiver yara rules put keylog rule.yar
+memdiver yara scan --rule-name keylog dump.msl
+```
+
+## Key finders
+
+`keys` recognises key material by structure, with no ground truth: `keys list`
+names the finders (today `aes_schedule`) and the `--params` each reads;
+`keys scan DUMP` scans only the **captured** bytes of an `.msl`, `.mdview` or flat
+file, one VA-contiguous run at a time, so a structure straddling a capture gap
+is never found in invented zeros. Every row carries its coordinate system
+(`addr` + `space`), heap-chunk and region context (`--heap-policy
+off|annotate|mask`), and the result reports `coverage` and `truncated` (a cut by
+`--limit`). `--case DIR` files the hits as the `key_hits` case table (join it to
+`heap_chunks` / `msl_regions` with `case query`) plus `key_hit` annotations;
+`--candidates-out FILE` writes a `candidates.json` for verify / brute-force. REST
+runs inline up to 64 MiB of captured bytes and as a task beyond that (or with
+`async`); the MCP server always runs inline.
+
+```bash
+memdiver keys list
+memdiver keys scan dump.msl --finder aes_schedule --heap-policy annotate --case ./case
+```
+
+## Detector fixtures
+
+`fixtures` gives a YARA rule or a key finder positive controls and decoys with a
+verdict (`pass` / `fail` / `indeterminate`; no fixtures is `indeterminate`, never a
+pass). `fixtures run --kind keyfinder aes_schedule` runs the bundled synthetic
+AES-schedule fixtures; `fixtures run --kind yara RULE.yar --case ./case` runs the
+stored fixtures that name a rule of the file and exits 0 / 1 / 2 for pass / fail /
+indeterminate. `fixtures add`, `fixtures list` and `fixtures remove` manage the
+fixtures stored in a case (`remove` archives, never loses).
+
+```bash
+memdiver fixtures run --kind keyfinder aes_schedule
+memdiver fixtures add my_hit --kind yara --case ./case --artifact my_rule \
+  --sample-hex 00000000deadbeef --expect '{"matches": [{"offset": 4}]}'
+```
+
+## Strings as a table
+
+`strings table` lists every string of the captured bytes (`ascii`, `utf-8`,
+`utf16le`; default ascii + utf16le), one row each with `addr` + `space`, region and
+`iocs` badges. A string never crosses a capture gap, and `truncated` / `coverage` are
+always reported. `--case` files the `strings` table; the `strings_iocs` saved query
+(`memdiver vol3 query --saved strings_iocs`) then adds URL / email / IPv4 / path /
+exe / archive / PEM / base64 columns. REST runs inline up to 64 MiB of captured bytes
+and as a task beyond that (or with `async`). `memdiver inspect strings` is the
+separate streaming extractor.
+
+```bash
+memdiver strings table dump.msl --min-len 6 --case ./case
 ```
 
 ## Volatility 3 plugins

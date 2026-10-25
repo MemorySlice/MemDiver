@@ -1,0 +1,97 @@
+{
+  "title": "Key finders",
+  "noDump": "Open a dump to scan it for key material.",
+  "error": {
+    "load": "Could not load the key finders: {{message}}",
+    "scan": "The scan failed: {{message}}"
+  },
+  "finders": {
+    "legend": "Finders",
+    "aes_schedule": {
+      "label": "AES key schedule",
+      "desc": "Expanded AES round keys (128/192/256-bit), recognised by the schedule's own structure."
+    },
+    "rsa_der": {
+      "label": "RSA private key (DER)",
+      "desc": "ASN.1 DER RSAPrivateKey structures with consistent key components."
+    },
+    "rsa_factor": {
+      "label": "RSA factor",
+      "desc": "Prime factors of a known RSA modulus found as raw big-integer bytes."
+    },
+    "pem_scan": {
+      "label": "PEM blocks",
+      "desc": "PEM-armoured keys and certificates (BEGIN/END markers)."
+    },
+    "entropy_window": {
+      "label": "High-entropy window",
+      "desc": "Windows of near-random bytes that may hold key material."
+    }
+  },
+  "region": {
+    "legend": "Region to scan",
+    "view": "Whole view",
+    "selection": "Current selection",
+    "unsafe": "The selection lies at an address too large to send exactly; scan the whole view instead."
+  },
+  "heap": {
+    "legend": "Heap policy",
+    "policy": {
+      "off": "Off",
+      "annotate": "Annotate",
+      "mask": "Mask"
+    },
+    "policyHint": {
+      "off": "Do not look up the allocator chunk of a hit.",
+      "annotate": "Show the heap chunk holding each hit.",
+      "mask": "Keep only hits that sit inside one chunk's user data."
+    },
+    "role": {
+      "none": "none",
+      "chunk_header": "chunk header",
+      "user_data": "user data",
+      "free_link": "free-list link",
+      "free_data": "freed data",
+      "allocator_meta": "allocator metadata",
+      "top": "top chunk",
+      "slack": "slack",
+      "mixed": "mixed",
+      "uncovered": "uncovered"
+    },
+    "spans": "(spans chunks)"
+  },
+  "run": {
+    "button": "Run key finders",
+    "running": "Scanning for key material",
+    "pct": "{{pct}}%",
+    "cancel": "Cancel",
+    "cancelled": "Scan cancelled.",
+    "noPayload": "The job finished without a result payload."
+  },
+  "results": {
+    "title": "Key finder results",
+    "summary": "{{count}} hits in the {{view}} view",
+    "truncated": "Result truncated at {{limit}} hits; the scan stopped early, so more may exist.",
+    "empty": "No key material found in the scanned region.",
+    "skipped": "{{count}} hits could not be placed in the viewer.",
+    "notReady": "The viewer is still loading this dump's address map; try again in a moment.",
+    "unplaceable": "This hit's address cannot be placed in the viewer exactly."
+  },
+  "col": {
+    "finder": "Finder",
+    "label": "Label",
+    "address": "Address",
+    "length": "Length",
+    "confidence": "Confidence",
+    "key": "Key",
+    "heap": "Heap",
+    "region": "Perms",
+    "actions": "Actions"
+  },
+  "row": {
+    "copy": "Copy",
+    "copyAria": "Copy the key at {{addr}}",
+    "verify": "Verify",
+    "verifyAria": "Verify the key at {{addr}} with an oracle"
+  }
+}

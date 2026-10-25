@@ -1,0 +1,108 @@
+{
+  "title": "YARA rules",
+  "noDump": "Open a dump to scan it with a rule.",
+  "editor": {
+    "label": "YARA rule source",
+    "name": "Rule name",
+    "namePlaceholder": "Name for saving",
+    "starter": "rule example {\n    strings:\n        $a = \"SSLKEYLOGFILE\"\n    condition:\n        $a\n}\n"
+  },
+  "saved": {
+    "title": "Stored rules",
+    "scope": {
+      "label": "Save to",
+      "library": "Library",
+      "case": "Case",
+      "caseNeeded": "A case rule needs a case directory."
+    },
+    "caseDir": "Case directory",
+    "caseError": "Case directory not used: {{message}}",
+    "none": "No stored rules",
+    "save": "Save",
+    "saveHint": "Stored on the server: the library is per user, a case rule lives in the case directory.",
+    "savedOk": "Saved {{name}} to the {{scope}} (version {{version}}).",
+    "savedBroken": "Saved {{name}} to the {{scope}} (version {{version}}), but it does not compile.",
+    "failed": "The rule was not saved: {{message}}",
+    "listFailed": "Could not list the stored rules: {{message}}",
+    "load": "Load",
+    "loadLabel": "Load {{name}} ({{scope}})",
+    "loadFailed": "Could not load the rule: {{message}}",
+    "delete": "Delete",
+    "deleteLabel": "Delete {{name}} ({{scope}})",
+    "confirmDelete": "Delete {{name}} from the {{scope}}? Its last text stays in the history folder.",
+    "confirm": "Delete",
+    "cancel": "Cancel",
+    "deleteFailed": "The rule was not deleted: {{message}}",
+    "deleted": "Deleted {{name}} from the {{scope}}.",
+    "version": "v{{version}}",
+    "external": "modified externally",
+    "externalHint": "The file was changed outside MemDiver since it was saved; what is stored now may differ from what was checked.",
+    "broken": "does not compile",
+    "shadows": "shadows a library rule",
+    "shadowed": "hidden by a case rule of the same name",
+    "externalNotice": "This rule was changed outside MemDiver since it was last saved. What you see is the file as it is now.",
+    "import": {
+      "done": "Imported {{count}} rules from this browser into the library.",
+      "skipped": "Skipped {{count}} already stored (not overwritten): {{names}}.",
+      "invalid": "Could not import {{count}} old rules that can never be stored (invalid name or empty): {{names}}.",
+      "failed": "Could not import {{names}}; it will be retried next time."
+    }
+  },
+  "check": {
+    "button": "Compile",
+    "running": "Compiling...",
+    "ok": "Compiles: {{names}}",
+    "failedAt": "Does not compile (line {{line}})",
+    "failed": "Does not compile",
+    "error": "Could not check the rule: {{message}}",
+    "failedAtColumn": "Does not compile (line {{line}}, column {{column}})",
+    "rule": "in rule {{rule}}"
+  },
+  "region": {
+    "legend": "Region to scan",
+    "view": "Whole view",
+    "selection": "Current selection",
+    "unsafe": "The selection lies at an address too large to send exactly; scan the whole view instead."
+  },
+  "run": {
+    "button": "Run",
+    "running": "Scanning...",
+    "error": "The scan failed: {{message}}",
+    "cancel": "Cancel",
+    "cancelled": "Scan cancelled; no result.",
+    "pct": "{{pct}}%",
+    "noPayload": "The job finished without a result payload.",
+    "progress": "Scanning"
+  },
+  "results": {
+    "title": "YARA hits",
+    "summary_one": "{{count}} hit in the {{view}} view",
+    "summary_other": "{{count}} hits in the {{view}} view",
+    "empty": "No hits in the captured bytes that were scanned.",
+    "emptyNotProof": "No hits, but this is not proof of absence: {{reason}}",
+    "truncated": "Showing the first {{limit}} hits; the scan stopped there, so later hits are not listed.",
+    "incomplete": "The scan did not finish ({{reason}}); the hits listed are not the whole truth.",
+    "coverage": "Scanned {{scanned}} of {{captured}} captured bytes in {{runs}} runs; {{gaps}} capture gaps were skipped, never read as zeros.",
+    "skipped": "{{count}} hits lie at addresses too large to place exactly and are not highlighted.",
+    "unplaceable": "That hit's address is too large to place exactly.",
+    "notReady": "The address map is still loading; try again in a moment.",
+    "reason": {
+      "truncated": "the hit limit was reached",
+      "timed_out": "libyara timed out on part of the dump",
+      "errors": "part of the dump could not be scanned",
+      "short_reads": "part of the dump could not be read",
+      "scan_limit": "a wildcard pattern in this rule is wider than libyara will verify, so it can never match"
+    },
+    "byName": "Scanned the stored rule {{name}} ({{scope}})."
+  },
+  "col": {
+    "rule": "Rule",
+    "string": "String",
+    "address": "Address",
+    "length": "Length",
+    "bytes": "Bytes"
+  },
+  "badge": {
+    "legend": "Fixture verdict for this rule"
+  }
+}

@@ -18,7 +18,9 @@
     "import": "import",
     "heap": "heap",
     "image": "image",
-    "vol3": "vol3"
+    "vol3": "vol3",
+    "keyfinders": "key finders",
+    "yara": "yara"
   },
   "bottomTabs": {
     "variance": "variance",

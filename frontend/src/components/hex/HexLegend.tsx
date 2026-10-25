@@ -13,6 +13,8 @@ import { AbsenceLegend } from "./AbsenceLegend";
 
 const VOL3_PREFIX = "vol3:";
 const isVol3Kind = (kind: string | undefined) => kind?.startsWith(VOL3_PREFIX) ?? false;
+const KEY_HIT_KIND = "key_hit";
+const YARA_HIT_KIND = "yara_hit";
 
 export function HexLegend() {
   const { t } = useTranslation("hex");
@@ -27,7 +29,7 @@ export function HexLegend() {
   const activeTypes = useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of regions) {
-      if (isVol3Kind(r.kind)) continue;
+      if (isVol3Kind(r.kind) || r.kind === KEY_HIT_KIND || r.kind === YARA_HIT_KIND) continue;
       counts.set(r.type, (counts.get(r.type) ?? 0) + 1);
     }
     return counts;
@@ -43,7 +45,10 @@ export function HexLegend() {
     return counts;
   }, [regions]);
 
-  if (activeTypes.size === 0 && vol3Kinds.size === 0 && !heapLayerOn && !pageStateTintsActive) return null;
+  const keyHitCount = useMemo(() => regions.filter((r) => r.kind === KEY_HIT_KIND).length, [regions]);
+  const yaraHitCount = useMemo(() => regions.filter((r) => r.kind === YARA_HIT_KIND).length, [regions]);
+
+  if (activeTypes.size === 0 && vol3Kinds.size === 0 && keyHitCount === 0 && yaraHitCount === 0 && !heapLayerOn && !pageStateTintsActive) return null;
 
   return (
     <div className="flex items-center gap-1 px-2 py-0.5 border-b border-[var(--md-border)] text-[10px] md-text-secondary">
@@ -87,6 +92,26 @@ export function HexLegend() {
               </span>
             );
           })}
+          {keyHitCount > 0 && (
+            <span data-testid="hex-legend-key-hit" className="flex items-center gap-1">
+              <span
+                className={`inline-block w-3 h-3 rounded-sm highlight-kind-${kindSlot(KEY_HIT_KIND)}`}
+                style={{ background: `var(--md-hl-kind-${kindSlot(KEY_HIT_KIND)})` }}
+              />
+              <span>{t("legend.keyHit")}</span>
+              <span className="md-text-muted">({keyHitCount})</span>
+            </span>
+          )}
+          {yaraHitCount > 0 && (
+            <span data-testid="hex-legend-yara-hit" className="flex items-center gap-1">
+              <span
+                className={`inline-block w-3 h-3 rounded-sm highlight-kind-${kindSlot(YARA_HIT_KIND)}`}
+                style={{ background: `var(--md-hl-kind-${kindSlot(YARA_HIT_KIND)})` }}
+              />
+              <span>{t("legend.yaraHit")}</span>
+              <span className="md-text-muted">({yaraHitCount})</span>
+            </span>
+          )}
           {heapLayerOn && dumpPath && <HeapLegend dumpPath={dumpPath} />}
           {pageStateTintsActive && (
             <span data-testid="hex-page-state-legend" className="flex items-center gap-2">

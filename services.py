@@ -163,6 +163,32 @@ from memdiver.app.tools_image import (
     image_profile_result,
 )
 
+# --- key finders (structure-based key recognition over captured bytes) --------
+from memdiver.app.tools_keyfinders import (
+    keyfinders_list_result,
+    keyfinders_scan_result,
+)
+
+# --- YARA editor (compile-check + captured-bytes scan of one dump) ---------------
+from memdiver.app.tools_yara import yara_check_result, yara_scan_dump_result
+from memdiver.app.tools_yara_rules import (
+    yara_rule_delete_result,
+    yara_rule_get_result,
+    yara_rule_list_result,
+    yara_rule_put_result,
+)
+
+# --- detector fixtures (positive controls / decoys for YARA rules and key finders)
+from memdiver.app.tools_detector_fixtures import (
+    detector_fixtures_add_result,
+    detector_fixtures_list_result,
+    detector_fixtures_remove_result,
+    detector_fixtures_run_result,
+)
+
+# --- strings as a table (+ IOC badges; ``strings_iocs`` saved query) ---------
+from memdiver.app.tools_strings import strings_table_result
+
 # --- Volatility 3 plugins over a .mdview (run / query / annotate / dev tools) --
 from memdiver.app.tools_vol3 import (
     vol3_annotate_result,
@@ -298,6 +324,19 @@ __all__ = [
     "image_processes_result",
     "image_extract_process_result",
     # Volatility 3 — plugins over a .mdview into a case, saved queries, dev tools.
+    "keyfinders_list_result",
+    "keyfinders_scan_result",
+    "yara_check_result",
+    "yara_scan_dump_result",
+    "yara_rule_list_result",
+    "yara_rule_get_result",
+    "yara_rule_put_result",
+    "yara_rule_delete_result",
+    "detector_fixtures_run_result",
+    "detector_fixtures_add_result",
+    "detector_fixtures_list_result",
+    "detector_fixtures_remove_result",
+    "strings_table_result",
     "vol3_plugins_result",
     "vol3_describe_result",
     "vol3_run_result",

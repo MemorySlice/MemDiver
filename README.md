@@ -235,6 +235,10 @@ Newer subcommands at a glance:
 - `case` — the case data lake: Parquet tables, read-only SQL and `locate_context` (`init`, `status`, `schema`, `query`, `context-at`, `export`), e.g. `memdiver case query --case ./case --sql "SELECT name, count(*) FROM annotations GROUP BY 1"`
 - `image` — memory-image views via Volatility 3 (`probe`, `profile`, `open`, `processes`, `extract`), e.g. `memdiver image open alma-9.lime --view process --pid 22176 --case ./case`
 - `vol3` — run Volatility 3 plugins over a `.mdview` into a case and query them (`list`, `describe`, `run`, `query`, `annotate`, `scaffold`, `check`, `import`, `write-config`), e.g. `memdiver vol3 run --view p.mdview --plugin linux.pslist --case ./case`
+- `yara` — YARA rule editor backend: compile-check a rule with its failing line, scan one dump's captured bytes with VA coordinates and coverage (`check`, `scan`, `rules list|get|put|delete` for stored library/case rules; put/delete default to the case when `--case` is given, `get --scope library|case|auto`), e.g. `memdiver yara scan rule.yar dump.msl --offset 0x7f0000000000 --length 0x1000`
+- `keys` — key finders: recognise key material by structure in a dump's captured bytes (`list`, `scan`), e.g. `memdiver keys scan dump.msl --finder aes_schedule --heap-policy annotate --case ./case`
+- `fixtures` — detector fixtures: positive controls and decoys with a pass / fail / indeterminate verdict for YARA rules and key finders (`run`, `add`, `list`, `remove`), e.g. `memdiver fixtures run --kind keyfinder aes_schedule`
+- `strings` — strings as a table with IOC badges (`table`), e.g. `memdiver strings table dump.msl --case ./case`; the `strings_iocs` saved query adds IOC columns
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -275,7 +279,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 86 tools exposed to AI assistants
+mcp_server/     MCP server — 95 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

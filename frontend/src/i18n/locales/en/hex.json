@@ -3,7 +3,9 @@
     "show": "Show legend",
     "hide": "Hide legend",
     "vol3Rows": "Vol3 rows: {{plugin}}",
-    "vol3Query": "Vol3 query rows"
+    "vol3Query": "Vol3 query rows",
+    "keyHit": "Key finder hits",
+    "yaraHit": "YARA rule hits"
   },
   "comparison": {
     "loadError": "Failed to load comparison data",

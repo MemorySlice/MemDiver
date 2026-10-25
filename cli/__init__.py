@@ -49,6 +49,10 @@ from .experiment import (
 from .annotations import _cmd_annotations, add_annotations_parser
 from .case import _cmd_case, add_case_parser
 from .image import _cmd_image, add_image_parser
+from .fixtures import _cmd_fixtures, add_fixtures_parser
+from .keys import _cmd_keys, add_keys_parser
+from .yara import _cmd_yara, add_yara_parser
+from .strings import _cmd_strings, add_strings_parser
 from .vol3 import _cmd_vol3, add_vol3_parser
 from .heap import (
     _HEAP_HANDLERS,
@@ -196,6 +200,18 @@ __all__ = [
     # vol3
     "add_vol3_parser",
     "_cmd_vol3",
+    # fixtures
+    "add_fixtures_parser",
+    "_cmd_fixtures",
+    # keys
+    "add_keys_parser",
+    "_cmd_keys",
+    # yara
+    "add_yara_parser",
+    "_cmd_yara",
+    # strings
+    "add_strings_parser",
+    "_cmd_strings",
     # heap
     "_HEAP_HANDLERS",
     "add_heap_parser",

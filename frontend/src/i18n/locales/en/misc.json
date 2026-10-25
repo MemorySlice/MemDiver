@@ -129,7 +129,38 @@
     "colLen": "Len",
     "colEnc": "Enc",
     "noStringsFound": "No strings found.",
-    "noStringsMatch": "No strings match filter."
+    "noStringsMatch": "No strings match filter.",
+    "table": {
+      "modeLabel": "Strings view",
+      "mode": {
+        "stream": "Stream",
+        "table": "Table + IOCs"
+      },
+      "searchLabel": "Search strings",
+      "searchPlaceholder": "Search and highlight...",
+      "onlyIocs": "Only IOCs",
+      "count": "{{shown}} of {{total}} strings",
+      "truncated": " (truncated at {{limit}})",
+      "colAddr": "Address",
+      "colIocs": "IOCs",
+      "tooLarge": "This dump is large: building the strings table runs as a background job and can take a while.",
+      "scan": "Scan strings",
+      "cancel": "Cancel",
+      "noPayload": "The strings job finished without a result.",
+      "viewMismatch": "This address is in a different view than the hex viewer is showing. Switch the hex view to match.",
+      "outOfView": "This address lies before the start of the hex view.",
+      "ioc": {
+        "urls": "URL",
+        "emails": "email",
+        "ipv4": "IPv4",
+        "unix_paths": "path",
+        "windows_paths": "win path",
+        "executables": "exe/so",
+        "archives": "archive",
+        "pem_markers": "PEM",
+        "base64": "base64"
+      }
+    }
   },
   "settings": {
     "title": "Settings",

@@ -63,7 +63,7 @@ import { ConsensusChart } from "@/components/charts/ConsensusChart";
 import { CandidatePanel } from "@/components/charts/CandidatePanel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ArchitectPlaceholder } from "@/components/research/ArchitectPlaceholder";
-import { StringsPanel } from "@/components/strings/StringsPanel";
+import { StringsWorkbench } from "@/components/strings/StringsWorkbench";
 import { ExperimentPanel } from "@/components/experiment/ExperimentPanel";
 import { ConvergenceChart } from "@/components/charts/ConvergenceChart";
 import { VarianceMap } from "@/components/charts/VarianceMap";
@@ -81,6 +81,9 @@ import { HeapOverview } from "@/components/heap/HeapOverview";
 import { HeapPanel } from "@/components/heap/HeapPanel";
 import { ImagePanel } from "@/components/image/ImagePanel";
 import { Vol3Panel } from "@/components/vol3/Vol3Panel";
+import { KeyFindersPanel } from "@/components/keyfinders/KeyFindersPanel";
+import { YaraPanel } from "@/components/yara/YaraPanel";
+import { useKeyFinderStore } from "@/stores/keyfinder-store";
 import { isMdview } from "@/components/image/open-view-in-workspace";
 import { useImageStore } from "@/stores/image-store";
 import { useHeapModeLayer } from "@/hooks/useHeapModeLayer";
@@ -153,7 +156,7 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara";
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
 
 const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
@@ -172,7 +175,9 @@ function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>(
     imagePath ? "image" : mode === "heap" ? "heap" : "bookmarks");
   const baseTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
-  const sideTabs = showImageTab ? [...baseTabs, "image" as const, "vol3" as const] : baseTabs;
+  const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const] : baseTabs;
+  // Key finders scan any open dump, so the tab follows the dump, not the image.
+  const sideTabs = activeViewPath ? [...withImage, "keyfinders" as const, "yara" as const] : withImage;
   // Entering heap mode opens its overview; leaving it drops a tab that no
   // longer exists. Adjusted during render, guarded by the last mode seen.
   const [prevMode, setPrevMode] = useState(mode);
@@ -188,6 +193,7 @@ function Sidebar() {
     if (imagePath) setSideTab("image");
   }
   if ((sideTab === "image" || sideTab === "vol3") && !showImageTab) setSideTab("bookmarks");
+  if ((sideTab === "keyfinders" || sideTab === "yara") && !activeViewPath) setSideTab("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const { bookmarks, addBookmark, removeBookmarkEntry, jumpToBookmark, multiView } = useHexStore(
@@ -300,6 +306,8 @@ function Sidebar() {
         {sideTab === "heap" && <HeapOverview dumpPath={dumpPath} />}
         {sideTab === "image" && <ImagePanel />}
         {sideTab === "vol3" && <Vol3Panel />}
+        {sideTab === "keyfinders" && <KeyFindersPanel />}
+        {sideTab === "yara" && <YaraPanel />}
       </div>
     </div>
   );
@@ -760,6 +768,14 @@ function BottomTabs() {
     else if (!availableTabs.includes(tab)) setTab("analysis");
   }
 
+  // "Verify with oracle" on a key-finder hit opens the Verify Key tab.
+  const verifyRequestSeq = useKeyFinderStore((s) => s.verifyRequestSeq);
+  const [prevVerifySeq, setPrevVerifySeq] = useState(verifyRequestSeq);
+  if (prevVerifySeq !== verifyRequestSeq) {
+    setPrevVerifySeq(verifyRequestSeq);
+    if (availableTabs.includes("verify-key")) setTab("verify-key");
+  }
+
   // Switch to results on new hits — but don't hijack the bottom tab on
   // first-hit notifications while a pipeline run owns the stage.
   if (prevHits !== totalHits) {
@@ -917,7 +933,7 @@ function BottomTabs() {
           !dumpPath ? (
             <p className="p-3 text-sm md-text-muted">{t("loadDumpForStrings")}</p>
           ) : (
-            <StringsPanel dumpPath={dumpPath} />
+            <StringsWorkbench dumpPath={dumpPath} />
           )
         )}
         {tab === "consensus" && (

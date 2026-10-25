@@ -88,9 +88,13 @@ def create_server():
     # result lands in the model's context window.
     MCP_CASE_QUERY_LIMIT = 200
     from memdiver.app import (
-        tools_annotations, tools_case, tools_heap, tools_image, tools_vol3, tools_vol3_dev,
-        tools_vol3_fixtures, tools_vol3_sources,
+        tools_annotations, tools_case, tools_detector_fixtures, tools_heap, tools_image, tools_keyfinders, tools_strings,
+        tools_yara, tools_yara_rules, tools_vol3, tools_vol3_dev, tools_vol3_fixtures, tools_vol3_sources,
     )
+    # Rows land in the model's context window: a smaller default than REST/CLI.
+    MCP_KEYFINDER_LIMIT = 200
+    MCP_YARA_LIMIT = 200
+    MCP_STRINGS_LIMIT = 200
     # An agent's vol3_run echoes few rows (they land in its context) and has a
     # bounded budget: there is no TaskManager in this stdio process.
     MCP_VOL3_MAX_ROWS = 200
@@ -633,6 +637,201 @@ def create_server():
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_case.case_export_result(
                 case_dir, dump_path, tuple(what or ("auto",)), run_id)))
+
+    @mcp.tool()
+    def keyfinders_list() -> str:
+        """List the key finders (structure-based key recognisers) and the ``params`` each reads."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_keyfinders.keyfinders_list_result()))
+
+    @mcp.tool()
+    def keyfinders_scan(
+        dump_path: str, finders: Optional[List[str]] = None, view: Optional[str] = None,
+        offset: Optional[int] = None, length: Optional[int] = None,
+        heap_policy: str = "annotate", params: Optional[Dict[str, Any]] = None,
+        case_dir: Optional[str] = None, limit: int = MCP_KEYFINDER_LIMIT,
+        candidates_out: Optional[str] = None, annotate: bool = True,
+    ) -> str:
+        """Scan the CAPTURED bytes of a dump (.msl, .mdview, raw) for key material.
+
+        ``finders`` default ``["aes_schedule"]`` (``keyfinders_list`` names them).
+        ``view``/``offset``/``length`` pick the window in the view's coordinates
+        (``va`` default for .msl/.mdview, ``vas`` for .msl, ``raw`` for a flat file).
+        A structure straddling a capture gap is never found in invented zeros.
+        ``heap_policy``: ``off`` | ``annotate`` (chunk context) | ``mask`` (keep only
+        hits inside one chunk's user data). Every row has ``addr`` + ``space`` +
+        ``location``; ``coverage`` says what was scanned and ``truncated`` whether
+        ``limit`` cut the rows. ``candidates`` feeds verify/brute_force. With
+        ``case_dir`` the hits become the ``key_hits`` case table (joinable to
+        ``heap_chunks``/``msl_regions`` by ``case_query``) and ``key_hit`` annotations.
+        Runs inline and blocks on a large capture.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_keyfinders.keyfinders_scan_result(
+                dump_path, tuple(finders or tools_keyfinders.DEFAULT_FINDERS), view,
+                offset, length, heap_policy, params, case_dir, limit, candidates_out,
+                annotate)))
+
+    @mcp.tool()
+    def yara_check(rule_source: Optional[str] = None, rule_name: Optional[str] = None,
+                   case_dir: Optional[str] = None) -> str:
+        """Compile a YARA rule WITHOUT scanning: ``valid`` plus ``rule_names``.
+
+        Give ``rule_source`` or a stored ``rule_name`` (+ ``case_dir``), not both.
+
+        A rule that does not compile is an answer, not an error: ``valid: false`` and
+        ``errors: [{line, message}]`` (1-based line). ``warnings`` flags a wildcard hex
+        string wider than the installed libyara will verify (it matches nothing).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara.yara_check_result(rule_source, rule_name, case_dir)))
+
+    @mcp.tool()
+    def yara_scan_dump(
+        dump_path: str, rule_source: Optional[str] = None, view: Optional[str] = None,
+        offset: Optional[int] = None, length: Optional[int] = None,
+        limit: int = MCP_YARA_LIMIT, timeout_s: int = tools_yara.DEFAULT_TIMEOUT_S,
+        rule_name: Optional[str] = None, case_dir: Optional[str] = None,
+    ) -> str:
+        """Scan the CAPTURED bytes of ONE dump (.msl, .mdview, raw) with a YARA rule.
+
+        ``view``/``offset``/``length`` pick the window in the view's coordinates (``va``
+        default for .msl/.mdview, ``vas`` for .msl, ``raw`` for a flat file). Only captured
+        runs are read: a pattern straddling a capture gap is never found in invented
+        zeros. Rows carry rule, string_id, ``addr`` + ``space`` + ``location``, length,
+        ``matched_hex`` preview, ``va``, ``vas_offset``, ``region``; ``coverage`` says what
+        was scanned and ``truncated`` / ``complete`` / ``incomplete_reason`` whether the
+        rows are the whole truth. A non-compiling rule is INVALID_INPUT (use ``yara_check``
+        for the line). For a many-dump census use ``scan_yara_rule``. Give ``rule_source`` or
+        a stored ``rule_name`` (+ ``case_dir``), not both.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara.yara_scan_dump_result(
+                dump_path, rule_source, view, offset, length, limit, timeout_s,
+                rule_name, case_dir)))
+
+    @mcp.tool()
+    def yara_rule_list(case_dir: Optional[str] = None) -> str:
+        """List stored YARA rules: the per-user library and, with ``case_dir``, the case's.
+
+        Rows (no source): name, ``scope`` (library | case), sha256, size, version, updated,
+        ``compiles``, ``errors``, ``rule_names``, ``modified_externally``; ``shadows`` marks a
+        case rule that hides a library one of the same name. An unreadable rule is a row with
+        ``error``; a missing ``case_dir`` leaves the library rows and sets ``case_error``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara_rules.yara_rule_list_result(case_dir)))
+
+    @mcp.tool()
+    def yara_rule_get(name: str, case_dir: Optional[str] = None,
+                      scope: Optional[str] = None) -> str:
+        """One stored YARA rule with its source.
+
+        ``scope``: ``library`` | ``case`` (exactly that scope) | ``auto`` (default: the case,
+        when ``case_dir`` is given, wins over the library).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara_rules.yara_rule_get_result(name, case_dir, scope)))
+
+    @mcp.tool()
+    def yara_rule_put(name: str, rule_source: str, scope: Optional[str] = None,
+                      case_dir: Optional[str] = None) -> str:
+        """Store a YARA rule as ``name`` in ``scope`` (``library`` or ``case`` + ``case_dir``).
+
+        An omitted ``scope`` is ``case`` when ``case_dir`` is given, else ``library``.
+
+        The rule is compile-checked; a draft that does not compile is SAVED and flagged
+        (``stored.compiles: false``, ``check.errors`` with lines). The previous version is kept
+        in the scope's history. Scan or check it later by ``rule_name``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara_rules.yara_rule_put_result(name, rule_source, scope, case_dir)))
+
+    @mcp.tool()
+    def yara_rule_delete(name: str, scope: Optional[str] = None,
+                         case_dir: Optional[str] = None) -> str:
+        """Remove a stored YARA rule from exactly ``scope`` (not found if only in the other one).
+
+        An omitted ``scope`` is ``case`` when ``case_dir`` is given, else ``library``. The last
+        source is archived to history.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_yara_rules.yara_rule_delete_result(name, scope, case_dir)))
+
+    @mcp.tool()
+    def detector_fixtures_run(
+        artifact_kind: str, artifact: str, fixtures: Optional[List[dict]] = None,
+        params: Optional[Dict[str, Any]] = None, case_dir: Optional[str] = None,
+    ) -> str:
+        """Run a detector's fixtures (positive controls + decoys): ``pass`` / ``fail`` / ``indeterminate``.
+
+        ``artifact_kind`` is ``keyfinder`` (``artifact`` = finder name, e.g. ``aes_schedule``,
+        which ships synthetic AES-schedule fixtures) or ``yara`` (``artifact`` = the rule SOURCE).
+        With no fixtures the verdict is ``indeterminate`` (reason_code ``no_fixtures``), never a
+        pass. ``fixtures`` replaces the default selection with inline ones:
+        ``{"name", "sample": {"hex"}, "expect": {"matches": [{"offset", "length"?, "label"?,
+        "key_hex"?}]} | {"no_match": true}, "artifact"?: rule name, "params"?}``. ``case_dir`` adds
+        the stored fixtures and stores the verdicts (``last_verdict``).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_detector_fixtures.detector_fixtures_run_result(
+                artifact_kind, artifact, fixtures, params, case_dir)))
+
+    @mcp.tool()
+    def detector_fixtures_add(
+        case_dir: str, name: str, artifact_kind: str, artifact: str, sample: Dict[str, Any],
+        expect: Dict[str, Any], params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Store a detector fixture in a case. ``artifact`` is a finder name or a YARA RULE name.
+
+        ``sample``: ``{"hex"}`` | ``{"base64"}`` | ``{"dump_path", "offset", "length"}`` (a wholly
+        captured range). ``expect``: ``{"matches": [{"offset": N, ...}]}`` (sample-relative) or
+        ``{"no_match": true}`` for a decoy. An overwrite keeps the old version in ``history/``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_detector_fixtures.detector_fixtures_add_result(
+                case_dir, name, artifact_kind, artifact, sample, expect, params)))
+
+    @mcp.tool()
+    def detector_fixtures_list(
+        case_dir: Optional[str] = None, artifact_kind: Optional[str] = None,
+        artifact: Optional[str] = None,
+    ) -> str:
+        """List bundled and (with ``case_dir``) stored detector fixtures with their ``last_verdict``."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_detector_fixtures.detector_fixtures_list_result(
+                case_dir, artifact_kind, artifact)))
+
+    @mcp.tool()
+    def detector_fixtures_remove(case_dir: str, name: str) -> str:
+        """Retire a stored detector fixture (its definition is archived under ``history/``)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_detector_fixtures.detector_fixtures_remove_result(case_dir, name)))
+
+    @mcp.tool()
+    def strings_table(
+        dump_path: str, view: Optional[str] = None, offset: Optional[int] = None,
+        length: Optional[int] = None, min_len: int = 4,
+        encodings: Optional[List[str]] = None, case_dir: Optional[str] = None,
+        limit: int = MCP_STRINGS_LIMIT,
+    ) -> str:
+        """List the printable strings of the CAPTURED bytes of a dump, one row each.
+
+        ``encodings``: ``ascii`` / ``utf-8`` / ``utf16le`` (default ascii + utf16le).
+        ``view``/``offset``/``length`` pick the window in the view's coordinates
+        (``va`` default for .msl/.mdview, ``vas`` for .msl, ``raw`` for a flat file).
+        A string never crosses a capture gap. Every row has ``addr`` + ``space`` +
+        ``location``, ``encoding``, ``length``, ``value``, ``iocs`` (urls, emails,
+        ipv4, paths, ...) and its ``region``; ``truncated`` says whether ``limit``
+        cut the rows, ``coverage`` what was read. With ``case_dir`` the rows become
+        the ``strings`` case table; ``vol3_query`` with ``saved="strings_iocs"`` then
+        returns IOC columns. Runs inline and blocks on a large capture.
+        """
+        region = tools_strings._region_of(offset, length)
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_strings.strings_table_result(
+                dump_path, view, region, min_len,
+                tuple(encodings or tools_strings.DEFAULT_ENCODINGS), limit, case_dir)))
 
     # -- image.* : memory-image views. The MCP server has no TaskManager (it is
     # a stdio process), so the slow steps run inline and the call blocks: the

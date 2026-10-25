@@ -103,13 +103,14 @@ def export_msl_regions(case: Case, msl_path: str, *,
     """Table ``msl_regions``: the VAS map of an ``.msl`` (space ``msl_va``).
 
     Columns: standard + ``region_type``, ``protection``, ``mapped_path``,
-    ``captured``.
+    ``captured``. A capture with no VAS map falls back to its captured region
+    headers (``mapped_path`` null), so the table is never silently empty.
     """
     from memdiver.app.session import ToolSession
     from memdiver.app.tools_inspect import vas_regions_result
 
     result = vas_regions_result(ToolSession(), str(msl_path))
-    entries = result.payload["vas_entries"]
+    entries = result.payload["vas_entries"] or _captured_region_entries(msl_path)
     space = AddressSpace.MSL_VA.value
     table = _standard(
         space, _msl_pid(msl_path), [e["base_addr"] for e in entries],
@@ -121,6 +122,20 @@ def export_msl_regions(case: Case, msl_path: str, *,
     return _register(case, "msl_regions", table, space,
                      capture_id=capture_id_for(msl_path), image_sha256=None,
                      run_id=run_id, producer="export_msl_regions")
+
+
+def _captured_region_entries(msl_path: str) -> List[Dict[str, Any]]:
+    """VAS-entry-shaped rows from the region headers of an ``.msl`` with no VAS map.
+
+    Only the regions the capture actually holds; ``mapped_path`` is unknown.
+    """
+    from memdiver.msl.reader import MslReader
+
+    with MslReader(Path(msl_path)) as reader:
+        regions = reader.collect_regions()
+    return [{"base_addr": r.base_addr, "region_size": r.region_size,
+             "region_type": r.region_type, "protection": r.protection,
+             "mapped_path": None, "captured": True} for r in regions]
 
 
 def export_page_state_runs(case: Case, msl_path: str, *,
@@ -197,3 +212,85 @@ def export_yara_matches(case: Case, matches: Iterable[Any], *, capture_id: str,
     return _register(case, "yara_hits", table, space, capture_id=capture_id,
                      image_sha256=image_sha256, run_id=run_id,
                      producer="export_yara_matches")
+
+
+# -- key finders ------------------------------------------------------------
+
+_KEY_HIT_UINT_COLUMNS = ("va", "vas_offset", "heap_chunk_va", "heap_chunk_size",
+                         "region_start", "region_end")
+_KEY_HIT_TEXT_COLUMNS = ("finder", "label", "key_hex", "heap_role", "heap_state",
+                         "region_perms", "region_path", "metadata_json")
+
+
+def export_key_hits(case: Case, hits: Sequence[Dict[str, Any]], *, capture_id: str,
+                    space: str, pid: Optional[int] = None,
+                    image_sha256: Optional[str] = None,
+                    run_id: Optional[str] = None,
+                    truncated: bool = False) -> TableRef:
+    """Table ``key_hits``: one row per key-finder hit (``addr`` in ``space``).
+
+    ``hits`` are flat dicts (the key-finder producer builds them): ``addr`` and
+    ``length`` are required; ``length`` lands in the standard ``size`` column.
+    Columns: standard + ``confidence`` (double), the text columns
+    :data:`_KEY_HIT_TEXT_COLUMNS` and the nullable uint64 columns
+    :data:`_KEY_HIT_UINT_COLUMNS`. ``va`` (the hit's virtual address, always
+    ``msl_va`` / ``process_va``-style) is declared a location too when any row has
+    one, so ``key_hits`` joins ``heap_chunks`` / ``msl_regions`` on ``va`` even when
+    ``addr`` is a packed-stream offset. ``truncated`` is recorded on the run.
+    """
+    rows = list(hits)
+    extra: Dict[str, Any] = {"confidence": pa.array(
+        [r.get("confidence") for r in rows], type=pa.float64())}
+    for name in _KEY_HIT_TEXT_COLUMNS:
+        extra[name] = pa.array([r.get(name) for r in rows], type=pa.string())
+    for name in _KEY_HIT_UINT_COLUMNS:
+        extra[name] = pa.array([r.get(name) for r in rows], type=pa.uint64())
+    table = _standard(space, pid, [r["addr"] for r in rows],
+                      [r["length"] for r in rows], **extra)
+    locations = {"addr": space}
+    if any(r.get("va") is not None for r in rows):
+        locations["va"] = (AddressSpace.MSL_VA.value if space in (
+            AddressSpace.MSL_VA.value, AddressSpace.MSL_VAS.value) else space)
+    return case.register_table(
+        "key_hits", table, capture_id=capture_id, run_id=run_id,
+        image_sha256=image_sha256, producer="memdiver.export_key_hits",
+        locations=locations, meta={"truncated": bool(truncated)})
+
+
+# -- strings ----------------------------------------------------------------
+
+_STRING_UINT_COLUMNS = ("chars", "va", "vas_offset", "region_start", "region_end")
+_STRING_TEXT_COLUMNS = ("encoding", "value", "region_perms", "region_path")
+
+
+def export_strings(case: Case, rows: Sequence[Dict[str, Any]], *, capture_id: str,
+                   space: str, pid: Optional[int] = None,
+                   image_sha256: Optional[str] = None,
+                   run_id: Optional[str] = None,
+                   truncated: bool = False) -> TableRef:
+    """Table ``strings``: one row per extracted string (``addr`` in ``space``).
+
+    ``rows`` are flat dicts: ``addr`` and ``byte_length`` (the string's extent in
+    the dump, stored in the standard ``size`` column) are required. Columns:
+    standard + the text columns :data:`_STRING_TEXT_COLUMNS` and the nullable
+    uint64 columns :data:`_STRING_UINT_COLUMNS`. ``va`` is declared a location
+    too when any row has one, so ``strings`` joins ``heap_chunks`` /
+    ``msl_regions`` on ``va`` even when ``addr`` is a packed-stream offset.
+    ``truncated`` is recorded on the run (a saved query refuses a truncated table).
+    """
+    items = list(rows)
+    extra: Dict[str, Any] = {}
+    for name in _STRING_TEXT_COLUMNS:
+        extra[name] = pa.array([r.get(name) for r in items], type=pa.string())
+    for name in _STRING_UINT_COLUMNS:
+        extra[name] = pa.array([r.get(name) for r in items], type=pa.uint64())
+    table = _standard(space, pid, [r["addr"] for r in items],
+                      [r["byte_length"] for r in items], **extra)
+    locations = {"addr": space}
+    if any(r.get("va") is not None for r in items):
+        locations["va"] = (AddressSpace.MSL_VA.value if space in (
+            AddressSpace.MSL_VA.value, AddressSpace.MSL_VAS.value) else space)
+    return case.register_table(
+        "strings", table, capture_id=capture_id, run_id=run_id,
+        image_sha256=image_sha256, producer="memdiver.export_strings",
+        locations=locations, meta={"truncated": bool(truncated)})

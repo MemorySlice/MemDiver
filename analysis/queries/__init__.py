@@ -30,9 +30,9 @@ class SavedQuery:
 
 def saved_queries() -> Dict[str, SavedQuery]:
     """Every built-in saved query by name."""
-    from memdiver.analysis.queries import linux
+    from memdiver.analysis.queries import linux, strings
 
-    return {q.name: q for q in linux.QUERIES}
+    return {q.name: q for q in (*linux.QUERIES, *strings.QUERIES)}
 
 
 def get_saved_query(name: str) -> SavedQuery:

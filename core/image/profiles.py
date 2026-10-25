@@ -21,7 +21,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 
 from memdiver.core.image.context import cache_dir, file_sha256
@@ -30,6 +30,7 @@ from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 PROVENANCE_NAME = "provenance.json"
 ISF_SUFFIX = ".isf.json"
+_CANCELLED_PREFIX = "Cancelled by the caller"
 _BANNER_MARKER = b"Linux version "
 _BANNER_MAX = 1024
 _BANNER_CANDIDATES = 16
@@ -140,8 +141,16 @@ class PakunodaLinuxProvider(_ReasonMixin):
 
     name = "pakunoda"
 
-    def __init__(self, arch: str = "auto") -> None:
+    def __init__(self, arch: str = "auto", progress: Optional[Callable[[str, float], None]] = None,
+                 cancel: Optional[Callable[[], bool]] = None) -> None:
         self._arch = arch
+        self._progress = progress
+        self._cancel = cancel
+
+    def _controls(self) -> Dict[str, Any]:
+        """The optional pakunoda job controls, only those that are set."""
+        return {k: v for k, v in (("progress", self._progress), ("cancel", self._cancel))
+                if v is not None}
 
     def resolve(self, image_path: Path, image_sha256: str) -> Optional[ProfileResolution]:
         try:
@@ -149,10 +158,22 @@ class PakunodaLinuxProvider(_ReasonMixin):
         except ImportError:
             return self._miss("pakunoda is not installed (pip install \"memdiver[image]\")")
         try:
-            result = pakunoda.extract_isf(Path(image_path), arch=self._arch)
+            result = pakunoda.extract_isf(Path(image_path), arch=self._arch,
+                                          **self._controls())
         except Exception as exc:  # noqa: BLE001  (extraction failure == a miss)
             return self._miss(f"pakunoda extraction failed: {exc}")
+        self._raise_if_cancelled(result)
         return self._store(result, pakunoda.__version__, image_sha256)
+
+    def _raise_if_cancelled(self, result: Any) -> None:
+        """A cancel is not a miss: it must stop the chain, not fall to the next provider."""
+        errors = getattr(result, "errors", None) or []
+        said_cancelled = any(str(e).startswith(_CANCELLED_PREFIX) for e in errors)
+        failed_after_cancel = (not getattr(result, "success", False)
+                               and self._cancel is not None and self._cancel())
+        if said_cancelled or failed_after_cancel:
+            raise CapabilityError("kernel profile extraction was cancelled",
+                                  category=ErrorCategory.PRECONDITION, code="cancelled")
 
     def _store(self, result: Any, version: str,
                image_sha256: str) -> Optional[ProfileResolution]:
@@ -272,7 +293,13 @@ class ProfileChain:
                 "or install pakunoda. Tried:\n" + "\n".join(lines))
 
 
-def default_chain(explicit_isf: Optional[Path] = None) -> ProfileChain:
-    """The D3 chain: explicit -> cache -> draft -> pakunoda -> vol3 symbol dirs."""
+def default_chain(explicit_isf: Optional[Path] = None,
+                  progress: Optional[Callable[[str, float], None]] = None,
+                  cancel: Optional[Callable[[], bool]] = None) -> ProfileChain:
+    """The D3 chain: explicit -> cache -> draft -> pakunoda -> vol3 symbol dirs.
+
+    ``progress`` / ``cancel`` are pakunoda's job controls (stage callback, cancel predicate).
+    """
     return ProfileChain([ExplicitProvider(explicit_isf), CacheProvider(), DraftProvider(),
-                         PakunodaLinuxProvider(), Vol3SymbolDirProvider()])
+                         PakunodaLinuxProvider(progress=progress, cancel=cancel),
+                         Vol3SymbolDirProvider()])

@@ -612,8 +612,52 @@ def _target_regions(ctx: DetectContext, flavor: _Flavor,
     regions = [r for r in ctx.regions if r.captured and r.size > 0]
     if opts is not None and opts.regions is not None:
         return [r for r in regions if opts.selects(r)]
-    return [r for r in regions
-            if any(name_matches(r.name, p) for p in flavor.region_patterns)]
+    named = [r for r in regions
+             if any(name_matches(r.name, p) for p in flavor.region_patterns)]
+    if named or flavor.dlmalloc:
+        return named
+    return _nameless_main_heap(ctx, regions, flavor)
+
+
+#: A candidate heap must score at least this on the boundary-tag probe.
+_NAMELESS_MIN_PROBE_SCORE = 0.5
+
+
+def _nameless_main_heap(ctx: DetectContext, regions: Sequence[MappedRegion],
+                        flavor: _Flavor) -> List[MappedRegion]:
+    """The brk heap of a dump whose map lost the ``[heap]`` label.
+
+    An imported ``.msl`` keeps the executable's and libraries' paths but not
+    the pseudo-names, so ``[heap]`` is an anonymous ``rw-`` region. On Linux
+    the brk heap lies above the main executable's image, but the lowest such
+    region is often the executable's own ``.bss`` continuation; so the
+    candidates are tried in address order (``ctx.regions`` is not assumed
+    sorted) and the first whose content passes the boundary-tag probe wins.
+    Only offered when glibc is mapped; the walk's own header checks still
+    have to agree before anything is reported.
+    """
+    if not ctx.matching_modules(*_GLIBC_MODULES):
+        return []
+    image_end = _first_module_end(ctx.regions)
+    if image_end is None:
+        return []
+    candidates = sorted((r for r in regions if r.va >= image_end and "w" in r.perms
+                         and not r.name and not r.module_path), key=lambda r: r.va)
+    geo = _geometry(ctx.platform)
+    reader = _PagedReader(ctx.memory, geo)
+    for region in candidates:
+        if _probe_score(*_probe_region(reader, region, geo, flavor)) >= _NAMELESS_MIN_PROBE_SCORE:
+            return [region]
+    return []
+
+
+def _first_module_end(regions: Sequence[MappedRegion]) -> Optional[int]:
+    """End of the last mapping of the lowest-VA file-backed module."""
+    mapped = [r for r in regions if r.module_path]
+    if not mapped:
+        return None
+    first_path = min(mapped, key=lambda r: r.va).module_path
+    return max(r.end for r in mapped if r.module_path == first_path)
 
 
 # -- probe ----------------------------------------------------------------------------

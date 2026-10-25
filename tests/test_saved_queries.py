@@ -55,7 +55,7 @@ def _run(case, name):
 
 def test_all_queries_have_required_tables_and_plugins():
     for query in saved_queries().values():
-        assert query.requires and all(p.startswith("linux.") for p in query.requires.values())
+        assert query.requires and all(p.startswith(("linux.", "memdiver ")) for p in query.requires.values())
         assert query.description and query.sql.lstrip().upper().startswith("SELECT")
 
 

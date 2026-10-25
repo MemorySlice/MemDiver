@@ -97,6 +97,10 @@ from .heap import _cmd_heap, add_heap_parser
 from .annotations import _cmd_annotations, add_annotations_parser
 from .case import _cmd_case, add_case_parser
 from .image import _cmd_image, add_image_parser
+from .fixtures import _cmd_fixtures, add_fixtures_parser
+from .keys import _cmd_keys, add_keys_parser
+from .yara import _cmd_yara, add_yara_parser
+from .strings import _cmd_strings, add_strings_parser
 from .vol3 import _cmd_vol3, add_vol3_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
@@ -1079,6 +1083,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # vol3 — Volatility 3 plugins over app.tools_vol3 / app.tools_vol3_dev (same
     # producers as /api/vol3 and the MCP vol3_* tools).
     add_vol3_parser(sub)
+
+    # keys — key finders over app.tools_keyfinders (same producers as
+    # /api/keyfinders and the MCP keyfinders_* tools).
+    add_keys_parser(sub)
+    # yara — the YARA editor backend over app.tools_yara (same producers as
+    # /api/yara and the MCP yara_* tools).
+    add_yara_parser(sub)
+    # fixtures — detector fixtures over app.tools_detector_fixtures.
+    add_fixtures_parser(sub)
+    # strings — the strings table over app.tools_strings (same producer as
+    # /api/strings and the MCP strings_table tool).
+    add_strings_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1289,6 +1305,10 @@ def main():
         "case": _cmd_case,
         "image": _cmd_image,
         "vol3": _cmd_vol3,
+        "keys": _cmd_keys,
+        "yara": _cmd_yara,
+        "fixtures": _cmd_fixtures,
+        "strings": _cmd_strings,
     }
     handler = handlers.get(args.command)
     if handler is None:

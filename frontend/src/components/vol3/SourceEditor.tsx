@@ -11,10 +11,12 @@ const lineCount = (text: string) => text.split("\n").length;
  * The gutter scrolls with the textarea; `errorLine` (1-based) is marked in it,
  * and Tab inserts four spaces instead of leaving the field.
  */
-export function SourceEditor({ value, onChange, errorLine = null }: {
+export function SourceEditor({ value, onChange, errorLine = null, ariaLabel }: {
   value: string;
   onChange: (next: string) => void;
   errorLine?: number | null;
+  /** Accessible name of the textarea; defaults to the plugin-source label. */
+  ariaLabel?: string;
 }) {
   const { t } = useTranslation("vol3");
   const gutter = useRef<HTMLDivElement>(null);
@@ -49,7 +51,7 @@ export function SourceEditor({ value, onChange, errorLine = null }: {
         })}
       </div>
       <textarea value={value} spellCheck={false} wrap="off" data-testid="editor-textarea"
-        aria-label={t("editor.sourceLabel")}
+        aria-label={ariaLabel ?? t("editor.sourceLabel")}
         onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown}
         onScroll={(e) => { if (gutter.current) gutter.current.scrollTop = e.currentTarget.scrollTop; }}
         className="flex-1 min-w-0 resize-none bg-transparent font-mono outline-none py-1 px-2"

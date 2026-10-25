@@ -118,7 +118,12 @@ export function ImagePanel() {
             {t("profile.extract")}
           </button>
         </div>
-        <JobStatus state={profileJob.state} label={t("profile.running")} testId="profile-progress" />
+        <JobStatus state={profileJob.state} label={t("profile.running")} testId="profile-progress"
+          onCancel={() => void profileJob.cancel()} />
+        {profileJob.state.status === "cancelled" && (
+          <p role="status" data-testid="profile-cancelled" className="md-text-secondary">
+            {t("profile.cancelled")}</p>
+        )}
         {profileJob.state.result?.isf && (
           <p data-testid="profile-done" className="md-text-secondary">
             {t("profile.done", { isf: profileJob.state.result.isf })}</p>

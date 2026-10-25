@@ -109,6 +109,26 @@
     "constraint_validator": {
       "label": "Constraint Validator",
       "desc": "KDF relationship verification for candidates"
+    },
+    "aes_schedule": {
+      "label": "AES Key Schedule",
+      "desc": "Expanded AES round keys recognised by their structure"
+    },
+    "rsa_der": {
+      "label": "RSA Key (DER)",
+      "desc": "ASN.1 RSA private key structures"
+    },
+    "rsa_factor": {
+      "label": "RSA Factor",
+      "desc": "Prime factors of an RSA modulus"
+    },
+    "pem_scan": {
+      "label": "PEM Scan",
+      "desc": "PEM-armoured keys and certificates"
+    },
+    "entropy_window": {
+      "label": "Entropy Window",
+      "desc": "High-entropy byte windows"
     }
   }
 }

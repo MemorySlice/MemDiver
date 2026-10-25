@@ -264,6 +264,7 @@ packages = [
     "memdiver.algorithms",
     "memdiver.algorithms.known_key",
     "memdiver.algorithms.unknown_key",
+    "memdiver.algorithms.keyfinders",
     "memdiver.algorithms.patterns",
     "memdiver.harvester",
     "memdiver.architect",

@@ -94,6 +94,7 @@ _STDLIB_OR_VENDORED = frozenset({
     "importlib",   # stdlib
     "io",          # stdlib
     "resource",    # stdlib (Unix-only, hence the probe)
+    "fcntl",       # stdlib (POSIX-only, hence the probe; yara_rule_store write lock)
     "tomllib",     # stdlib on 3.11+
     "typing",      # stdlib
     "asyncio",     # stdlib

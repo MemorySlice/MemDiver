@@ -154,7 +154,7 @@ class FakePakunoda:
 def _chain_with(fake, monkeypatch):
     from memdiver.core.image.profiles import CacheProvider, ExplicitProvider
 
-    def chain(explicit):
+    def chain(explicit, **_controls):
         return ProfileChain([ExplicitProvider(explicit), CacheProvider(), fake])
     monkeypatch.setattr(ti, "default_chain", chain)
 
@@ -527,6 +527,9 @@ class _Ctx:
 
     def emit(self, kind, **fields):
         self.events.append((kind, fields))
+
+    def is_cancelled(self):
+        return False
 
 
 def test_job_runner_returns_the_producer_payload_as_artifact_and_summary(image, tmp_path):

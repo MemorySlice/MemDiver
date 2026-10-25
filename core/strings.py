@@ -7,6 +7,7 @@ All functions are stdlib-only with no external dependencies.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import List
 
@@ -141,3 +142,24 @@ def _emit_utf8_run(
                 offset=start + m.offset, value=m.value,
                 encoding="ascii", length=m.length,
             ))
+
+
+def extract_utf16le_strings(data: bytes, min_length: int = 4) -> List[StringMatch]:
+    """Extract UTF-16LE strings of printable ASCII characters (``c 00 c 00 ...``).
+
+    ``offset`` is the byte offset of the first character, ``length`` the number
+    of characters (so the byte extent is ``2 * length``). Only the ASCII-printable
+    subset of UTF-16 is recognised, which is what Windows paths and ``wchar_t``
+    identifiers in a dump are made of; the scan is alignment-free.
+    """
+    if not data:
+        return []
+    return [
+        StringMatch(offset=m.start(), value=m.group().decode("utf-16-le"),
+                    encoding="utf16le", length=(m.end() - m.start()) // 2)
+        for m in _UTF16LE_RUN.finditer(data)
+        if (m.end() - m.start()) // 2 >= min_length
+    ]
+
+
+_UTF16LE_RUN = re.compile(rb"(?:[\x20-\x7e\t\n\r]\x00)+")

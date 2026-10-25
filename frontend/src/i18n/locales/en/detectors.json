@@ -1,0 +1,11 @@
+{
+  "fixtures": {
+    "run": "Run fixtures",
+    "running": "Running...",
+    "notRun": "Fixtures not run",
+    "summary": "{{pass}} of {{total}} fixtures passed",
+    "noFixtures": "No fixtures apply to this detector, so nothing was proven.",
+    "error": "Could not run the fixtures: {{message}}",
+    "needRule": "Enter a rule to run its fixtures."
+  }
+}

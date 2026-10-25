@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **86 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **95 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -106,6 +106,19 @@ Tabular results live as Parquet tables in a case directory, queryable with read-
 | `case_schema` | Columns, types, location mappings, runs and rows per table. |
 | `case_query` | ONE read-only SELECT (DuckDB SQL), `?` bindings via `params`, rows capped at `limit` (default 200). |
 | `case_export` | Export a dump (`.mdview` view or `.msl`) into case tables: view regions, MSL regions, page states, heap chunks (`what`, default `auto`; heap skipped when no allocator is found). |
+| `keyfinders_list` | The key finders (structure-based key recognisers) with the `params` each reads. |
+| `keyfinders_scan` | Scan the captured bytes of a dump (`.msl`, `.mdview`, raw) with key finders (default `aes_schedule`); rows carry `addr`+`space`+`location`, heap/region context, `coverage`, `truncated` and `candidates` (verify/brute_force input); `case_dir` files the `key_hits` table and `key_hit` annotations. |
+| `yara_check` | Compile a YARA rule without scanning: `valid`, `rule_names`, and `errors: [{line, message}]` for a rule that does not compile (an answer, not an error). |
+| `yara_scan_dump` | Scan the captured bytes of one dump (`.msl`, `.mdview`, raw) with a YARA rule, optionally a `view`/`offset`/`length` window; rows carry `addr` + `space` + `va`, `coverage` and `truncated` qualify them. Never reads across a capture gap. |
+| `yara_rule_list` | List stored YARA rules of the per-user library and, with `case_dir`, the case; each row has `scope`, `version`, `compiles`, `modified_externally`, and `shadows` for a case rule hiding a library one; an unreadable rule is a row with `error`, a missing `case_dir` sets `case_error` and keeps the library rows. |
+| `yara_rule_get` | One stored YARA rule with its source; `scope` is `library`, `case` or `auto` (default: the case, when `case_dir` is given, wins over the library). |
+| `yara_rule_put` | Store a YARA rule by `name` in `scope` (`library` or `case` + `case_dir`; omitted = `case` when `case_dir` is given, else `library`); compile-checked, a non-compiling draft is saved and flagged. The previous version goes to history. `yara_check` / `yara_scan_dump` then accept `rule_name` (+ `case_dir`) instead of `rule_source`. |
+| `yara_rule_delete` | Remove a stored YARA rule from exactly the named scope (same default as put; not found if it lives only in the other scope); its last source is archived to history. |
+| `detector_fixtures_run` | Run a detector's fixtures (positive controls + decoys): verdict `pass` / `fail` / `indeterminate` (no fixtures is `indeterminate`, never a pass). `artifact_kind` `keyfinder` (finder name; `aes_schedule` ships synthetic AES-schedule fixtures) or `yara` (rule source); `case_dir` adds stored fixtures and stores `last_verdict`. |
+| `detector_fixtures_add` | Store a fixture in a case: finder / YARA rule name, a sample (`hex`, `base64` or a wholly captured `dump_path` range) and `expect` (`matches` with sample-relative offsets, or `no_match` for a decoy). |
+| `detector_fixtures_list` | Bundled and stored detector fixtures with their `last_verdict`. |
+| `detector_fixtures_remove` | Retire a stored fixture (archived under `history/`). |
+| `strings_table` | The printable strings of the captured bytes of a dump, one row each (`ascii`/`utf-8`/`utf16le`); rows carry `addr`+`space`+`location`, `encoding`, `value`, `iocs` badges and `region`; a string never crosses a capture gap; `truncated`/`coverage` always present; `case_dir` files the `strings` table (then `vol3_query` `saved="strings_iocs"`). |
 | `context_at` | Everything containing a `location` (table rows and current annotations, outermost first), with read coverage when `dump_path` is given. |
 
 ## Memory images

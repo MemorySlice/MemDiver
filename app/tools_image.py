@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from memdiver.core.image.context import (
     ImageContext,
@@ -150,23 +150,29 @@ def image_probe_result(image_path: str, banners: bool = False,
     return ServiceResult.ok(payload)
 
 
-def _full_chain(isf: Optional[Path], allow_pakunoda: bool) -> ProfileChain:
-    chain = default_chain(isf)
+def _full_chain(isf: Optional[Path], allow_pakunoda: bool,
+                progress: Optional[Callable[[str, float], None]] = None,
+                cancel: Optional[Callable[[], bool]] = None) -> ProfileChain:
+    chain = default_chain(isf, progress=progress, cancel=cancel)
     if not allow_pakunoda:
         chain.providers = [p for p in chain.providers if p.name != "pakunoda"]
     return chain
 
 
 def image_profile_result(image_path: str, isf: Optional[str] = None,
-                         allow_pakunoda: bool = True) -> "ServiceResult":
+                         allow_pakunoda: bool = True,
+                         progress: Optional[Callable[[str, float], None]] = None,
+                         cancel: Optional[Callable[[], bool]] = None) -> "ServiceResult":
     """Resolve the kernel profile (explicit -> cache -> pakunoda -> vol3 dirs).
 
     pakunoda extraction takes ~15 s and maps the whole image; surfaces with a
-    request/response cycle run this as a job.
+    request/response cycle run this as a job. ``progress(stage, elapsed_s)`` /
+    ``cancel()`` are forwarded to pakunoda; a cancel raises ``CapabilityError``
+    with ``code="cancelled"``.
     """
     image = _image_file(image_path)
     sha = file_sha256(image)
-    chain = _full_chain(_isf_file(isf), allow_pakunoda)
+    chain = _full_chain(_isf_file(isf), allow_pakunoda, progress, cancel)
     hit = chain.resolve(image, sha)
     return ServiceResult.ok({"image": str(image), "image_sha256": sha,
                              **_resolution_dict(hit, chain)})

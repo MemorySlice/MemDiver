@@ -115,6 +115,11 @@ export const startProfileJob = (imagePath: string, isf?: string, allowPakunoda =
     image_path: imagePath, isf, allow_pakunoda: allowPakunoda,
   }));
 
+/** Cooperative cancel of a job (`DELETE /api/tasks/{id}`; 409 once it is terminal). */
+export const cancelImageJob = (taskId: string) =>
+  request<{ task_id: string; cancelled: boolean }>(
+    `/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+
 export const startOpenViewJob = (args: OpenViewArgs) =>
   post("/api/image/open-view", compact(args));
 

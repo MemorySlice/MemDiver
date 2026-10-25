@@ -408,9 +408,22 @@ def _named(ctx: DetectContext, pattern: str,
             and (opts is None or opts.selects(r))]
 
 
+def _foreign_libc_without_scudo(ctx: DetectContext) -> bool:
+    libc = ctx.matching_modules("libc.so.6", "libc-2.*.so", "ld-musl-*.so.1",
+                                "libc.musl-*")
+    return bool(libc) and not ctx.matching_modules("libscudo*", "libclang_rt.scudo_standalone*")
+
+
 def _fallback_regions(ctx: DetectContext,
                       opts: Optional[ParseOptions] = None) -> List[MappedRegion]:
-    """Anonymous writable regions: where scudo hides without region names."""
+    """Anonymous writable regions: where scudo hides without region names.
+
+    None when a glibc or musl libc is mapped and no scudo library is: such a
+    process allocates with ptmalloc2 / mallocng, and its anonymous heap bytes
+    only resemble scudo headers by chance (an aarch64 glibc heap does).
+    """
+    if _foreign_libc_without_scudo(ctx):
+        return []
     return [r for r in ctx.regions if _is_anonymous_rw(r)
             and not name_matches(r.name, _SECONDARY)
             and (opts is None or opts.selects(r))]

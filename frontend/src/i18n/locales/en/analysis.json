@@ -16,7 +16,12 @@
     "user_regex": "User Regex",
     "exact_match": "Exact Match",
     "differential": "Differential",
-    "constraint_validator": "Constraint Validator"
+    "constraint_validator": "Constraint Validator",
+    "aes_schedule": "AES Key Schedule",
+    "rsa_der": "RSA Key (DER)",
+    "rsa_factor": "RSA Factor",
+    "pem_scan": "PEM Scan",
+    "entropy_window": "Entropy Window"
   },
   "algoDescriptions": {
     "entropy_scan": "Shannon entropy sliding window — finds high-entropy regions that may contain cryptographic keys or compressed data.",
@@ -26,7 +31,12 @@
     "user_regex": "Custom regex byte pattern search on raw dump data. Enter your regex pattern below when selected.",
     "exact_match": "Searches for known cryptographic key byte sequences using ground truth from keylog reference data.",
     "differential": "Cross-run byte variance analysis (DPA-inspired) — compares multiple dumps to locate volatile key-sized regions.",
-    "constraint_validator": "Validates candidate keys against protocol-specific KDF constraints (key length, derivation relationships)."
+    "constraint_validator": "Validates candidate keys against protocol-specific KDF constraints (key length, derivation relationships).",
+    "aes_schedule": "Expanded AES round keys recognised by their structure",
+    "rsa_der": "ASN.1 RSA private key structures",
+    "rsa_factor": "Prime factors of an RSA modulus",
+    "pem_scan": "PEM-armoured keys and certificates",
+    "entropy_window": "High-entropy byte windows"
   },
   "panel": {
     "protocol": "Protocol",

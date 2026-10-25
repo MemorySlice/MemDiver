@@ -23,13 +23,28 @@ STAGE = "image"
 JOBS = ("profile", "open_view", "extract_process", "case_export")
 
 
-def _call_producer(job: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _pakunoda_progress(ctx):
+    """Adapter: pakunoda ``(stage, elapsed_s)`` -> a ``progress`` event (frontend contract)."""
+    def emit(stage: str, elapsed: float) -> None:
+        ctx.emit("progress", stage=STAGE, pct=0.0, msg=f"{stage}",
+                 extra={"pakunoda_stage": stage, "elapsed_s": round(elapsed, 1)})
+    return emit
+
+
+def _job_controls(job: str, ctx) -> Dict[str, Any]:
+    """Job controls only the profile producer understands."""
+    if job != "profile":
+        return {}
+    return {"progress": _pakunoda_progress(ctx), "cancel": ctx.is_cancelled}
+
+
+def _call_producer(job: str, args: Dict[str, Any], **controls: Any) -> Dict[str, Any]:
     from memdiver.app import tools_case, tools_image
     producers = {"profile": tools_image.image_profile_result,
                  "open_view": tools_image.image_open_view_result,
                  "extract_process": tools_image.image_extract_process_result,
                  "case_export": tools_case.case_export_result}
-    return dict(producers[job](**args).payload)
+    return dict(producers[job](**args, **controls).payload)
 
 
 def _write_artifact(payload: Dict[str, Any], params: Dict[str, Any], ctx) -> Dict[str, Any]:
@@ -51,8 +66,11 @@ def run_image_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         raise ValueError(f"unknown image job: {job!r}")
     ctx.emit("stage_start", stage=STAGE, pct=0.0, msg=f"image {job}")
     try:
-        payload = _call_producer(job, dict(params.get("args", {})))
+        payload = _call_producer(job, dict(params.get("args", {})), **_job_controls(job, ctx))
     except CapabilityError as exc:
+        if exc.code == "cancelled":
+            ctx.emit("error", error="cancelled")
+            raise RuntimeError("image profile cancelled") from exc
         ctx.emit("error", error=exc.message)
         raise ValueError(exc.message) from exc
     artifact = _write_artifact(payload, params, ctx)

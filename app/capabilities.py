@@ -392,6 +392,49 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("vol3.fixture_run", "memdiver.app.tools_vol3_fixtures.vol3_fixture_run_result",
          ("library", "cli", "web", "mcp")),
+    # -- key finders: structure-based key recognition over captured bytes (T3.3).
+    # keyfinders.scan registers the ``key_hits`` case table; REST runs a large
+    # scan as a job (app.pipeline.keyfinders_task_runner).
+    _cap("keyfinders.list", "memdiver.app.tools_keyfinders.keyfinders_list_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("keyfinders.scan", "memdiver.app.tools_keyfinders.keyfinders_scan_result",
+         ("library", "cli", "web", "mcp")),
+    # -- YARA editor: compile-check (errors with lines) and a captured-bytes scan of
+    # ONE dump (windowed, VA coordinates, coverage); the N-dump census is analysis.yara_scan.
+    # REST runs a large / async scan as a job (app.pipeline.yara_task_runner).
+    _cap("yara.check", "memdiver.app.tools_yara.yara_check_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("yara.scan_dump", "memdiver.app.tools_yara.yara_scan_dump_result",
+         ("library", "cli", "web", "mcp")),
+    # -- stored YARA rules: a per-user library and per-case directories; check/scan take
+    # ``rule_name`` in place of the source.
+    _cap("yara.rule_list", "memdiver.app.tools_yara_rules.yara_rule_list_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("yara.rule_get", "memdiver.app.tools_yara_rules.yara_rule_get_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("yara.rule_put", "memdiver.app.tools_yara_rules.yara_rule_put_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("yara.rule_delete", "memdiver.app.tools_yara_rules.yara_rule_delete_result",
+         ("library", "cli", "web", "mcp")),
+    # -- detector fixtures (T3.7, D13): positive controls / decoys with a verdict
+    # for YARA rules and key finders; stored in the case, shared store primitives
+    # with the vol3 fixtures.
+    _cap("detector_fixtures.run",
+         "memdiver.app.tools_detector_fixtures.detector_fixtures_run_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("detector_fixtures.add",
+         "memdiver.app.tools_detector_fixtures.detector_fixtures_add_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("detector_fixtures.list",
+         "memdiver.app.tools_detector_fixtures.detector_fixtures_list_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("detector_fixtures.remove",
+         "memdiver.app.tools_detector_fixtures.detector_fixtures_remove_result",
+         ("library", "cli", "web", "mcp")),
+    # -- strings as a table (T3.6): registers the ``strings`` case table; the
+    # ``strings_iocs`` saved query adds IOC columns. REST runs a large scan as a job.
+    _cap("strings.table", "memdiver.app.tools_strings.strings_table_result",
+         ("library", "cli", "web", "mcp")),
 )
 
 

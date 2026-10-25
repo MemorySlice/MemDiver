@@ -27,7 +27,7 @@ class AlgorithmRegistry:
         self._algorithms: Dict[str, BaseAlgorithm] = {}
 
     def discover(self) -> None:
-        """Walk known_key/ and unknown_key/ subdirectories to find algorithms.
+        """Walk known_key/, unknown_key/ and keyfinders/ subdirectories to find algorithms.
 
         Also loads any algorithms advertised by installed packages under the
         ``memdiver.algorithms`` entry-point group (additive; a no-op when none
@@ -36,7 +36,7 @@ class AlgorithmRegistry:
         base_dir = Path(__file__).parent
 
         modules = []
-        for subdir in ["known_key", "unknown_key", "patterns"]:
+        for subdir in ["known_key", "unknown_key", "keyfinders", "patterns"]:
             pkg_path = base_dir / subdir
             if not pkg_path.is_dir():
                 continue

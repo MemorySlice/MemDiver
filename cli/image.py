@@ -66,10 +66,15 @@ def _cmd_image_probe(args: argparse.Namespace) -> int:
     return _emit(args, image_probe_result(args.image, args.banners, args.isf).payload)
 
 
+def _print_stage(stage: str, elapsed: float) -> None:
+    """pakunoda stage line on stderr so stdout stays the JSON payload."""
+    print(f"[{elapsed:7.1f}s] {stage}", file=sys.stderr, flush=True)
+
+
 def _cmd_image_profile(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_profile_result
     return _emit(args, image_profile_result(
-        args.image, args.isf, not args.no_pakunoda).payload)
+        args.image, args.isf, not args.no_pakunoda, progress=_print_stage).payload)
 
 
 def _cmd_image_open(args: argparse.Namespace) -> int:

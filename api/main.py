@@ -228,6 +228,10 @@ def create_app() -> FastAPI:
         annotations,
         case,
         image,
+        detector_fixtures,
+        keyfinders,
+        yara,
+        strings,
         vol3,
         architect,
         consensus,
@@ -288,6 +292,22 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         vol3.router, prefix="/api/vol3", tags=["vol3"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        detector_fixtures.router, prefix="/api/detector-fixtures", tags=["detector-fixtures"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        keyfinders.router, prefix="/api/keyfinders", tags=["keyfinders"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        yara.router, prefix="/api/yara", tags=["yara"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        strings.router, prefix="/api/strings", tags=["strings"],
         dependencies=_read_path_policy,
     )
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])

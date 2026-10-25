@@ -122,11 +122,21 @@ EXPECTED_TOOLS = {
     # T2.5/T2.8: stored plugin sources and plugin fixtures.
     "vol3_source_list", "vol3_source_get", "vol3_source_put",
     "vol3_fixture_put", "vol3_fixture_list", "vol3_fixture_run",
+    # T3.3: key finders (structure-based key recognition) over captured bytes.
+    "keyfinders_list", "keyfinders_scan",
+    # YARA editor: compile-check + captured-bytes scan of one dump.
+    "yara_check", "yara_scan_dump",
+    "yara_rule_list", "yara_rule_get", "yara_rule_put", "yara_rule_delete",
+    # T3.7: detector fixtures (YARA rules / key finders): positive controls + decoys.
+    "detector_fixtures_run", "detector_fixtures_add", "detector_fixtures_list",
+    "detector_fixtures_remove",
+    # T3.6: strings as a table with IOC badges.
+    "strings_table",
 }
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 86
+EXPECTED_TOOL_COUNT = 99
 
 
 def _registered_tool_names(server) -> set:

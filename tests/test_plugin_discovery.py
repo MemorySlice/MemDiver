@@ -99,12 +99,17 @@ def test_discover_subclasses_last_write_wins_by_name():
 # The full built-in sets. Locked exactly (not just a subset) so an
 # accidentally-dropped or renamed built-in plugin is caught.
 _EXPECTED_ALGORITHMS = {
+    "aes_schedule",
     "change_point",
     "constraint_validator",
     "differential",
     "entropy_scan",
+    "entropy_window",
     "exact_match",
     "pattern_match",
+    "pem_scan",
+    "rsa_der",
+    "rsa_factor",
     "structure_scan",
     "user_regex",
 }

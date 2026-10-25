@@ -11,6 +11,7 @@ import { useImageStore } from "@/stores/image-store";
 const api = vi.hoisted(() => ({
   probeImage: vi.fn(),
   startProfileJob: vi.fn(),
+  cancelImageJob: vi.fn(),
   startOpenViewJob: vi.fn(),
   startExtractProcessJob: vi.fn(),
   listImageProcesses: vi.fn(),
@@ -116,6 +117,45 @@ describe("ImagePanel", () => {
     expect(screen.getByTestId("profile-progress")).toHaveTextContent("mapping 50%");
     act(() => task("tp").onDone({ extra: { isf: "/cache/k.json", image: "/img.lime", image_sha256: "s" } }));
     expect(await screen.findByTestId("profile-done")).toHaveTextContent("/cache/k.json");
+  });
+
+  it("shows the pakunoda stage and elapsed time on an indeterminate bar", async () => {
+    api.startProfileJob.mockResolvedValue({ task_id: "ts", status: "pending" });
+    render(<ImagePanel />);
+    await screen.findByTestId("probe-format");
+    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    await waitFor(() => expect(ws.calls.some((c) => c.taskId === "ts")).toBe(true));
+    act(() => task("ts").onProgress(0, "symbols", { extra: { pakunoda_stage: "symbols", elapsed_s: 4.26 } }));
+    expect(screen.getByTestId("profile-progress-text")).toHaveTextContent("Stage: symbols · 4.3 s");
+    const bar = screen.getByRole("progressbar", { name: "Extracting profile..." });
+    expect(bar).toHaveAttribute("aria-busy", "true");
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+  });
+
+  it("cancels the profile job and shows the cancelled state", async () => {
+    api.startProfileJob.mockResolvedValue({ task_id: "tc", status: "pending" });
+    api.cancelImageJob.mockResolvedValue({ task_id: "tc", cancelled: true });
+    render(<ImagePanel />);
+    await screen.findByTestId("probe-format");
+    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tc")).toBe(true));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await waitFor(() => expect(api.cancelImageJob).toHaveBeenCalledWith("tc"));
+    expect(await screen.findByTestId("profile-cancelled")).toHaveTextContent("Profile extraction cancelled");
+    expect(screen.queryByTestId("image-error")).toBeNull();
+    expect(screen.getByText("Extract profile with pakunoda")).toBeEnabled();
+  });
+
+  it("treats a terminal 'cancelled' error event as cancelled, not failed", async () => {
+    api.startProfileJob.mockResolvedValue({ task_id: "te", status: "pending" });
+    render(<ImagePanel />);
+    await screen.findByTestId("probe-format");
+    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    await waitFor(() => expect(ws.calls.some((c) => c.taskId === "te")).toBe(true));
+    act(() => task("te").onError("cancelled", {}));
+    expect(await screen.findByTestId("profile-cancelled")).toBeInTheDocument();
+    expect(screen.queryByTestId("image-error")).toBeNull();
   });
 
   it("opens the kernel view in the workspace and lists processes, filter + sort", async () => {
