@@ -56,6 +56,7 @@ class BlockType(IntEnum):
     CONNECTION_TABLE = 0x0052
     HANDLE_TABLE = 0x0053
     CONNECTIVITY_TABLE = 0x0055
+    PHYSICAL_MEMORY_MAP = 0x0059  # spec 5.9 (v1.1)
     END_OF_EXTENSION = 0x0FFE  # terminator of an extension segment (spec 4.6)
     END_OF_CAPTURE = 0x0FFF
     VAS_MAP = 0x1001
@@ -199,6 +200,9 @@ class SourceFormat(IntEnum):
     # region types come from the maps paths, i.e. real observations, so the
     # raw "unclassified" rule does not apply to it.
     REGIONED_RAW = 0x05
+    # Spec Table 40 "Other": a producer the spec registry has no code for
+    # (e.g. a process extracted from a full physical memory image).
+    OTHER = 0xFFFF
 
 
 class MslKeyType(IntEnum):

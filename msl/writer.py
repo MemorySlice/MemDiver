@@ -36,7 +36,7 @@ from .enums import (ARGON2ID_MIN_LANES, ARGON2ID_MIN_MEMORY_KIB,
                     HashAlgo, HeaderFlag, KdfType, KeyEncap, OSType, PageState,
                     ThreadState)
 from .hashing import _new_hasher, hash_bytes, hash_file, hash_stream
-from .types import (ConnectivityRow, MslConnArpEntry, MslConnIfaceStats,
+from .types import (ConnectivityRow, PhysicalRange, MslConnArpEntry, MslConnIfaceStats,
                     MslConnIPv4Route, MslConnIPv6Route, MslConnMibCounter,
                     MslConnPacketSocket, MslConnSocketFamilyAgg,
                     MslPointerGraphEdge, MslPointerGraphNode, MslThreadRegister,
@@ -921,6 +921,19 @@ class MslWriter:
         self._blocks.append(
             (BlockType.CONNECTIVITY_TABLE, payload, block_uuid, _ZERO_UUID, 0)
         )
+        return block_uuid
+
+    def add_physical_memory_map(self, rows: Sequence[PhysicalRange]) -> UUID:
+        """Add a Physical Memory Map block (spec 5.9, type 0x0059, v1.1).
+
+        Host physical address ranges (``/proc/iomem`` top level) at
+        acquisition time. Optional, ParentUUID zero. Files using it already
+        carry Version 0x0101 (the writer's only version).
+        """
+        payload = _build_physical_memory_map_payload(rows)
+        block_uuid = uuid4()
+        self._blocks.append(
+            (BlockType.PHYSICAL_MEMORY_MAP, payload, block_uuid, _ZERO_UUID, 0))
         return block_uuid
 
     # ------------------------------------------------------------------
@@ -1960,6 +1973,28 @@ def _build_pointer_graph_block(
         block_uuid.bytes, _ZERO_UUID, prev_hash,
     )
     return block_header + payload
+
+
+def _build_physical_memory_map_payload(rows: Sequence[PhysicalRange]) -> bytes:
+    """Encode a Physical Memory Map payload (spec 5.9 Table 25).
+
+    ``u32 RowCount, u32 Reserved``; rows packed back to back (``u64 Start,
+    u64 End`` inclusive, ``u16 LabelLen, u16 Reserved``, UTF-8 label, no NUL,
+    no per-row padding); the whole payload padded to 8 bytes.
+    """
+    rows = list(rows)
+    parts = [struct.pack("<II", len(rows), 0)]
+    for r in rows:
+        label = r.label.encode("utf-8")
+        if r.start < 0 or r.end_inclusive < r.start or r.end_inclusive > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError(
+                f"invalid physical range {r.start:#x}..{r.end_inclusive:#x}")
+        if len(label) > 0xFFFF:
+            raise ValueError("physical range label exceeds 65535 bytes")
+        parts.append(struct.pack("<QQHH", r.start, r.end_inclusive, len(label), 0))
+        parts.append(label)
+    payload = b"".join(parts)
+    return payload + b"\x00" * (_pad8(len(payload)) - len(payload))
 
 
 def _build_connectivity_table_payload(

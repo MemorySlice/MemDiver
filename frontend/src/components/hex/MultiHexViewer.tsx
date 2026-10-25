@@ -196,10 +196,18 @@ export function MultiHexViewer() {
   const selectionStart = selection ? Math.min(selection.anchor, selection.active) : null;
   const selectionEnd = selection ? Math.max(selection.anchor, selection.active) : null;
 
-  const regionIndex = useMemo(
-    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
-    [highlightedRegions, viewMode, availableViews],
-  );
+  // One index per pane: a region tagged with a `dumpPath` paints only in the
+  // pane showing that dump.
+  const regionIndexByPath = useMemo(() => {
+    const byPath = new Map<string, ReturnType<typeof buildRegionIndex>>();
+    for (const pane of panes) {
+      byPath.set(
+        pane.path,
+        buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews, pane.path)),
+      );
+    }
+    return byPath;
+  }, [panes, highlightedRegions, viewMode, availableViews]);
 
   /**
    * One byte reader per pane, re-created when THAT pane's chunks change.
@@ -485,7 +493,7 @@ export function MultiHexViewer() {
                         cursorOffset={cursorOffset}
                         selectionStart={selectionStart}
                         selectionEnd={selectionEnd}
-                        regionIndex={regionIndex}
+                        regionIndex={regionIndexByPath.get(pane.path)!}
                         view={viewMode}
                       />
                     </div>

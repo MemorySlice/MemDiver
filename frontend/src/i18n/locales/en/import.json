@@ -70,6 +70,11 @@
     "raw": {
       "writes": "The selection decides what is written to the converted .msl. Excluded regions keep their place in the address-space map but carry no bytes."
     },
+    "imageView": {
+      "reads": "This is a memory-image view: it is opened in place, nothing is converted or written.",
+      "processInfo": "This process view lists its mappings by kind. The workspace always shows the whole process; to keep only some regions, extract the process to an .msl (memdiver image extract).",
+      "noSelection": "Region selection does not apply to a {{kind}} view: it has no process mappings to choose between, so the whole view is analysed."
+    },
     "noLayoutInfo": "This raw dump has no memory layout; categories can't be separated. Provide a .maps sidecar (same name) to split it into regions.",
     "imageDataInfo": "Static keys in statically linked binaries live in module data (.data / .bss). Include \"Module data\" if the target library is linked statically.",
     "finishing": "Applying the region selection…",

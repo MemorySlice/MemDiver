@@ -28,6 +28,18 @@ export interface HighlightRegion {
    * view — in any other it would mark unrelated bytes.
    */
   view?: HexViewMode;
+  /**
+   * Open-ended highlight kind (free slug, e.g. "vol3:task_struct", "key_hit",
+   * "annotation"). When set, the region paints one of the 8 generic palette
+   * slots chosen by a stable hash of this string (`kindSlot`) INSTEAD of the
+   * closed `type` colour; `type` is still required and acts as the fallback.
+   */
+  kind?: string;
+  /**
+   * The dump this region belongs to. When set, a pane showing a different dump
+   * does not paint it. Unset = every pane (the historical contract).
+   */
+  dumpPath?: string;
 }
 
 export interface Bookmark {
@@ -264,6 +276,23 @@ async function fetchChunkData(
   return decodeBase64(json.bytes);
 }
 
+/** The backend `format_name` of an `.mdview` image view (a process / kernel / physical layer). */
+export const IMAGE_VIEW_FORMAT = "image_view";
+
+/**
+ * Whether the backend can answer `/api/inspect/page-states` for this dump: an
+ * `.msl` (by the caller's key) or an image view (by what the backend detected —
+ * an `.mdview` is a plain "raw" dump as far as the extension goes).
+ */
+export function servesPageStates(format: string, detectedFormat: string): boolean {
+  return format === "msl" || detectedFormat === IMAGE_VIEW_FORMAT;
+}
+
+/** An image view that has a "vas" projection opens on it instead of "raw". */
+function opensOnVas(detectedFormat: string, views: readonly HexViewMode[]): boolean {
+  return detectedFormat === IMAGE_VIEW_FORMAT && views.includes("vas");
+}
+
 const VIEW_MODE_KEY = "memdiver:hex:viewMode";
 const BOOKMARKS_KEY_PREFIX = "memdiver:hex:bookmarks:";
 
@@ -462,6 +491,10 @@ export const useHexStore = create<HexState>((set, get) => ({
       // e.g. a persisted "va" (an .msl-only view) on a gcore core: the
       // backend would refuse every chunk. Fall back without persisting.
       applyViewMode(views[0], false);
+    } else if (viewMode === "raw" && opensOnVas(detectedFormat, views)) {
+      // An image view's "raw" is the multi-GB image file it was cut from, not
+      // the view. Open on the view's own bytes, as an `.msl` leaves "raw".
+      applyViewMode("vas", false);
     }
   },
 
@@ -477,8 +510,8 @@ export const useHexStore = create<HexState>((set, get) => ({
   },
 
   fetchPageStates: () => {
-    const { dumpPath, pageStatesLoaded, format } = get();
-    if (!dumpPath || pageStatesLoaded || format !== "msl") return;
+    const { dumpPath, pageStatesLoaded, format, detectedFormat } = get();
+    if (!dumpPath || pageStatesLoaded || !servesPageStates(format, detectedFormat)) return;
     const key = useDumpStore.getState().getKeyMaterialByPath(dumpPath);
     getPageStates(dumpPath, key)
       .then((data) => {

@@ -48,6 +48,10 @@ export async function applyRegionSelection(
 ): Promise<RegionSelectionOutcome> {
   const spec = categoriesToSpec(input.categories);
   if (input.inputMode !== "file") return { regionFilter: spec, imported: null };
+  // A memory-image view (.mdview) is opened in place. "Importing" it as a raw
+  // dump would convert the small descriptor FILE into an .msl and show its text
+  // as memory; turning a process view into an .msl is extraction, not import.
+  if (isImageView(input)) return { regionFilter: null, imported: null };
 
   const excludesSomething =
     spec !== null &&
@@ -83,4 +87,10 @@ function layoutMapsPath(preview: ImportPreview | null): string | undefined {
 /** True when at least one key field is non-blank (blank inputs send nothing). */
 function hasKeyMaterial(km?: KeyMaterial): km is KeyMaterial {
   return Object.keys(keyMaterialWire(km)).length > 0;
+}
+
+
+/** True for a `.mdview` memory-image view (by preview, or by extension before one arrives). */
+function isImageView(input: RegionSelectionInput): boolean {
+  return Boolean(input.preview?.view_kind) || /\.mdview$/i.test(input.inputPath);
 }

@@ -46,6 +46,15 @@ export const GROUND_CLASSES: ReadonlySet<string> = new Set([
   "highlight-differential",
   "highlight-constraint",
   "highlight-strings",
+  // Generic-kind bands (`regionHighlightClass()`, 8 hashed palette slots).
+  "highlight-kind-0",
+  "highlight-kind-1",
+  "highlight-kind-2",
+  "highlight-kind-3",
+  "highlight-kind-4",
+  "highlight-kind-5",
+  "highlight-kind-6",
+  "highlight-kind-7",
   // Structure field colour cycling.
   "field-color-0",
   "field-color-1",

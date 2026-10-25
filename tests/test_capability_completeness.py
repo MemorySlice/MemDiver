@@ -246,6 +246,32 @@ EXEMPT_ROUTES: FrozenSet[Tuple[str, str]] = frozenset({
         "wired on web through that runner, but the hand-off is a STRING the "
         "AST cannot follow, so the route reads as uncovered.",
     ),
+    # -- image router (T1.7): the slow image.* capabilities run as jobs -----
+    (
+        "image:POST /profile",
+        "Async dispatch: submits runner_dotted='memdiver.app.pipeline."
+        "image_task_runner.run_image_job' (job='profile'); the worker calls "
+        "tools_image.image_profile_result. pakunoda maps the whole image, so the "
+        "string hand-off is invisible to the AST.",
+    ),
+    (
+        "image:POST /open-view",
+        "Async dispatch to image_task_runner.run_image_job (job='open_view'): "
+        "the first sha256 of a multi-GB image is slow; the worker calls "
+        "tools_image.image_open_view_result.",
+    ),
+    (
+        "image:POST /extract-process",
+        "Async dispatch to image_task_runner.run_image_job (job='extract_process'): "
+        "walks every VMA of the process; the worker calls "
+        "tools_image.image_extract_process_result.",
+    ),
+    (
+        "case:POST /export",
+        "Async dispatch to image_task_runner.run_image_job (job='case_export'): "
+        "walks a multi-GB view's runs / an .msl's heap; the worker calls "
+        "tools_case.case_export_result.",
+    ),
     # -- analysis router ---------------------------------------------------
     (
         "analysis:POST /run",

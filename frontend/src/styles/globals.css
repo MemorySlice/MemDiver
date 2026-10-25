@@ -77,6 +77,16 @@
   --md-hl-constraint: #8a7a00;
   --md-hl-strings: #2266aa;
 
+  /* Generic highlight-kind palette (8 hashed slots, see kindSlot()). */
+  --md-hl-kind-0: #cc2222;
+  --md-hl-kind-1: #2a6db5;
+  --md-hl-kind-2: #3d7a28;
+  --md-hl-kind-3: #a68a00;
+  --md-hl-kind-4: #8b3d85;
+  --md-hl-kind-5: #1a8a70;
+  --md-hl-kind-6: #b05a2e;
+  --md-hl-kind-7: #5a6a7a;
+
   /* Heap role layer (hex heap mode). Seven roles, each a distinct hue so the
      chunk anatomy reads at a glance; hex.css mixes them at low alpha behind
      the byte text. Freed links are the warmest (they are the exploit-relevant
@@ -197,6 +207,16 @@
   --md-hl-differential: #4ec9b0;
   --md-hl-constraint: #d7ba7d;
   --md-hl-strings: #9cdcfe;
+
+  /* Generic highlight-kind palette (8 hashed slots, see kindSlot()). */
+  --md-hl-kind-0: #ff6b6b;
+  --md-hl-kind-1: #569cd6;
+  --md-hl-kind-2: #6a9955;
+  --md-hl-kind-3: #ffd93d;
+  --md-hl-kind-4: #c586c0;
+  --md-hl-kind-5: #4ec9b0;
+  --md-hl-kind-6: #e0a458;
+  --md-hl-kind-7: #9cb0c4;
 
   /* Heap role layer -- dark-theme steps of the same seven hues. */
   --md-hl-heap-header: #b589d6;

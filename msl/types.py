@@ -516,6 +516,22 @@ ConnectivityRow = Union[
 
 
 @dataclass(frozen=True)
+class PhysicalRange:
+    """One Physical Memory Map row (spec 5.9 Table 25): ``end_inclusive`` is the last byte."""
+    start: int
+    end_inclusive: int
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class MslPhysicalMemoryMap:
+    """Physical Memory Map payload (spec 5.9, type 0x0059)."""
+    block_header: MslBlockHeader
+    row_count: int
+    rows: Tuple[PhysicalRange, ...] = ()
+
+
+@dataclass(frozen=True)
 class MslConnectivityTable:
     """Connectivity Table payload (spec Table 25, type 0x0055).
 

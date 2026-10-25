@@ -47,7 +47,8 @@ READ_PATH_KEYS = frozenset({
     "path", "paths", "dump_path", "dump_paths", "msl_path", "anchor_path",
     "additional_paths", "source_paths", "selected_dump_paths", "pcap_path",
     "root", "library_dir", "library_dirs", "input_path", "dataset_root",
-    "variance_path", "plugin_path", "rule_paths",
+    "variance_path", "plugin_path", "rule_paths", "case_dir",
+    "image_path", "view_path", "isf",
 })
 
 #: Message returned with every 403 so the operator knows which knob to turn.

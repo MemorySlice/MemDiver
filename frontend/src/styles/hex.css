@@ -131,6 +131,57 @@
   text-decoration: underline wavy var(--md-hl-strings);
 }
 
+/* Generic highlight kinds: 8 slots chosen by a stable hash of the kind string
+   (highlight-utils `kindSlot`). The inset underline keeps the band visible
+   when the tint alone is not enough; the kind is also in the cell title. */
+.hex-byte.highlight-kind-0,
+.hex-char.highlight-kind-0 {
+  background: color-mix(in srgb, var(--md-hl-kind-0) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-0);
+}
+
+.hex-byte.highlight-kind-1,
+.hex-char.highlight-kind-1 {
+  background: color-mix(in srgb, var(--md-hl-kind-1) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-1);
+}
+
+.hex-byte.highlight-kind-2,
+.hex-char.highlight-kind-2 {
+  background: color-mix(in srgb, var(--md-hl-kind-2) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-2);
+}
+
+.hex-byte.highlight-kind-3,
+.hex-char.highlight-kind-3 {
+  background: color-mix(in srgb, var(--md-hl-kind-3) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-3);
+}
+
+.hex-byte.highlight-kind-4,
+.hex-char.highlight-kind-4 {
+  background: color-mix(in srgb, var(--md-hl-kind-4) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-4);
+}
+
+.hex-byte.highlight-kind-5,
+.hex-char.highlight-kind-5 {
+  background: color-mix(in srgb, var(--md-hl-kind-5) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-5);
+}
+
+.hex-byte.highlight-kind-6,
+.hex-char.highlight-kind-6 {
+  background: color-mix(in srgb, var(--md-hl-kind-6) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-6);
+}
+
+.hex-byte.highlight-kind-7,
+.hex-char.highlight-kind-7 {
+  background: color-mix(in srgb, var(--md-hl-kind-7) 25%, transparent);
+  box-shadow: inset 0 -1px 0 0 var(--md-hl-kind-7);
+}
+
 /* The in-flight placeholder. The PENDING-ness is carried by the glyph (`··`),
    not by a dimmer colour: `opacity: 0.4` on top of --md-text-muted composited
    to #4d5054 on --md-bg-primary, a 2.05:1 read that WCAG AA (SC 1.4.3) fails

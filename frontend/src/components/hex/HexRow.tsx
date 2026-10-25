@@ -1,7 +1,7 @@
 import { memo, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import type { RegionIndex } from "./highlight-utils";
-import { getRegionForOffset, highlightClass } from "./highlight-utils";
+import { getRegionForOffset, regionHighlightClass } from "./highlight-utils";
 import { byteToHex, byteToAscii, offsetToHex } from "@/utils/hex-codec";
 import type { HexViewMode } from "@/stores/hex-store";
 import { ABSENCE_META, type AbsenceKind } from "@/utils/absence-classes";
@@ -275,7 +275,7 @@ export const HexRow = memo(function HexRow({
     // Highlight region
     const region = getRegionForOffset(regionIndex, byteOffset);
     if (region) {
-      classes.push(highlightClass(region.type));
+      classes.push(regionHighlightClass(region));
       if (region.colorIndex !== undefined) {
         classes.push(`field-color-${region.colorIndex % 8}`);
       }

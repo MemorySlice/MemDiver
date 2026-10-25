@@ -11,7 +11,7 @@ flowchart TB
     subgraph UX
         Web[React SPA<br/>4 wired views + 7 feature panels]
         CLI[memdiver CLI<br/>35 subcommands]
-        MCP[MCP server<br/>56 tools]
+        MCP[MCP server<br/>71 tools]
         Marimo[Marimo sandbox<br/>+5 research views]
     end
     subgraph API[FastAPI · 19 routers + WS]

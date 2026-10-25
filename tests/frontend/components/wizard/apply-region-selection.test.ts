@@ -143,4 +143,15 @@ describe("applyRegionSelection", () => {
       expect(importDumpPath).toHaveBeenCalledWith("/a.dump", { regions: "heap,stack,unclassified" });
     });
   });
+
+  it("never imports a memory-image view, even when the selection excludes something", async () => {
+    for (const p of [{ ...preview(false), format: "image_view", view_kind: "process" as const }, null]) {
+      const out = await applyRegionSelection({
+        inputMode: "file", inputPath: "/cases/a/views/x.process.pid7.mdview",
+        categories: [...DEFAULTS], materialize: true, preview: p,
+      });
+      expect(out).toEqual({ regionFilter: null, imported: null });
+    }
+    expect(importDumpPath).not.toHaveBeenCalled();
+  });
 });

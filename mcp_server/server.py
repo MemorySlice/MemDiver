@@ -80,8 +80,14 @@ def create_server():
     # one the producer actually serves.
     from memdiver.app.tools_consensus import DEFAULT_REGIONS_PER_PAGE
 
+    from mcp.server.mcpserver import ResourceSecurity
+
     from memdiver.app import tools_consensus
-    from memdiver.app import tools_heap
+
+    # Agents get a smaller default row cap than the 1000 of CLI/REST: a SQL
+    # result lands in the model's context window.
+    MCP_CASE_QUERY_LIMIT = 200
+    from memdiver.app import tools_annotations, tools_case, tools_heap, tools_image
     # Same reason: the heap walk cap and chunk page size an agent sees
     # advertised must be the producer's numbers.
     from memdiver.app.tools_heap import (
@@ -476,6 +482,216 @@ def create_server():
             regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
         )))
+
+    # -- annotations.* : the versioned analysis record of a capture ----------
+    # ``case_dir`` is required until the Case abstraction (default
+    # ~/.memdiver/cases/<name>) lands. Locations are dicts as in
+    # ``Location.to_dict()``: {"space": "physical", "value": 4096, ...}.
+    @mcp.tool()
+    def annotations_list(
+        case_dir: str, capture_id: str, kind: Optional[str] = None,
+        include_superseded: bool = False,
+    ) -> str:
+        """List what has been concluded about a capture (its analysis record).
+
+        Returns the CURRENT entries of ``capture_id`` in ``case_dir`` (an
+        entry replaced by a newer one, and retractions, are hidden unless
+        ``include_superseded``). Each entry has id, kind, author
+        (human/agent/tool:<name>), locations, length, label, payload, support
+        and a ``superseded`` flag. ``case_dir`` is required.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_annotations.annotations_list_result(
+                case_dir, capture_id, kind, include_superseded)))
+
+    @mcp.tool()
+    def annotations_add(
+        case_dir: str, capture_id: str, kind: str = "annotation",
+        author: str = "agent", locations: Optional[List[dict]] = None,
+        label: str = "", payload: Optional[dict] = None,
+        support: Optional[List[dict]] = None, length: Optional[int] = None,
+    ) -> str:
+        """Record a conclusion about a capture (append-only, never edits history).
+
+        ``locations`` are dicts like ``{"space": "physical", "value": 4096}``
+        (spaces: physical, kernel_va, process_va [needs pid], msl_va, msl_vas,
+        module_rel [needs module], object_field [needs object_id],
+        file_offset). ``support`` is a list of ``{"kind", "ref"}`` evidence
+        items. ``author`` is human, agent or tool:<name>. Returns the stored
+        entry including its id.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_annotations.annotations_add_result(
+                case_dir, capture_id, kind, author, locations, label, payload,
+                support, length)))
+
+    @mcp.tool()
+    def annotations_supersede(
+        case_dir: str, capture_id: str, entry_id: str, author: str = "agent",
+        kind: Optional[str] = None, locations: Optional[List[dict]] = None,
+        label: Optional[str] = None, payload: Optional[dict] = None,
+        support: Optional[List[dict]] = None, length: Optional[int] = None,
+    ) -> str:
+        """Correct an entry: append a replacement that supersedes ``entry_id``.
+
+        Fields you omit are inherited from the old entry; the old one stays in
+        the log, flagged superseded. Use ``annotations_list`` for entry ids.
+        """
+        changes = {"kind": kind, "locations": locations, "label": label,
+                   "payload": payload, "support": support, "length": length}
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_annotations.annotations_supersede_result(
+                case_dir, capture_id, entry_id, author,
+                **{k: v for k, v in changes.items() if v is not None})))
+
+    @mcp.tool()
+    def annotations_retract(
+        case_dir: str, capture_id: str, entry_id: str, author: str = "agent",
+        reason: str = "",
+    ) -> str:
+        """Withdraw an entry (a retraction is appended; nothing is deleted)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_annotations.annotations_retract_result(
+                case_dir, capture_id, entry_id, author, reason)))
+
+    # -- case.* : the case data lake (Parquet tables + read-only SQL) ---------
+    @mcp.tool()
+    def case_init(case: str) -> str:
+        """Create (or re-open) a case. A bare name means ~/.memdiver/cases/<name>."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_init_result(case)))
+
+    @mcp.tool()
+    def case_status(case_dir: str) -> str:
+        """Manifest, tables (runs, row counts) and annotation captures of a case."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_status_result(case_dir)))
+
+    @mcp.tool()
+    def case_schema(case_dir: str) -> str:
+        """Columns, types, location mappings, runs and rows per table.
+
+        Every table carries capture_id, image_sha256, pid, space, addr, size,
+        run_id; analysis-record entries are queryable as ``annotations``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_schema_result(case_dir)))
+
+    @mcp.tool()
+    def case_query(
+        case_dir: str, sql: str, limit: int = MCP_CASE_QUERY_LIMIT,
+        params: Optional[List[Any]] = None,
+    ) -> str:
+        """Run ONE read-only SELECT over the case tables (DuckDB SQL).
+
+        Anything but a single SELECT is refused. Bind values with positional
+        ``?`` placeholders via ``params`` rather than formatting them into the
+        SQL. Rows are capped at ``limit``; ``truncated`` says whether more
+        existed. Call ``case_schema`` first for table and column names.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_query_result(case_dir, sql, limit, params)))
+
+    @mcp.tool()
+    def context_at(
+        case_dir: str, location: dict, length: int = 1,
+        dump_path: Optional[str] = None, tables: Optional[List[str]] = None,
+    ) -> str:
+        """What contains this address? Table rows and annotations, outermost first.
+
+        ``location`` is a dict like ``{"space": "kernel_va", "value": 4096,
+        "capture_id": "<id>", "pid": 1}``; ``capture_id`` is required. One
+        range-containment query over every case table (VMAs, modules, heap
+        chunks, ...) plus the current annotations. With ``dump_path`` the
+        result also reports how much of ``[value, value+length)`` the capture
+        holds, when the dump supports it.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.context_at_result(
+                case_dir, location, length, dump_path, tables)))
+
+    @mcp.tool()
+    def case_export(case_dir: str, dump_path: str, what: Optional[List[str]] = None,
+                    run_id: Optional[str] = None) -> str:
+        """Export a dump's tables into a case (so ``case_query``/``context_at`` see them).
+
+        ``dump_path`` is an ``.mdview`` image view or an ``.msl``. ``what`` is
+        ``["auto"]`` (default: view regions for a view; regions, page states and
+        heap chunks for an ``.msl``, heap skipped when no allocator is found) or any
+        of ``view_regions``, ``msl_regions``, ``page_states``, ``heap_chunks``.
+        Runs inline and blocks on a large image. Returns the registered tables
+        (``table``, ``run_id``, ``rows``, ``path``) and a ``skipped`` list.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_export_result(
+                case_dir, dump_path, tuple(what or ("auto",)), run_id)))
+
+    # -- image.* : memory-image views. The MCP server has no TaskManager (it is
+    # a stdio process), so the slow steps run inline and the call blocks: the
+    # first ``image_open_view``/``image_profile`` on a multi-GB image hashes it
+    # and pakunoda may take ~15 s.
+    @mcp.tool()
+    def image_probe(image_path: str, banners: bool = False,
+                    isf: Optional[str] = None) -> str:
+        """Cheap facts about a memory image: size, physical layer chain, profile status.
+
+        Never hashes the image and never runs pakunoda; ``profile.status`` is
+        ``unknown`` until ``image_profile``/``image_open_view`` has hashed it.
+        ``banners=true`` also scans the raw image for Linux banners (may read
+        all of it).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_image.image_probe_result(image_path, banners, isf)))
+
+    @mcp.tool()
+    def image_profile(image_path: str, isf: Optional[str] = None,
+                      allow_pakunoda: bool = True) -> str:
+        """Resolve the kernel profile (ISF): explicit -> cache -> pakunoda -> vol3 dirs.
+
+        Slow on a first run (pakunoda ~15 s, maps the whole image); the result
+        is cached so ``image_open_view`` finds it.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_image.image_profile_result(image_path, isf, allow_pakunoda)))
+
+    @mcp.tool()
+    def image_open_view(image_path: str, view: str, pid: Optional[int] = None,
+                        isf: Optional[str] = None, case_dir: Optional[str] = None,
+                        out_path: Optional[str] = None) -> str:
+        """Write a ``.mdview`` descriptor for a view of the image; returns its path.
+
+        ``view`` is ``physical``, ``kernel`` or ``process`` (needs ``pid``). The
+        descriptor opens like any dump (hex/search/regions tools accept it). A
+        kernel/process view needs a profile: run ``image_profile`` first.
+        Default location: ``<case_dir>/views/``.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_image.image_open_view_result(
+                image_path, view, pid, isf, case_dir, out_path)))
+
+    @mcp.tool()
+    def image_processes(view_path: str) -> str:
+        """List the tasks (pid, ppid, comm, uid, has_mm, kernel_va Location) of a view.
+
+        Zero tasks is reported as an error (wrong profile or paging depth).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_image.image_processes_result(view_path)))
+
+    @mcp.tool()
+    def image_extract_process(view_path: str, out_path: str) -> str:
+        """Extract the process of a process ``.mdview`` into an ``.msl`` file."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_image.image_extract_process_result(view_path, out_path)))
+
+    @mcp.resource("memdiver://case/{case_dir}/schema",
+                  name="case_schema", mime_type="application/json",
+                  description="Schema of a case; URL-encode the case directory.",
+                  # A case directory is legitimately an absolute path; ".." and
+                  # NUL stay rejected.
+                  security=ResourceSecurity(reject_absolute_paths=False))
+    def case_schema_resource(case_dir: str) -> str:
+        return json.dumps(tools_case.case_schema_result(case_dir).payload)
 
     @mcp.tool()
     def get_connections(

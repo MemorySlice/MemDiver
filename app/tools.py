@@ -288,6 +288,11 @@ def preview_import(
     maps = _require_maps_file(maps_path)
     region_selection = _coerce_selection(selection, exclude)
 
+    from memdiver.app.image_preview import is_image_view_path
+
+    if is_image_view_path(src):
+        return _preview_image_view(src, region_selection)
+
     from memdiver.msl.import_preview import preview_import as _preview
 
     try:
@@ -295,6 +300,13 @@ def preview_import(
     except ValueError as exc:
         raise CapabilityError(f"cannot preview {path}: {exc}") from None
     return preview.to_dict(region_selection)
+
+
+def _preview_image_view(src: Path, selection: Optional["RegionSelection"]) -> dict:
+    """:func:`preview_import` of an ``.mdview`` (VMAs, not file bytes)."""
+    from memdiver.app.image_preview import image_view_preview
+
+    return image_view_preview(src, selection)
 
 
 def import_raw_dump(

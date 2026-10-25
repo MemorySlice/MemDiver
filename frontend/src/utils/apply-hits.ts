@@ -97,3 +97,73 @@ export function applyFlatHitsToStore(hits: unknown[]): void {
     store.setAlgorithmResults(algo, algoHits);
   }
 }
+
+/** A located address of an analysis-record entry (backend `Location.to_dict`). */
+export interface AnnotationLocation {
+  space: string;
+  value: number;
+  [extra: string]: unknown;
+}
+
+/** One analysis-record entry (backend schema: `analysis/record.py`). */
+export interface AnnotationEntry {
+  id: string;
+  capture_id?: string | null;
+  kind: string;
+  label?: string;
+  locations: AnnotationLocation[];
+  length?: number | null;
+  payload?: Record<string, unknown> | null;
+}
+
+export interface ApplyAnnotationsOptions {
+  /** Only locations whose `space` equals this are considered. */
+  space: string;
+  /**
+   * Caller-owned coordinate translation: the byte offset in the view being
+   * painted, or null when the location cannot be placed there (skipped; an
+   * offset is never invented).
+   */
+  toOffset: (location: AnnotationLocation) => number | null;
+  /** Stamped on every region so only the pane showing this dump paints it. */
+  dumpPath?: string;
+  /** The byte view the offsets address; unset = whatever is on screen. */
+  view?: HexViewMode;
+}
+
+/**
+ * Turn analysis-record entries into generic-kind highlight regions.
+ *
+ * `kind` is `payload.highlight_kind` when it is a non-empty string, else the
+ * entry kind. A missing/invalid length paints one byte. The entry label (or
+ * its kind) becomes the cell tooltip.
+ */
+export function applyAnnotations(
+  entries: readonly AnnotationEntry[],
+  opts: ApplyAnnotationsOptions,
+): HighlightRegion[] {
+  const regions: HighlightRegion[] = [];
+  for (const entry of entries) {
+    const override = entry.payload?.highlight_kind;
+    const kind = typeof override === "string" && override ? override : entry.kind;
+    const length =
+      typeof entry.length === "number" && Number.isFinite(entry.length) && entry.length > 0
+        ? entry.length
+        : 1;
+    for (const location of entry.locations) {
+      if (location.space !== opts.space) continue;
+      const offset = opts.toOffset(location);
+      if (offset === null || !Number.isFinite(offset) || offset < 0) continue;
+      regions.push({
+        offset,
+        length,
+        type: "pattern",
+        label: entry.label || entry.kind,
+        kind,
+        ...(opts.dumpPath !== undefined ? { dumpPath: opts.dumpPath } : {}),
+        ...(opts.view ? { view: opts.view } : {}),
+      });
+    }
+  }
+  return regions;
+}

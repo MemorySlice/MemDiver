@@ -157,8 +157,21 @@ from memdiver.services import (
     heap_summary_result,
 )
 
+def open_case(path):
+    """Open an existing case directory and return its :class:`~memdiver.analysis.case.Case`.
+
+    The case holds Parquet tables and the analysis record; ``case.table(name)``
+    returns an Ibis table for notebooks, ``case.query(sql)`` runs read-only SQL.
+    Imported lazily so ``import memdiver`` stays cheap (DuckDB/Arrow load on use).
+    """
+    from memdiver.analysis.case import Case
+
+    return Case.open(path)
+
+
 __all__ = [
     "__version__",
+    "open_case",
     # dump access
     "open_dump",
     "RawDumpSource",

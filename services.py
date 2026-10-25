@@ -136,6 +136,33 @@ from memdiver.app.tools_heap import (
     heap_summary_result,
 )
 
+# --- analysis record: versioned annotations per capture ---------------------
+from memdiver.app.tools_annotations import (
+    annotations_add_result,
+    annotations_list_result,
+    annotations_retract_result,
+    annotations_supersede_result,
+)
+
+# --- case data lake + semantic context ---------------------------------------
+from memdiver.app.tools_case import (
+    case_export_result,
+    case_init_result,
+    case_query_result,
+    case_schema_result,
+    case_status_result,
+    context_at_result,
+)
+
+# --- memory-image views (probe / profile / open / processes / extract) --------
+from memdiver.app.tools_image import (
+    image_extract_process_result,
+    image_open_view_result,
+    image_probe_result,
+    image_processes_result,
+    image_profile_result,
+)
+
 __all__ = [
     # session
     "ToolSession",
@@ -227,4 +254,22 @@ __all__ = [
     "heap_chunk_at_result",
     "heap_free_lists_result",
     "heap_roles_result",
+    # analysis record — versioned, append-only annotations per capture.
+    "annotations_list_result",
+    "annotations_add_result",
+    "annotations_supersede_result",
+    "annotations_retract_result",
+    # case data lake — Parquet tables + read-only SQL, and locate_context.
+    "case_init_result",
+    "case_status_result",
+    "case_schema_result",
+    "case_query_result",
+    "case_export_result",
+    "context_at_result",
+    # memory-image views — a .mdview descriptor per image view, pslist, extraction.
+    "image_probe_result",
+    "image_profile_result",
+    "image_open_view_result",
+    "image_processes_result",
+    "image_extract_process_result",
 ]

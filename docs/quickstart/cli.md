@@ -1,6 +1,6 @@
 # CLI quickstart
 
-MemDiver exposes a single console script `memdiver` with 35 subcommands. The most common entry points:
+MemDiver exposes a single console script `memdiver` with 36 subcommands. The most common entry points:
 
 ```bash
 # One-shot analysis on a library directory
@@ -27,6 +27,56 @@ actually contains. Canonical phases are defined in
 `core/phase_normalizer.py:CANONICAL_PHASE_ORDER`
 (`pre_handshake_end`, `post_handshake_end`, `pre_close`, `post_close`, …).
 :::
+
+## Recording what you concluded
+
+`annotations` keeps a versioned, append-only record per capture inside a case
+directory (`--case` is required for now). `supersede` and `retract` never edit
+history; they append.
+
+```bash
+memdiver annotations add --case ./case --capture <sha256> --label "session key" \
+  --location '{"space":"physical","value":4096}' --length 32
+memdiver annotations list --case ./case --capture <sha256>
+```
+
+## Querying a case
+
+`case` is the case data lake: every tabular output is a Parquet table with the
+standard columns `capture_id, image_sha256, pid, space, addr, size, run_id`.
+`query` runs ONE read-only SELECT (`--sql`, or SQL on stdin with `-`; bind
+values with repeatable `--param`); `context-at` answers "what contains this
+address" across every table plus the annotations, outermost layer first.
+`export` fills the case from a dump (an `.mdview` view or an `.msl`): `--what`
+(repeatable) picks `view_regions`, `msl_regions`, `page_states` or `heap_chunks`;
+the default `auto` exports everything applicable and skips heap when no allocator
+is detected. Over REST it is a job (`POST /api/case/export`).
+
+```bash
+memdiver case init mycase            # a bare name -> ~/.memdiver/cases/mycase
+memdiver case status --case ./case
+memdiver case schema --case ./case
+memdiver case query --case ./case --sql "SELECT * FROM annotations WHERE pid = ?" --param 1
+memdiver case export --case ./case ./process.msl
+memdiver case context-at --case ./case \
+  --location '{"space":"physical","value":4096,"capture_id":"<sha256>"}'
+```
+
+## Memory images
+
+`image` opens a whole memory image (needs `pip install "memdiver[image]"`).
+`probe` is cheap (no hashing, no pakunoda); `profile` resolves the kernel ISF
+(pakunoda extraction takes ~15 s and maps the whole image); `open` writes a
+`.mdview` descriptor that opens like any dump; `processes` lists its tasks;
+`extract` writes a process view out as an `.msl`.
+
+```bash
+memdiver image probe alma-9.lime
+memdiver image profile alma-9.lime
+memdiver image open alma-9.lime --view process --pid 22176 --case ./case
+memdiver image processes ./case/views/alma-9.process.pid22176.mdview
+memdiver image extract ./case/views/alma-9.process.pid22176.mdview --out sshd.msl
+```
 
 ## Looking at the heap
 

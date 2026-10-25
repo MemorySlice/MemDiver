@@ -167,6 +167,10 @@ marimo = ["marimo>=0.23.9", "pymdown-extensions>=11.0.1"]
 #   * SUPPLY CHAIN: pip-audit's surface (the `security` job) grows by one
 #     package plus its transitives.
 vol = ["volatility3>=2.27,<3"]
+# Memory-image views (core/image): volatility3 as above plus pakunoda, which
+# extracts a kernel ISF straight from a Linux image. pakunoda is Apache-2.0 and
+# optional exactly like vol3 -- lazy-imported, never vendored in the wheel.
+image = ["pakunoda", "volatility3>=2.27,<3"]
 # Every optional interface at once. Base already covers api + mcp + pcap, so
 # this adds the Marimo notebook UI and Volatility3.
 #
@@ -269,6 +273,7 @@ packages = [
     "memdiver.core.binary_formats",
     "memdiver.core.binary_formats.kaitai_compiled",
     "memdiver.core.dump_sources",
+    "memdiver.core.image",
     "memdiver.msl",
     "memdiver.app",
     "memdiver.app.pipeline",
@@ -278,6 +283,7 @@ packages = [
     "memdiver.api.routers",
     "memdiver.api.ws",
     "memdiver.api.services",
+    "memdiver.analysis",
     "memdiver.heap",
     "memdiver.heap.allocators",
 ]
@@ -405,6 +411,12 @@ files = [
     "engine/candidate_grid.py",
     # Wave 3 — new fully-typed service/error modules.
     "core/service_errors.py",
+    "core/location.py",
+    "core/image/run_index.py",
+    "core/image/view_descriptor.py",
+    "core/image/sources.py",
+    "analysis/record.py",
+    "core/image/profiles.py",
     "engine/consensus_service.py",
     # Wave 4 — P3.4 ratchet (2026-08).
     "core/artifact_util.py",

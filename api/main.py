@@ -225,6 +225,9 @@ def create_app() -> FastAPI:
     from memdiver.api.routers import (
         algorithms,
         analysis,
+        annotations,
+        case,
+        image,
         architect,
         consensus,
         dataset,
@@ -268,6 +271,18 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         heap.router, prefix="/api/heap", tags=["heap"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        annotations.router, prefix="/api/annotations", tags=["annotations"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        case.router, prefix="/api/case", tags=["case"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        image.router, prefix="/api/image", tags=["image"],
         dependencies=_read_path_policy,
     )
     app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])

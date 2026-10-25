@@ -661,7 +661,15 @@ def page_states_result(
     passphrase: Optional[str] = None,
     kem_key_file: Optional[str] = None,
 ) -> "ServiceResult":
-    """ServiceResult producer for :func:`get_page_states`."""
+    """ServiceResult producer for :func:`get_page_states`.
+
+    An ``.mdview`` image view answers from its run table instead of an
+    ``.msl`` page map (see :func:`_image_page_states_result`); the response
+    shape is identical, so the workspace needs no image-specific branch.
+    """
+    if Path(msl_path).suffix == IMAGE_VIEW_SUFFIX:
+        return _image_page_states_result(
+            msl_path, key_material_kwargs(key_file, passphrase, kem_key_file))
     _require_msl_path(msl_path)
 
     from memdiver.msl.enums import PageState
@@ -717,6 +725,24 @@ def page_states_result(
             "vas_size": vas_offset,
         }
         return _finalize_inspect(payload, reader, view=None)
+
+
+IMAGE_VIEW_SUFFIX = ".mdview"
+
+
+def _image_page_states_result(path_str: str, km: dict) -> "ServiceResult":
+    """Page states of an image view's ``"va"`` view, from its run table."""
+    from memdiver.app.page_state_runs import image_page_states_payload
+
+    if not Path(path_str).is_file():
+        raise FileNotFoundServiceError(f"File not found: {path_str}")
+    with open_dump_source(path_str, km) as source:
+        if getattr(source, "format_name", "") != "image_view":
+            raise UnsupportedFormatError(f"Not an image view: {path_str}")
+        # A view whose addresses a browser cannot hold exactly offers no "va".
+        _require_supported_view(source, "va")
+        payload = image_page_states_payload(source.layer_runs())
+        return _finalize_inspect(payload, source, view=None)
 
 
 def processes_result(

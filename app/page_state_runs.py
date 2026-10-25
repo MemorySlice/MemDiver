@@ -188,3 +188,46 @@ def window_page_state_runs(
         runs.extend(_clip(
             table, starts, span_start + read_at, length, window_offset))
     return merge_runs(_subtract_valid(runs, valid))
+
+
+# -- image views (.mdview) ----------------------------------------------------
+
+#: Page size the workspace's page-state vocabulary is expressed in. The run
+#: table of an image view is byte-granular; page counts are informational.
+IMAGE_PAGE_SIZE = 4096
+
+_IMAGE_STATE_NAMES = {"CAPTURED": "CAPTURED", "FAILED": "FAILED",
+                      "NOT_RESIDENT": "NOT_RESIDENT"}
+
+
+def image_page_states_payload(layer_runs: Sequence[Any]) -> Dict[str, Any]:
+    """The ``/api/inspect/page-states`` payload of an image view.
+
+    Same shape :func:`~memdiver.app.tools_inspect.page_states_result` emits for
+    an ``.msl``, built from the view's run table: one region per run, FAILED /
+    NOT_RESIDENT runs carrying their own state. Addresses outside every run are
+    left out — the viewer reads a VA inside the span that no region covers as
+    UNMAPPED, exactly as it does for an ``.msl``. ``vas_offset`` is stamped on
+    CAPTURED runs in run order, which is the VAS stream order.
+    """
+    regions: List[Dict[str, Any]] = []
+    vas_offset = total_pages = captured_pages = 0
+    for run in sorted(layer_runs, key=lambda r: r.start):
+        state = _IMAGE_STATE_NAMES.get(run.state.name, "FAILED")
+        pages = -(-run.length // IMAGE_PAGE_SIZE)
+        entry: Dict[str, Any] = {"va": run.start, "length": run.length,
+                                 "state": state, "page_count": pages}
+        if state == "CAPTURED":
+            entry["vas_offset"] = vas_offset
+            vas_offset += run.length
+            captured_pages += pages
+        total_pages += pages
+        regions.append({"base_addr": run.start, "region_size": run.length,
+                        "page_size": IMAGE_PAGE_SIZE, "intervals": [entry]})
+    return {
+        "regions": regions,
+        "total_pages": total_pages,
+        "captured_pages": captured_pages,
+        "coverage": captured_pages / total_pages if total_pages else 0.0,
+        "vas_size": vas_offset,
+    }

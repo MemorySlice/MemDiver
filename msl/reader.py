@@ -20,6 +20,7 @@ from .decoders import (decode_connection_table, decode_connectivity_table,
                        decode_import_provenance, decode_key_hint,
                        decode_memory_region, decode_module_entry,
                        decode_module_list_index, decode_process_identity,
+                       decode_physical_memory_map,
                        decode_process_table, decode_related_dump,
                        decode_vas_map)
 from .decoders_ext import (decode_environment_block, decode_file_descriptor,
@@ -36,7 +37,7 @@ from .types import (ExtensionSegment, MslAuthError, MslBlockHeader,
                     MslFileHeader,
                     MslHandleTable, MslImportProvenance, MslKeyHint,
                     MslMemoryRegion, MslModuleEntry, MslModuleListIndex,
-                    MslParseError, MslPointerGraph, MslProcessIdentity,
+                    MslParseError, MslPhysicalMemoryMap, MslPointerGraph, MslProcessIdentity,
                     MslProcessTable, MslRelatedDump, MslVasMap)
 
 logger = logging.getLogger("memdiver.msl.reader")
@@ -174,7 +175,7 @@ class MslReader:
                     # New spec-defined table decoders (Phase MSL-Decoders-02)
                     "_module_list_index_cache", "_processes_cache",
                     "_connections_cache", "_handles_cache",
-                    "_connectivity_tables_cache",
+                    "_connectivity_tables_cache", "_physical_memory_map_cache",
                     # Ext decoders (0x0011 per spec 5.7; the rest speculative)
                     "_thread_contexts_cache", "_file_descriptors_cache",
                     "_network_connections_cache", "_environment_blocks_cache",
@@ -1253,6 +1254,11 @@ class MslReader:
             decode_connectivity_table,
             "_connectivity_tables_cache",
         )
+
+    def collect_physical_memory_map(self) -> List[MslPhysicalMemoryMap]:
+        """Physical Memory Map (0x0059) blocks, in file order (spec 5.9)."""
+        return self._collect(BlockType.PHYSICAL_MEMORY_MAP, decode_physical_memory_map,
+                             "_physical_memory_map_cache")
 
     # -- Ext decoder collectors (0x0011 is spec-defined; the rest speculative) --
 

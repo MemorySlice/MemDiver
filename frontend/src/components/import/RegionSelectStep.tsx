@@ -158,9 +158,12 @@ export function RegionSelectStep({
   // A raw dump without a memory layout is one unclassified region: categories
   // can't be separated, so the selection is pinned to "all" (no filter).
   const noLayout = preview?.layout === "none";
+  // A physical / kernel image view has no mappings to choose between either.
+  const noSelection = preview?.selection_applicable === false;
+  const pinned = noLayout || noSelection;
   useEffect(() => {
-    if (noLayout && !isAllCategories(selected)) onSelectedChange([...REGION_CATEGORIES]);
-  }, [noLayout, selected, onSelectedChange]);
+    if (pinned && !isAllCategories(selected)) onSelectedChange([...REGION_CATEGORIES]);
+  }, [pinned, selected, onSelectedChange]);
   useDefaultsOnceLayoutAppears(preview?.layout, onSelectedChange);
 
   const count = dumpCount === undefined ? paths.length : dumpCount;
@@ -188,16 +191,25 @@ export function RegionSelectStep({
         />
       )}
 
+      {noSelection && preview && (
+        <InfoCallout
+          text={preview.view_kind === "process"
+            ? t("step.imageView.processInfo")
+            : t("step.imageView.noSelection", { kind: preview.view_kind ?? "" })}
+          testId="region-no-selection-info"
+        />
+      )}
+
       <RegionCategoryChecklist
         selected={selected}
         onChange={onSelectedChange}
         totals={preview?.totals}
-        disabled={noLayout}
+        disabled={pinned}
       />
 
       {preview && <RuntimeNotice preview={preview} />}
 
-      {preview && <SelectionSummary preview={preview} selected={selected} />}
+      {preview && !noSelection && <SelectionSummary preview={preview} selected={selected} />}
 
       <InfoCallout text={t("step.imageDataInfo")} />
 
@@ -344,7 +356,11 @@ function FormatNotes({ preview }: { preview: ImportPreview }) {
     <div className="text-xs md-text-secondary space-y-1">
       <p>
         {t("step.format", { format: preview.format })}{" — "}
-        {preview.is_msl ? t("step.msl.nonDestructive") : t("step.raw.writes")}
+        {preview.is_msl
+          ? t("step.msl.nonDestructive")
+          : preview.view_kind
+            ? t("step.imageView.reads")
+            : t("step.raw.writes")}
       </p>
       {preview.notes.length > 0 && (
         <ul aria-label={t("step.notes")} className="list-disc ml-4">

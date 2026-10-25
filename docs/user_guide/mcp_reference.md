@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **56 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **71 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -94,6 +94,31 @@ Allocator-aware heap parsing for ptmalloc2 (glibc), dlmalloc, scudo (Android), m
 | `heap_chunk_at` | The chunk containing a `va` (or `offset` in `view`), the role of that byte, offsets in chunk/user data and the neighbouring chunks. |
 | `heap_free_lists` | Walked free lists (tcache, fastbins, …) optionally of one `kind`, with `cycle` and `corrupt` flags. |
 | `heap_roles` | Byte-role runs of an `offset`/`length` window in `view` (`vas`/`raw`/`va`; `length` max 1 MiB): `runs` of `{offset, length, role}` in view offsets (sorted, non-overlapping, coalesced; bytes in no chunk omitted), `chunk_starts` in the window, and the allocator's `partial`/`heuristic` flags. |
+
+## Case data lake
+
+Tabular results live as Parquet tables in a case directory, queryable with read-only SQL, with a versioned annotation record beside them. The schema is also served as the MCP resource `memdiver://case/{case_dir}/schema` (URL-encode the directory).
+
+| Tool | Purpose |
+|---|---|
+| `case_init` | Create (or re-open) a case; a bare name means `~/.memdiver/cases/<name>`. |
+| `case_status` | Manifest, tables (runs, row counts) and annotation captures. |
+| `case_schema` | Columns, types, location mappings, runs and rows per table. |
+| `case_query` | ONE read-only SELECT (DuckDB SQL), `?` bindings via `params`, rows capped at `limit` (default 200). |
+| `case_export` | Export a dump (`.mdview` view or `.msl`) into case tables: view regions, MSL regions, page states, heap chunks (`what`, default `auto`; heap skipped when no allocator is found). |
+| `context_at` | Everything containing a `location` (table rows and current annotations, outermost first), with read coverage when `dump_path` is given. |
+
+## Memory images
+
+Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip install "memdiver[image]"`). A view is a small `.mdview` descriptor file that opens like any dump. The MCP server has no job queue, so slow steps (image hashing, pakunoda) block the call; the REST API runs them as tasks.
+
+| Tool | Purpose |
+|---|---|
+| `image_probe` | Size, physical layer chain, versions and cached-profile status; never hashes the image or runs pakunoda. `banners=true` also scans for Linux banners. |
+| `image_profile` | Resolve the kernel profile (ISF): explicit, cache, pakunoda, vol3 symbol dirs. |
+| `image_open_view` | Write a `.mdview` for a `physical`, `kernel` or `process` (needs `pid`) view. |
+| `image_processes` | `pslist` of a kernel or process view (pid, ppid, comm, uid, has_mm, `kernel_va` Location); zero tasks is an error. |
+| `image_extract_process` | Extract a process view into an `.msl` file. |
 
 ## Format conversion
 

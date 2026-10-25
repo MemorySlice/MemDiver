@@ -1192,6 +1192,7 @@ DumpSourceFactory = Callable[..., DumpSource]  # called as factory(path, **key_m
 _HEADER_PROBE_LEN = 18
 
 # Priority tiers for the built-in sources (see module comment above).
+_PRIORITY_IMAGE_VIEW = 110  # .mdview descriptor (core/image), plan D2
 _PRIORITY_MSL = 100
 _PRIORITY_ELF_CORE = 90
 _PRIORITY_GDB_RAW = 80
@@ -1248,6 +1249,11 @@ def register_dump_source(
 # -- Built-in detectors ------------------------------------------------------
 
 
+def _detect_image_view(path: Path, header: bytes) -> bool:
+    from memdiver.core.image.view_descriptor import is_view_descriptor
+    return is_view_descriptor(header)
+
+
 def _detect_msl(path: Path, header: bytes) -> bool:
     from memdiver.msl.enums import FILE_MAGIC
     return header[:8] == FILE_MAGIC
@@ -1283,6 +1289,11 @@ def _detect_raw_fallback(path: Path, header: bytes) -> bool:
 # consumes it (encrypted .msl containers, spec §10).
 
 
+def _make_image_view(path: Path, **_: Any) -> DumpSource:
+    from memdiver.core.image.sources import Vol3LayerSource
+    return Vol3LayerSource(path)
+
+
 def _make_msl(path: Path, **key_material: Any) -> DumpSource:
     return MslDumpSource(
         path,
@@ -1313,6 +1324,7 @@ def _make_raw(path: Path, **_: Any) -> DumpSource:
 
 def _register_builtin_sources() -> None:
     """Register the built-in sources, preserving the legacy dispatch order."""
+    register_dump_source(_detect_image_view, _make_image_view, priority=_PRIORITY_IMAGE_VIEW)
     register_dump_source(_detect_msl, _make_msl, priority=_PRIORITY_MSL)
     register_dump_source(_detect_elf_core, _make_gcore, priority=_PRIORITY_ELF_CORE)
     register_dump_source(_detect_gdb_raw, _make_gdb_raw, priority=_PRIORITY_GDB_RAW)

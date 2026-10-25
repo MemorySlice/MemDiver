@@ -108,11 +108,19 @@ EXPECTED_TOOLS = {
     # a view window. Registered on all four surfaces in the heap phase.
     "heap_detect", "heap_summary", "heap_chunks", "heap_chunk_at",
     "heap_free_lists", "heap_roles",
+    # T1.5: the versioned analysis record of a capture (annotations.*).
+    "annotations_list", "annotations_add", "annotations_supersede",
+    "annotations_retract",
+    # T1.8/T1.9: the case data lake and locate_context.
+    "case_init", "case_status", "case_schema", "case_query", "context_at", "case_export",
+    # T1.7: memory-image views (probe/profile/open/processes/extract).
+    "image_probe", "image_profile", "image_open_view", "image_processes",
+    "image_extract_process",
 }
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 56
+EXPECTED_TOOL_COUNT = 71
 
 
 def _registered_tool_names(server) -> set:

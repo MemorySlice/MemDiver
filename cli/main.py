@@ -94,6 +94,9 @@ from .consensus import (
 )
 from .capture import _cmd_capture, add_capture_parser
 from .heap import _cmd_heap, add_heap_parser
+from .annotations import _cmd_annotations, add_annotations_parser
+from .case import _cmd_case, add_case_parser
+from .image import _cmd_image, add_image_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
     DEFAULT_AUTO_EXPORT_CONTEXT,
@@ -1061,6 +1064,16 @@ def _build_parser() -> argparse.ArgumentParser:
     # lists, byte roles over the app.tools_heap producers (same as /api/heap
     # and MCP).
     add_heap_parser(sub)
+    # annotations — the versioned analysis record over app.tools_annotations
+    # (same producers as /api/annotations and the MCP annotations_* tools).
+    add_annotations_parser(sub)
+    # case — the case data lake and locate_context over app.tools_case (same
+    # producers as /api/case and the MCP case_* / context_at tools).
+    add_case_parser(sub)
+
+    # image — memory-image views over app.tools_image (same producers as
+    # /api/image and the MCP image_* tools).
+    add_image_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1265,6 +1278,9 @@ def main():
         "gen-kem-key": _cmd_gen_kem_key,
         "inspect": _cmd_inspect,
         "heap": _cmd_heap,
+        "annotations": _cmd_annotations,
+        "case": _cmd_case,
+        "image": _cmd_image,
     }
     handler = handlers.get(args.command)
     if handler is None:

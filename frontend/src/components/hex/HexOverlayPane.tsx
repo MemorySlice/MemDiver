@@ -148,8 +148,11 @@ export function HexOverlayPane() {
   const selectionEnd = selection ? Math.max(selection.anchor, selection.active) : null;
 
   const regionIndex = useMemo(
-    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
-    [highlightedRegions, viewMode, availableViews],
+    () =>
+      buildRegionIndex(
+        regionsForView(highlightedRegions, viewMode, availableViews, anchor?.path),
+      ),
+    [highlightedRegions, viewMode, availableViews, anchor?.path],
   );
 
   // The anchor's version alone rotates these getters: this pane paints exactly

@@ -209,7 +209,7 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 56 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 70 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
@@ -217,7 +217,7 @@ All 35 subcommands exposed by [`cli/`](cli/):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Known secret &amp; detectors | Format conversion | Runtime shells |
 |---|---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` · `heap` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` · `capture` |
+| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` · `heap` · `annotations` · `case` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` · `capture` |
 
 Newer subcommands at a glance:
 
@@ -231,6 +231,9 @@ Newer subcommands at a glance:
 - `verify-plugin` — run a MemDiver-emitted Volatility3 plugin over N dumps
 - `score-detector` — score detector firings against known-true key intervals
 - `heap` — allocator detection and heap layout (`detect`, `summary`, `chunks`, `at`, `free-lists`), e.g. `memdiver heap summary dump.msl`
+- `annotations` — versioned, append-only analysis record per capture (`list`, `add`, `supersede`, `retract`; `--case` required), e.g. `memdiver annotations list --case ./case --capture <id>`
+- `case` — the case data lake: Parquet tables, read-only SQL and `locate_context` (`init`, `status`, `schema`, `query`, `context-at`, `export`), e.g. `memdiver case query --case ./case --sql "SELECT name, count(*) FROM annotations GROUP BY 1"`
+- `image` — memory-image views via Volatility 3 (`probe`, `profile`, `open`, `processes`, `extract`), e.g. `memdiver image open alma-9.lime --view process --pid 22176 --case ./case`
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -271,7 +274,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 56 tools exposed to AI assistants
+mcp_server/     MCP server — 71 tools exposed to AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

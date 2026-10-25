@@ -33,6 +33,8 @@ from .types import (
     MslModuleIndexEntry,
     MslModuleListIndex,
     MslParseError,
+    MslPhysicalMemoryMap,
+    PhysicalRange,
     MslProcessEntry,
     MslProcessIdentity,
     MslProcessTable,
@@ -618,6 +620,29 @@ def decode_connectivity_table(
     return MslConnectivityTable(
         block_header=hdr, row_count=row_count, rows=tuple(rows),
     )
+
+
+def decode_physical_memory_map(
+    hdr: MslBlockHeader, payload: bytes, byte_order: str
+) -> MslPhysicalMemoryMap:
+    """Decode Physical Memory Map payload (type 0x0059, spec 5.9 Table 25).
+
+    Rows are packed back to back; the walk advances by ``LabelLen``.
+    """
+    bo = byte_order
+    _require(payload, 8, "PHYSICAL_MEMORY_MAP header")
+    row_count = struct.unpack_from(f"{bo}I", payload, 0)[0]
+    offset = 8
+    rows = []
+    for idx in range(row_count):
+        _require(payload, offset + 0x14, f"PHYSICAL_MEMORY_MAP row {idx}")
+        start, end, label_len = struct.unpack_from(f"{bo}QQH", payload, offset)
+        offset += 0x14
+        _require(payload, offset + label_len, f"PHYSICAL_MEMORY_MAP row {idx} label")
+        label = bytes(payload[offset:offset + label_len]).decode("utf-8", "replace")
+        offset += label_len
+        rows.append(PhysicalRange(start, end, label))
+    return MslPhysicalMemoryMap(block_header=hdr, row_count=row_count, rows=tuple(rows))
 
 
 def decode_import_provenance(

@@ -26,10 +26,15 @@ export function regionsForView(
   regions: HighlightRegion[],
   viewMode: HexViewMode,
   availableViews: readonly HexViewMode[],
+  dumpPath?: string,
 ): HighlightRegion[] {
-  if (availableViews.length <= 1) return regions;
-  if (!regions.some((r) => r.view !== undefined && r.view !== viewMode)) return regions;
-  return regions.filter((r) => r.view === undefined || r.view === viewMode);
+  const byDump =
+    dumpPath === undefined
+      ? regions
+      : regions.filter((r) => r.dumpPath === undefined || r.dumpPath === dumpPath);
+  if (availableViews.length <= 1) return byDump;
+  if (!byDump.some((r) => r.view !== undefined && r.view !== viewMode)) return byDump;
+  return byDump.filter((r) => r.view === undefined || r.view === viewMode);
 }
 
 export function buildRegionIndex(regions: HighlightRegion[]): RegionIndex {
@@ -80,4 +85,62 @@ export function getRegionForOffset(
 
 export function highlightClass(type: HighlightRegion["type"]): string {
   return `highlight-${type}`;
+}
+
+/** Number of generic palette slots (`--md-hl-kind-0` .. `--md-hl-kind-7`). */
+export const KIND_SLOT_COUNT = 8;
+
+/**
+ * Fixed slots for the analysis-record kinds the workbench itself produces, so
+ * the ones that appear together (a key hit inside a vol3 task_struct row, a
+ * heap chunk under an annotation) never share a colour. A pure hash put
+ * `key_hit`, `table_rule` and every `vol3:*` kind on the same slot.
+ */
+const KNOWN_KIND_SLOTS: Readonly<Record<string, number>> = {
+  annotation: 0,
+  key_hit: 1,
+  plugin_row: 2,
+  structure_proposal: 3,
+  heap_chunk: 4,
+  yara_hit: 5,
+  isf_draft: 6,
+  table_rule: 7,
+};
+
+/** Every `vol3:<plugin or type>` kind paints like a plugin row. */
+const VOL3_KIND_PREFIX = "vol3:";
+
+/**
+ * Stable palette slot (0..7) for a highlight kind. Known workbench kinds get
+ * their fixed slot; any other kind falls back to FNV-1a 32-bit over the UTF-16
+ * code units, modulo 8. Pure function of the string, so the same kind gets the
+ * same colour in every pane and across reloads.
+ */
+export function kindSlot(kind: string): number {
+  const known = KNOWN_KIND_SLOTS[kind];
+  if (known !== undefined) return known;
+  if (kind.startsWith(VOL3_KIND_PREFIX)) return KNOWN_KIND_SLOTS.plugin_row;
+  return hashSlot(kind);
+}
+
+function hashSlot(kind: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < kind.length; i++) {
+    h ^= kind.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % KIND_SLOT_COUNT;
+}
+
+/**
+ * The CSS class a region paints.
+ *
+ * Precedence: a region with a `kind` paints `highlight-kind-<slot>` and NOT its
+ * closed `highlight-<type>` class (one band per region, as before). Which
+ * region wins a byte is unchanged (`getRegionForOffset`); generic kinds sit in
+ * the same slot of the cell-class order as closed types, so everything that
+ * outranks a closed highlight (variance, consensus, absence...) outranks them.
+ */
+export function regionHighlightClass(region: HighlightRegion): string {
+  return region.kind ? `highlight-kind-${kindSlot(region.kind)}` : highlightClass(region.type);
 }

@@ -668,6 +668,13 @@ export interface ImportPreview {
   runtime_count?: number;
   /** Captured bytes of the `runtime` regions. */
   runtime_bytes?: number;
+  /** `.mdview` image views only: which address space the view exposes. */
+  view_kind?: "process" | "kernel" | "physical";
+  /**
+   * `.mdview` image views only: `false` for a physical / kernel view, which has
+   * no process mappings to choose between (the UI explains instead of listing).
+   */
+  selection_applicable?: boolean;
 }
 
 /** Source of an import preview's region layout (see `ImportPreview.layout`). */

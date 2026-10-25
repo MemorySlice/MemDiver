@@ -46,6 +46,9 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   const pageStateVersion = useHexStore((s) => s.pageStateVersion);
   const pageStatesLoaded = useHexStore((s) => s.pageStatesLoaded);
   const fetchPageStates = useHexStore((s) => s.fetchPageStates);
+  // An image view is only recognised once the view probe answers; the effect
+  // below must re-run then, or a persisted "va" would never ask for page states.
+  const detectedFormat = useHexStore((s) => s.detectedFormat);
   const cursorOffset = useHexStore((s) => s.cursorOffset);
   const selection = useHexStore((s) => s.selection);
   const highlightedRegions = useHexStore((s) => s.highlightedRegions);
@@ -100,13 +103,13 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
   // FAILED/UNMAPPED) would be silently missing until the user toggles
   // views. Fetch it here whenever the "va" view is active and its page
   // states have not yet loaded. The store's fetchPageStates guards on
-  // dumpPath/format/already-loaded, so this is a no-op for non-msl dumps
+  // dumpPath/format/already-loaded, so this is a no-op for dumps with no page states
   // or when the fetch has already run.
   useEffect(() => {
     if (viewMode === "va" && !pageStatesLoaded) {
       fetchPageStates();
     }
-  }, [viewMode, pageStatesLoaded, fetchPageStates]);
+  }, [viewMode, pageStatesLoaded, detectedFormat, fetchPageStates]);
 
   // The consensus overlay is only coordinate-correct in the "va" view for
   // .msl dumps (the classification array lives in an aligned-slab coordinate,
@@ -259,8 +262,8 @@ export function HexViewer({ dumpPath, fileSize, format = "raw", onOffsetClick }:
     : null;
 
   const regionIndex = useMemo(
-    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews)),
-    [highlightedRegions, viewMode, availableViews]
+    () => buildRegionIndex(regionsForView(highlightedRegions, viewMode, availableViews, dumpPath)),
+    [highlightedRegions, viewMode, availableViews, dumpPath]
   );
 
   const getByteAtStable = useCallback(
