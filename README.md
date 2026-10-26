@@ -190,7 +190,7 @@ network with zero auth is refused outright. Set a token, or override with
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
 | CLI subcommands | **33** | [`cli/`](cli/) |
 | FastAPI routers | **19** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **56** | [`mcp_server/`](mcp_server/) |
+| MCP tools | **120** + 8 prompts + 4 resources | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
 | Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
 | Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
@@ -209,7 +209,7 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 70 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 120 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
@@ -285,7 +285,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 95 tools exposed to AI assistants
+mcp_server/     MCP server — 120 tools + 8 playbook prompts + case resources for AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

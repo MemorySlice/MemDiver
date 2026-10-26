@@ -142,6 +142,16 @@ class SessionPayload(BaseModel):
         return "" if value is None else value
 
 
+def _admit_session_paths(state: Dict[str, Any]) -> None:
+    """Sandbox ON: 403 a session naming any path outside the admitted read roots."""
+    from memdiver.api import path_policy
+
+    if not path_policy.policy_enabled():
+        return
+    for value in session_service.session_path_values(state):
+        path_policy.admit_read_path(value)
+
+
 @router.get("/")
 def list_sessions(settings: Settings = Depends(get_api_settings)):
     """List available saved sessions with basic metadata."""
@@ -160,7 +170,9 @@ def load_session(
         raise HTTPException(status_code=404, detail=f"Session not found: {name}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return asdict(snapshot)
+    state = asdict(snapshot)
+    _admit_session_paths(state)
+    return state
 
 
 @router.post("/")
@@ -169,6 +181,7 @@ def save_session(
     settings: Settings = Depends(get_api_settings),
 ):
     """Save full session state from the frontend."""
+    _admit_session_paths(payload.model_dump())
     try:
         saved = session_service.save_session(
             payload.model_dump(),

@@ -156,6 +156,7 @@ from memdiver.app.tools_annotations import (
 from memdiver.app.tools_case import (
     case_export_result,
     case_init_result,
+    case_manifest_result,
     case_query_result,
     case_schema_result,
     case_status_result,
@@ -345,6 +346,7 @@ __all__ = [
     # case data lake — Parquet tables + read-only SQL, and locate_context.
     "case_init_result",
     "case_status_result",
+    "case_manifest_result",
     "case_schema_result",
     "case_query_result",
     "case_export_result",

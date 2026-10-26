@@ -58,6 +58,10 @@ def add_case_parser(sub) -> None:
                       help="Directory, or a bare name for ~/.memdiver/cases/<name>")
     actions.add_parser("status", parents=[_common_parser()],
                        help="Manifest, tables (runs, rows) and annotation captures")
+    man = actions.add_parser("manifest", parents=[_common_parser()],
+                             help="Inventory: views, images, captures, annotations, ISF, plugins")
+    man.add_argument("--json", action="store_true", dest="as_json",
+                     help="Emit the JSON payload instead of the human table")
     actions.add_parser("schema", parents=[_common_parser()],
                        help="Columns, location mappings and row counts per table")
     q = actions.add_parser("query", parents=[_common_parser()],
@@ -109,6 +113,37 @@ def _cmd_case_status(args: argparse.Namespace) -> int:
     return _emit(args, case_status_result(args.case).payload)
 
 
+def _manifest_lines(m: dict) -> list:
+    n, isf = m["record_counts"], m["isf"]
+    lines = [f"case {m['name']}  ({m['case_dir']})  created {m['created']}  v{m['version']}",
+             f"  views {n['views']}  images {n['images']}  captures {n['captures']}  "
+             f"annotation-captures {n['annotation_captures']}  isf-drafts {n['isf_drafts']}  "
+             f"isf-exports {n['isf_exports']}  plugins {n['plugins']}  tables {n['tables']}"]
+    lines += [f"  view    {v['path']}  {v['kind']}  pid={v['pid']}  -> {v['image']}"
+              for v in m["views"]]
+    lines += [f"  image   {i['path']}  {'exists' if i['exists'] else 'MISSING'}  "
+              f"size={i['size']}" for i in m["images"]]
+    lines += [f"  capture {c['path']}  size={c['size']}" for c in m["captures"]]
+    lines += [f"  annot   {a['capture']}  entries={a['entries']}" for a in m["annotations"]]
+    lines += [f"  draft   {d['name']}  capture={d['capture']}  ops={d['ops']}"
+              for d in isf["drafts"]]
+    lines += [f"  isf     {e['path']}  size={e['size']}" for e in isf["exports"]]
+    lines += [f"  plugin  {p['path']}  size={p['size']}" for p in m["plugins"]]
+    lines += [f"  table   {t['name']}  runs={t['runs']}  rows={t['rows']}" for t in m["tables"]]
+    lines += [f"  truncated: {k}" for k in m["truncated"]]
+    lines += [f"  warning: {w}" for w in m["warnings"]]
+    return lines
+
+
+def _cmd_case_manifest(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_case import case_manifest_result
+    payload = case_manifest_result(args.case).payload
+    if args.as_json or args.output:
+        return _emit(args, payload)
+    print("\n".join(_manifest_lines(payload)))
+    return 0
+
+
 def _cmd_case_schema(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_schema_result
     return _emit(args, case_schema_result(args.case).payload)
@@ -134,7 +169,8 @@ def _cmd_case_export(args: argparse.Namespace) -> int:
 
 
 _CASE_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {
-    "init": _cmd_case_init, "status": _cmd_case_status, "schema": _cmd_case_schema,
+    "init": _cmd_case_init, "status": _cmd_case_status, "manifest": _cmd_case_manifest,
+    "schema": _cmd_case_schema,
     "query": _cmd_case_query, "context-at": _cmd_case_context_at,
     "export": _cmd_case_export,
 }

@@ -25,6 +25,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.read_roots import sandbox_roots
 from memdiver.api.routers.annotations import contained_case_dir
 from memdiver.app import tools_case
 
@@ -81,6 +82,12 @@ def init_case(req: InitRequest):
 def case_status(case_dir: str):
     """Manifest, tables (runs and rows) and annotation captures."""
     return tools_case.case_status_result(case_dir).payload
+
+
+@router.get("/manifest")
+def case_manifest(case_dir: str):
+    """Inventory of the case: views, images, captures, annotations, ISF, plugins, tables."""
+    return tools_case.case_manifest_result(case_dir, read_roots=sandbox_roots()).payload
 
 
 @router.get("/schema")

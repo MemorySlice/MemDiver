@@ -232,6 +232,163 @@ def case_export_result(case_dir: str, dump_path: str,
                              "exports": exports, "skipped": skipped})
 
 
-__all__ = ["DEFAULT_QUERY_LIMIT", "EXPORT_APPLIES_TO", "case_init_result",
+__all__ = ["DEFAULT_QUERY_LIMIT", "MANIFEST_LIST_CAP", "case_manifest_result", "EXPORT_APPLIES_TO", "case_init_result",
            "case_status_result", "case_schema_result", "case_query_result",
            "context_at_result", "case_export_result"]
+
+
+# -- case manifest: the inventory (status is the summary) ------------------------
+
+#: Per-list cap of :func:`case_manifest_result`; a clipped list sets ``truncated``.
+MANIFEST_LIST_CAP = 500
+_MANIFEST_SKIP_DIRS = frozenset({"tables", "annotations", "isf_drafts", "plugins", "isf"})
+
+
+def _file_entry(case_dir: Path, path: Path) -> Dict[str, Any]:
+    return {"path": str(path.relative_to(case_dir)), "size": path.stat().st_size}
+
+
+def _capped(items: List[Any], truncated: Dict[str, bool], key: str) -> List[Any]:
+    if len(items) > MANIFEST_LIST_CAP:
+        truncated[key] = True
+    return items[:MANIFEST_LIST_CAP]
+
+
+def _manifest_views(case_dir: Path, warnings: List[str]) -> List[Dict[str, Any]]:
+    from memdiver.core.image.view_descriptor import SUFFIX, ViewDescriptor
+
+    out: List[Dict[str, Any]] = []
+    for path in sorted((case_dir / "views").glob(f"*{SUFFIX}")):
+        try:
+            desc = ViewDescriptor.read(path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            warnings.append(f"unreadable view {path.name}: {exc}")
+            out.append({"path": f"views/{path.name}", "kind": None, "image": None,
+                        "pid": None, "error": str(exc)})
+            continue
+        out.append({"path": f"views/{path.name}", "kind": desc.view.value,
+                    "image": str(desc.image_path(path)), "image_sha256": desc.image_sha256,
+                    "pid": desc.pid})
+    return out
+
+
+def _image_stat(image: str, roots: List[Path],
+                warnings: Optional[List[str]]) -> Dict[str, Any]:
+    """``exists``/``size`` of an image; sandbox ON: never stat outside the read roots."""
+    from memdiver.core import path_sandbox
+
+    if roots and not path_sandbox.within(Path(image).expanduser().resolve(strict=False), roots):
+        if warnings is not None:
+            warnings.append(f"image {image!r} is outside the sandbox: not stat-ed")
+        return {"exists": None, "size": None}
+    try:
+        size: Optional[int] = Path(image).stat().st_size
+    except OSError:
+        size = None
+    return {"exists": size is not None, "size": size}
+
+
+def _manifest_images(views: List[Dict[str, Any]], roots: Optional[List[Path]] = None,
+                     warnings: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Distinct images the views refer to; ``stat`` only, never opened."""
+    images: Dict[str, Dict[str, Any]] = {}
+    for view in views:
+        image = view.get("image")
+        if not image or image in images:
+            continue
+        images[image] = {"path": image, **_image_stat(image, roots or [], warnings),
+                         "views": 0}
+    for view in views:
+        if view.get("image") in images:
+            images[view["image"]]["views"] += 1
+    return list(images.values())
+
+
+def _manifest_captures(case_dir: Path) -> List[Dict[str, Any]]:
+    """Extracted ``.msl`` files anywhere in the case outside the managed subdirs."""
+    found: List[Path] = []
+    for path in sorted(case_dir.rglob("*.msl")):
+        if path.is_file() and path.relative_to(case_dir).parts[0] not in _MANIFEST_SKIP_DIRS:
+            found.append(path)
+    return [_file_entry(case_dir, p) for p in found]
+
+
+def _manifest_annotations_and_drafts(case_dir: Path, warnings: List[str]):
+    from memdiver.analysis.record import ISF_DRAFT
+    from memdiver.analysis.record_store import AnalysisRecord
+
+    record = AnalysisRecord(case_dir)
+    annotations: List[Dict[str, Any]] = []
+    drafts: List[Dict[str, Any]] = []
+    for cap in record.captures():
+        try:
+            annotations.append({"capture": cap, "entries": len(record.latest(cap))})
+            ops: Dict[str, Dict[str, Any]] = {}
+            for entry in record.entries(cap, kind=ISF_DRAFT):
+                name = str(entry.payload.get("draft"))
+                item = ops.setdefault(name, {"capture": cap, "name": name, "ops": 0})
+                item["ops"] += 1
+                if entry.payload.get("op") == "create":
+                    item["arch"] = entry.payload.get("arch")
+            drafts.extend(ops.values())
+        except Exception as exc:  # noqa: BLE001 - inventory must survive one bad record
+            warnings.append(f"unreadable annotations {cap}: {exc}")
+    return annotations, drafts
+
+
+def _manifest_isf_exports(case_dir: Path) -> List[Dict[str, Any]]:
+    from memdiver.isf.draft import BLOBS_DIR, DRAFTS_DIR, ISF_SUFFIX
+
+    paths = sorted(p for root in ("isf", DRAFTS_DIR) for p in (case_dir / root).rglob(f"*{ISF_SUFFIX}")
+                   if p.is_file() and BLOBS_DIR not in p.relative_to(case_dir).parts)
+    return [_file_entry(case_dir, p) for p in paths]
+
+
+def _manifest_tables(case: "Case", warnings: List[str]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for name in case.tables():
+        try:
+            runs = case.runs(name)
+            out.append({"name": name, "runs": len(runs),
+                        "rows": sum(r.row_count for r in runs)})
+        except (OSError, ValueError, KeyError) as exc:
+            warnings.append(f"unreadable table {name}: {exc}")
+            out.append({"name": name, "runs": None, "rows": None})
+    return out
+
+
+def case_manifest_result(case_dir: str,
+                         read_roots: Optional[Sequence[Path]] = None) -> "ServiceResult":
+    """Read-only inventory of a case: views, images, captures, annotations, ISF, plugins.
+
+    Complements :func:`case_status_result` (a summary): this lists what files the
+    case holds. Images are stat-ed, never opened; each list is capped at
+    :data:`MANIFEST_LIST_CAP` with ``truncated[<list>]`` set when clipped.
+    *read_roots* = the sandboxed surface's admitted read roots (REST/MCP pass them;
+    empty/None = policy off): image paths outside them are never stat-ed.
+    """
+    case = _open(case_dir)
+    root, warnings = case.dir, []  # type: Path, List[str]
+    truncated: Dict[str, bool] = {}
+    meta = case.manifest()
+    views = _manifest_views(root, warnings)
+    annotations, drafts = _manifest_annotations_and_drafts(root, warnings)
+    plugins = [_file_entry(root, p) for p in sorted((root / "plugins").rglob("*")) if p.is_file()]
+    body = {
+        "case_dir": str(root), "name": case.name, "created": meta.get("created"),
+        "version": meta.get("v"), "views": views,
+        "images": _manifest_images(views, list(read_roots or []), warnings),
+        "captures": _manifest_captures(root), "annotations": annotations,
+        "isf": {"drafts": drafts, "exports": _manifest_isf_exports(root)},
+        "plugins": plugins, "tables": _manifest_tables(case, warnings),
+    }
+    counts = {"views": len(views), "images": len(body["images"]),
+              "captures": len(body["captures"]), "annotation_captures": len(annotations),
+              "isf_drafts": len(drafts), "isf_exports": len(body["isf"]["exports"]),
+              "plugins": len(plugins), "tables": len(body["tables"])}
+    for key in ("views", "images", "captures", "annotations", "plugins", "tables"):
+        body[key] = _capped(body[key], truncated, key)
+    for key in ("drafts", "exports"):
+        body["isf"][key] = _capped(body["isf"][key], truncated, f"isf.{key}")
+    return ServiceResult.ok({**body, "record_counts": counts, "truncated": truncated,
+                             "warnings": warnings})

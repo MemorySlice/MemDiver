@@ -133,6 +133,20 @@ def _default_capture_output(request: CaptureRequest) -> str:
     return str(root / f"{stem}_{request.tool}_{stamp}.{ext}")
 
 
+def _confine_capture_output(output: str) -> None:
+    """Sandbox ON: a client-chosen dump path must lie in the write roots (OFF: as before)."""
+    from memdiver.api.path_safety import write_denial_detail
+    from memdiver.api.read_roots import sandbox_roots, write_roots
+    from memdiver.core import path_sandbox
+
+    if not sandbox_roots():
+        return
+    roots = write_roots()
+    if not path_sandbox.within(Path(output).expanduser().resolve(strict=False), roots):
+        raise HTTPException(status_code=403, detail=write_denial_detail(
+            "output path", output, roots, "out/result", "MemDiver home + upload dir"))
+
+
 @router.post("/capture")
 def capture_endpoint(request: CaptureRequest) -> dict:
     """Capture one dump synchronously and return the capture report.
@@ -146,6 +160,8 @@ def capture_endpoint(request: CaptureRequest) -> dict:
 
     if not request.target.strip():
         raise HTTPException(status_code=400, detail="target must be a pid or a name")
+    if request.output:
+        _confine_capture_output(request.output)
     output = request.output or _default_capture_output(request)
     return capture_result(
         target=request.target, output=output, tool=request.tool,

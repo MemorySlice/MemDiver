@@ -68,11 +68,16 @@ class RetractRequest(_CaseRequest):
 
 
 def _write_roots() -> List[Path]:
-    roots = [memdiver_home()]
-    upload_dir = get_settings().upload_dir
-    if upload_dir is not None:
-        roots.append(Path(upload_dir))
-    return roots
+    # Delegates to the shared helper (also used by the MCP write guard).
+    from memdiver.api.read_roots import write_roots
+
+    return write_roots()
+    # Historical inline computation, kept for reference:
+    # roots = [memdiver_home()]
+    # upload_dir = get_settings().upload_dir
+    # if upload_dir is not None:
+    #     roots.append(Path(upload_dir))
+    # return roots
 
 
 def contained_case_dir(case_dir: str) -> str:

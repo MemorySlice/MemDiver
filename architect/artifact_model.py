@@ -9,7 +9,9 @@ need:
     How instances are found in ONE new image (P5: no corpus, no agent).
     ``kind="byte_pattern"`` is today's exporter input verbatim;
     ``kind="structure"`` uses the same pattern as a PREFILTER and then decodes
-    the ``layout`` around each hit.
+    the ``layout`` around each hit; a structure locator matches on the primary
+    pattern OR any of ``alternatives`` (redundant prefilters, each with its own
+    ``key_offset``), then decodes and validates.
 ``layout``
     A :class:`~memdiver.core.structure_defs.StructureDef` plus which field the
     locator lands on (``anchor_field``); the structure base is
@@ -58,6 +60,7 @@ class Locator:
     kind: str
     pattern: Dict[str, Any]
     anchor_field: Optional[str] = None
+    alternatives: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,7 @@ class ArtifactModel:
     applicability: Applicability = field(default_factory=Applicability)
     validation: Validation = field(default_factory=Validation)
     description: str = ""
+    warnings: Tuple[str, ...] = ()
 
     def field_names(self) -> Tuple[str, ...]:
         return tuple(f.name for f in self.layout.fields) if self.layout else ()
@@ -136,6 +140,7 @@ class ArtifactModel:
             "assertions": [_assertion_dict(a) for a in self.assertions],
             "applicability": _applicability_dict(self.applicability),
             "validation": _validation_dict(self.validation),
+            "warnings": list(self.warnings),
         }
 
     @classmethod
@@ -145,7 +150,8 @@ class ArtifactModel:
         layout = data.get("layout")
         return cls(
             name=str(data["name"]), description=str(data.get("description", "")),
-            locator=Locator(**data["locator"]),
+            locator=_locator_from(data["locator"]),
+            warnings=tuple(str(w) for w in data.get("warnings", ())),
             layout=None if layout is None else structure_from_dict(layout),
             relationships=tuple(_relationship_from(r) for r in data.get("relationships", ())),
             assertions=tuple(_assertion_from(a) for a in data.get("assertions", ())),
@@ -168,6 +174,15 @@ def structure_base_delta(model: ArtifactModel) -> int:
     return int(model.locator.pattern.get("key_offset", 0)) - anchor.offset
 
 
+def structure_base_deltas(model: ArtifactModel) -> List[int]:
+    """Base delta of the primary window then of each alternative (own ``key_offset`` each)."""
+    anchor = model.layout.field_by_name(model.locator.anchor_field) if model.layout else None
+    if anchor is None:
+        raise ValueError("structure locator needs a layout containing its anchor_field")
+    return [int(p.get("key_offset", 0)) - anchor.offset
+            for p in (model.locator.pattern, *model.locator.alternatives)]
+
+
 # -- consistency -------------------------------------------------------------
 
 def _locator_problems(model: ArtifactModel) -> List[str]:
@@ -176,6 +191,9 @@ def _locator_problems(model: ArtifactModel) -> List[str]:
         problems.append(f"locator.kind {loc.kind!r} not in {LOCATOR_KINDS}")
     if not loc.pattern.get("wildcard_pattern"):
         problems.append("locator.pattern has no wildcard_pattern")
+    for i, alt in enumerate(loc.alternatives):
+        problems += [f"locator.alternatives[{i}] has no {key}"
+                     for key in ("wildcard_pattern", "key_offset") if key not in alt or alt[key] in (None, "")]
     if loc.kind == "structure":
         if model.layout is None:
             problems.append("a structure locator needs a layout")
@@ -242,7 +260,13 @@ def _evidence_from(items: Any) -> Tuple[Evidence, ...]:
 
 
 def _locator_dict(loc: Locator) -> Dict[str, Any]:
-    return {"kind": loc.kind, "pattern": dict(loc.pattern), "anchor_field": loc.anchor_field}
+    return {"kind": loc.kind, "pattern": dict(loc.pattern), "anchor_field": loc.anchor_field,
+            "alternatives": [dict(a) for a in loc.alternatives]}
+
+
+def _locator_from(d: Dict[str, Any]) -> Locator:
+    return Locator(kind=d["kind"], pattern=dict(d["pattern"]), anchor_field=d.get("anchor_field"),
+                   alternatives=tuple(dict(a) for a in d.get("alternatives") or ()))
 
 
 def _relationship_dict(r: Relationship) -> Dict[str, Any]:

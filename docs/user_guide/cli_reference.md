@@ -101,6 +101,14 @@ Before building a consensus, MemDiver estimates the peak memory the build needs 
 - `batch` applies `--force-memory` to every job in the config.
 ```
 
+```{admonition} Case data lake (`case`)
+:class: note
+
+`memdiver case <action> --case DIR` works on a case directory (views, extracted `.msl`, annotations, ISF drafts, plugins, DuckDB tables). Actions: `init CASE` (a bare name files under `~/.memdiver/cases/<name>`), `status`, **`manifest`**, `schema`, `query`, `context-at`, `export DUMP`.
+
+`memdiver case manifest --case DIR [--json]` is the inventory of a case: views, images (exists/size), `.msl` captures, annotations, ISF drafts and exports, plugins and tables. It prints a human summary; `--json` (or `-o FILE`) emits the full JSON payload, the same one the MCP tool `case_manifest` and the resource `memdiver://case/{case_dir}/manifest` return. It only reads the case. When `MEMDIVER_ALLOWED_ROOTS` is set, see [](sandbox.md).
+```
+
 ```{eval-rst}
 .. argparse::
    :module: cli

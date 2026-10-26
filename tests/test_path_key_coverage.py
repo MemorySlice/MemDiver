@@ -50,7 +50,6 @@ NOT_A_PATH = {
     "source": "inline plugin TEXT / provenance label (vol3, isf, oracles)",
     "source_name": "stored-source name inside a case",
     "plugin": "vol3 plugin NAME", "plugin_name": "name",
-    "case": "case name (case_dir is the READ key)",
     "image_sha256": "hash", "oracle_id": "registry id",
     "num_dumps": "count", "dump_count": "count", "dump_labels": "labels",
     # dict-valued containers: the walker recurses, so the INNER path keys
@@ -62,8 +61,10 @@ NOT_A_PATH = {
     "maps": "multipart upload part (maps file content)",
     # multipart upload part: the body is the content, not a server path
     "file": "multipart upload part",
-    # saved-session UI state (api/routers/sessions.py): stored, never opened;
-    # reopening goes through endpoints whose own path keys ARE sandboxed
+    # saved-session UI state (api/routers/sessions.py): stored, never opened by
+    # the session endpoints; save/load nevertheless admit every one of these
+    # (and input_path/dataset_root/dumps[].path/dump_weights keys) against the
+    # read roots via sessions._admit_session_paths (tests/test_sandbox_writes_and_sessions.py)
     "active_dump_path": "session UI state", "collapsed_dump_paths": "session UI state",
     "excluded_dump_paths": "session UI state", "origin_dump_path": "session UI state",
     "solo_dump_path": "session UI state",
@@ -115,6 +116,7 @@ def _rest_names() -> set[str]:
 def _gaps(names: set[str]) -> list[str]:
     return sorted(n for n in names
                   if _looks_pathish(n) and n not in READ_PATH_KEYS and n not in path_sandbox.WRITE_PATH_KEYS
+                  and n not in path_sandbox.CASE_NAME_KEYS
                   and n not in NOT_A_PATH)
 
 
@@ -147,6 +149,9 @@ def test_mcp_write_paths_confined_when_sandbox_on(tmp_path, monkeypatch):
 
         denied = guard_tool(tool)(out_path="/definitely/elsewhere/x.json")
         assert "path.outside_sandbox" in denied
-        assert guard_tool(tool)(out_path=str(root / "x.json")) == "ran"
+        # A read root is no longer a write root: writes need home/upload dir.
+        assert "path.outside_sandbox" in guard_tool(tool)(out_path=str(root / "x.json"))
+        from memdiver.api.read_roots import write_roots
+        assert guard_tool(tool)(out_path=str(write_roots()[0] / "x.json")) == "ran"
     finally:
         get_settings.cache_clear()

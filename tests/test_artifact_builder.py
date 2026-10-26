@@ -183,3 +183,61 @@ def test_select_prefilter_never_matches_excluded_pointer_bytes_literally():
     covered = range(plain.delta - hardened.delta, plain.delta - hardened.delta + 8)
     assert all(tokens[i] == "??" for i in covered if 0 <= i < len(tokens))
     assert hardened.informative_bytes <= plain.informative_bytes
+
+
+# -- redundant prefilters ----------------------------------------------------
+
+from memdiver.engine.artifact_builder import select_prefilters  # noqa: E402
+
+
+def _two_windows():
+    return _windows({10: _rand(1, 8), 150: _rand(2, 5)})
+
+
+def test_select_prefilters_primary_equals_select_prefilter_and_alternative_is_disjoint():
+    c = _two_windows()
+    out = select_prefilters(c, anchor_length=ANCHOR_LEN, length=32, alternatives=2)
+    assert out[0] == select_prefilter(c, anchor_length=ANCHOR_LEN, length=32)
+    assert len(out) == 2 and out[0].informative_bytes == 8 and out[1].informative_bytes == 5
+    assert abs(out[0].delta - out[1].delta) >= 32
+    assert out[1].pattern["key_offset"] == -out[1].delta
+
+
+def test_select_prefilters_respects_min_informative():
+    c = _two_windows()
+    assert len(select_prefilters(c, anchor_length=ANCHOR_LEN, length=32, min_informative=6)) == 1
+    assert len(select_prefilters(c, anchor_length=ANCHOR_LEN, length=32, alternatives=0)) == 1
+
+
+def test_select_prefilters_alternative_never_literal_on_excluded_span():
+    c = _two_windows()
+    ex = [(DELTA_START + 150, 5)]
+    out = select_prefilters(c, anchor_length=ANCHOR_LEN, length=32, exclude=ex, min_informative=1)
+    for pf in out:
+        tokens = pf.pattern["wildcard_pattern"].split()
+        for i, tok in enumerate(tokens):
+            if ex[0][0] <= pf.delta + i < ex[0][0] + ex[0][1]:
+                assert tok == "??"
+    assert len(out) == 1
+
+
+def test_build_model_round_trips_alternatives_and_description():
+    from memdiver.architect.artifact_model import ArtifactModel
+    m = _build()
+    assert m.check() == []
+    assert ("alternatives" in m.description) == bool(m.locator.alternatives)
+    assert ArtifactModel.from_dict(m.to_dict()) == m
+    assert _build(prefilter_alternatives=0).locator.alternatives == ()
+
+
+def test_prefilter_warnings_low_information_and_no_alternative():
+    from memdiver.engine.artifact_builder import Prefilter, _prefilter_warnings
+    weak = Prefilter(0, 64, 5, {})
+    strong = Prefilter(0, 64, 12, {})
+    w = _prefilter_warnings(weak, [], 2)
+    assert [x.split(":")[0] for x in w] == ["prefilter.low_information", "prefilter.no_alternative"]
+    assert "5 literal bytes" in w[0]
+    assert [x.split(":")[0] for x in _prefilter_warnings(strong, [weak], 2)] == [
+        "prefilter.weak_alternative"]
+    assert _prefilter_warnings(strong, [strong], 2) == ()
+    assert _prefilter_warnings(strong, [], 0) == ()

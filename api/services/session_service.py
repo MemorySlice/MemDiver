@@ -139,3 +139,33 @@ def delete_session(name: str, directory: Path) -> None:
 def list_sessions(directory: Optional[Path] = None) -> list:
     """Thin passthrough for symmetry with the other service helpers."""
     return SessionStore.list_sessions(directory)
+
+
+_SESSION_PATH_FIELDS = (
+    "input_path", "dataset_root", "active_dump_path", "origin_dump_path",
+    "solo_dump_path",
+)
+_SESSION_PATH_LIST_FIELDS = (
+    "selected_dump_paths", "collapsed_dump_paths", "excluded_dump_paths",
+)
+
+
+def session_path_values(state: Mapping[str, Any]) -> List[str]:
+    """Every non-blank filesystem path a session payload/snapshot refers to."""
+    found: List[str] = []
+    for field in _SESSION_PATH_FIELDS:
+        value = state.get(field)
+        if isinstance(value, str) and value.strip():
+            found.append(value)
+    for field in _SESSION_PATH_LIST_FIELDS:
+        for value in state.get(field) or []:
+            if isinstance(value, str) and value.strip():
+                found.append(value)
+    for entry in state.get("dumps") or []:
+        value = entry.get("path") if isinstance(entry, _MappingABC) else None
+        if isinstance(value, str) and value.strip():
+            found.append(value)
+    weights = state.get("dump_weights")
+    if isinstance(weights, _MappingABC):
+        found.extend(k for k in weights if isinstance(k, str) and k.strip())
+    return found

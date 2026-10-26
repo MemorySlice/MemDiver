@@ -47,3 +47,18 @@ def sandbox_roots(loaded_dataset_root: Optional[Path] = None) -> list[Path]:
     if not configured:
         return []
     return path_sandbox.resolve_roots([*configured, *dynamic_roots(loaded_dataset_root)])
+
+
+def write_roots() -> list[Path]:
+    """Where the server may WRITE on behalf of a client: MemDiver home + upload dir.
+
+    Always the same set REST confines its writes to (``contained_case_dir``);
+    the MCP guard applies it when the read sandbox is ON.
+    """
+    from memdiver.core.constants import memdiver_home
+
+    roots = [Path(memdiver_home())]
+    upload_dir = get_settings().upload_dir
+    if upload_dir is not None:
+        roots.append(Path(upload_dir))
+    return path_sandbox.resolve_roots(str(r) for r in roots)

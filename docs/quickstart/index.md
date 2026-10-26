@@ -23,7 +23,7 @@ Run one-shot analysis, batch jobs, and pipeline stages from the terminal.
 :link: mcp
 :link-type: doc
 
-Expose 15 analysis tools to Claude Code, Claude Desktop, or any MCP-speaking agent.
+Expose 120+ tools and 8 playbook prompts (start with `memdiver_start`) to Claude Code, Claude Desktop, or any MCP-speaking agent. Working on a full memory image? See [](image.md).
 :::
 
 :::{grid-item-card} Experiment harness

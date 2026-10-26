@@ -80,7 +80,7 @@ def create_server():
     # one the producer actually serves.
     from memdiver.app.tools_consensus import DEFAULT_REGIONS_PER_PAGE
 
-    from mcp.server.mcpserver import ResourceSecurity
+    from mcp.server.mcpserver import ResourceSecurity  # noqa: F401  (resource moved to resources.py)
 
     from memdiver.app import tools_consensus
 
@@ -126,6 +126,7 @@ def create_server():
     # ONE central read-sandbox hook (policy ON only; see mcp_server/path_guard.py):
     # every tool registered below has its path arguments checked against
     # MEMDIVER_ALLOWED_ROOTS exactly as the REST API does. Policy OFF: no-op.
+    from .path_guard import _roots as _sandbox_roots
     from .path_guard import guard_tool
 
     _register_tool = mcp.add_tool
@@ -593,6 +594,13 @@ def create_server():
         """Manifest, tables (runs, row counts) and annotation captures of a case."""
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_case.case_status_result(case_dir)))
+
+    @mcp.tool()
+    def case_manifest(case_dir: str) -> str:
+        """Inventory of a case: views, images (exists/size), .msl captures, annotations, ISF drafts/exports, plugins, tables."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_case.case_manifest_result(
+                case_dir, read_roots=_sandbox_roots(getattr(_session, "dataset_root", None)))))
 
     @mcp.tool()
     def case_schema(case_dir: str) -> str:
@@ -1281,14 +1289,14 @@ def create_server():
                 case_dir, name, view_path=view_path, limit=limit, timeout_s=timeout_s,
                 register_run=register_run)))
 
-    @mcp.resource("memdiver://case/{case_dir}/schema",
-                  name="case_schema", mime_type="application/json",
-                  description="Schema of a case; URL-encode the case directory.",
-                  # A case directory is legitimately an absolute path; ".." and
-                  # NUL stay rejected.
-                  security=ResourceSecurity(reject_absolute_paths=False))
-    def case_schema_resource(case_dir: str) -> str:
-        return json.dumps(tools_case.case_schema_result(case_dir).payload)
+    # The case_schema resource moved to mcp_server/resources.py (T6.1): resources
+    # bypass guard_tool, so it now runs behind the read sandbox with its siblings.
+    # @mcp.resource("memdiver://case/{case_dir}/schema",
+    #               name="case_schema", mime_type="application/json",
+    #               description="Schema of a case; URL-encode the case directory.",
+    #               security=ResourceSecurity(reject_absolute_paths=False))
+    # def case_schema_resource(case_dir: str) -> str:
+    #     return json.dumps(tools_case.case_schema_result(case_dir).payload)
 
     @mcp.tool()
     def get_connections(
@@ -3101,6 +3109,12 @@ def create_server():
             max_region_size=max_region_size,
             include_large_readonly=include_large_readonly, timeout=timeout,
         ))
+
+    from .prompts import register_prompts
+    from .resources import register_resources
+
+    register_prompts(mcp)
+    register_resources(mcp, _session)
 
     return mcp
 

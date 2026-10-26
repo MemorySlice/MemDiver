@@ -56,21 +56,57 @@ def _function_size(va: int, symbols: Mapping[str, int]) -> Optional[int]:
     return addresses[i] - va if i < len(addresses) else None
 
 
-def _read_body(session: _Session, symbols: Mapping[str, int], va: int, length: int) -> bytes:
+def _describe_placement(report: Any, anchor: Mapping[str, Any],
+                        arch: Optional[str] = None) -> Dict[str, Any]:
+    """How the reads were placed and which pakunoda self-tests ran (SKIPPED stays SKIPPED).
+
+    ``kimage_voffset`` is an arm64 check: on another arch its SKIPPED is not news.
+    """
+    def outcome(check: Any) -> str:
+        return str(getattr(check, "value", check))
+    banner, voffset = outcome(report.banner), outcome(report.kimage_voffset)
+    verified_via = anchor.get("source")
+    notes = [f"reads placed via delta source {report.delta_source!r} "
+             f"(init_task anchor verified via {verified_via!r})"]
+    checks = [("banner", banner)]
+    if arch is None or str(arch).lower() in ("aarch64", "arm64"):
+        checks.append(("kimage_voffset", voffset))
+    skipped = [n for n, v in checks if v == "skipped"]
+    if skipped:
+        notes.append("pakunoda self-tests SKIPPED (not passed): " + ", ".join(skipped))
+    mismatch = getattr(report, "delta_mismatch", None)
+    return {"delta_source": report.delta_source, "va_pa_delta": report.va_pa_delta,
+            "init_task_anchor_source": verified_via,
+            "self_tests": {"banner": banner, "kimage_voffset": voffset},
+            "delta_mismatch": mismatch, "notes": notes}
+
+
+def _read_body(session: _Session, symbols: Mapping[str, int], va: int, length: int,
+               placement: Optional[Dict[str, Any]] = None) -> bytes:
     from pakunoda.recovery.layout.reads import image_reads_for
     anchor = session.init_task()
     if anchor["phys"] is None or not anchor.get("verified", False):
         raise _err("init_task is not verified in this image, so kernel VAs cannot be "
                    "translated trustworthily", "init_task_unverified", ErrorCategory.PRECONDITION)
-    reads, report = image_reads_for(session.dump, session.arch, dict(symbols), anchor["phys"])
+    reads, report = image_reads_for(session.dump, session.arch, dict(symbols), anchor["phys"],
+                                    va_pa_delta=anchor.get("va_to_pa_delta"))
     if reads is None:
         raise _err(f"the image could not be read at kernel VAs: {report}", "image_reads_failed",
                    ErrorCategory.PRECONDITION)
+    if placement is not None:
+        placement.update(_describe_placement(report, anchor, session.arch))
     code = reads.raw(va, length)
     if not code:
         raise _err(f"function body at {va:#x} is not captured in this image", "body_not_captured",
                    ErrorCategory.PRECONDITION)
     return bytes(code)
+
+
+def _placement_warnings(placement: Mapping[str, Any]) -> List[str]:
+    warnings = [n for n in placement["notes"][1:]]
+    if placement.get("delta_mismatch"):
+        warnings.append(f"delta mismatch: {placement['delta_mismatch']}")
+    return warnings
 
 
 def _current_task_vas(session: _Session, symbols: Mapping[str, int]) -> List[int]:
@@ -243,7 +279,8 @@ def _produce(session: Any, function: str, max_bytes: int, base: Optional[str],
     name, va = _resolve_function(function, symbols)
     size = _function_size(va, symbols)
     length = min(size, max_bytes) if size else max_bytes
-    code = _read_body(session, symbols, va, length)
+    placement: Dict[str, Any] = {}
+    code = _read_body(session, symbols, va, length, placement)
     target = CodeTarget(name, va, size, session.arch_name)
     evidence = evidence_for(code, target, provider="pakunoda",
                             current_task_vas=_current_task_vas(session, symbols))
@@ -257,6 +294,9 @@ def _produce(session: Any, function: str, max_bytes: int, base: Optional[str],
                            "function_size": size, "max_bytes": max_bytes,
                            "bytes_requested": length, "bytes_read": len(code),
                            "size_known": size_known, "truncated": truncated}
+    if placement:
+        payload["image_reads"] = placement
+        payload["warnings"] = list(payload.get("warnings") or []) + _placement_warnings(placement)
     payload["arch_source"] = session.arch_source
     payload["capture_id"] = session.capture
     if base is not None:

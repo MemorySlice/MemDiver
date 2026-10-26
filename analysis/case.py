@@ -72,6 +72,17 @@ def case_path(dir_or_name: "str | Path") -> Path:
     return cases_root() / text if bare else Path(text).expanduser()
 
 
+def resolve_case_dir(dir_or_name: "str | Path") -> Path:
+    """The directory :meth:`Case.open` would open for *dir_or_name* (no I/O beyond stat).
+
+    A bare name is tried relative to the current directory first (an existing
+    ``<cwd>/<name>/case.json`` wins), then under ``cases_root()``; a path is used
+    as given. Lets a caller (the sandbox guard) judge the REAL target.
+    """
+    root = Path(dir_or_name).expanduser()
+    return root if (root / MANIFEST).is_file() else case_path(dir_or_name)
+
+
 def __getattr__(name: str) -> Any:  # pragma: no cover - trivial
     if name == "CASES_ROOT":  # resolved lazily so XDG_DATA_HOME changes apply
         return cases_root()

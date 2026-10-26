@@ -28,6 +28,72 @@ def _roots(loaded_dataset_root: Any = None):
     return sandbox_roots(loaded_dataset_root)
 
 
+#: Tools that only READ a case dir: like REST's read routes they need the read
+#: roots alone. Every other tool taking ``case_dir`` may write into it, so a
+#: path-shaped case dir is also confined to the write roots (a tool missing here
+#: is merely stricter, never looser).
+CASE_READ_ONLY_TOOLS = frozenset({
+    "annotations_list", "case_status", "case_manifest", "case_schema", "case_query",
+    "context_at", "yara_rule_list", "yara_rule_get", "isf_draft_list", "isf_draft_get",
+    "isf_draft_versions", "isf_draft_diff", "detector_fixtures_list", "vol3_source_list",
+    "vol3_source_get", "vol3_fixture_list", "vol3_describe", "vol3_query",
+})
+
+
+def _write_targets(arguments: dict, tool_name: str = ""):
+    """Output paths plus a path-shaped ``case_dir`` of a case-WRITING tool.
+
+    REST confines a non-bare case dir to the write roots (``contained_case_dir``);
+    a bare case name files under the cases root inside MemDiver home.
+    """
+    yield from path_sandbox.iter_write_values(arguments)
+    if tool_name in CASE_READ_ONLY_TOOLS:
+        return
+    new_case = arguments.get("case")
+    if isinstance(new_case, str) and new_case and path_sandbox.is_path_shaped("case", new_case):
+        yield new_case  # case_init: a bare name files under the cases root
+    case_dir = arguments.get("case_dir")
+    if isinstance(case_dir, str) and case_dir.strip():
+        yield str(_resolved_case_dir(case_dir))
+
+
+def _resolved_case_dir(case_dir: str):
+    """The directory ``Case.open`` really uses (a bare name may hit ``<cwd>/<name>``)."""
+    from memdiver.analysis.case import resolve_case_dir
+
+    return resolve_case_dir(case_dir)
+
+
+def _check_read_case_dir(arguments: dict, tool_name: str, roots) -> None:
+    """Read-only case tool: a BARE name's resolved dir must lie in a read/write root."""
+    from memdiver.api.read_roots import write_roots
+
+    case_dir = arguments.get("case_dir")
+    if tool_name not in CASE_READ_ONLY_TOOLS or not isinstance(case_dir, str) \
+            or not case_dir.strip() or path_sandbox.is_path_shaped("case_dir", case_dir):
+        return
+    path_sandbox.admit(_resolved_case_dir(case_dir), [*roots, *write_roots()])
+
+
+def _check_write_roots(arguments: dict, tool_name: str = "") -> None:
+    """Raise a 403 ``CapabilityError`` for a write path outside the write roots."""
+    from pathlib import Path
+
+    from memdiver.api.path_safety import write_denial_detail
+    from memdiver.api.read_roots import write_roots
+    from memdiver.core.service_errors import ErrorCategory
+
+    roots = write_roots()
+    for value in _write_targets(arguments, tool_name):
+        resolved = Path(value).expanduser().resolve(strict=False)
+        if not path_sandbox.within(resolved, roots):
+            raise CapabilityError(
+                write_denial_detail("output path", value, roots, "out/result",
+                                    "MemDiver home + upload dir"),
+                category=ErrorCategory.PRECONDITION, status=403,
+                code="path.outside_sandbox")
+
+
 def denial_for(fn: Callable, args: tuple, kwargs: dict,
                session: Any = None) -> Optional[CapabilityError]:
     """The sandbox denial for a call's arguments, or ``None`` when admitted."""
@@ -42,8 +108,10 @@ def denial_for(fn: Callable, args: tuple, kwargs: dict,
         bound_args = dict(bound.arguments)
     try:
         path_sandbox.check_arguments(bound_args, roots)
-        # Sandbox ON: MCP output paths are confined to the same roots.
-        path_sandbox.check_write_arguments(bound_args, roots)
+        _check_read_case_dir(bound_args, getattr(fn, "__name__", ""), roots)
+        # Sandbox ON: MCP output paths are confined to the WRITE roots (MemDiver
+        # home + upload dir, the same set REST uses), not the broader read roots.
+        _check_write_roots(bound_args, getattr(fn, "__name__", ""))
     except CapabilityError as err:
         return err
     return None

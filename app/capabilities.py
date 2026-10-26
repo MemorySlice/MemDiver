@@ -363,6 +363,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("case.status", "memdiver.app.tools_case.case_status_result",
          ("library", "cli", "web", "mcp")),
+    _cap("case.manifest", "memdiver.app.tools_case.case_manifest_result",
+         ("library", "cli", "web", "mcp")),
     _cap("case.schema", "memdiver.app.tools_case.case_schema_result",
          ("library", "cli", "web", "mcp")),
     _cap("case.query", "memdiver.app.tools_case.case_query_result",

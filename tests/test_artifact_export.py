@@ -120,8 +120,11 @@ def test_non_contiguous_layer_decodes_only_inside_the_matched_window(synthetic):
     rows = run_rows_over_buffer(Volatility3Exporter.export_model(_model()), data)
     got = _by(rows, hits[0])
     assert hits[0] // PAGE == (bases[0] + ANCHOR_OFF) // PAGE   # same page, still refused
-    for name in ("anchor", "rid", "far"):
-        assert got[name]["Status"] == "not_contiguous" and got[name]["ValueHex"] == ""
+    # The anchor and its relationship owner (rid) are read directly and validated;
+    # the unrelated far field is still refused.
+    assert got["anchor"]["ValueHex"] == SECRET.hex() and got["anchor"]["Status"] == "ok"
+    assert got["rid"]["ValueHex"] == RID.hex() and got["rid"]["Status"] == "ok"
+    assert got["far"]["Status"] == "not_contiguous" and got["far"]["ValueHex"] == ""
 
 
 def test_non_contiguous_layer_decodes_a_field_inside_the_matched_window(synthetic):
@@ -137,7 +140,7 @@ def test_non_contiguous_layer_decodes_a_field_inside_the_matched_window(syntheti
     got = _by(rows, hits[0])
     assert got["head"]["Status"] == "ok" and got["head"]["ValueHex"] == data[hits[0]:hits[0] + 4].hex()
     assert got["rid"]["Status"] == "not_contiguous"
-    assert got["anchor"]["Status"] == "not_contiguous"
+    assert got["anchor"]["Status"] == "ok"   # anchor is read directly and validated
 
 
 def test_truncated_buffer_is_unreadable_not_zero(synthetic):

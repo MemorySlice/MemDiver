@@ -169,3 +169,68 @@ def test_truncated_when_size_unknown_or_short_read(monkeypatch):
     short = tce.code_evidence_result(FakeSession(symbols), image_path="x",
                                      function="f").payload["coverage"]
     assert short["truncated"] is True and short["bytes_requested"] == 64 and short["bytes_read"] == 8
+
+
+class _Check:
+    def __init__(self, value):
+        self.value = value
+
+
+class _Report:
+    va_pa_delta, delta_source, delta_mismatch = 0x1234, "explicit", None
+    banner, kimage_voffset = _Check("skipped"), _Check("skipped")
+
+
+class _Reads:
+    def raw(self, va, length):
+        return CODE
+
+
+class _AnchoredSession(FakeSession):
+    dump, arch = object(), object()
+
+    def init_task(self):
+        return {"phys": 0x5000, "verified": True, "source": "self_reference",
+                "va_to_pa_delta": 0x1234}
+
+
+def test_read_body_passes_verified_delta_and_reports_skipped_selftests(monkeypatch):
+    import pakunoda.recovery.layout.reads as reads_mod
+    seen = {}
+
+    def fake(dump, arch, kallsyms, phys, **kw):
+        seen.update(phys=phys, **kw)
+        return _Reads(), _Report()
+
+    monkeypatch.setattr(reads_mod, "image_reads_for", fake)
+    placement = {}
+    assert tce._read_body(_AnchoredSession({"f": 1}), {"f": 1}, 1, 8, placement) == CODE
+    assert seen == {"phys": 0x5000, "va_pa_delta": 0x1234}
+    assert placement["delta_source"] == "explicit"
+    assert placement["self_tests"] == {"banner": "skipped", "kimage_voffset": "skipped"}
+    warnings = tce._placement_warnings(placement)
+    assert any("SKIPPED" in w and "not passed" in w for w in warnings)
+    assert not any("passed:" in w for w in warnings)
+
+
+def test_read_body_still_refuses_unverified_anchor():
+    session = _AnchoredSession({"f": 1})
+    session.init_task = lambda: {"phys": 0x5000, "verified": False, "va_to_pa_delta": 1}
+    with pytest.raises(CapabilityError) as info:
+        tce._read_body(session, {"f": 1}, 1, 8)
+    assert info.value.code == "code_evidence.init_task_unverified"
+
+
+def test_kimage_voffset_skip_is_only_news_on_arm64():
+    """kimage_voffset is an arm64 self-test; x86_64 must not warn it was skipped."""
+    from types import SimpleNamespace
+
+    from memdiver.app.tools_code_evidence import _describe_placement
+
+    report = SimpleNamespace(banner="passed", kimage_voffset="skipped", delta_source="init_task",
+                             va_pa_delta=1, delta_mismatch=None)
+    x86 = _describe_placement(report, {"source": "kallsyms"}, "x86_64")
+    arm = _describe_placement(report, {"source": "kallsyms"}, "aarch64")
+    assert not any("SKIPPED" in n for n in x86["notes"])
+    assert any("kimage_voffset" in n for n in arm["notes"])
+    assert x86["self_tests"]["kimage_voffset"] == "skipped"

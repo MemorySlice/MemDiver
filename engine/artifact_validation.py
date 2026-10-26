@@ -96,6 +96,38 @@ def score_capture(run: CaptureRun, expected: Set[Triple],
         detail=f"{run.scanned_runs} runs / {run.scanned_bytes} bytes scanned in {run.seconds}s")
 
 
+def tp_windows(run: CaptureRun, expected: Set[Triple],
+               labels: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+    """Per true positive, the prefilter windows (0 = primary) that found it.
+
+    Rows come from the plugin's ``Windows`` column ("0,2"); a plugin without it
+    (byte-pattern or older export) reports no window ids."""
+    wanted = set(labels) if labels is not None else {t[0] for t in expected}
+    want = {(label, value) for label, _owner, value in expected if label in wanted}
+    found: Dict[Tuple[str, str], Set[int]] = {}
+    for r in run.rows:
+        key = (str(r.get("Label")), str(r.get("ValueHex")).lower())
+        if r.get("Status") != "ok" or key not in want:
+            continue
+        ids = {int(x) for x in str(r.get("Windows") or "").split(",") if x.strip().isdigit()}
+        found.setdefault(key, set()).update(ids)
+    return [{"label": label, "windows": sorted(ids)} for (label, _v), ids in sorted(found.items())]
+
+
+def window_redundancy(per_capture: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, Any]:
+    """``{tp_by_window: {id: n}, tps_found_by_multiple_windows, tp_total}`` over all captures."""
+    by_window: Dict[str, int] = {}
+    multi = total = 0
+    for tps in per_capture.values():
+        for tp in tps:
+            total += 1
+            multi += len(tp["windows"]) >= 2
+            for w in tp["windows"]:
+                by_window[str(w)] = by_window.get(str(w), 0) + 1
+    return {"tp_by_window": dict(sorted(by_window.items())),
+            "tps_found_by_multiple_windows": multi, "tp_total": total}
+
+
 def _recovered_triples(rows: Sequence[Dict[str, Any]], labels: Set[str]) -> Set[Triple]:
     return {(str(r.get("Label")), str(r.get("OwnerHex") or "").lower(), str(r.get("ValueHex")).lower())
             for r in rows if r.get("Status") == "ok" and r.get("Label") in labels}

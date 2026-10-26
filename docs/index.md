@@ -29,6 +29,7 @@ MemDiver is a browser-based workbench for exploring binary memory dumps. A FastA
 
 :::{grid-item-card} 🚀 Quick start
 :link: quickstart/index
+quickstart/image
 :link-type: doc
 
 Install MemDiver and run the web UI, CLI, MCP server, or experiment harness in under five minutes.
@@ -91,6 +92,11 @@ user_guide/mcp_reference
 user_guide/keylog_export
 user_guide/locate_key
 user_guide/heap
+user_guide/vol3
+user_guide/isf_workbench
+user_guide/keyfinders
+user_guide/object_model
+user_guide/sandbox
 user_guide/configuration
 ```
 

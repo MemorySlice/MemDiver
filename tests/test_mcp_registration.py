@@ -118,7 +118,7 @@ EXPECTED_TOOLS = {
     "annotations_list", "annotations_add", "annotations_supersede",
     "annotations_retract",
     # T1.8/T1.9: the case data lake and locate_context.
-    "case_init", "case_status", "case_schema", "case_query", "context_at", "case_export",
+    "case_init", "case_status", "case_manifest", "case_schema", "case_query", "context_at", "case_export",
     # T1.7: memory-image views (probe/profile/open/processes/extract).
     "image_probe", "image_profile", "image_open_view", "image_processes",
     "image_extract_process",
@@ -147,7 +147,7 @@ EXPECTED_TOOLS = {
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 119
+EXPECTED_TOOL_COUNT = 120
 
 
 def _registered_tool_names(server) -> set:

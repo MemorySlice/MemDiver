@@ -152,3 +152,23 @@ def test_models_are_frozen():
     with pytest.raises(FrozenInstanceError):
         _model().name = "other"
     assert replace(_model(), name="o").name == "o"
+
+
+def test_alternatives_round_trip_and_back_compat_and_check():
+    alt = {"wildcard_pattern": "bb ??", "key_offset": 12}
+    m = _model(locator=Locator("structure", dict(PATTERN), "anchor", (alt,)))
+    d = m.to_dict()
+    assert d["locator"]["alternatives"] == [alt]
+    assert ArtifactModel.from_dict(d).locator.alternatives == (alt,)
+    del d["locator"]["alternatives"]
+    assert ArtifactModel.from_dict(d).locator.alternatives == ()
+    bad = _model(locator=Locator("structure", dict(PATTERN), "anchor", ({"key_offset": 1}, {"wildcard_pattern": "aa"})))
+    assert len([p for p in bad.check() if "alternatives" in p]) == 2
+
+
+def test_warnings_round_trip_and_default_empty():
+    import dataclasses
+    m = dataclasses.replace(_model(), warnings=("prefilter.low_information: x",))
+    assert ArtifactModel.from_dict(m.to_dict()).warnings == m.warnings
+    d = _model().to_dict(); d.pop("warnings")
+    assert ArtifactModel.from_dict(d).warnings == ()

@@ -6,7 +6,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from .artifact_model import ArtifactModel, structure_base_delta
+from .artifact_model import ArtifactModel, structure_base_delta, structure_base_deltas
 from .yara_exporter import YaraExporter, key_locator_from_pattern
 
 logger = logging.getLogger("memdiver.architect.volatility3_exporter")
@@ -397,13 +397,25 @@ contiguous: a process/VA layer (``--pid``), the configured translation layer
 (``--virtual``), or a VA-materialized buffer (``--contiguous``). On any other
 layer (a flat file/physical layer, where neighbouring virtual pages are not
 neighbouring file offsets, and a file offset is not a physical page) only
-fields lying ENTIRELY inside the prefilter's matched window
-``[hit, hit + PATTERN_LENGTH)`` are decoded -- the match itself proved those
-bytes adjacent in that layer. Every other field gets Status ``not_contiguous``
--- it is never guessed. A read that fails gives Status ``unreadable`` -- never zeros.
+fields lying ENTIRELY inside a MATCHED prefilter window (the primary or an
+alternative, ``[hit, hit + length)``) are decoded -- the match itself proved
+those bytes adjacent in that layer. Every other field gets Status
+``not_contiguous`` -- it is never guessed. A read that fails gives Status
+``unreadable`` -- never zeros.
 
-A hit whose anchor field is unreadable or violates its constraints is a
-prefilter false positive and is skipped entirely.
+The ANCHOR and every relationship OWNER field are the exception: when one lies
+outside every matched window it is read directly from the layer at ``base + offset`` and must pass its validators,
+or the candidate is dropped. A short (weak) alternative window therefore cannot
+turn every hit into an object row. A hit whose anchor is unreadable or violates
+its constraints is a prefilter false positive and is skipped entirely.
+
+All windows are matched in ONE pass over the layer (``_WindowScanner``: each
+window's regex runs independently over every chunk, so matches of different
+windows that overlap or sit close together are all found).
+
+Known limit: on a physical/file layer, one object that straddles a page boundary
+may be reported twice (once per fragment base) -- duplicates are only merged by
+equal object base.
 
 Status: ok | unreadable | not_contiguous | constraint_failed. A row whose field
 is fine but whose OWNER field is not carries the owner's status.
@@ -441,6 +453,10 @@ SCAN_REGEX = $scan_regex_repr
 ANCHOR_FIELD = $anchor_repr
 #: Structure base minus the prefilter hit (window start).
 BASE_DELTA = $base_delta
+#: Every prefilter window: index 0 is the primary, the rest are disjoint
+#: alternatives inside the same object. Each carries its OWN base delta.
+#: A candidate object is reported once however many windows matched it.
+WINDOWS = $windows_repr
 #: field -> (offset in structure, size, constraints)
 FIELDS = $fields_repr
 FIELD_TYPES = $field_types_repr
@@ -465,6 +481,7 @@ _COLUMNS = [
     ("OwnerHex", str),
     ("Status", str),
     ("PatternOffset", format_hints.Hex),
+    ("Windows", str),
 ]
 
 _INT_FORMATS = {
@@ -540,9 +557,32 @@ def _value_hex(value):
     return hex(value)
 
 
-def _in_matched_window(hit, address, size):
-    """True when the field lies wholly inside ``[hit, hit + PATTERN_LENGTH)``."""
-    return hit <= address and address + size <= hit + PATTERN_LENGTH
+class _WindowScanner(interfaces.layers.ScannerInterface):
+    """Single-pass multi-window scanner yielding ``(window_index, offset)``.
+
+    Each window's regex is run independently on every chunk (not one combined
+    alternation), so a match of one window can never shadow an overlapping match
+    of another; ``layer.scan`` still reads the layer only once.
+    """
+    thread_safe = True
+    _version = (1, 0, 0)
+    _required_framework_version = (2, 0, 0)
+
+    def __init__(self, patterns) -> None:
+        super().__init__()
+        self.regexes = [re.compile(p, re.DOTALL) for p in patterns]
+
+    def __call__(self, data: bytes, data_offset: int):
+        for index, regex in enumerate(self.regexes):
+            for match in regex.finditer(data):
+                if match.start() < self.chunk_size:
+                    yield (index, match.start() + data_offset)
+
+
+def _in_matched_window(matched, address, size):
+    """True when the field lies wholly inside any matched ``(hit, length)`` window."""
+    return any(hit <= address and address + size <= hit + length
+               for hit, length in matched)
 
 
 class $class_name(interfaces.plugins.PluginInterface):
@@ -608,25 +648,34 @@ class $class_name(interfaces.plugins.PluginInterface):
         return name
 
     def _scan_hits(self, layer_name: str):
-        """Prefilter hits (window start offsets) in *layer_name*.
+        """``(window_index, hit)`` for every prefilter window match in *layer_name*.
 
         A regex that does not compile is raised, not degraded to a weaker
         detector: this plugin has no fallback needle.
         """
         layer = self.context.layers[layer_name]
-        scanner = scanners.RegExScanner(SCAN_REGEX)
+        scanner = _WindowScanner([window["regex"] for window in WINDOWS])
         seen = set()
-        for offset in layer.scan(context=self.context, scanner=scanner):
-            if offset in seen:
+        for hit in layer.scan(context=self.context, scanner=scanner):
+            if hit in seen:
                 continue
-            seen.add(offset)
-            yield offset
+            seen.add(hit)
+            yield hit
 
-    def _read_field(self, layer, hit: int, base: int, name: str, contiguous: bool):
+    def _candidates(self, layer_name: str):
+        """``{object_base: {window_index: hit}}``: one entry per object, however
+        many windows matched it."""
+        found = {}
+        for index, hit in self._scan_hits(layer_name):
+            base = hit + WINDOWS[index]["base_delta"]
+            found.setdefault(base, {}).setdefault(index, hit)
+        return found
+
+    def _read_field(self, layer, matched, base: int, name: str, contiguous: bool):
         """``(status, value, address)`` of one field; never guesses."""
         offset, size, constraints = FIELDS[name]
         address = base + offset
-        if not contiguous and not _in_matched_window(hit, address, size):
+        if not contiguous and not _in_matched_window(matched, address, size):
             return (STATUS_NOT_CONTIGUOUS, None, address)
         if address < 0:
             return (STATUS_UNREADABLE, None, address)
@@ -641,12 +690,25 @@ class $class_name(interfaces.plugins.PluginInterface):
             return (STATUS_CONSTRAINT_FAILED, value, address)
         return (STATUS_OK, value, address)
 
-    def _rows_for_hit(self, layer, hit: int, contiguous: bool):
-        base = hit + BASE_DELTA
-        fields = {n: self._read_field(layer, hit, base, n, contiguous) for n in FIELDS}
+    def _rows_for_object(self, layer, base: int, windows: dict, contiguous: bool):
+        order = sorted(windows)
+        hit = windows[order[0]]
+        matched = [(windows[i], WINDOWS[i]["length"]) for i in order]
+        window_ids = ",".join(str(i) for i in order)
+        fields = {n: self._read_field(layer, matched, base, n, contiguous) for n in FIELDS}
+        if fields[ANCHOR_FIELD][0] == STATUS_NOT_CONTIGUOUS:
+            # Anchor outside every matched window: it must be read and validated
+            # before this candidate may become an object.
+            fields[ANCHOR_FIELD] = self._read_field(layer, matched, base, ANCHOR_FIELD, True)
         anchor_status = fields[ANCHOR_FIELD][0]
         if anchor_status in (STATUS_UNREADABLE, STATUS_CONSTRAINT_FAILED):
             return  # prefilter false positive
+        for owner_name in sorted(set(OWNERS.values())):
+            # Relationship targets outside every matched window are read and
+            # validated directly, so an alternative-only hit resolves its
+            # relationships exactly as a primary-window hit would.
+            if fields[owner_name][0] == STATUS_NOT_CONTIGUOUS:
+                fields[owner_name] = self._read_field(layer, matched, base, owner_name, True)
         for name, meaning, label in ASSERTIONS:
             status, value, address = fields[name]
             owner = OWNERS.get(name)
@@ -659,13 +721,13 @@ class $class_name(interfaces.plugins.PluginInterface):
             yield (0, (
                 format_hints.Hex(address), name, meaning, label,
                 _value_hex(value), owner or "", owner_hex, status,
-                format_hints.Hex(hit),
+                format_hints.Hex(hit), window_ids,
             ))
 
     def _generator(self, layer_name: str, contiguous: bool):
         layer = self.context.layers[layer_name]
-        for hit in self._scan_hits(layer_name):
-            yield from self._rows_for_hit(layer, hit, contiguous)
+        for base, windows in self._candidates(layer_name).items():
+            yield from self._rows_for_object(layer, base, windows, contiguous)
 
     def _grid(self, layer_name: str, contiguous: bool):
         return renderers.TreeGrid(_COLUMNS, self._generator(layer_name, contiguous))
@@ -828,6 +890,18 @@ def _model_field_names(model: ArtifactModel) -> list:
     return list(dict.fromkeys(names))
 
 
+def _structure_windows(model: ArtifactModel) -> list:
+    """Primary then alternative prefilter windows, each with its own base delta."""
+    out = []
+    for pattern, delta in zip(
+            (model.locator.pattern, *model.locator.alternatives),
+            structure_base_deltas(model)):
+        wp = pattern.get("wildcard_pattern", "")
+        out.append({"regex": _wildcard_to_regex(wp), "base_delta": delta,
+                    "length": int(pattern.get("length") or len(wp.split()))})
+    return out
+
+
 def _export_structure(model: ArtifactModel, plugin_name: Optional[str],
                       description: Optional[str]) -> str:
     pattern = model.locator.pattern
@@ -852,7 +926,8 @@ def _export_structure(model: ArtifactModel, plugin_name: Optional[str],
         key_offset=int(pattern.get("key_offset", 0)), class_name=class_name,
         scan_regex_repr=repr(_wildcard_to_regex(pattern.get("wildcard_pattern", ""))),
         anchor_repr=repr(model.locator.anchor_field),
-        base_delta=structure_base_delta(model), fields_repr=repr(fields),
+        base_delta=structure_base_delta(model),
+        windows_repr=repr(_structure_windows(model)), fields_repr=repr(fields),
         field_types_repr=repr(types), assertions_repr=repr(assertions),
         owners_repr=repr(owners), model_repr=repr(model.to_dict()),
     )

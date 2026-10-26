@@ -43,7 +43,12 @@ READ_PATH_KEYS = frozenset({
 #: to the sandbox roots when the sandbox is ON (policy OFF: unrestricted).
 WRITE_PATH_KEYS = frozenset({
     "out_path", "output_path", "out_dir", "output_dir", "candidates_out",
+    "output",  # MCP capture_dump / REST CaptureRequest: the dump file to create
 })
+
+#: Parameters holding a case NAME or path that creates the case (``case_init``):
+#: a bare name files under the cases root; a path-shaped value is a WRITE path.
+CASE_NAME_KEYS = frozenset({"case"})
 
 #: Keys whose value is a mapping ``{path: path}``: BOTH keys and values are paths.
 PATH_MAPPING_KEYS = frozenset({"per_dump"})
@@ -56,7 +61,7 @@ PATH_KEYED_MAPPINGS = {"needles": 1, "related": 2, "key_material_by_path": 1}
 
 #: Keys whose value is usually NOT a path (a bare case name / a sha256): admitted
 #: as is; only a path-shaped value goes through the sandbox.
-NAME_OR_PATH_KEYS = frozenset({"case_dir", "capture_id"})
+NAME_OR_PATH_KEYS = frozenset({"case_dir", "capture_id"}) | CASE_NAME_KEYS
 
 ADMIT_HOW_TO = (
     "add its directory to MEMDIVER_ALLOWED_ROOTS (os.pathsep-separated), or add it "

@@ -18,7 +18,7 @@ an empirical question answered by the held-out run, never assumed here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -65,6 +65,56 @@ def select_prefilter(consensus: AnchorConsensus, *, anchor_length: int,
     pattern = _pattern_dict(consensus, reference, static, start, length, anchor_length, name)
     return Prefilter(delta=consensus.delta_start + start, length=length,
                      informative_bytes=int(scores.max()), pattern=pattern)
+
+
+def select_prefilters(consensus: AnchorConsensus, *, anchor_length: int,
+                      length: int = DEFAULT_PREFILTER, name: str = "artifact",
+                      within: Optional[Tuple[int, int]] = None,
+                      exclude: Sequence[Tuple[int, int]] = (),
+                      alternatives: int = 2, min_informative: int = 4) -> List[Prefilter]:
+    """The primary prefilter plus up to *alternatives* redundant, disjoint windows.
+
+    One window can rest on a few literal bytes (a TLS record header with a fixed
+    payload length); a workload that changes them blinds the detector. Each
+    alternative is a further window inside the same search span that overlaps no
+    already chosen window and holds at least *min_informative* informative bytes.
+    Greedy by score, ties to the window nearest the anchor.
+    """
+    primary = select_prefilter(consensus, anchor_length=anchor_length, length=length,
+                               name=name, within=within, exclude=exclude)
+    reference = np.frombuffer(consensus.instances[0].data, dtype=np.uint8)
+    static = _static_mask(consensus, exclude)
+    useful = static & ~np.isin(reference, _UNINFORMATIVE)
+    lo, hi = _search_span(consensus, within, length)
+    sums = np.concatenate(([0], np.cumsum(useful[lo:hi])))
+    scores = sums[length:] - sums[:-length]
+    chosen = [primary]
+    for _ in range(max(0, alternatives)):
+        pick = _best_disjoint_window(scores, lo, chosen, consensus, length, min_informative)
+        if pick is None:
+            break
+        pattern = _pattern_dict(consensus, reference, static, pick, length, anchor_length, name)
+        chosen.append(Prefilter(delta=consensus.delta_start + pick, length=length,
+                                informative_bytes=int(scores[pick - lo]), pattern=pattern))
+    return chosen
+
+
+def _best_disjoint_window(scores: np.ndarray, lo: int, chosen: Sequence[Prefilter],
+                          consensus: AnchorConsensus, length: int,
+                          min_informative: int) -> Optional[int]:
+    """Start index of the best window overlapping no *chosen* one, or ``None``."""
+    allowed = scores >= max(1, min_informative)
+    for pf in chosen:
+        taken = pf.delta - consensus.delta_start
+        first = max(0, taken - length + 1 - lo)
+        allowed[first:max(first, taken + length - lo)] = False
+    if not allowed.any():
+        return None
+    anchor_start = -consensus.delta_start
+    candidates = np.flatnonzero(allowed)
+    ranked = sorted(candidates.tolist(),
+                    key=lambda i: (-int(scores[i]), abs(lo + i - anchor_start)))
+    return lo + ranked[0]
 
 
 def _informative_mask(consensus: AnchorConsensus, reference: np.ndarray) -> np.ndarray:
@@ -118,26 +168,62 @@ def build_structure_model(consensus: AnchorConsensus, proposal: LayoutProposal, 
                           anchor_length: int, meanings: Sequence[FieldMeaning],
                           relationships: Sequence[Tuple[str, str, str]] = (),
                           applicability: Applicability = Applicability(),
-                          prefilter_length: int = DEFAULT_PREFILTER) -> ArtifactModel:
+                          prefilter_length: int = DEFAULT_PREFILTER,
+                          prefilter_alternatives: int = 2) -> ArtifactModel:
     """A ``structure``-locator model; *relationships* are ``(kind, source, target)``."""
     layout = proposal.to_structure(name, library=applicability.library or None)
     within = _object_span(proposal)
     pointers = [(f.delta, f.length) for f in proposal.fields if f.kind == "pointer"]
-    prefilter = select_prefilter(consensus, anchor_length=anchor_length, length=prefilter_length,
-                                 name=name, within=within, exclude=pointers)
+    chosen = select_prefilters(consensus, anchor_length=anchor_length, length=prefilter_length,
+                               name=name, within=within, exclude=pointers,
+                               alternatives=prefilter_alternatives)
+    prefilter, extras = chosen[0], chosen[1:]
     anchor = _anchor_field_name(proposal)
     model = ArtifactModel(
         name=name, layout=layout, applicability=applicability,
-        locator=Locator(kind="structure", pattern=prefilter.pattern, anchor_field=anchor),
+        locator=Locator(kind="structure", pattern=prefilter.pattern, anchor_field=anchor,
+                        alternatives=tuple(a.pattern for a in extras)),
         assertions=tuple(Assertion(m.field, m.meaning, m.label, m.support) for m in meanings),
         relationships=tuple(_relationship(proposal, consensus, *r) for r in relationships),
         validation=Validation(learned_on=tuple(w.anchor.dump_path for w in consensus.instances)),
         description=f"learned from {len(consensus.instances)} instances; prefilter "
-                    f"{prefilter.informative_bytes} informative bytes at delta {prefilter.delta}")
+                    f"{prefilter.informative_bytes} informative bytes at delta {prefilter.delta}"
+                    + _alternatives_note(extras),
+        warnings=_prefilter_warnings(prefilter, extras, prefilter_alternatives))
     problems = model.check()
     if problems:
         raise ValueError("inconsistent artifact model: " + "; ".join(problems))
     return model
+
+
+LOW_INFORMATION_BYTES = 8
+
+
+def _alternatives_note(extras: Sequence[Prefilter]) -> str:
+    if not extras:
+        return "; no alternative prefilter"
+    return "; alternatives " + ", ".join(
+        f"{a.informative_bytes} informative bytes at delta {a.delta}" for a in extras)
+
+
+def _prefilter_warnings(primary: Prefilter, extras: Sequence[Prefilter],
+                        requested: int) -> Tuple[str, ...]:
+    warnings = []
+    if primary.informative_bytes < LOW_INFORMATION_BYTES:
+        warnings.append(
+            f"prefilter.low_information: a detector resting on {primary.informative_bytes} literal "
+            "bytes; a workload/platform that changes them is missed -- held-out runs on the same "
+            "cohort cannot reveal it; validate on a different-workload cohort")
+    for alt in extras:
+        if alt.informative_bytes < LOW_INFORMATION_BYTES:
+            warnings.append(
+                f"prefilter.weak_alternative: the alternative at delta {alt.delta} rests on "
+                f"{alt.informative_bytes} literal bytes; it raises recall but also candidate "
+                "volume -- every candidate must pass its anchor validators to be reported")
+    if requested > 0 and not extras:
+        warnings.append("prefilter.no_alternative: no second disjoint window holds enough "
+                        "informative bytes; the detector has a single point of failure")
+    return tuple(warnings)
 
 
 def _object_span(proposal: LayoutProposal) -> Optional[Tuple[int, int]]:

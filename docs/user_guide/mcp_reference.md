@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **95 tools** to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **120 tools** (plus 8 prompts and 4 resources, below) to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -195,5 +195,71 @@ Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip 
 | `inspect_pcap` | Summarise the TLS sessions in a capture (the pcap arm/validate step). |
 | `verify` | Verify a candidate key read at an offset decrypts a known ciphertext. |
 | `experiment` | Run the full spawn→dump→consensus→verify→emit experiment. |
+
+## Semantic-workbench tools by workflow
+
+Tools added with the memory-image / case workbench. Image, `vol3_*`, case, YARA, detector-fixture, key-finder and heap tools are tabled in their sections above; this section adds the rest, grouped by workflow. List every tool with `tools/list` in your MCP client; the playbook prompts below say in which order to call them.
+
+**Case inventory and annotations**
+
+| Tool | Purpose |
+|---|---|
+| `case_manifest` | Inventory of a case: views, images (exists/size), `.msl` captures, annotations, ISF drafts/exports, plugins, tables. |
+| `annotations_list` | What has been concluded about a capture (its analysis record). |
+| `annotations_add` | Record a conclusion about a capture (append-only, never edits history). |
+| `annotations_supersede` | Correct an entry: append a replacement that supersedes `entry_id`. |
+| `annotations_retract` | Withdraw an entry (a retraction is appended; nothing is deleted). |
+
+**ISF profile workbench** (see [](isf_workbench.md))
+
+| Tool | Purpose |
+|---|---|
+| `isf_probe` | Run one pakunoda probe on a full image (`viability`, `banner`, `vmcoreinfo`, ...). |
+| `isf_draft_create` / `isf_draft_list` / `isf_draft_get` | Create an empty draft for a capture, list drafts, read a materialized summary. |
+| `isf_draft_set` | One draft operation: `op` is symbol, struct, field, base_type, enum or remove. |
+| `isf_draft_import` | Import (a subset of) an ISF JSON file into the draft; records its sha256. |
+| `isf_draft_retract` / `isf_draft_versions` / `isf_draft_diff` | Retract an entry, read the version history, diff against an older version or an ISF file. |
+| `isf_draft_validate` | Validate the draft as an ISF document and report per-plugin readiness. |
+| `isf_draft_export` | Write the draft (at `version`) as an ISF file; returns path, size and sha256. |
+| `isf_try` | Try a draft or an ISF file on the image, with a ground-truth diff. |
+| `code_evidence` | Decode which struct fields a kernel function touches. |
+| `disasm` | Disassemble `length` bytes at `address` of a dump; captured stretches only. |
+
+**N-dump structure and object models** (see [](object_model.md))
+
+| Tool | Purpose |
+|---|---|
+| `anchor_consensus` | Consensus keyed by DELTA from each dump's own anchor (e.g. the key). |
+| `xref_pointers` | Who points here: captured words holding a pointer into a target. |
+| `propose_layout` | Propose field boundaries around a verified anchor, learned from N dumps. |
+| `artifact_model_build` | Learn a layout and build the artifact model. |
+| `artifact_model_export` | Export an artifact model (JSON) as a Volatility3 plugin. |
+| `artifact_model_validate` | Validate a model's plugin on held-out captures against ground truth. |
+
+## Prompts (playbooks)
+
+The server registers 8 MCP prompts. Each renders a numbered procedure naming the exact tools and parameters, what to check in each result, and the traps hit on real data. All arguments are optional; given values are substituted into the steps.
+
+| Prompt | Arguments | For |
+|---|---|---|
+| `memdiver_start` | none | What MemDiver is, the playbook list, the resources and conventions. Fetch this first. |
+| `vol3_inside_memdiver` | `image_path`, `case` | Open an image, resolve a profile, run Volatility 3 plugins, query and annotate rows. |
+| `vol3_plugin_dev` | `case`, `view_path` | Scaffold, store, check, run and fixture-test a Volatility 3 plugin. |
+| `isf_workbench` | `image_path`, `case`, `draft` | Hand-build an ISF kernel profile when automatic resolution fails. |
+| `image_to_process_keys` | `image_path`, `case`, `pid` | Process, `.msl`, heap, key finders, oracle verification. |
+| `n_image_variance` | `corpus_dir` | Cohorts, consensus and anchor consensus across N dumps. |
+| `object_model_from_keylog` | `corpus_dir`, `keylog` | Key log, layout, artifact model, exported plugin, held-out validation. |
+| `code_evidence` | `image_path`, `function` | Which struct fields a kernel function touches, joined to an ISF. |
+
+## Resources
+
+Four read-only resource templates serve case state as JSON. URL-encode the case directory. They run the same read sandbox as the tools ([](sandbox.md)) and return the same structured JSON error on a denial.
+
+| URI | Content |
+|---|---|
+| `memdiver://case/{case_dir}/manifest` | Inventory of a case (as `case_manifest`). |
+| `memdiver://case/{case_dir}/schema` | Schema of a case (as `case_schema`). |
+| `memdiver://case/{case_dir}/annotations/{capture}` | Current annotations of one capture. |
+| `memdiver://case/{case_dir}/isf/{capture}/{draft}` | Materialized summary of one ISF draft. |
 
 See each tool's input schema via the MCP client's tool picker, or read the implementations in `mcp_server/server.py` (registrations) and `mcp_server/tools.py` / `mcp_server/tools_inspect.py` / `mcp_server/tools_pipeline.py` / `mcp_server/tools_xref.py`.

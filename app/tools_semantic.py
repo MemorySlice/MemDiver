@@ -675,12 +675,15 @@ def _score_one(stack: ExitStack, source: str, capture: Mapping[str, Any],
                labels: Sequence[str], min_run: int,
                owned_labels: Optional[set] = None,
                shared: Optional[Sequence[Any]] = None,
-               not_in_memory: Optional[Dict[str, List[str]]] = None) -> Tuple[Any, int]:
+               not_in_memory: Optional[Dict[str, List[str]]] = None,
+               window_hits: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> Tuple[Any, int]:
     """``(HeldOutResult, scanned_runs)`` for one held-out capture.
 
-    *not_in_memory* (when given) receives ``{capture: [client_random hex]}``."""
+    *not_in_memory* (when given) receives ``{capture: [client_random hex]}``;
+    *window_hits* ``{capture: [{label, windows}]}`` (which prefilter windows found each TP)."""
     from memdiver.app.tools_consensus import _open_one
-    from memdiver.engine.artifact_validation import run_plugin_on_capture, score_capture
+    from memdiver.engine.artifact_validation import (
+        run_plugin_on_capture, score_capture, tp_windows)
 
     dump_path = str(capture["dump_path"])
     opened = _open_one(stack, dump_path, None)
@@ -695,6 +698,8 @@ def _score_one(stack: ExitStack, source: str, capture: Mapping[str, Any],
     run = run_plugin_on_capture(
         source, opened, str(Path(dump_path).expanduser().resolve(strict=False)),
         min_run=min_run)
+    if window_hits is not None:
+        window_hits[run.capture] = tp_windows(run, expected, labels)
     return score_capture(run, expected, labels, owned_labels), run.scanned_runs
 
 
@@ -775,12 +780,13 @@ def artifact_model_validate_result(
     _require_volatility3()
     source, plugin_sha = _plugin_source(model, plugin_path)
     started, results, scanned, not_in_memory = time.monotonic(), [], {}, {}
+    window_hits: Dict[str, List[Dict[str, Any]]] = {}
     owned = _owned_labels(model)
     shared, keylog_summary = _shared_keylog(keylog, use_labels)
     with ExitStack() as stack:
         for capture in held_out:
             result, runs = _score_one(stack, source, capture, use_labels, int(min_run), owned,
-                                      shared, not_in_memory)
+                                      shared, not_in_memory, window_hits)
             results.append(result)
             scanned[result.capture] = runs
     try:
@@ -789,7 +795,7 @@ def artifact_model_validate_result(
         raise _invalid(str(exc), "semantic.held_out_leak") from exc
     payload = _validation_payload(results, record, use_labels, plugin_sha,
                                   round(time.monotonic() - started, 3), scanned,
-                                  not_in_memory)
+                                  not_in_memory, window_hits, model.warnings)
     if keylog_summary is not None:
         payload["keylog_summary"] = keylog_summary
     if target is not None:
@@ -803,10 +809,12 @@ def artifact_model_validate_result(
 def _validation_payload(results: Sequence[Any], record: Any, labels: Sequence[str],
                         plugin_sha: str, seconds: float,
                         scanned: Mapping[str, int],
-                        not_in_memory: Optional[Mapping[str, Sequence[str]]] = None) -> Dict[str, Any]:
+                        not_in_memory: Optional[Mapping[str, Sequence[str]]] = None,
+                        window_hits: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None,
+                        warnings: Sequence[str] = ()) -> Dict[str, Any]:
     from dataclasses import asdict
 
-    from memdiver.engine.artifact_validation import capture_verdict
+    from memdiver.engine.artifact_validation import capture_verdict, window_redundancy
 
     def total(key: str) -> int:
         return sum(getattr(r, key) for r in results)
@@ -815,9 +823,12 @@ def _validation_payload(results: Sequence[Any], record: Any, labels: Sequence[st
         "verdict": record.verdict, "labels": list(labels), "plugin_sha256": plugin_sha,
         "captures": [{**asdict(r), "verdict": capture_verdict(r, scanned.get(r.capture, 0)),
                       "scanned_runs": scanned.get(r.capture, 0),
-                      "not_in_memory": list((not_in_memory or {}).get(r.capture, ()))}
+                      "not_in_memory": list((not_in_memory or {}).get(r.capture, ())),
+                      "tp_windows": list((window_hits or {}).get(r.capture, ()))}
                      for r in results],
         "seconds": seconds,
+        "window_redundancy": window_redundancy(window_hits or {}),
+        "warnings": list(warnings),
         "totals": {"expected": total("expected"), "tp": total("true_positives"),
                    "fp": total("false_positives"), "fn": total("false_negatives"),
                    "relationships_correct": total("relationships_correct"),

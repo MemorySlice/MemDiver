@@ -182,3 +182,42 @@ def test_gnutls_invents_no_relationship(session, tmp_path):
             out_path=str(tmp_path / "gnutls_model.json"))
     assert exc.value.category == ErrorCategory.INVALID_INPUT, exc.value
     assert not (tmp_path / "gnutls_model.json").exists()
+
+
+PRIMARY_RECORD_HEADER = bytes.fromhex("00000000050017030300fc")
+
+
+def test_boringssl_alternative_window_survives_patched_primary(learned, session, tmp_path):
+    """Patch the primary prefilter's fixed TLS record-length byte (fc -> fd) in held-out
+    dumps: the primary window can no longer match, yet every secret is still found
+    through an alternative in-object window."""
+    if learned["lib"] != "boringssl":
+        pytest.skip("boringssl-only mutation test")
+    held = learned["inp"]["held"][:3]
+    original, patched = [], []
+    for run in held:
+        data = bytearray(Path(_msl(run)).read_bytes())
+        pos = bytes(data).find(PRIMARY_RECORD_HEADER)
+        assert pos >= 0, f"{run.name}: primary prefilter not present in the original dump"
+        data[pos + len(PRIMARY_RECORD_HEADER) - 1] = 0xFD
+        out = tmp_path / f"{run.name}.msl"
+        out.write_bytes(bytes(data))
+        original.append({"dump_path": _msl(run), "keylog_path": str(run / "keylog.csv")})
+        patched.append({"dump_path": str(out), "keylog_path": str(run / "keylog.csv")})
+    model = str(learned["model_path"])
+    base = S.artifact_model_validate_result(session, model_path=model, held_out=original).payload
+    res = S.artifact_model_validate_result(session, model_path=model, held_out=patched).payload
+    n = len(held)
+    print("original", base["totals"], base["window_redundancy"])
+    print("patched ", res["totals"], res["window_redundancy"], res["warnings"])
+    for pl in (base, res):
+        assert pl["verdict"] == "pass", pl["totals"]
+        assert pl["totals"]["tp"] == 2 * n and pl["totals"]["fn"] == 0 and pl["totals"]["fp"] == 0
+    for pl in (base, res):  # owner correct for every TP, alternative-only included
+        assert pl["totals"]["relationships_correct"] == pl["totals"]["relationships_checked"] == 2 * n, pl["totals"]
+    assert base["window_redundancy"]["tp_by_window"].get("0", 0) == 2 * n
+    patched_by_window = res["window_redundancy"]["tp_by_window"]
+    assert patched_by_window.get("0", 0) == 0, patched_by_window  # primary did NOT hit
+    assert sum(patched_by_window.values()) >= 2 * n
+    assert all(tp["windows"] and 0 not in tp["windows"]
+               for cap in res["captures"] for tp in cap["tp_windows"])
