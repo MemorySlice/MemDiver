@@ -231,6 +231,8 @@ def create_app() -> FastAPI:
         detector_fixtures,
         keyfinders,
         yara,
+        isf,
+        disasm,
         strings,
         vol3,
         architect,
@@ -304,6 +306,14 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         yara.router, prefix="/api/yara", tags=["yara"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        isf.router, prefix="/api/isf", tags=["isf"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        disasm.router, prefix="/api/disasm", tags=["disasm"],
         dependencies=_read_path_policy,
     )
     app.include_router(

@@ -100,6 +100,13 @@ _DEPRECATED_MARKER = ".. deprecated::"
 #: So they stay out of the registry and stay visible here instead.
 EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
     (
+        "memdiver.app.tools_disasm.resolve_arch",
+        "Internal helper, not a capability: it resolves the arch / ARM mode "
+        "(auto-detected from the dump source, or the caller's alias) for the "
+        "registered ``disasm`` capability. It returns a tuple, not a ServiceResult, "
+        "and has no surface of its own.",
+    ),
+    (
         "memdiver.app.tools_yara_rules.resolve_rule_source",
         "Internal helper, not a capability: it resolves rule_name (+ case_dir) to "
         "rule text for yara.check / yara.scan_dump, which ARE registered. It returns "

@@ -52,6 +52,8 @@ from .image import _cmd_image, add_image_parser
 from .fixtures import _cmd_fixtures, add_fixtures_parser
 from .keys import _cmd_keys, add_keys_parser
 from .yara import _cmd_yara, add_yara_parser
+from .isf import _cmd_isf, add_isf_parser
+from .disasm import _cmd_disasm, add_disasm_parser
 from .strings import _cmd_strings, add_strings_parser
 from .vol3 import _cmd_vol3, add_vol3_parser
 from .heap import (
@@ -209,6 +211,8 @@ __all__ = [
     # yara
     "add_yara_parser",
     "_cmd_yara",
+    "_cmd_isf",
+    "_cmd_disasm",
     # strings
     "add_strings_parser",
     "_cmd_strings",

@@ -127,6 +127,10 @@ EXPECTED_TOOLS = {
     # YARA editor: compile-check + captured-bytes scan of one dump.
     "yara_check", "yara_scan_dump",
     "yara_rule_list", "yara_rule_get", "yara_rule_put", "yara_rule_delete",
+    # P4 ISF workbench (probe, drafts, try-loop) and disassembly.
+    "isf_probe", "isf_draft_create", "isf_draft_list", "isf_draft_get", "isf_draft_set",
+    "isf_draft_import", "isf_draft_retract", "isf_draft_versions", "isf_draft_diff",
+    "isf_draft_validate", "isf_draft_export", "isf_try", "disasm",
     # T3.7: detector fixtures (YARA rules / key finders): positive controls + decoys.
     "detector_fixtures_run", "detector_fixtures_add", "detector_fixtures_list",
     "detector_fixtures_remove",
@@ -136,7 +140,7 @@ EXPECTED_TOOLS = {
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 99
+EXPECTED_TOOL_COUNT = 112
 
 
 def _registered_tool_names(server) -> set:

@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.png
 
 # npm workspaces: one hoisted install lives at the repo root. frontend/ and
 # tests/e2e/ no longer get their own tree from npm, but vite still writes

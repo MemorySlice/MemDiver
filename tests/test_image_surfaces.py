@@ -190,6 +190,12 @@ def test_open_physical_view_defaults_into_a_named_case(image):
     assert ViewDescriptor.read(path).view is ViewKind.PHYSICAL
 
 
+@pytest.fixture(autouse=True)
+def _no_open_time_profile_build(monkeypatch):
+    """These fixtures use stub ISFs vol3 cannot load; the open-time check has its own tests."""
+    monkeypatch.setattr(ti, "_check_profile_loads", lambda descriptor, target: None)
+
+
 def test_open_process_view_uses_explicit_isf_and_case_dir(image, isf, tmp_path):
     out = ti.image_open_view_result(str(image), "process", pid=22176, isf=str(isf),
                                     case_dir=str(tmp_path / "mycase")).payload

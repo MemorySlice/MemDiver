@@ -91,6 +91,18 @@ export interface OpenViewArgs {
   pid?: number;
   isf?: string;
   case_dir?: string;
+  no_profile?: boolean;
+  paging?: PagingOverride;
+  draft?: string;
+  draft_version?: string;
+}
+
+/** Manual paging for a profile-less kernel view; omitted fields are auto-detected. */
+export interface PagingOverride {
+  pgd_phys?: number | string;
+  arch?: string;
+  va_bits?: number;
+  page_size?: number;
 }
 
 const post = (url: string, body: object) =>

@@ -54,21 +54,33 @@ class ProfileRef:
 
 @dataclass(frozen=True)
 class PagingSpec:
-    """Manual paging parameters (no-ISF kernel view, or overriding detection)."""
+    """Manual paging parameters (no-ISF kernel view, or overriding detection).
+
+    ``format`` is a pakunoda ``PagingFormat`` as a dict, for architectures whose
+    paging pakunoda does not state (arm32, mips, ...); otherwise the format comes
+    from ``arch``/``va_bits``/``page_size``. ``kernel_va_start`` is the lowest
+    kernel VA the no-ISF view enumerates (default per architecture).
+    """
 
     pgd_phys: Optional[int] = None
     arch: Optional[str] = None      # "x86_64", "aarch64", ...
     va_bits: Optional[int] = None   # x86_64: 48 (4-level) or 57 (LA57, 5-level)
     page_size: int = 4096
+    endian: str = "little"          # "little" | "big"
+    format: Optional[Dict[str, Any]] = None
+    kernel_va_start: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {"pgd_phys": self.pgd_phys, "arch": self.arch,
-                "va_bits": self.va_bits, "page_size": self.page_size}
+                "va_bits": self.va_bits, "page_size": self.page_size,
+                "endian": self.endian, "format": self.format,
+                "kernel_va_start": self.kernel_va_start}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PagingSpec":
         return cls(data.get("pgd_phys"), data.get("arch"), data.get("va_bits"),
-                   int(data.get("page_size", 4096)))
+                   int(data.get("page_size", 4096)), str(data.get("endian", "little")),
+                   data.get("format"), data.get("kernel_va_start"))
 
 
 @dataclass(frozen=True)

@@ -80,6 +80,9 @@ memdiver image extract ./case/views/alma-9.process.pid22176.mdview --out sshd.ms
 
 ## YARA rule editor
 
+`isf` is the ISF workbench: `isf probe IMAGE kallsyms` runs a pakunoda probe, `isf draft create|set|import|get|diff|validate|export` edits a versioned ISF draft in a case, and `isf try IMAGE --case C --draft D` tries it with a Volatility plugin.
+`disasm` (`disasm DUMP ADDRESS LENGTH`) decodes captured bytes only (`--arch`, `--mode thumb`, `--max-insns`, `--case`).
+
 `yara` is the editor backend. `yara check RULE.yar` compiles a rule and prints its names, or the failing line
 (`errors: [{line, message}]`, exit 1). `yara scan RULE.yar DUMP` scans only the
 **captured** bytes of one `.msl`, `.mdview` or flat file, optionally a window

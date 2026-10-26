@@ -294,3 +294,28 @@ def export_strings(case: Case, rows: Sequence[Dict[str, Any]], *, capture_id: st
         "strings", table, capture_id=capture_id, run_id=run_id,
         image_sha256=image_sha256, producer="memdiver.export_strings",
         locations=locations, meta={"truncated": bool(truncated)})
+
+
+_DISASM_TEXT_COLUMNS = ("mnemonic", "op_str", "bytes_hex", "stop_reason")
+
+
+def export_disasm(case: Case, rows: Sequence[Dict[str, Any]], *, capture_id: str,
+                  space: str, pid: Optional[int] = None,
+                  image_sha256: Optional[str] = None,
+                  run_id: Optional[str] = None,
+                  truncated: bool = False) -> TableRef:
+    """Table ``disasm``: one row per decoded instruction (``addr`` in ``space``).
+
+    ``rows`` are flat dicts: ``addr`` (int) and ``size`` are required; the text
+    columns :data:`_DISASM_TEXT_COLUMNS` are optional. ``truncated`` is recorded
+    on the run.
+    """
+    items = list(rows)
+    extra = {name: pa.array([r.get(name) for r in items], type=pa.string())
+             for name in _DISASM_TEXT_COLUMNS}
+    table = _standard(space, pid, [r["addr"] for r in items],
+                      [r["size"] for r in items], **extra)
+    return case.register_table(
+        "disasm", table, capture_id=capture_id, run_id=run_id,
+        image_sha256=image_sha256, producer="memdiver.export_disasm",
+        locations={"addr": space}, meta={"truncated": bool(truncated)})

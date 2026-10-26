@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "1.0.2"
+version = "1.0.5"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -171,6 +171,9 @@ vol = ["volatility3>=2.27,<3"]
 # extracts a kernel ISF straight from a Linux image. pakunoda is Apache-2.0 and
 # optional exactly like vol3 -- lazy-imported, never vendored in the wheel.
 image = ["pakunoda", "volatility3>=2.27,<3"]
+# Disassembly helper (app/tools_disasm.py): capstone, lazy-imported behind an
+# install hint, exactly like vol3.
+disasm = ["capstone>=5"]
 # Every optional interface at once. Base already covers api + mcp + pcap, so
 # this adds the Marimo notebook UI and Volatility3.
 #
@@ -183,7 +186,7 @@ image = ["pakunoda", "volatility3>=2.27,<3"]
 # tests/test_install_contract.py was written for; its docstring names
 # yara-python as exactly that case. Keeping `vol` in `all` is what makes the
 # vol3 proof harness run in CI instead of skipping there forever.
-all = ["memdiver[marimo]", "memdiver[vol]"]
+all = ["memdiver[marimo]", "memdiver[vol]", "memdiver[disasm]"]
 # Alias for `all`. Exists because `pip install "memdiver[full]"` is the command
 # people type; it must resolve rather than error on an unknown extra. See the
 # volatility3[full] name-collision note above.
@@ -287,6 +290,7 @@ packages = [
     "memdiver.api.services",
     "memdiver.analysis",
     "memdiver.analysis.queries",
+    "memdiver.isf",
     "memdiver.heap",
     "memdiver.heap.allocators",
 ]

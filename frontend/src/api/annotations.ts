@@ -34,3 +34,22 @@ export const retractAnnotation = (body: {
 }) => request<Record<string, unknown>>("/api/annotations/retract", {
   method: "POST", body: JSON.stringify(body),
 });
+
+/** One `isf_try` entry of the analysis record (payload written by the try producer). */
+export interface IsfTryEntry extends RecordEntry {
+  created?: string;
+  payload: {
+    draft?: string | null;
+    version?: string | null;
+    state_id?: string | null;
+    plugin?: string;
+    verdict?: string;
+    implicated?: { item: string; reason?: string }[];
+    comparison?: Record<string, unknown> | null;
+    error?: string | null;
+  } | null;
+}
+
+/** Past tries of a capture, from `GET /api/annotations?kind=isf_try`. */
+export const listIsfTries = (caseDir: string, captureId: string) =>
+  listAnnotations(caseDir, captureId, "isf_try") as Promise<{ entries: IsfTryEntry[]; count: number }>;

@@ -1,0 +1,238 @@
+{
+  "title": "ISF Builder",
+  "caseDir": "Case directory",
+  "caseDirPlaceholder": "Case directory (name or path)",
+  "imagePath": "Memory image path",
+  "needsCase": "Enter a case directory to list and create ISF drafts for this image.",
+  "job": {
+    "cancelled": "Cancelled."
+  },
+  "tier": {
+    "exact": "exact",
+    "ordinal": "ordinal",
+    "population": "population",
+    "code": "code",
+    "crc_certified": "crc certified",
+    "upstream_constant": "upstream constant",
+    "bound": "bound",
+    "imported": "imported",
+    "probe": "probe",
+    "manual": "manual"
+  },
+  "provenance": {
+    "unknown": "no provenance",
+    "source": "Source: {{source}}",
+    "author": "Author: {{author}}",
+    "evidenceLine": "Evidence: {{evidence}}"
+  },
+  "prov": {
+    "legend": "Provenance",
+    "source": "Source",
+    "tier": "Tier",
+    "evidence": "Evidence (one per line)",
+    "evidencePlaceholder": "Evidence, one replayable line each",
+    "author": "Author: human"
+  },
+  "drafts": {
+    "title": "Drafts",
+    "refresh": "Refresh",
+    "empty": "No drafts for this image yet.",
+    "row": "{{arch}} - {{symbols}} symbols, {{types}} types, {{applied}} ops",
+    "name": "New draft name",
+    "arch": "Architecture",
+    "create": "Create",
+    "nameRule": "Use letters, digits, dot, dash or underscore.",
+    "noCase": "No such case yet - create a draft to start one."
+  },
+  "tree": {
+    "sections": "Draft sections",
+    "section": {
+      "symbols": "symbols ({{count}})",
+      "user_types": "structs ({{count}})",
+      "base_types": "base types ({{count}})",
+      "enums": "enums ({{count}})"
+    },
+    "search": "Search the section",
+    "searchPlaceholder": "Search names (substring)",
+    "loading": "Loading...",
+    "toggle": "Toggle fields of {{name}}",
+    "edit": "Edit",
+    "remove": "Remove",
+    "removeConfirm": "Confirm remove",
+    "cancel": "Cancel",
+    "range": "{{from}}–{{to}} of {{total}}",
+    "none": "No matching entries",
+    "prev": "Previous",
+    "next": "Next",
+    "untyped": "untyped — not exported",
+    "untypedCount": "{{count}} untyped — not exported",
+    "noSection": "The answer has no such section."
+  },
+  "edit": {
+    "title": "Edit draft"
+  },
+  "op": {
+    "symbol": "symbol",
+    "struct": "struct",
+    "field": "field",
+    "base_type": "base type"
+  },
+  "form": {
+    "name": "Name",
+    "address": "Address",
+    "size": "Size",
+    "struct": "Struct",
+    "field": "Field",
+    "offset": "Offset",
+    "structKind": "Kind",
+    "baseKind": "Base type kind",
+    "endian": "Endianness",
+    "signed": "signed",
+    "symbolType": "Give the symbol a type",
+    "apply": "Apply",
+    "applied": "Applied: {{op}}",
+    "needNameAddress": "A name and a numeric address (0x... or decimal) are required.",
+    "needNameSize": "A name and a non-negative integer size are required.",
+    "needField": "Struct, field, a non-negative integer offset and a complete type are required."
+  },
+  "field": {
+    "base": "Struct base address (selection offsets are relative to it)",
+    "baseNeeded": "Enter the struct base address first.",
+    "selectionBelowBase": "The selection starts below the struct base address.",
+    "offsetFromSelection": "Offset from selection",
+    "offsetFromSelectionHint": "Selection address minus the struct base address"
+  },
+  "type": {
+    "kind": "Type kind",
+    "name": "Type name",
+    "count": "Element count",
+    "kinds": {
+      "base": "base",
+      "pointer": "pointer to",
+      "array": "array of",
+      "struct": "struct"
+    }
+  },
+  "selection": {
+    "use": "From hex selection",
+    "evidence": "hex selection {{address}}",
+    "evidenceOffset": "hex selection {{address}} minus struct base {{base}}",
+    "hint": {
+      "noSelection": "Select bytes in the hex viewer first.",
+      "rawView": "Switch the hex viewer to the va or vas view: the raw view has no address map.",
+      "inexactSpan": "This view's start address is too large to be exact here; switch to the vas view.",
+      "notCaptured": "The selection is not in captured memory.",
+      "unavailable": "The view's page map could not be loaded."
+    }
+  },
+  "validate": {
+    "title": "Validation and readiness",
+    "run": "Validate",
+    "valid": "Valid",
+    "invalid": "Not valid",
+    "counts": "{{errors}} errors, {{warnings}} warnings",
+    "truncated": "lists truncated",
+    "missing": "{{required}} required and {{optional}} optional entries missing",
+    "defects": "{{count}} upstream defects"
+  },
+  "try": {
+    "title": "Try the draft",
+    "plugin": "Volatility plugin",
+    "groundTruth": "Ground truth file",
+    "groundTruthPlaceholder": "Ground truth file (vol3 pslist text or ps -ef)",
+    "run": "Run try",
+    "running": "Trying the draft",
+    "stage": "Stage {{stage}} - {{plugin}}",
+    "unverified": "unverified",
+    "unverifiedHint": "Rows came back, but without a ground truth that is not a verdict.",
+    "verdict": {
+      "pass": "pass",
+      "partial": "partial",
+      "fail": "fail",
+      "unverified": "unverified",
+      "error": "error"
+    },
+    "cmp": {
+      "expected": "Expected",
+      "returned": "Returned",
+      "matched": "Matched",
+      "recall": "Recall",
+      "precision": "Precision"
+    },
+    "pids": "Missing pids: {{missing}}; extra pids: {{extra}}",
+    "mismatches": "{{count}} mismatches",
+    "truncated": "(first {{shown}} shown)",
+    "implicated": "Implicated:",
+    "historyItem": "{{verdict}} - {{plugin}} (version {{version}})",
+    "past": "Past tries",
+    "pastItem": "{{created}} — {{verdict}} ({{plugin}}), version {{version}}, state {{state}}, {{implicated}} implicated",
+    "pastEmpty": "No earlier tries recorded for this capture.",
+    "pastError": "Could not read earlier tries: {{message}}",
+    "current": "This run"
+  },
+  "versions": {
+    "title": "Versions ({{total}})",
+    "isfPath": "ISF file to compare with",
+    "diffIsf": "Diff vs file",
+    "diffVs": "Diff vs here",
+    "retract": "Retract",
+    "retractConfirm": "Confirm retract",
+    "retracted": "retracted",
+    "diffEqual": "Identical to {{against}}.",
+    "diffCounts": "Against {{against}}: {{added}} added, {{removed}} removed, {{changed}} changed",
+    "diffTruncated": "showing {{shown}} of {{total}}",
+    "change": {
+      "added": "added",
+      "removed": "removed",
+      "changed": "changed"
+    },
+    "op": {
+      "create": "created",
+      "set_symbol": "symbol",
+      "set_struct": "struct",
+      "set_field": "field",
+      "set_base_type": "base type",
+      "set_enum": "enum",
+      "remove": "removed",
+      "import": "import",
+      "size_bound": "size bound"
+    }
+  },
+  "probe": {
+    "title": "Probe the image",
+    "probe": "Probe",
+    "arch": "Architecture",
+    "feed": "Feed into draft",
+    "feedNone": "Do not feed a draft",
+    "notFeedable": "This probe produces nothing a draft can import.",
+    "run": "Run probe",
+    "running": "Running probe",
+    "summary": "Probe {{probe}} ({{arch}})",
+    "location": "Location",
+    "truncated": "Truncated: {{shown}} rows shown (limit {{limit}}); counts above are complete.",
+    "imported": "Fed into draft {{draft}}.",
+    "nav": {
+      "noView": "Open a matching image view in the hex viewer to jump to a location.",
+      "inexact": "This address is not an exact integer and cannot be placed."
+    },
+    "unavailable": "unavailable (not an exact address)"
+  },
+  "disasm": {
+    "action": "Disassemble selection",
+    "title": "Disassembly",
+    "arch": "Architecture",
+    "running": "Disassembling...",
+    "summary": "{{arch}} at {{address}}: {{count}} instructions, {{captured}} of {{requested}} bytes captured",
+    "capped": "Only the first {{sent}} of {{selected}} selected bytes were decoded.",
+    "truncated": "Output cut at {{max}} instructions.",
+    "gap": "Gap at {{start}}, {{length}} bytes: {{reason}}",
+    "stops": "{{count}} undecodable positions, first at {{first}}",
+    "col": {
+      "addr": "Address",
+      "bytes": "Bytes",
+      "mnemonic": "Mnemonic",
+      "opStr": "Operands"
+    }
+  },
+  "caseDirLoad": "Load"
+}

@@ -88,6 +88,20 @@ export function placeRow(
   return vasOk ? { view: "vas", offset: row.vas_offset as number } : null;
 }
 
+/** Like `request`, but decode the answer with {@link parseJsonLossless}. */
+export async function requestLossless<T>(url: string, init?: RequestInit): Promise<T> {
+  const { headers, ...rest } = init ?? {};
+  const res = await fetch(url, { ...rest, headers: { "Content-Type": "application/json", ...headers } });
+  const text = await res.text();
+  if (!res.ok) throw new ApiError(res.status, text);
+  if (text === "") return undefined as T;
+  try {
+    return parseJsonLossless(text) as T;
+  } catch {
+    throw new ApiError(res.status, `Malformed JSON response: ${text.slice(0, 200)}`);
+  }
+}
+
 /** POST JSON and decode the answer with {@link parseJsonLossless}. */
 export async function postLossless<T>(url: string, body: object, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, {

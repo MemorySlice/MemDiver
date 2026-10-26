@@ -18,7 +18,7 @@ export function JobStatus<T>({ state, label, testId, onCancel }: {
   onCancel?: () => void;
 }) {
   const { t } = useTranslation("image");
-  if (state.status === "error" && state.error) return <ImageError message={state.error} />;
+  if (state.status === "error" && state.error) return <ImageError message={state.error} implicated={state.implicated} />;
   if (state.status !== "running") return null;
   const pct = state.pct === null ? null : Math.round(state.pct * 100);
   const stage = state.stage ?? state.msg;

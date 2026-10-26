@@ -49,7 +49,14 @@ READ_PATH_KEYS = frozenset({
     "root", "library_dir", "library_dirs", "input_path", "dataset_root",
     "variance_path", "plugin_path", "rule_paths", "case_dir",
     "image_path", "view_path", "isf",
+    "isf_path", "against_isf", "ground_truth", "type_hints_isf",
+    "capture_id",
 })
+
+#: Keys whose value is usually NOT a path: a bare name (``case_dir`` = a case under
+#: ``~/.memdiver/cases``) or a sha256 (``capture_id``). Such a value is admitted as is;
+#: only a path-shaped one (separator, leading ``.`` / ``~``) goes through the sandbox.
+_NAME_OR_PATH_KEYS = frozenset({"case_dir", "capture_id"})
 
 #: Message returned with every 403 so the operator knows which knob to turn.
 _DENIED_DETAIL = (
@@ -154,16 +161,24 @@ def clamp_parent(current: Path) -> str | None:
     return str(parent)
 
 
-def _iter_path_values(value: Any, key_matches: bool) -> Iterator[str]:
+def _is_path_shaped(key: str, value: str) -> bool:
+    """True when *value* under *key* must be sandbox-checked (see ``_NAME_OR_PATH_KEYS``)."""
+    if key not in _NAME_OR_PATH_KEYS:
+        return True
+    return "/" in value or "\\" in value or value.startswith((".", "~"))
+
+
+def _iter_path_values(value: Any, key_matches: "bool | str") -> Iterator[str]:
     """Yield every non-blank string under a READ_PATH_KEYS key, recursively."""
     if isinstance(value, dict):
         for key, child in value.items():
-            yield from _iter_path_values(child, key in READ_PATH_KEYS)
+            yield from _iter_path_values(child, key if key in READ_PATH_KEYS else False)
     elif isinstance(value, list):
         for child in value:
             yield from _iter_path_values(child, key_matches)
     elif key_matches and isinstance(value, str) and value.strip():
-        yield value
+        if _is_path_shaped(str(key_matches), value):
+            yield value
 
 
 async def _json_body(request: Request) -> Any:
@@ -189,7 +204,7 @@ async def enforce_request_read_paths(request: Request) -> None:
     if not policy_enabled():
         return
     for key, value in request.query_params.multi_items():
-        if key in READ_PATH_KEYS and value.strip():
+        if key in READ_PATH_KEYS and value.strip() and _is_path_shaped(key, value):
             admit_read_path(value)
     for value in _iter_path_values(await _json_body(request), False):
         admit_read_path(value)

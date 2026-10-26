@@ -7,6 +7,7 @@ or ``-o FILE``); a :class:`CapabilityError` propagates to the CLI backstop.
 """
 
 import argparse
+import json
 import sys
 from typing import Callable, Dict, Optional
 
@@ -46,6 +47,15 @@ def add_image_parser(sub) -> None:
     op.add_argument("--case", dest="case_dir",
                     help="Case directory or bare name; the view goes to <case>/views/")
     op.add_argument("--out", dest="out_path", help="Write the descriptor here")
+    op.add_argument("--no-profile", action="store_true",
+                    help="Kernel view without any ISF (paging from --paging/--pgd or discovered)")
+    op.add_argument("--paging", help="Paging spec as JSON, e.g. '{\"pgd_phys\": 4096, "
+                                     "\"arch\": \"x86_64\"}'")
+    op.add_argument("--pgd", type=lambda x: int(x, 0), help="Page-table root (physical)")
+    op.add_argument("--arch", help="Paging arch (with --pgd / --va-bits)")
+    op.add_argument("--va-bits", type=int, help="Virtual-address width (with --pgd)")
+    op.add_argument("--draft", help="Use this ISF draft of --case as the profile")
+    op.add_argument("--draft-version", help="Draft version (default: current)")
     procs = actions.add_parser("processes", parents=[_common_parser()],
                                help="List the tasks of a kernel or process .mdview")
     procs.add_argument("view", metavar="VIEW", help=".mdview descriptor")
@@ -77,10 +87,21 @@ def _cmd_image_profile(args: argparse.Namespace) -> int:
         args.image, args.isf, not args.no_pakunoda, progress=_print_stage).payload)
 
 
+def _paging_arg(args: argparse.Namespace) -> Optional[dict]:
+    """``--paging`` JSON, overlaid by the ``--pgd/--arch/--va-bits`` shorthands."""
+    paging = json.loads(args.paging) if args.paging else {}
+    for key, value in (("pgd_phys", args.pgd), ("arch", args.arch), ("va_bits", args.va_bits)):
+        if value is not None:
+            paging[key] = value
+    return paging or None
+
+
 def _cmd_image_open(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_open_view_result
     return _emit(args, image_open_view_result(
-        args.image, args.view, args.pid, args.isf, args.case_dir, args.out_path).payload)
+        args.image, args.view, args.pid, args.isf, args.case_dir, args.out_path,
+        no_profile=args.no_profile, paging=_paging_arg(args), draft=args.draft,
+        draft_version=args.draft_version).payload)
 
 
 def _cmd_image_processes(args: argparse.Namespace) -> int:

@@ -255,9 +255,11 @@ def _vma_name(image_ctx: ImageContext, vma: Any, task: Any) -> str:
 def adapter_for_view(image_ctx: ImageContext, descriptor: ViewDescriptor) -> Any:
     if descriptor.view is ViewKind.PHYSICAL:
         return PhysicalAdapter(image_ctx)
+    if descriptor.view is ViewKind.KERNEL and descriptor.profile is None:
+        from memdiver.core.image.pakunoda_view import NoIsfKernelAdapter
+        return NoIsfKernelAdapter(image_ctx, descriptor.paging)
     if not image_ctx.has_kernel:
-        raise CapabilityError(f"a {descriptor.view.value} view needs a kernel profile (ISF); "
-                              "the no-ISF kernel view is not built yet (plan T4.3)",
+        raise CapabilityError(f"a {descriptor.view.value} view needs a kernel profile (ISF)",
                               category=ErrorCategory.UNSUPPORTED)
     if descriptor.view is ViewKind.KERNEL:
         return KernelAdapter(image_ctx)

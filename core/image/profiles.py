@@ -128,12 +128,36 @@ class CacheProvider(_ReasonMixin):
 
 
 class DraftProvider(_ReasonMixin):
-    """Analysis-record ISF drafts (workbench). Stub: they arrive in P4 / T4.1."""
+    """An ISF draft from the case's analysis record (ISF workbench, plan T4.1).
+
+    Only consulted when a draft is selected (``case_dir`` + ``draft``); the draft
+    must belong to this image (its capture id is the image sha256). ``upto``
+    pins a version (an operation entry id).
+    """
 
     name = "draft"
 
+    def __init__(self, case_dir: Optional[Path] = None, draft: Optional[str] = None,
+                 upto: Optional[str] = None) -> None:
+        self._case_dir = Path(case_dir) if case_dir else None
+        self._draft = draft
+        self._upto = upto
+
     def resolve(self, image_path: Path, image_sha256: str) -> Optional[ProfileResolution]:
-        return self._miss("analysis-record ISF drafts are not implemented yet (P4/T4.1)")
+        if self._case_dir is None or not self._draft:
+            return self._miss("no ISF draft selected (pass case_dir and draft)")
+        from memdiver.isf.draft import IsfDraftStore
+        store = IsfDraftStore(self._case_dir)
+        names = {d["name"] for d in store.list_drafts(image_sha256)}
+        if self._draft not in names:
+            return self._miss(f"case {self._case_dir} has no draft {self._draft!r} "
+                              "for this image")
+        path = store.export_isf(image_sha256, self._draft, upto=self._upto)
+        draft = store.materialize(image_sha256, self._draft, upto=self._upto)
+        return ProfileResolution(path, file_sha256(path), "draft",
+                                 details={"draft": self._draft, "version": draft.version,
+                                          "applied": draft.applied,
+                                          "case_dir": str(self._case_dir)})
 
 
 class PakunodaLinuxProvider(_ReasonMixin):
@@ -295,11 +319,20 @@ class ProfileChain:
 
 def default_chain(explicit_isf: Optional[Path] = None,
                   progress: Optional[Callable[[str, float], None]] = None,
-                  cancel: Optional[Callable[[], bool]] = None) -> ProfileChain:
+                  cancel: Optional[Callable[[], bool]] = None, *,
+                  draft_case_dir: Optional[Path] = None, draft: Optional[str] = None,
+                  draft_upto: Optional[str] = None) -> ProfileChain:
     """The D3 chain: explicit -> cache -> draft -> pakunoda -> vol3 symbol dirs.
 
     ``progress`` / ``cancel`` are pakunoda's job controls (stage callback, cancel predicate).
+    A selected draft (``draft_case_dir`` + ``draft``) goes BEFORE the cache: the
+    user asked for that draft, and a cached extraction must not shadow it.
     """
-    return ProfileChain([ExplicitProvider(explicit_isf), CacheProvider(), DraftProvider(),
+    selected = DraftProvider(draft_case_dir, draft, draft_upto)
+    if draft_case_dir is not None and draft:
+        return ProfileChain([ExplicitProvider(explicit_isf), selected, CacheProvider(),
+                             PakunodaLinuxProvider(progress=progress, cancel=cancel),
+                             Vol3SymbolDirProvider()])
+    return ProfileChain([ExplicitProvider(explicit_isf), CacheProvider(), selected,
                          PakunodaLinuxProvider(progress=progress, cancel=cancel),
                          Vol3SymbolDirProvider()])

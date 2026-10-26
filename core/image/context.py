@@ -80,6 +80,15 @@ def require_volatility3() -> None:
         raise CapabilityError(VOL3_IMAGE_MISSING, category=ErrorCategory.UNSUPPORTED) from exc
 
 
+
+def require_pakunoda() -> None:
+    """Raise the one capability error for a missing pakunoda (``memdiver[image]``)."""
+    try:
+        import pakunoda  # noqa: F401
+    except ImportError as exc:
+        raise CapabilityError("pakunoda is not installed (pip install \"memdiver[image]\")",
+                              category=ErrorCategory.UNSUPPORTED) from exc
+
 @dataclass
 class ImageContext:
     """A vol3 context over one image, optionally with a kernel profile loaded."""
@@ -132,9 +141,33 @@ class ImageContext:
         physical = _stack_physical(ctx, Path(image_path))
         image_ctx = cls(Path(image_path), ctx, physical, isf_path)
         if isf_path is not None:
-            image_ctx.kernel_paging = _load_kernel(ctx, physical, Path(isf_path),
-                                                   va_bits_hint, dtb)
+            try:
+                image_ctx.kernel_paging = _load_kernel(ctx, physical, Path(isf_path),
+                                                       va_bits_hint, dtb)
+            except CapabilityError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - vol3 profile-load / self-test failure
+                raise _profile_build_failed(exc, Path(isf_path)) from exc
         return image_ctx
+
+
+def _profile_build_failed(exc: BaseException, isf_path: Path) -> CapabilityError:
+    """A vol3 profile that cannot load is a precondition failure (4xx), never a 500.
+
+    ``details.implicated`` names the ISF entries the vol3 message blames, plus every
+    vol3-required type the profile lacks when the message is the missing-type one.
+    """
+    from memdiver.isf.tryloop import (
+        _TYPE_NOT_IN_TABLE, implicated_by_error, missing_required_types)
+    message = f"{type(exc).__name__}: {exc}"
+    implicated = implicated_by_error(message)
+    if _TYPE_NOT_IN_TABLE.search(message):
+        known = {i["item"] for i in implicated}
+        implicated += [i for i in missing_required_types(isf_path) if i["item"] not in known]
+    return CapabilityError(
+        f"profile {isf_path.name} cannot be loaded: {message}"[:2000],
+        category=ErrorCategory.PRECONDITION, code="profile_build_failed",
+        details={"isf": str(isf_path), "implicated": implicated})
 
 
 def _new_vol3_context() -> Any:

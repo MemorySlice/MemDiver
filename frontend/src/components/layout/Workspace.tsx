@@ -83,6 +83,7 @@ import { ImagePanel } from "@/components/image/ImagePanel";
 import { Vol3Panel } from "@/components/vol3/Vol3Panel";
 import { KeyFindersPanel } from "@/components/keyfinders/KeyFindersPanel";
 import { YaraPanel } from "@/components/yara/YaraPanel";
+import { IsfBuilder } from "@/components/isf/IsfBuilder";
 import { useKeyFinderStore } from "@/stores/keyfinder-store";
 import { isMdview } from "@/components/image/open-view-in-workspace";
 import { useImageStore } from "@/stores/image-store";
@@ -156,7 +157,7 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara" | "isf";
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
 
 const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
@@ -175,7 +176,7 @@ function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>(
     imagePath ? "image" : mode === "heap" ? "heap" : "bookmarks");
   const baseTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
-  const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const] : baseTabs;
+  const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const, "isf" as const] : baseTabs;
   // Key finders scan any open dump, so the tab follows the dump, not the image.
   const sideTabs = activeViewPath ? [...withImage, "keyfinders" as const, "yara" as const] : withImage;
   // Entering heap mode opens its overview; leaving it drops a tab that no
@@ -192,7 +193,7 @@ function Sidebar() {
     setPrevImagePath(imagePath);
     if (imagePath) setSideTab("image");
   }
-  if ((sideTab === "image" || sideTab === "vol3") && !showImageTab) setSideTab("bookmarks");
+  if ((sideTab === "image" || sideTab === "vol3" || sideTab === "isf") && !showImageTab) setSideTab("bookmarks");
   if ((sideTab === "keyfinders" || sideTab === "yara") && !activeViewPath) setSideTab("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
@@ -308,6 +309,7 @@ function Sidebar() {
         {sideTab === "vol3" && <Vol3Panel />}
         {sideTab === "keyfinders" && <KeyFindersPanel />}
         {sideTab === "yara" && <YaraPanel />}
+        {sideTab === "isf" && <IsfBuilder />}
       </div>
     </div>
   );

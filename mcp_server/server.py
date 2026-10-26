@@ -88,7 +88,8 @@ def create_server():
     # result lands in the model's context window.
     MCP_CASE_QUERY_LIMIT = 200
     from memdiver.app import (
-        tools_annotations, tools_case, tools_detector_fixtures, tools_heap, tools_image, tools_keyfinders, tools_strings,
+        tools_annotations, tools_case, tools_detector_fixtures, tools_disasm, tools_heap, tools_image,
+        tools_isf, tools_keyfinders, tools_strings,
         tools_yara, tools_yara_rules, tools_vol3, tools_vol3_dev, tools_vol3_fixtures, tools_vol3_sources,
     )
     # Rows land in the model's context window: a smaller default than REST/CLI.
@@ -758,6 +759,161 @@ def create_server():
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_yara_rules.yara_rule_delete_result(name, scope, case_dir)))
 
+    # -- ISF workbench: pakunoda probes, versioned ISF drafts in a case, the try-loop.
+    @mcp.tool()
+    def isf_probe(image_path: str, probe: str, arch: str = "auto",
+                  params: Optional[Dict[str, Any]] = None, case_dir: Optional[str] = None,
+                  draft: Optional[str] = None) -> str:
+        """Run one pakunoda probe on a full image: ``viability``, ``banner``, ``vmcoreinfo``,
+        ``kallsyms``, ``btf``, ``init_task``, ``page_table_root``, ``utsname``, ``ksymtab`` or
+        ``layout_legs``.
+
+        Rows carry ``Location`` dicts; ``counts``, ``truncated`` and ``timings`` qualify them.
+        ``params``: ``limit``, ``va_bits``, ``page_size``, ``type_hints_isf``. ``case_dir`` +
+        ``draft`` feed kallsyms/vmcoreinfo/btf/layout_legs findings into that draft. Runs
+        inline: kallsyms on a multi-GB image can take over a minute.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_probe_result(
+                image_path, probe, arch=arch, params=params, case_dir=case_dir, draft=draft)))
+
+    @mcp.tool()
+    def isf_draft_create(case_dir: str, capture_id: str, name: str, arch: str,
+                         banner: Optional[str] = None,
+                         base_metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Create an empty ISF draft ``name`` for a capture (the image sha256) in a case."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_create_result(
+                case_dir, capture_id, name, arch, author="agent", banner=banner,
+                base_metadata=base_metadata)))
+
+    @mcp.tool()
+    def isf_draft_list(case_dir: str, capture_id: str) -> str:
+        """List the ISF drafts of a capture."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_list_result(case_dir, capture_id)))
+
+    @mcp.tool()
+    def isf_draft_get(case_dir: str, capture_id: str, name: str,
+                      only: Optional[Dict[str, List[str]]] = None,
+                      version: Optional[str] = None, include_origins: bool = False,
+                      limit: int = tools_isf.DEFAULT_LIMIT, search: Optional[str] = None,
+                      offset: int = 0) -> str:
+        """Materialized summary of a draft; item rows only for ``only`` (``{section: [names]}``;
+        an empty list selects the whole section). ``search`` filters names by case-insensitive
+        substring; ``offset``/``limit`` page each section (``total``/``truncated`` reported).
+        ``version`` reads an older state; ``include_origins`` adds item and field provenance."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_get_result(
+                case_dir, capture_id, name, only=only, version=version,
+                include_origins=include_origins, limit=limit, search=search,
+                offset=offset)))
+
+    @mcp.tool()
+    def isf_draft_set(case_dir: str, capture_id: str, name: str, op: str,
+                      args: Dict[str, Any], source: str = "manual", tier: str = "manual",
+                      evidence: Optional[List[str]] = None, witnesses: int = 1) -> str:
+        """One draft operation: ``op`` is symbol | struct | field | base_type | enum | remove.
+
+        ``args`` are the op's arguments (e.g. struct: ``{"struct": "task_struct", "size": 9792}``);
+        a missing one is INVALID_INPUT naming it. Appends an entry with its provenance.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_set_result(
+                case_dir, capture_id, name, op, args, source=source, tier=tier,
+                evidence=evidence or (), author="agent", witnesses=witnesses)))
+
+    @mcp.tool()
+    def isf_draft_import(case_dir: str, capture_id: str, name: str, isf_path: str,
+                         only: Optional[Dict[str, List[str]]] = None,
+                         source: str = "isf_import", tier: str = "imported",
+                         evidence: Optional[List[str]] = None) -> str:
+        """Import (a subset, ``only``) of an ISF JSON file into the draft; records its sha256."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_import_result(
+                case_dir, capture_id, name, isf_path, only=only, source=source, tier=tier,
+                evidence=evidence or (), author="agent")))
+
+    @mcp.tool()
+    def isf_draft_retract(case_dir: str, capture_id: str, name: str, entry_id: str,
+                          reason: str = "") -> str:
+        """Retract one draft entry by id; the history keeps it and the retraction."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_retract_result(
+                case_dir, capture_id, name, entry_id, author="agent", reason=reason)))
+
+    @mcp.tool()
+    def isf_draft_versions(case_dir: str, capture_id: str, name: str,
+                           limit: int = tools_isf.DEFAULT_LIMIT) -> str:
+        """The version history of a draft."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_versions_result(
+                case_dir, capture_id, name, limit=limit)))
+
+    @mcp.tool()
+    def isf_draft_diff(case_dir: str, capture_id: str, name: str,
+                       against_version: Optional[str] = None,
+                       against_isf: Optional[str] = None,
+                       only: Optional[Dict[str, List[str]]] = None,
+                       limit: int = tools_isf.DEFAULT_LIMIT) -> str:
+        """Diff the draft against an older version OR an ISF file (exactly one); the direction
+        is ``against -> draft`` (``added`` = only in the draft)."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_diff_result(
+                case_dir, capture_id, name, against_version=against_version,
+                against_isf=against_isf, only=only, limit=limit)))
+
+    @mcp.tool()
+    def isf_draft_validate(case_dir: str, capture_id: str, name: str,
+                           check_schema: bool = False,
+                           limit: int = tools_isf.DEFAULT_LIMIT) -> str:
+        """Validate the draft as an ISF document and report per-Volatility-plugin readiness."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_validate_result(
+                case_dir, capture_id, name, check_schema=check_schema, limit=limit)))
+
+    @mcp.tool()
+    def isf_draft_export(case_dir: str, capture_id: str, name: str,
+                         version: Optional[str] = None, out_path: Optional[str] = None) -> str:
+        """Write the draft (at ``version``) as an ISF file; returns path, size and sha256."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_draft_export_result(
+                case_dir, capture_id, name, version=version, out_path=out_path)))
+
+    @mcp.tool()
+    def isf_try(image_path: str, case_dir: Optional[str] = None, draft: Optional[str] = None,
+                version: Optional[str] = None, isf_path: Optional[str] = None,
+                plugin: str = "linux.pslist", ground_truth: Optional[str] = None,
+                timeout_s: float = 120.0, min_recall: float = 0.95,
+                min_precision: float = 0.95) -> str:
+        """Try a draft (``case_dir`` + ``draft`` [+ ``version``]) OR an ISF file on the image with
+        a Volatility plugin; returns the verdict, comparison and implicated entries. A draft
+        try is appended to the case's analysis record as an ``isf_try`` entry."""
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_isf.isf_try_result(
+                image_path, case_dir=case_dir, draft=draft, version=version,
+                isf_path=isf_path, plugin=plugin, ground_truth=ground_truth,
+                timeout_s=timeout_s, min_recall=min_recall, min_precision=min_precision,
+                author="agent")))
+
+    @mcp.tool()
+    def disasm(dump_path: str, address: int, length: int, arch: str = "auto",
+               view: Optional[str] = None, mode: Optional[str] = None,
+               max_insns: int = tools_disasm.DEFAULT_MAX_INSNS,
+               case_dir: Optional[str] = None) -> str:
+        """Disassemble ``length`` bytes at ``address`` of a dump; captured stretches only.
+
+        ``address`` is in the view's own space (kernel/process VA for ``.mdview``, MSL VA for
+        ``.msl``, file offset for a flat file). ``arch``: auto, x86_64, x86, aarch64, arm,
+        mips, mipsel (``mode="thumb"`` for Thumb). Rows: ``addr``, ``location``, ``bytes``,
+        ``mnemonic``, ``op_str``; ``stops`` lists undecodable bytes, ``coverage`` the capture
+        gaps (never decoded across). With ``case_dir`` the rows become the ``disasm`` table.
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_disasm.disasm_result(
+                dump_path, address, length, arch=arch, view=view, mode=mode,
+                max_insns=max_insns, case_dir=case_dir)))
+
     @mcp.tool()
     def detector_fixtures_run(
         artifact_kind: str, artifact: str, fixtures: Optional[List[dict]] = None,
@@ -864,17 +1020,23 @@ def create_server():
     @mcp.tool()
     def image_open_view(image_path: str, view: str, pid: Optional[int] = None,
                         isf: Optional[str] = None, case_dir: Optional[str] = None,
-                        out_path: Optional[str] = None) -> str:
+                        out_path: Optional[str] = None, no_profile: bool = False,
+                        paging: Optional[Dict[str, Any]] = None, draft: Optional[str] = None,
+                        draft_version: Optional[str] = None) -> str:
         """Write a ``.mdview`` descriptor for a view of the image; returns its path.
 
         ``view`` is ``physical``, ``kernel`` or ``process`` (needs ``pid``). The
         descriptor opens like any dump (hex/search/regions tools accept it). A
-        kernel/process view needs a profile: run ``image_profile`` first.
+        kernel/process view needs a profile: run ``image_profile`` first, or pass
+        ``draft`` (+ ``draft_version``, with ``case_dir``) to use an ISF draft, or
+        ``no_profile`` for a kernel view without any ISF (``paging``:
+        ``{pgd_phys, arch, va_bits, ...}``; without ``pgd_phys`` a verified root is found).
         Default location: ``<case_dir>/views/``.
         """
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_image.image_open_view_result(
-                image_path, view, pid, isf, case_dir, out_path)))
+                image_path, view, pid, isf, case_dir, out_path, no_profile=no_profile,
+                paging=paging, draft=draft, draft_version=draft_version)))
 
     @mcp.tool()
     def image_processes(view_path: str) -> str:

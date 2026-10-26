@@ -20,7 +20,7 @@ from typing import Any, Dict
 from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
 
 STAGE = "image"
-JOBS = ("profile", "open_view", "extract_process", "case_export")
+JOBS = ("profile", "open_view", "extract_process", "case_export", "isf_probe", "isf_try")
 
 
 def _pakunoda_progress(ctx):
@@ -32,18 +32,22 @@ def _pakunoda_progress(ctx):
 
 
 def _job_controls(job: str, ctx) -> Dict[str, Any]:
-    """Job controls only the profile producer understands."""
-    if job != "profile":
-        return {}
-    return {"progress": _pakunoda_progress(ctx), "cancel": ctx.is_cancelled}
+    """Job controls: profile takes progress + cancel, the ISF jobs cancel only."""
+    if job == "profile":
+        return {"progress": _pakunoda_progress(ctx), "cancel": ctx.is_cancelled}
+    if job in ("isf_probe", "isf_try"):
+        return {"cancel": ctx.is_cancelled}
+    return {}
 
 
 def _call_producer(job: str, args: Dict[str, Any], **controls: Any) -> Dict[str, Any]:
-    from memdiver.app import tools_case, tools_image
+    from memdiver.app import tools_case, tools_image, tools_isf
     producers = {"profile": tools_image.image_profile_result,
                  "open_view": tools_image.image_open_view_result,
                  "extract_process": tools_image.image_extract_process_result,
-                 "case_export": tools_case.case_export_result}
+                 "case_export": tools_case.case_export_result,
+                 "isf_probe": tools_isf.isf_probe_result,
+                 "isf_try": tools_isf.isf_try_result}
     return dict(producers[job](**args, **controls).payload)
 
 
@@ -70,7 +74,7 @@ def run_image_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     except CapabilityError as exc:
         if exc.code == "cancelled":
             ctx.emit("error", error="cancelled")
-            raise RuntimeError("image profile cancelled") from exc
+            raise RuntimeError(f"image {job} cancelled") from exc
         ctx.emit("error", error=exc.message)
         raise ValueError(exc.message) from exc
     artifact = _write_artifact(payload, params, ctx)

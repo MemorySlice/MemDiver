@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import i18n from "@/i18n";
 import { readableFailure } from "@/api/client";
 import { cancelImageJob, type ImageJobTicket } from "@/api/image";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
+import { implicatedOf, type ImplicatedItem } from "./failure-details";
 
 export interface ImageJobState<T> {
   status: "idle" | "running" | "done" | "error" | "cancelled";
@@ -17,6 +19,8 @@ export interface ImageJobState<T> {
   cancelling: boolean;
   result: T | null;
   error: string | null;
+  /** Items a rejected submit named as the cause (e.g. `profile_build_failed`). */
+  implicated?: ImplicatedItem[];
 }
 
 const IDLE = {
@@ -35,7 +39,11 @@ interface StageAnchor { elapsedS: number; receivedAt: number }
  * progress, and the terminal `done` event's `extra` (the producer payload)
  * becomes `result`. Failures are rendered as a sentence, never raw JSON.
  */
-export function useImageJob<T>(onResult?: (result: T) => void) {
+export function useImageJob<T>(
+  onResult?: (result: T) => void,
+  /** Read the result from the stored task payload (lossless) instead of the `done` event. */
+  loadPayload?: (taskId: string) => Promise<T | null>,
+) {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [state, setState] = useState<ImageJobState<T>>(IDLE);
   const cancelled = useRef(false);
@@ -62,6 +70,18 @@ export function useImageJob<T>(onResult?: (result: T) => void) {
     },
     onDone: (event) => {
       if (cancelled.current) return;
+      if (loadPayload && taskId) {
+        void loadPayload(taskId).then((result) => {
+          if (cancelled.current) return;
+          setState((s) => (result
+            ? { ...s, status: "done", pct: 1, result }
+            : { ...s, status: "error", error: i18n.t("image:job.noPayload") }));
+          if (result) onResult?.(result);
+        }).catch((err) => {
+          if (!cancelled.current) setState((s) => ({ ...s, status: "error", error: readableFailure(err) }));
+        });
+        return;
+      }
       const result = (event.extra ?? null) as T | null;
       setState((s) => ({ ...s, status: "done", pct: 1, result }));
       if (result) onResult?.(result);
@@ -83,7 +103,7 @@ export function useImageJob<T>(onResult?: (result: T) => void) {
       const ticket = await submit();
       setTaskId(ticket.task_id);
     } catch (err) {
-      setState({ ...IDLE, status: "error", error: readableFailure(err) });
+      setState({ ...IDLE, status: "error", error: readableFailure(err), implicated: implicatedOf(err) });
     }
   }, []);
 

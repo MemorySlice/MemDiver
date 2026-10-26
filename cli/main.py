@@ -100,6 +100,8 @@ from .image import _cmd_image, add_image_parser
 from .fixtures import _cmd_fixtures, add_fixtures_parser
 from .keys import _cmd_keys, add_keys_parser
 from .yara import _cmd_yara, add_yara_parser
+from .isf import _cmd_isf, add_isf_parser
+from .disasm import _cmd_disasm, add_disasm_parser
 from .strings import _cmd_strings, add_strings_parser
 from .vol3 import _cmd_vol3, add_vol3_parser
 from .experiment import _cmd_experiment
@@ -1090,6 +1092,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # yara — the YARA editor backend over app.tools_yara (same producers as
     # /api/yara and the MCP yara_* tools).
     add_yara_parser(sub)
+    # isf / disasm — the ISF workbench and disassembly over app.tools_isf / app.tools_disasm
+    # (same producers as /api/isf, /api/disasm and the MCP isf_* / disasm tools).
+    add_isf_parser(sub)
+    add_disasm_parser(sub)
     # fixtures — detector fixtures over app.tools_detector_fixtures.
     add_fixtures_parser(sub)
     # strings — the strings table over app.tools_strings (same producer as
@@ -1307,6 +1313,8 @@ def main():
         "vol3": _cmd_vol3,
         "keys": _cmd_keys,
         "yara": _cmd_yara,
+        "isf": _cmd_isf,
+        "disasm": _cmd_disasm,
         "fixtures": _cmd_fixtures,
         "strings": _cmd_strings,
     }

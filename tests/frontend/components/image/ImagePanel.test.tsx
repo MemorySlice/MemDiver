@@ -58,6 +58,12 @@ beforeEach(() => {
   api.listImageProcesses.mockResolvedValue({ processes: [row(30, "sshd"), row(2, "kthreadd"), row(1, "systemd")] });
 });
 
+// What the backend's ViewDescriptor.to_dict() sends: `profile` only when the view has one.
+const PROFILED = { image: "/img.lime", image_sha256: "c", view: "kernel",
+  profile: { isf: "/x.isf.json", sha256: null, origin: "explicit" } };
+const PROFILE_LESS = { image: "/img.lime", image_sha256: "c", view: "kernel",
+  paging: { pgd_phys: 44089344, arch: "x86_64", va_bits: 48, page_size: 4096 } };
+
 describe("ImagePanel", () => {
   it("renders the probe card", async () => {
     render(<ImagePanel />);
@@ -166,7 +172,7 @@ describe("ImagePanel", () => {
     await waitFor(() => expect(api.startOpenViewJob).toHaveBeenCalledWith(
       { image_path: "/img.lime", view: "kernel", pid: undefined, isf: undefined, case_dir: "mycase" }));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tk")).toBe(true));
-    act(() => task("tk").onDone({ extra: { view_path: "/cases/k.mdview", capture_id: "c", descriptor: {} } }));
+    act(() => task("tk").onDone({ extra: { view_path: "/cases/k.mdview", capture_id: "c", descriptor: PROFILED } }));
 
     await waitFor(() => expect(useDumpStore.getState().dumps.map((d) => d.path)).toEqual(["/cases/k.mdview"]));
     expect(useDumpStore.getState().dumps[0].format).toBe("raw");
@@ -182,6 +188,7 @@ describe("ImagePanel", () => {
   });
 
   it("process row opens a process view and registers the descriptor", async () => {
+    api.probeImage.mockResolvedValue({ ...PROBE, profile: { status: "found" } });
     useImageStore.setState({ kernelViewPath: "/cases/k.mdview" });
     api.startOpenViewJob.mockResolvedValue({ task_id: "tv", status: "pending" });
     render(<ImagePanel />);
@@ -190,12 +197,13 @@ describe("ImagePanel", () => {
     await waitFor(() => expect(api.startOpenViewJob).toHaveBeenCalledWith(
       expect.objectContaining({ view: "process", pid: 30 })));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tv")).toBe(true));
-    act(() => task("tv").onDone({ extra: { view_path: "/cases/p30.mdview", capture_id: "c", descriptor: {} } }));
+    act(() => task("tv").onDone({ extra: { view_path: "/cases/p30.mdview", capture_id: "c", descriptor: PROFILED } }));
     await waitFor(() => expect(useDumpStore.getState().dumps[0]?.path).toBe("/cases/p30.mdview"));
     expect(useDumpStore.getState().activeDumpId).toBe(useDumpStore.getState().dumps[0].id);
   });
 
   it("extract chains open-view into extract-process and shows the result", async () => {
+    api.probeImage.mockResolvedValue({ ...PROBE, profile: { status: "found" } });
     useImageStore.setState({ kernelViewPath: "/cases/k.mdview" });
     api.startOpenViewJob.mockResolvedValue({ task_id: "tv", status: "pending" });
     api.startExtractProcessJob.mockResolvedValue({ task_id: "tx", status: "pending" });
@@ -203,7 +211,7 @@ describe("ImagePanel", () => {
     await screen.findAllByTestId("process-row");
     fireEvent.click(screen.getByLabelText("Extract to .msl 30"));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tv")).toBe(true));
-    act(() => task("tv").onDone({ extra: { view_path: "/cases/p30.mdview", capture_id: "c", descriptor: {} } }));
+    act(() => task("tv").onDone({ extra: { view_path: "/cases/p30.mdview", capture_id: "c", descriptor: PROFILED } }));
     await waitFor(() => expect(api.startExtractProcessJob).toHaveBeenCalledWith("/cases/p30.mdview", "/cases/p30.msl"));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tx")).toBe(true));
     act(() => task("tx").onProgress(0.25, null, {}));
@@ -222,5 +230,18 @@ describe("ImagePanel", () => {
     await screen.findByTestId("probe-format");
     fireEvent.click(screen.getByText("Open physical view"));
     expect(await screen.findByTestId("image-error")).toHaveTextContent("image not found: /img.lime");
+  });
+
+  it("a profile-less view (descriptor WITHOUT a profile key, as the backend sends it) lists no processes", async () => {
+    api.listImageProcesses.mockClear();
+    api.startOpenViewJob.mockResolvedValue({ task_id: "tn", status: "pending" });
+    useImageStore.setState({ caseDir: "mycase" });
+    render(<ImagePanel />);
+    fireEvent.click(screen.getByText("Open kernel view"));
+    await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tn")).toBe(true));
+    act(() => task("tn").onDone({ extra: { view_path: "/cases/n.mdview", capture_id: "c", descriptor: PROFILE_LESS } }));
+    await waitFor(() => expect(useDumpStore.getState().dumps.map((d) => d.path)).toEqual(["/cases/n.mdview"]));
+    expect(await screen.findByTestId("processes-need-profile")).toBeInTheDocument();
+    expect(api.listImageProcesses).not.toHaveBeenCalledWith("/cases/n.mdview");
   });
 });

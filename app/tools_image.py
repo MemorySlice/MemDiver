@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from memdiver.analysis.case import case_path
 from memdiver.core.image.context import (
     ImageContext,
     cache_dir,
@@ -29,6 +30,7 @@ from memdiver.core.image.context import (
 )
 from memdiver.core.image.profiles import (
     CacheProvider,
+    DraftProvider,
     ExplicitProvider,
     ProfileChain,
     ProfileResolution,
@@ -36,8 +38,10 @@ from memdiver.core.image.profiles import (
     plausible_banners_first,
     scan_linux_banners,
 )
+from memdiver.core.image.pakunoda_view import require_va_bits
 from memdiver.core.image.view_descriptor import (
     SUFFIX,
+    PagingSpec,
     ProfileRef,
     ViewDescriptor,
     ViewKind,
@@ -204,10 +208,37 @@ def _profile_for_view(image: Path, sha: str, isf: Optional[Path]) -> ProfileRef:
             details=exc.details) from exc
 
 
+def _check_profile_loads(descriptor: ViewDescriptor, target: Path) -> None:
+    """Build the profiled view's context NOW (through the shared cache, so the work is
+    reused by the first read): a profile vol3 cannot load refuses the descriptor with
+    ``profile_build_failed`` + the implicated entries instead of failing every later read."""
+    if descriptor.profile is None or descriptor.view is ViewKind.PHYSICAL:
+        return
+    try:
+        _context_for(descriptor, target)
+    except CapabilityError as exc:
+        if exc.code != "profile_build_failed":
+            raise
+        label = f"{descriptor.profile.origin} {Path(str(descriptor.profile.isf)).name}"
+        items = ", ".join(i["item"] for i in (exc.details or {}).get("implicated", [])[:8])
+        raise CapabilityError(
+            f"profile {label} cannot load yet" + (f": {items}" if items else "")
+            + f" ({exc.message})", category=exc.category, code=exc.code,
+            details=exc.details) from exc
+
+
 def _view_target(image: Path, kind: ViewKind, pid: Optional[int],
                  case_dir: Optional[str], out_path: Optional[str]) -> Path:
     if out_path:
         target = Path(out_path).expanduser()
+        if not target.name.endswith(SUFFIX) or target.name == SUFFIX:
+            raise _invalid(f"out_path must end in {SUFFIX}: {target}", "view_out_target")
+        if "annotations" in target.resolve(strict=False).parts:
+            raise _invalid("out_path must not lie inside a case's annotations/",
+                           "view_out_target")
+        if target.exists() or target.is_symlink():
+            raise _invalid(f"out_path already exists (views never overwrite): {target}",
+                           "view_out_exists")
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
     from memdiver.analysis.case import Case
@@ -218,17 +249,88 @@ def _view_target(image: Path, kind: ViewKind, pid: Optional[int],
     return views / f"{image.stem}.{kind.value}{suffix}{SUFFIX}"
 
 
+def _discovered_paging(image: Path, paging: Optional[Dict[str, Any]]) -> PagingSpec:
+    """Paging for a no-ISF kernel view: as given, or found by pakunoda (verified only)."""
+    given = dict(paging or {})
+    if given.get("pgd_phys") is not None:
+        if not given.get("arch") and not given.get("format"):
+            raise _invalid("paging needs 'arch' (or an explicit 'format') with pgd_phys",
+                           "paging_arch_required")
+        spec = PagingSpec.from_dict(given)
+        require_va_bits(spec)
+        return spec
+    from memdiver.app.tools_isf import isf_probe_result
+    wanted_bits = given.get("va_bits")
+    found = isf_probe_result(str(image), "page_table_root",
+                             arch=str(given.get("arch") or "auto"),
+                             params={"va_bits": wanted_bits} if wanted_bits else None).payload
+    rows = found.get("rows") or []
+    if not rows or not rows[0].get("verified"):
+        raise CapabilityError(
+            "pakunoda found no VERIFIED kernel page-table root in this image; pass "
+            "paging={'pgd_phys': ..., 'arch': ...} explicitly",
+            category=ErrorCategory.PRECONDITION, code="paging_root_not_found",
+            details={"probe": {k: found.get(k) for k in ("arch", "rows", "warnings")}})
+    root = rows[0]
+    if wanted_bits and int(root["va_bits"]) != int(wanted_bits):
+        raise CapabilityError(
+            f"requested va_bits={wanted_bits} but the verified page-table root uses "
+            f"va_bits={root['va_bits']}; pass pgd_phys explicitly to force this layout",
+            category=ErrorCategory.PRECONDITION, code="paging_va_bits_mismatch",
+            details={"requested": int(wanted_bits), "found": int(root["va_bits"])})
+    return PagingSpec(root["pgd_phys"], found["arch"], root["va_bits"], root["page_size"],
+                      str(given.get("endian", "little")), given.get("format"),
+                      given.get("kernel_va_start"))
+
+
+def _profile_choice(image: Path, sha: str, kind: ViewKind, isf: Optional[Path],
+                    no_profile: bool, draft: Optional[str], draft_version: Optional[str],
+                    case_dir: Optional[str]) -> Optional[ProfileRef]:
+    if kind is ViewKind.PHYSICAL or no_profile:
+        return None
+    if draft:
+        if isf is not None:
+            raise _invalid("pass either isf or draft, not both", "profile_conflict")
+        if not case_dir:
+            raise _invalid("a draft profile needs case_dir", "draft_case_required")
+        provider = DraftProvider(case_path(case_dir), draft, draft_version)
+        hit = provider.resolve(image, sha)
+        if hit is None:
+            raise _invalid(f"draft {draft!r} was not usable: {provider.last_reason}",
+                           "draft_unusable")
+        return hit.to_profile_ref()
+    return _profile_for_view(image, sha, isf)
+
+
 def image_open_view_result(image_path: str, view: str, pid: Optional[int] = None,
                            isf: Optional[str] = None, case_dir: Optional[str] = None,
-                           out_path: Optional[str] = None) -> "ServiceResult":
-    """Write a ``.mdview`` descriptor for one view of the image; return its path."""
+                           out_path: Optional[str] = None, *, no_profile: bool = False,
+                           paging: Optional[Dict[str, Any]] = None,
+                           draft: Optional[str] = None,
+                           draft_version: Optional[str] = None) -> "ServiceResult":
+    """Write a ``.mdview`` descriptor for one view of the image; return its path.
+
+    ``no_profile`` opens a KERNEL view without any ISF (plan T4.3): ``paging``
+    supplies ``pgd_phys``/``arch``/... or, without ``pgd_phys``, pakunoda finds a
+    verified root. ``draft`` (+ ``draft_version``, with ``case_dir``) uses an ISF
+    draft from the case's analysis record as the profile.
+    """
     kind = _view_kind(view, pid)
+    if no_profile and kind is not ViewKind.KERNEL:
+        raise _invalid("no_profile applies to the kernel view only", "no_profile_view")
+    if no_profile and (isf or draft):
+        raise _invalid("no_profile excludes isf and draft", "no_profile_conflict")
     image = _image_file(image_path)
     isf_file = _isf_file(isf)
     sha = file_sha256(image)
-    profile = None if kind is ViewKind.PHYSICAL else _profile_for_view(image, sha, isf_file)
-    descriptor = ViewDescriptor(str(image), sha, kind, pid=pid, profile=profile)
-    path = descriptor.write(_view_target(image, kind, pid, case_dir, out_path))
+    profile = _profile_choice(image, sha, kind, isf_file, no_profile, draft, draft_version,
+                              case_dir)
+    spec = _discovered_paging(image, paging) if no_profile else (
+        PagingSpec.from_dict(paging) if paging else None)
+    descriptor = ViewDescriptor(str(image), sha, kind, pid=pid, profile=profile, paging=spec)
+    target = _view_target(image, kind, pid, case_dir, out_path)
+    _check_profile_loads(descriptor, target)
+    path = descriptor.write(target)
     return ServiceResult.ok({"view_path": str(path), "capture_id": descriptor.capture_id,
                              "descriptor": descriptor.to_dict()})
 
@@ -369,6 +471,11 @@ def image_extract_process_result(view_path: str, out_path: str) -> "ServiceResul
         raise _invalid("out_path is required", "out_path_required")
     extract = _extractor()
     target = Path(out_path).expanduser()
+    if not target.name.endswith(".msl") or target.name == ".msl":
+        raise _invalid(f"out_path must end in .msl: {target}", "out_path_target")
+    if target.exists() or target.is_symlink():
+        raise _invalid(f"out_path already exists (extraction never overwrites): {target}",
+                       "out_path_exists")
     target.parent.mkdir(parents=True, exist_ok=True)
     image_ctx = _context_for(descriptor, path)
     ranges = list(_physical_ranges(image_ctx) or ())

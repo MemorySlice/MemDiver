@@ -15,6 +15,9 @@ interface ImageState {
   wizardImageMode: boolean;
   /** Last probe per image path, so a reopened tab keeps its scanned banners. */
   probes: Record<string, ImageProbe>;
+  /** Whether each opened `.mdview` carries a kernel profile (from its descriptor). */
+  viewHasProfile: Record<string, boolean>;
+  setViewHasProfile: (viewPath: string, has: boolean) => void;
   setImagePath: (path: string) => void;
   setIsfPath: (path: string) => void;
   setCaseDir: (dir: string) => void;
@@ -31,6 +34,7 @@ const INITIAL = {
   kernelViewPath: "",
   wizardImageMode: false,
   probes: {} as Record<string, ImageProbe>,
+  viewHasProfile: {} as Record<string, boolean>,
 };
 
 export const useImageStore = create<ImageState>((set) => ({
@@ -40,6 +44,8 @@ export const useImageStore = create<ImageState>((set) => ({
   setCaseDir: (caseDir) => set({ caseDir }),
   setKernelViewPath: (kernelViewPath) => set({ kernelViewPath }),
   setWizardImageMode: (wizardImageMode) => set({ wizardImageMode }),
+  setViewHasProfile: (viewPath, has) =>
+    set((state) => ({ viewHasProfile: { ...state.viewHasProfile, [viewPath]: has } })),
   setProbe: (path, probe) =>
     set((state) => {
       const { [path]: _dropped, ...rest } = state.probes;

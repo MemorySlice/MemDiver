@@ -1,4 +1,7 @@
 {
+  "job": {
+    "noPayload": "The job finished but its stored result could not be read."
+  },
   "tab": "image",
   "title": "Memory image",
   "pathLabel": "Image file",
@@ -41,7 +44,21 @@
     "openKernel": "Open kernel view",
     "openPhysical": "Open physical view",
     "opening": "Opening view...",
-    "opened": "Opened {{path}}"
+    "opened": "Opened {{path}}",
+    "openNoProfile": "Kernel view without profile",
+    "openDraft": "Open kernel view with ISF draft",
+    "noProfileHint": "Walks the page tables directly. Without a PGD the backend searches for a verified paging root, which can take several seconds.",
+    "paging": "Paging (optional)",
+    "pgdPhys": "PGD physical address (hex)",
+    "pgdPlaceholder": "0x1a2b3000",
+    "arch": "Architecture",
+    "vaBits": "VA bits",
+    "auto": "auto",
+    "badPgd": "The PGD must be a hex address such as 0x1a2b3000.",
+    "draftName": "ISF draft name",
+    "draftVersion": "Draft version (optional)",
+    "draftNeedsCase": "Set a case directory and a draft name first.",
+    "draftTitle": "ISF draft"
   },
   "processes": {
     "title": "Processes",
@@ -59,7 +76,8 @@
     },
     "openProcess": "Open process view",
     "extract": "Extract to .msl",
-    "select": "Select process (links the Vol3 tables)"
+    "select": "Select process (links the Vol3 tables)",
+    "needProfile": "The process list needs a kernel profile; this view was opened without one."
   },
   "extract": {
     "running": "Extracting process {{pid}}...",
@@ -69,7 +87,8 @@
   "progress": "{{pct}}%",
   "error": {
     "title": "Memory image error",
-    "installHint": "Install the optional image support: pip install \"memdiver[image]\""
+    "installHint": "Install the optional image support: pip install \"memdiver[image]\"",
+    "implicated": "Implicated items:"
   },
   "wizard": {
     "choice": "Memory image",

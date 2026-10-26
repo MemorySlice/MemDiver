@@ -169,6 +169,23 @@ from memdiver.app.tools_keyfinders import (
     keyfinders_scan_result,
 )
 
+# --- ISF workbench (pakunoda probes, ISF drafts, try-loop) and disassembly ---------
+from memdiver.app.tools_disasm import disasm_result
+from memdiver.app.tools_isf import (
+    isf_probe_result,
+    isf_draft_create_result,
+    isf_draft_list_result,
+    isf_draft_get_result,
+    isf_draft_set_result,
+    isf_draft_import_result,
+    isf_draft_retract_result,
+    isf_draft_versions_result,
+    isf_draft_diff_result,
+    isf_draft_validate_result,
+    isf_draft_export_result,
+    isf_try_result,
+)
+
 # --- YARA editor (compile-check + captured-bytes scan of one dump) ---------------
 from memdiver.app.tools_yara import yara_check_result, yara_scan_dump_result
 from memdiver.app.tools_yara_rules import (
@@ -332,6 +349,20 @@ __all__ = [
     "yara_rule_get_result",
     "yara_rule_put_result",
     "yara_rule_delete_result",
+    # ISF workbench + disassembly
+    "isf_probe_result",
+    "isf_draft_create_result",
+    "isf_draft_list_result",
+    "isf_draft_get_result",
+    "isf_draft_set_result",
+    "isf_draft_import_result",
+    "isf_draft_retract_result",
+    "isf_draft_versions_result",
+    "isf_draft_diff_result",
+    "isf_draft_validate_result",
+    "isf_draft_export_result",
+    "isf_try_result",
+    "disasm_result",
     "detector_fixtures_run_result",
     "detector_fixtures_add_result",
     "detector_fixtures_list_result",

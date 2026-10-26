@@ -53,6 +53,10 @@ class OpenViewRequest(_Strict):
     isf: Optional[str] = None
     case_dir: Optional[str] = None
     out_path: Optional[str] = None
+    no_profile: bool = False
+    paging: Optional[Dict[str, Any]] = None
+    draft: Optional[str] = None
+    draft_version: Optional[str] = None
 
 
 class ExtractRequest(_Strict):
@@ -100,7 +104,9 @@ def open_view(req: OpenViewRequest):
     """Submit the job that writes a ``.mdview`` for one view of the image."""
     return _submit("open_view", {
         "image_path": req.image_path, "view": req.view, "pid": req.pid, "isf": req.isf,
-        "case_dir": _case_target(req.case_dir), "out_path": _contained(req.out_path)})
+        "case_dir": _case_target(req.case_dir), "out_path": _contained(req.out_path),
+        "no_profile": req.no_profile, "paging": req.paging, "draft": req.draft,
+        "draft_version": req.draft_version})
 
 
 @router.get("/processes")

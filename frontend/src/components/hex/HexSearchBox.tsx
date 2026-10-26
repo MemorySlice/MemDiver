@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useHexStore } from "@/stores/hex-store";
+import { useActiveDump } from "@/hooks/useActiveDump";
 import { useHexSearch } from "@/hooks/useHexSearch";
 import {
   NEEDLE_FORMATS,
@@ -89,8 +90,11 @@ export function HexSearchBox() {
     }
   }, [patternInput, format]);
 
+  // The view mode a search was last run in; hits are offsets in THAT mode.
+  const searchedMode = useRef<string | null>(null);
   const handleFind = useCallback(() => {
     if (!dumpPath || !resolved?.bytes) return;
+    searchedMode.current = viewMode;
     search(patternInput.trim(), viewMode, resolved.format);
   }, [dumpPath, resolved, patternInput, viewMode, search]);
 
@@ -114,7 +118,38 @@ export function HexSearchBox() {
     ]);
   }, [offsets, patternLen, isSearching, setSearchOffsets, setHighlightedRegions, t]);
 
+  // Hits belong to the view they were found in: switching views (even to one that
+  // fails to load) drops the input, the hits and the search highlights.
+  const activePath = useActiveDump()?.path ?? "";
+  const clearRef = useRef(clear);
+  useEffect(() => { clearRef.current = clear; });
+  const viewKey = `${dumpPath}\u0000${activePath}`;
+  const [seenViewKey, setSeenViewKey] = useState(viewKey);
+  if (seenViewKey !== viewKey) { setSeenViewKey(viewKey); setPatternInput(""); }
+  useEffect(() => {
+    clearRef.current();
+    searchedMode.current = null;
+    useHexStore.getState().setSearchOffsets([]);
+    const existing = useHexStore.getState().highlightedRegions;
+    if (existing.some((r) => r.type === "search")) {
+      useHexStore.getState().setHighlightedRegions(existing.filter((r) => r.type !== "search"));
+    }
+  }, [dumpPath, activePath]);
+
+  // Switching the view MODE of the same dump re-runs the search in the new mode (the
+  // search API takes the view), so the hits and highlights never point at wrong bytes.
+  const findRef = useRef(handleFind);
+  useEffect(() => { findRef.current = handleFind; });
+  useEffect(() => {
+    if (searchedMode.current === null || searchedMode.current === viewMode) return;
+    useHexStore.getState().setSearchOffsets([]);
+    const existing = useHexStore.getState().highlightedRegions;
+    useHexStore.getState().setHighlightedRegions(existing.filter((r) => r.type !== "search"));
+    findRef.current();
+  }, [viewMode]);
+
   const handleClear = useCallback(() => {
+    searchedMode.current = null;
     setPatternInput("");
     clear();
     setSearchOffsets([]);

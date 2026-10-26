@@ -4,6 +4,7 @@ import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
 import { useMultiHexStore } from "@/stores/multi-hex-store";
 import { pluralityAt } from "./consensus-byte";
+import { DisasmSelection } from "./DisasmSelection";
 import {
   MAX_WINDOW_ROWS,
   windowCount,
@@ -175,6 +176,7 @@ export function HexStatusBar() {
             })}
           </span>
         )}
+        {selLength > 0 && <DisasmSelection />}
         {cursorOffset !== null && (
           <span data-testid="hex-status-byte">
             {cursorByte === undefined
