@@ -488,3 +488,52 @@ def test_try_other_build_error_does_not_add_required_types(patched, tmp_path, mo
     (tmp_path / "isf.json").write_text(json.dumps({"user_types": {}}))
     patched["build_exc"] = RuntimeError("boom")
     assert _try(tmp_path)["implicated"] == []
+
+
+# -- stage reporting + killable job path -----------------------------------------------
+
+def test_try_isf_announces_stages(patched, tmp_path):
+    patched["run"] = _fake_run([])
+    seen = []
+    tl.try_isf(tmp_path / "img", tmp_path / "x.json", on_stage=seen.append)
+    assert seen[:2] == ["build", "run"]
+
+
+def test_try_isf_stages_bridges_to_progress_dicts(monkeypatch):
+    monkeypatch.setattr(tl, "try_isf", lambda on_stage=None, **kw: (
+        [on_stage(s) for s in ("build", "run", "run", "compare")], {"verdict": "pass"})[1])
+    events = []
+    out = tl.try_isf_stages(progress=events.append, image_path="i", isf_path="f")
+    assert out == {"verdict": "pass"}
+    # the immediate repeat of "run" is throttled
+    assert [e["stage"] for e in events] == ["build", "run", "compare"]
+    assert all(e["elapsed_s"] >= 0 for e in events)
+
+
+def test_job_path_try_matches_in_process(tmp_path):
+    from memdiver.app import tools_isf as T
+    image = tmp_path / "img.lime"
+    image.write_bytes(b"x" * 4096)
+    bogus = tmp_path / "bogus.isf.json"
+    bogus.write_text("{}")
+    direct = T.isf_try_result(str(image), isf_path=str(bogus)).payload
+    stages = []
+    job = T.isf_try_result(str(image), isf_path=str(bogus), cancel=lambda: False,
+                           progress=lambda stage, elapsed: stages.append(stage)).payload
+
+    def stable(p):
+        return {k: v for k, v in p.items() if k != "elapsed_s"}
+    assert stable(job) == stable(direct) and job["verdict"] == "error"
+    assert stages and stages[0] == "build"
+
+
+def test_cancelled_try_appends_no_record(tmp_path):
+    from memdiver.app import tools_isf as T
+    case_dir = str(tmp_path / "case")
+    image = tmp_path / "img.lime"
+    image.write_bytes(b"x" * 4096)
+    T.isf_draft_create_result(case_dir, T.file_sha256(image), "d", "x86_64")
+    with pytest.raises(Exception) as info:
+        T.isf_try_result(str(image), case_dir=case_dir, draft="d", cancel=lambda: True)
+    assert getattr(info.value, "code", None) == "cancelled"
+    assert not list((tmp_path / "case").rglob("*isf_try*"))

@@ -8,6 +8,7 @@ import {
   type OpenViewArgs, type ProcessRow, type ProfileResult,
 } from "@/api/image";
 import { useActiveDump } from "@/hooks/useActiveDump";
+import { invalidateImageViewFacts, useImageViewFacts } from "@/hooks/useImageViewFacts";
 import { useImageStore } from "@/stores/image-store";
 import { useSelectionStore } from "@/stores/selection-store";
 import { KernelViewVariants } from "./KernelViewVariants";
@@ -17,6 +18,7 @@ import { ProbeCard } from "./ProbeCard";
 import { failureCode } from "./failure-details";
 import { ProcessTable } from "./ProcessTable";
 import { isMdview, openViewInWorkspace } from "./open-view-in-workspace";
+import { processListGate } from "./process-list-gate";
 import { useImageJob } from "./useImageJob";
 
 type Intent = { kind: "open" } | { kind: "kernel" } | { kind: "extract"; pid: number };
@@ -73,6 +75,7 @@ export function ImagePanel() {
     const current = intent.current;
     // The backend's `ViewDescriptor.to_dict()` OMITS `profile` when the view has none, so
     // a descriptor without the key (or with `profile: null`) is a profile-less view.
+    invalidateImageViewFacts(result.view_path);
     if (result.descriptor) {
       useImageStore.getState().setViewHasProfile(result.view_path, Boolean(result.descriptor.profile));
     }
@@ -85,16 +88,19 @@ export function ImagePanel() {
     void openViewInWorkspace(result.view_path);
   });
 
-  // A kernel view without a profile has no process list: the backend answers 400
-  // `kernel_view_required`. The signal is the VIEW's own descriptor (`profile`), not the
-  // image probe: an image can have a cached profile while this view has none. A view whose
-  // descriptor is unknown is requested anyway, and that answer is shown as the note.
+  // The view's own facts decide whether it can list processes (physical views and
+  // profile-less kernel views cannot: the backend answers 400 `kernel_view_required`).
+  // The signal is the VIEW's descriptor, not the image probe: an image can have a cached
+  // profile while this view has none. `viewHasProfile` (primed by this panel's open-view
+  // job) is the fast path; when the facts request fails the list is requested anyway and
+  // that answer is shown as the note.
   const [needsProfile, setNeedsProfile] = useState(false);
-  const viewHasProfile = useImageStore((s) => s.viewHasProfile[kernelView]);
-  const profileMissing = viewHasProfile === false;
+  const primedProfile = useImageStore((s) => s.viewHasProfile[kernelView]);
+  const facts = useImageViewFacts(kernelView);
+  const gate = processListGate(kernelView, facts, primedProfile);
   useEffect(() => {
     setNeedsProfile(false);
-    if (!kernelView || profileMissing) { setRows([]); return; }
+    if (gate !== "list") { setRows([]); return; }
     let cancelled = false;
     listImageProcesses(kernelView)
       .then((list) => { if (!cancelled) setRows(list.processes); })
@@ -105,7 +111,7 @@ export function ImagePanel() {
         else setError(readableFailure(err));
       });
     return () => { cancelled = true; };
-  }, [kernelView, profileMissing]);
+  }, [kernelView, gate]);
 
   const openView = (view: ImageViewKind, next: Intent, pid?: number, extra: Partial<OpenViewArgs> = {}) => {
     intent.current = next;
@@ -182,12 +188,14 @@ export function ImagePanel() {
       )}
 
       <h4 className="font-semibold md-text-secondary">{t("processes.title")}</h4>
-      {kernelView && (profileMissing || needsProfile)
-        ? <p className="md-text-muted" data-testid="processes-need-profile">{t("processes.needProfile")}</p>
-        : kernelView
-        ? <ProcessTable rows={rows} onOpen={rowOpen} onExtract={rowExtract} busy={busy}
-            selectedPid={selectedPid} onSelect={(row) => useSelectionStore.getState().setPid(row.pid)} />
-        : <p className="md-text-muted">{t("processes.needKernelView")}</p>}
+      {gate === "wait" && <p role="status" className="md-text-muted">{t("processes.loading")}</p>}
+      {(gate === "needProfile" || (gate === "list" && needsProfile)) &&
+        <p className="md-text-muted" data-testid="processes-need-profile">{t("processes.needProfile")}</p>}
+      {gate === "list" && !needsProfile &&
+        <ProcessTable rows={rows} onOpen={rowOpen} onExtract={rowExtract} busy={busy}
+          selectedPid={selectedPid} onSelect={(row) => useSelectionStore.getState().setPid(row.pid)} />}
+      {(gate === "none" || gate === "physical") &&
+        <p className="md-text-muted" data-testid="processes-need-kernel-view">{t("processes.needKernelView")}</p>}
     </div>
   );
 }

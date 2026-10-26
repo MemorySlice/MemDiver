@@ -18,6 +18,7 @@ Cost model (why REST/MCP run some of these as jobs):
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -227,8 +228,30 @@ def _check_profile_loads(descriptor: ViewDescriptor, target: Path) -> None:
             details=exc.details) from exc
 
 
+def _slug(text: str) -> str:
+    """A filename-safe fragment."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", str(text)).strip("-.") or "x"
+
+
+def _variant_tag(kind: ViewKind, profile: Optional[ProfileRef],
+                 paging: Optional[PagingSpec], draft_tag: Optional[str]) -> str:
+    """Deterministic per-profile-variant name part ('' for the physical view)."""
+    if kind is ViewKind.PHYSICAL:
+        return ""
+    if profile is None:
+        pgd = paging.pgd_phys if paging is not None else None
+        return "noprofile" + (f"-{int(pgd):x}" if pgd is not None else "")
+    if draft_tag:
+        return f"draft-{_slug(draft_tag)}"
+    sha = profile.sha256 or file_sha256(Path(profile.isf))
+    return f"isf-{sha[:8]}"
+
+
 def _view_target(image: Path, kind: ViewKind, pid: Optional[int],
-                 case_dir: Optional[str], out_path: Optional[str]) -> Path:
+                 case_dir: Optional[str], out_path: Optional[str], *,
+                 profile: Optional[ProfileRef] = None,
+                 paging: Optional[PagingSpec] = None,
+                 draft_tag: Optional[str] = None) -> Path:
     if out_path:
         target = Path(out_path).expanduser()
         if not target.name.endswith(SUFFIX) or target.name == SUFFIX:
@@ -245,8 +268,12 @@ def _view_target(image: Path, kind: ViewKind, pid: Optional[int],
     case = Case.init(case_dir if case_dir else image.stem)
     views = case.dir / "views"
     views.mkdir(exist_ok=True)
-    suffix = f".pid{pid}" if pid is not None else ""
-    return views / f"{image.stem}.{kind.value}{suffix}{SUFFIX}"
+    tag = _variant_tag(kind, profile, paging, draft_tag)
+    if kind is ViewKind.PROCESS:
+        name = f"{image.stem}.process.pid{pid}.{tag}"
+    else:
+        name = f"{image.stem}.{kind.value}" + (f".{tag}" if tag else "")
+    return views / f"{name}{SUFFIX}"
 
 
 def _discovered_paging(image: Path, paging: Optional[Dict[str, Any]]) -> PagingSpec:
@@ -285,7 +312,8 @@ def _discovered_paging(image: Path, paging: Optional[Dict[str, Any]]) -> PagingS
 
 def _profile_choice(image: Path, sha: str, kind: ViewKind, isf: Optional[Path],
                     no_profile: bool, draft: Optional[str], draft_version: Optional[str],
-                    case_dir: Optional[str]) -> Optional[ProfileRef]:
+                    case_dir: Optional[str],
+                    draft_tag: Optional[Dict[str, str]] = None) -> Optional[ProfileRef]:
     if kind is ViewKind.PHYSICAL or no_profile:
         return None
     if draft:
@@ -298,6 +326,8 @@ def _profile_choice(image: Path, sha: str, kind: ViewKind, isf: Optional[Path],
         if hit is None:
             raise _invalid(f"draft {draft!r} was not usable: {provider.last_reason}",
                            "draft_unusable")
+        if draft_tag is not None:
+            draft_tag["tag"] = f"{draft}-{str(hit.details.get('state_id', ''))[:8]}"
         return hit.to_profile_ref()
     return _profile_for_view(image, sha, isf)
 
@@ -323,12 +353,14 @@ def image_open_view_result(image_path: str, view: str, pid: Optional[int] = None
     image = _image_file(image_path)
     isf_file = _isf_file(isf)
     sha = file_sha256(image)
+    draft_tag: Dict[str, str] = {}
     profile = _profile_choice(image, sha, kind, isf_file, no_profile, draft, draft_version,
-                              case_dir)
+                              case_dir, draft_tag)
     spec = _discovered_paging(image, paging) if no_profile else (
         PagingSpec.from_dict(paging) if paging else None)
     descriptor = ViewDescriptor(str(image), sha, kind, pid=pid, profile=profile, paging=spec)
-    target = _view_target(image, kind, pid, case_dir, out_path)
+    target = _view_target(image, kind, pid, case_dir, out_path, profile=profile,
+                          paging=spec, draft_tag=draft_tag.get("tag"))
     _check_profile_loads(descriptor, target)
     path = descriptor.write(target)
     return ServiceResult.ok({"view_path": str(path), "capture_id": descriptor.capture_id,

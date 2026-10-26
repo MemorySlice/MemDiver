@@ -199,7 +199,8 @@ def _no_open_time_profile_build(monkeypatch):
 def test_open_process_view_uses_explicit_isf_and_case_dir(image, isf, tmp_path):
     out = ti.image_open_view_result(str(image), "process", pid=22176, isf=str(isf),
                                     case_dir=str(tmp_path / "mycase")).payload
-    assert out["view_path"].endswith("mycase/views/box.process.pid22176.mdview")
+    assert out["view_path"].endswith(
+        f"mycase/views/box.process.pid22176.isf-{file_sha256(isf)[:8]}.mdview")
     desc = ViewDescriptor.read(Path(out["view_path"]))
     assert desc.pid == 22176 and desc.profile.origin == "explicit"
     assert desc.profile.sha256 == file_sha256(isf)
@@ -684,3 +685,53 @@ def test_processes_locations_are_canonical_kernel_vas(tmp_path, image, isf, fake
     monkeypatch.setattr(ti, "get_image_context", lambda *a, **k: fake_image_ctx(tasks=[task]))
     row = ti.image_processes_result(str(_view(tmp_path, image, isf))).payload["processes"][0]
     assert row["location"]["value"] == row["task_offset"] == 0xFF424DB6C9E68000
+
+
+# -- per-variant default view names (no silent overwrite) ------------------------
+
+
+def _open(image, case, view="kernel", **kw):
+    out = ti.image_open_view_result(str(image), view, case_dir=str(case), **kw).payload
+    return Path(out["view_path"])
+
+
+def _fake_drafts(monkeypatch, isf):
+    class FakeDraft:
+        last_reason = ""
+
+        def __init__(self, case_dir, draft, upto):
+            self.state = upto or "s0"
+
+        def resolve(self, image_path, sha):
+            return ProfileResolution(isf, file_sha256(isf), "draft",
+                                     details={"state_id": self.state * 8})
+    monkeypatch.setattr(ti, "DraftProvider", FakeDraft)
+
+
+def test_each_profile_variant_gets_its_own_default_view_file(image, isf, tmp_path,
+                                                             monkeypatch):
+    _fake_drafts(monkeypatch, isf)
+    case = tmp_path / "c"
+    nop = {"pgd_phys": 0x1000, "arch": "x86_64", "va_bits": 48}
+    first = _open(image, case, no_profile=True, paging=nop)
+    assert first.name == "box.kernel.noprofile-1000.mdview"
+    before = first.read_bytes()
+    other_pgd = _open(image, case, no_profile=True, paging={**nop, "pgd_phys": 0x2000})
+    with_isf = _open(image, case, isf=str(isf))
+    draft_a = _open(image, case, draft="my draft", draft_version="a")
+    draft_b = _open(image, case, draft="my draft", draft_version="b")
+    proc = _open(image, case, "process", pid=7, isf=str(isf))
+    names = [p.name for p in (first, other_pgd, with_isf, draft_a, draft_b, proc)]
+    assert len(set(names)) == 6
+    assert with_isf.name == f"box.kernel.isf-{file_sha256(isf)[:8]}.mdview"
+    assert draft_a.name == "box.kernel.draft-my-draft-aaaaaaaa.mdview"
+    assert proc.name == f"box.process.pid7.isf-{file_sha256(isf)[:8]}.mdview"
+    assert first.read_bytes() == before
+
+
+def test_reopening_the_same_variant_reuses_the_same_path(image, isf, tmp_path):
+    case = tmp_path / "c"
+    one = _open(image, case, isf=str(isf))
+    content = one.read_bytes()
+    assert _open(image, case, isf=str(isf)) == one
+    assert one.read_bytes() == content

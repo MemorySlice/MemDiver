@@ -157,6 +157,7 @@ class DraftProvider(_ReasonMixin):
         return ProfileResolution(path, file_sha256(path), "draft",
                                  details={"draft": self._draft, "version": draft.version,
                                           "applied": draft.applied,
+                                          "state_id": draft.state_id,
                                           "case_dir": str(self._case_dir)})
 
 

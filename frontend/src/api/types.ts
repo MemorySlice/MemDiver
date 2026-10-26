@@ -640,6 +640,26 @@ export interface ImportSelectionCounts {
   excluded_bytes: number;
 }
 
+/**
+ * Everything an `.mdview` descriptor says about its view (`app/image_preview.py::view_block`).
+ * `profile` / `paging` are `null` (never omitted) when the descriptor has none.
+ */
+export interface ImageViewFacts {
+  kind: "process" | "kernel" | "physical";
+  /** The process view's pid; `null` for physical / kernel views. */
+  pid: number | null;
+  capture_id: string | null;
+  view_path: string;
+  /** A kernel/process view can list processes only with a profile. */
+  has_profile: boolean;
+  /** The ISF's origin / sha256 / FILE NAME (no directory). */
+  profile: { origin: string; sha256: string | null; isf_name: string } | null;
+  paging: { pgd_phys: number | null; arch: string | null; va_bits: number | null; page_size: number } | null;
+  /** The image file, resolved against the descriptor's directory. */
+  image_path: string;
+  image_sha256: string;
+}
+
 /** Shape returned by `POST /api/dumps/preview`. */
 export interface ImportPreview {
   format: string;
@@ -670,13 +690,8 @@ export interface ImportPreview {
   runtime_bytes?: number;
   /** `.mdview` image views only: which address space the view exposes. */
   view_kind?: "process" | "kernel" | "physical";
-  /** `.mdview` only: the descriptor's kind, pid (null unless a process view), capture and path. */
-  view?: {
-    kind: "process" | "kernel" | "physical";
-    pid: number | null;
-    capture_id: string | null;
-    view_path: string;
-  } | null;
+  /** `.mdview` only: the view's facts (`app/image_preview.py::view_block`). */
+  view?: ImageViewFacts | null;
   /**
    * `.mdview` image views only: `false` for a physical / kernel view, which has
    * no process mappings to choose between (the UI explains instead of listing).

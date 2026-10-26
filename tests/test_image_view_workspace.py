@@ -288,3 +288,47 @@ def test_physical_and_kernel_previews_have_nothing_to_select(client, make_view, 
     assert body["view_kind"] == kind.value
     assert body["selection_applicable"] is False
     assert body["regions"] == [] and body["totals"] == {}
+
+
+# -- view facts (view_block) -------------------------------------------------
+
+
+def _facts(client, path):
+    return _preview(client, path).json()["view"]
+
+
+def test_view_block_of_a_physical_view_has_no_profile_or_paging(client, make_view):
+    facts = _facts(client, make_view([LayerRun(0, PAGE, C)], kind=ViewKind.PHYSICAL))
+    # profile=ProfileRef is passed only for process/kernel by make_view
+    assert facts["kind"] == "physical" and facts["pid"] is None
+    assert facts["has_profile"] is False and facts["profile"] is None
+    assert facts["paging"] is None
+
+
+def test_view_block_of_a_profileless_kernel_view(client, tmp_path, monkeypatch):
+    from memdiver.core.image.view_descriptor import PagingSpec
+    (tmp_path / "img.bin").write_bytes(b"\0" * 64)
+    monkeypatch.setattr(sources, "_default_adapter_factory",
+                        lambda d, p: FakeAdapter([LayerRun(0, PAGE, C)]))
+    path = ViewDescriptor("img.bin", SHA, ViewKind.KERNEL,
+                          paging=PagingSpec(pgd_phys=0x1000, arch="x86_64", va_bits=48)
+                          ).write(tmp_path / "nokprof.mdview")
+    facts = _facts(client, str(path))
+    assert facts["has_profile"] is False and facts["profile"] is None
+    assert facts["paging"] == {"pgd_phys": 0x1000, "arch": "x86_64",
+                               "va_bits": 48, "page_size": 4096}
+
+
+def test_view_block_of_a_profiled_kernel_view(client, make_view, tmp_path):
+    facts = _facts(client, make_view([LayerRun(0, PAGE, C)], kind=ViewKind.KERNEL))
+    assert facts["kind"] == "kernel" and facts["has_profile"] is True
+    assert facts["profile"] == {"origin": "explicit", "sha256": None, "isf_name": "p.json"}
+    assert facts["image_sha256"] == SHA and facts["capture_id"] == SHA
+    assert facts["image_path"] == str((tmp_path / "img.bin").resolve())
+    assert facts["view_path"].endswith("kernel.mdview")
+
+
+def test_view_block_of_a_process_view_keeps_pid_and_profile(client, make_view):
+    facts = _facts(client, make_view(USER_RUNS, vmas=USER_VMAS))
+    assert facts["kind"] == "process" and facts["pid"] == 7
+    assert facts["has_profile"] is True and facts["profile"]["isf_name"] == "p.json"

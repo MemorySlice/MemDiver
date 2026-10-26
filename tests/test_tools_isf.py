@@ -148,7 +148,7 @@ class FakeSession:
     capture = CAP
     arch_name, arch_source = "x86_64", "banner_string"
 
-    def __init__(self, image, arch, params):
+    def __init__(self, image, arch, params, on_stage=None):
         self.params, self.timings, self.warnings = params, {"open": 0.0}, []
         self.syms = {f"sym{i}": 0xFFFFFFFF81000000 + i * 16 for i in range(10)}
 
@@ -286,7 +286,7 @@ def test_probe_uses_the_drafts_arch_when_auto(monkeypatch, tmp_path):
     seen = []
 
     class Recording(FakeSession):
-        def __init__(self, image, arch, params):
+        def __init__(self, image, arch, params, on_stage=None):
             seen.append(arch)
             super().__init__(image, arch, params)
 
@@ -458,3 +458,70 @@ def test_get_field_origins_and_untyped_flag(case):
     assert set(fo["task.pid"]["provenance"]) == {"source", "tier", "evidence", "author",
                                                  "witnesses"}
     assert got["sections"]["base_types"]["origins"]["int"]["op"]
+
+
+# -- killable job path (cancel given): real spawned child on a tiny image ------------
+
+@pytest.fixture
+def tiny_image(tmp_path):
+    pytest.importorskip("pakunoda")
+    image = tmp_path / "tiny.lime"
+    image.write_bytes(b"Linux version 5.10.0 (gcc) #1 SMP\0" + b"a" * 5000)
+    return str(image)
+
+
+def _without_timings(result):
+    return {k: v for k, v in payload(result).items() if k != "timings"}
+
+
+def test_job_path_payload_matches_in_process(tiny_image):
+    direct = T.isf_probe_result(tiny_image, "banner", arch="x86_64")
+    stages = []
+    job = T.isf_probe_result(tiny_image, "banner", arch="x86_64", cancel=lambda: False,
+                             progress=lambda stage, elapsed: stages.append(stage))
+    assert _without_timings(job) == _without_timings(direct)
+    assert set(payload(job)["timings"]) == set(payload(direct)["timings"])
+    assert stages[0] == "open" and "scan_banners" in stages
+
+
+def test_in_process_path_also_reports_stages(tiny_image):
+    stages = []
+    T.isf_probe_result(tiny_image, "banner", arch="x86_64",
+                       progress=lambda stage, elapsed: stages.append((stage, elapsed)))
+    assert [s for s, _ in stages] == ["open", "open", "scan_banners", "scan_banners"]
+
+
+def test_cancel_before_feed_leaves_draft_untouched(tiny_image, tmp_path):
+    case_dir = str(tmp_path / "case")
+    T.isf_draft_create_result(case_dir, CAP, "d", "x86_64")
+    before = payload(T.isf_draft_versions_result(case_dir, CAP, "d"))
+    flag = {"stage_done": False}
+    with pytest.raises(CapabilityError) as info:
+        T.isf_probe_result(
+            tiny_image, "kallsyms", arch="x86_64", case_dir=case_dir, draft="d",
+            cancel=lambda: flag["stage_done"],
+            progress=lambda stage, elapsed: flag.update(stage_done=stage == "kallsyms"))
+    assert info.value.code == "cancelled"
+    assert payload(T.isf_draft_versions_result(case_dir, CAP, "d")) == before
+
+
+def test_cancel_already_set_never_spawns(tiny_image, monkeypatch):
+    import memdiver.engine.killable as killable
+    monkeypatch.setattr(killable, "run_killable",
+                        lambda *a, **k: pytest.fail("child must not start"))
+    with pytest.raises(CapabilityError) as info:
+        T.isf_probe_result(tiny_image, "banner", arch="x86_64", cancel=lambda: True)
+    assert info.value.code == "cancelled"
+
+
+def test_feed_draft_needs_only_capture_and_params(case):
+    built = {"_symbols": {"init_task": 0xFFFF000000001000, "swapper": 8}, "counts": {}}
+    out = T._feed_draft("kallsyms", built, CAP, {}, T._store(case), "d", "tool:tester")
+    assert out["symbols"] == 2 and len(out["entries"]) == 1
+    assert payload(T.isf_draft_get_result(case, CAP, "d"))["counts"]["symbols"] == 2
+
+
+def test_probe_stage_returns_everything_the_parent_needs(tiny_image):
+    stage = T._probe_stage(tiny_image, "banner", "x86_64", {}, 5)
+    assert set(stage) == {"built", "capture", "arch_name", "arch_source", "timings", "warnings"}
+    assert stage["arch_name"] == "x86_64" and len(stage["capture"]) == 64

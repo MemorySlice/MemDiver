@@ -32,11 +32,11 @@ def _pakunoda_progress(ctx):
 
 
 def _job_controls(job: str, ctx) -> Dict[str, Any]:
-    """Job controls: profile takes progress + cancel, the ISF jobs cancel only."""
+    """Job controls: profile and the ISF jobs take progress + cancel (same event shape)."""
     if job == "profile":
         return {"progress": _pakunoda_progress(ctx), "cancel": ctx.is_cancelled}
     if job in ("isf_probe", "isf_try"):
-        return {"cancel": ctx.is_cancelled}
+        return {"progress": _pakunoda_progress(ctx), "cancel": ctx.is_cancelled}
     return {}
 
 

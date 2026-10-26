@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
 
-import { previewImport } from "@/api/client";
-import type { ImportPreview, PageStateInterval } from "@/api/types";
+import type { PageStateInterval } from "@/api/types";
 import { getVasNavigationMap, type Vol3RunResult, type Vol3ViewBlock } from "@/api/vol3";
+import { useImageViewFacts, viewFactsOf } from "@/hooks/useImageViewFacts";
 import { useHexStore } from "@/stores/hex-store";
 import type { ImageViewKind, ViewContext } from "./vol3-navigation";
 
@@ -23,23 +23,12 @@ async function fetchIntervals(viewPath: string): Promise<PageStateInterval[]> {
  * own (`view.pid`), else what the latest run revealed.
  */
 export function useViewContext(viewPath: string, result: Vol3RunResult | null) {
-  const [known, setKnown] = useState<{
-    path: string; kind: ImageViewKind | null; view: Vol3ViewBlock | null;
-  } | null>(null);
+  const facts = useImageViewFacts(viewPath);
   const mode = useHexStore((s) => s.viewMode);
   const vaSpanStart = useHexStore((s) => s.vaSpanStart);
   const vaSize = useHexStore((s) => s.vaSize);
   const pageStatesLoaded = useHexStore((s) => s.pageStatesLoaded);
   const intervals = useRef<{ path: string; list: PageStateInterval[] } | null>(null);
-
-  useEffect(() => {
-    if (!viewPath) return;
-    let cancelled = false;
-    previewImport(viewPath)
-      .then((p) => { if (!cancelled) setKnown({ path: viewPath, kind: p.view_kind ?? null, view: viewOf(p) }); })
-      .catch(() => { if (!cancelled) setKnown({ path: viewPath, kind: null, view: null }); });
-    return () => { cancelled = true; };
-  }, [viewPath]);
 
   const loadIntervals = useCallback(async (): Promise<PageStateInterval[] | null> => {
     if (!viewPath) return null;
@@ -53,17 +42,14 @@ export function useViewContext(viewPath: string, result: Vol3RunResult | null) {
     return intervals.current.list;
   }, [viewPath]);
 
-  // A kind learned for another view is stale: never reuse it for this one.
-  const current = known?.path === viewPath ? known : null;
-  const kind = current?.kind ?? null;
-  const view = current?.view ?? null;
+  // The shared facts are keyed by path, so a kind learned for another view is never reused.
+  const kind: ImageViewKind | null = facts.status === "ready" ? facts.preview.view_kind ?? null : null;
+  const view = viewFactsOf(facts);
   const ctx: ViewContext = {
     kind, pid: kind === "process" ? viewPidOf(view, result, viewPath) : null, mode, vaSpanStart, vaSize, pageStatesLoaded,
   };
   return { ctx, loadIntervals, view };
 }
-
-const viewOf = (preview: ImportPreview): Vol3ViewBlock | null => preview.view ?? null;
 
 /**
  * The process view's pid: the descriptor's own (`view.pid`, from the preview or a

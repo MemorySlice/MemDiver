@@ -28,7 +28,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
@@ -359,8 +359,14 @@ def verdict_of(cmp: Comparison, *, min_recall: float, min_precision: float) -> s
 def try_isf(image_path: Path, isf_path: Path, *, plugin: str = "linux.pslist",
             args: Optional[Dict[str, Any]] = None, ground_truth: Optional[Path] = None,
             timeout_s: float = 120.0, limit: int = 100_000, min_recall: float = 0.95,
-            min_precision: float = 0.95, capture_id: Optional[str] = None) -> Dict[str, Any]:
-    """Build, run, compare. Never raises for a bad ISF: the failure is the answer."""
+            min_precision: float = 0.95, capture_id: Optional[str] = None,
+            on_stage: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """Build, run, compare. Never raises for a bad ISF: the failure is the answer.
+
+    ``on_stage(name)`` is called with ``"build"``, ``"run"`` and ``"compare"`` as each
+    starts, and again with ``"run"`` for every progress report of the plugin run.
+    """
+    announce = on_stage or (lambda stage: None)
     from memdiver.core.image.context import ImageContext
     from memdiver.engine.vol3_runner import resolve_plugin, run_plugin
     result: Dict[str, Any] = {"plugin": plugin, "isf": str(isf_path), "stage": "build",
@@ -371,6 +377,7 @@ def try_isf(image_path: Path, isf_path: Path, *, plugin: str = "linux.pslist",
                                   "tasks": len(truth.tasks),
                                   "skipped_rows": truth.skipped_rows}
     started = time.monotonic()
+    announce("build")
     try:
         image_ctx = ImageContext.build(Path(image_path), Path(isf_path))
     except Exception as exc:  # noqa: BLE001 - a broken draft fails here; report it
@@ -384,9 +391,11 @@ def try_isf(image_path: Path, isf_path: Path, *, plugin: str = "linux.pslist",
     result["paging"] = image_ctx.kernel_paging.to_dict()
     result["stage"] = "run"
     started = time.monotonic()
+    announce("run")
     try:
         run = run_plugin(image_ctx, resolve_plugin(plugin), args, limit=limit,
-                         timeout_s=timeout_s, capture_id=capture_id)
+                         timeout_s=timeout_s, capture_id=capture_id,
+                         progress=lambda pct, msg: announce("run"))
     except Exception as exc:  # noqa: BLE001 - vol3 SymbolError / AttributeError / ...
         return _failed(result, "run", exc, started)
     result["elapsed_s"]["run"] = round(time.monotonic() - started, 3)
@@ -399,6 +408,7 @@ def try_isf(image_path: Path, isf_path: Path, *, plugin: str = "linux.pslist",
                       implicated=[] if run.row_count else
                       [{"item": i, "reason": "0 rows"} for i in TASK_LIST_FIELDS])
         return result
+    announce("compare")
     cmp = compare_pslist(columns, run.rows, truth, image_ctx.kernel_paging.va_bits)
     verdict = verdict_of(cmp, min_recall=min_recall, min_precision=min_precision)
     if run.truncated and run.stop_reason == "timeout" and verdict == FAIL:
@@ -421,3 +431,25 @@ def _failed(result: Dict[str, Any], stage: str, exc: BaseException,
     result.update(stage=stage, verdict=ERROR, error=message[:2000],
                   implicated=implicated_by_error(message))
     return result
+
+
+_PROGRESS_MIN_GAP_S = 0.5
+
+
+def try_isf_stages(*, progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+                   **kwargs: Any) -> Dict[str, Any]:
+    """:func:`try_isf` for a killable child: stage names become ``{"stage", "elapsed_s"}``
+    progress dicts (``elapsed_s`` = seconds in the current stage; repeats of the same
+    stage are throttled)."""
+    state = {"stage": None, "since": 0.0, "last": 0.0}
+
+    def on_stage(stage: str) -> None:
+        now = time.monotonic()
+        if stage != state["stage"]:
+            state.update(stage=stage, since=now, last=now)
+        elif now - state["last"] < _PROGRESS_MIN_GAP_S:
+            return
+        state["last"] = now
+        if progress is not None:
+            progress({"stage": stage, "elapsed_s": now - state["since"]})
+    return try_isf(on_stage=on_stage, **kwargs)

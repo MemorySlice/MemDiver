@@ -157,6 +157,10 @@ def test_cancelled_try_records_nothing(tmp_path, monkeypatch):
         state["ran"] = True
         return {"verdict": "pass", "stage": "done", "implicated": []}
     monkeypatch.setattr("memdiver.isf.tryloop.try_isf", fake_try)
+    # With ``cancel`` the try runs in a spawned child (``run_killable``), which cannot see
+    # this in-process fake; stand in for the child so the parent-side checks are exercised.
+    monkeypatch.setattr("memdiver.engine.killable.run_killable",
+                        lambda target, kwargs, **_: fake_try(**kwargs))
     with pytest.raises(CapabilityError) as err:   # cancelled only once the run finished
         T.isf_try_result(str(image), case_dir="c1", draft="d",
                          cancel=lambda: state["ran"])

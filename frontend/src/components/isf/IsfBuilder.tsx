@@ -30,9 +30,12 @@ export function IsfBuilder() {
   const viewPath = isMdview(activePath) ? activePath : "";
   const { view } = useViewContext(viewPath, null);
   const [typedImage, setTypedImage] = useState("");
-  const imagePath = (storedImage || typedImage).trim();
+  // The active image view's own facts come first: its image and capture are the truth
+  // for that view; the image store / probe / typed path are only the fallback.
+  const viewImage = (view?.image_path ?? "").trim();
+  const imagePath = (viewImage || storedImage || typedImage).trim();
   // The backend resolves a path to its sha256 too, so a path is a valid capture id.
-  const captureId = view?.capture_id ?? probeSha ?? imagePath;
+  const captureId = view?.capture_id ?? view?.image_sha256 ?? probeSha ?? imagePath;
   const draftRef: DraftRef | null = caseDir.trim() && captureId ? { caseDir: caseDir.trim(), captureId } : null;
 
   const [drafts, setDrafts] = useState<DraftSummaryRow[]>([]);
@@ -102,7 +105,7 @@ export function IsfBuilder() {
           <button type="button" className={buttonClass} data-testid="isf-case-load"
             onClick={commitCaseDir}>{t("caseDirLoad")}</button>
         </span></label>
-      {storedImage === "" && (
+      {viewImage === "" && storedImage === "" && (
         <label className="block space-y-0.5"><span className="md-text-secondary">{t("imagePath")}</span>
           <input type="text" value={typedImage} className={inputClass} data-testid="isf-image-path"
             onChange={(e) => setTypedImage(e.target.value)} /></label>

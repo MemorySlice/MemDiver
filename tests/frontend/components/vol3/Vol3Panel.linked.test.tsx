@@ -5,6 +5,7 @@ import "@/i18n";
 
 import { stubVirtualizerLayout } from "../../helpers/virtualizer";
 import type { Vol3Column, Vol3RunResult } from "@/api/vol3";
+import { invalidateImageViewFacts } from "@/hooks/useImageViewFacts";
 import { useAppStore } from "@/stores/app-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -60,6 +61,7 @@ const setCase = (dir: string) => fireEvent.change(screen.getByTestId("vol3-case-
 beforeEach(() => {
   stubVirtualizerLayout(900, 240);
   [...Object.values(api), ...Object.values(client), ...Object.values(rec)].forEach((m) => m.mockReset());
+  invalidateImageViewFacts(); // the view facts are cached per path across tests
   useDumpStore.getState().clearAll();
   useImageStore.getState().reset();
   useSelectionStore.getState().clear();

@@ -5,6 +5,7 @@ import "@/i18n";
 
 import { stubVirtualizerLayout } from "../../helpers/virtualizer";
 import type { Vol3RunResult } from "@/api/vol3";
+import { invalidateImageViewFacts } from "@/hooks/useImageViewFacts";
 import { useAppStore } from "@/stores/app-store";
 import { useDumpStore } from "@/stores/dump-store";
 import { useHexStore } from "@/stores/hex-store";
@@ -77,6 +78,7 @@ beforeEach(() => {
   [...Object.values(api), ...Object.values(client)].forEach((m) => m.mockReset());
   ws.calls.length = 0;
   vi.mocked(applyAnnotations).mockClear();
+  invalidateImageViewFacts(); // the view facts are cached per path across tests
   useDumpStore.getState().clearAll();
   useImageStore.getState().reset();
   useHexStore.setState({

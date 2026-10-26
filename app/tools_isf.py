@@ -119,12 +119,29 @@ def _sample(rows: Sequence[Any], limit: int) -> Tuple[List[Any], bool]:
     return list(rows[:limit]), len(rows) > limit
 
 
+class _Timings(Dict[str, float]):
+    """Stage timings that can also announce each stage as it starts and ends.
+
+    ``on_stage(name, elapsed_s, done)`` is optional; plain ``dict`` timings (the
+    draft producers) keep working with :func:`_timed`.
+    """
+
+    def __init__(self, on_stage: Optional[Callable[[str, float, bool], None]] = None) -> None:
+        super().__init__()
+        self.on_stage = on_stage
+
+
 def _timed(timings: Dict[str, float], name: str, fn: Callable[[], Any]) -> Any:
+    hook = getattr(timings, "on_stage", None)
     start = time.perf_counter()
+    if hook is not None:
+        hook(name, 0.0, False)
     try:
         return fn()
     finally:
         timings[name] = round(time.perf_counter() - start, 3)
+        if hook is not None:
+            hook(name, timings[name], True)
 
 
 # -- probe session ------------------------------------------------------------
@@ -136,12 +153,13 @@ _SELF_TEST_ARCHES: Tuple[str, ...] = ("x86_64", "aarch64")
 class _Session:
     """One open dump plus the lazily computed anchors several probes share."""
 
-    def __init__(self, image: Path, arch: str, params: Mapping[str, Any]) -> None:
+    def __init__(self, image: Path, arch: str, params: Mapping[str, Any], *,
+                 on_stage: Optional[Callable[[str, float, bool], None]] = None) -> None:
         from pakunoda import probes
         self.probes = probes
         self.image, self.params = image, params
         self.capture = file_sha256(image)
-        self.timings: Dict[str, float] = {}
+        self.timings: Dict[str, float] = _Timings(on_stage)
         self.warnings: List[str] = []
         self.dump = _timed(self.timings, "open", lambda: probes.open_dump(image))
         self._banner: Any = False
@@ -524,9 +542,11 @@ def _load_hint_isf(params: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     return _read_isf_file(path) if path else None
 
 
-def _feed_draft(probe: str, built: Dict[str, Any], s: _Session, store: IsfDraftStore,
-                draft: str, author: str) -> Dict[str, Any]:
-    cap, evidence = s.capture, (f"image sha256 {s.capture}", f"probe {probe}")
+def _feed_draft(probe: str, built: Dict[str, Any], capture: str, params: Mapping[str, Any],
+                store: IsfDraftStore, draft: str, author: str) -> Dict[str, Any]:
+    """Feed a probe's ``built`` rows into ``draft``; needs only the capture id and params,
+    so it works on data returned by a killable child as well as on a live session."""
+    cap, evidence = capture, (f"image sha256 {capture}", f"probe {probe}")
     if probe in ("kallsyms", "vmcoreinfo"):
         prov = Provenance(probe, "probe", evidence, author)
         entry = store.import_symbols(cap, draft, built["_symbols"], prov)
@@ -536,7 +556,7 @@ def _feed_draft(probe: str, built: Dict[str, Any], s: _Session, store: IsfDraftS
         isf = {k: v for k, v in built["_isf"].items() if k in SECTIONS}
         entry = store.import_isf(cap, draft, isf, prov)
         return {"draft": draft, "entries": [entry.id], "counts": built["counts"]}
-    hints = _hint_types(store, cap, draft, _load_hint_isf(s.params))
+    hints = _hint_types(store, cap, draft, _load_hint_isf(params))
     entries = store.import_layout_claims(cap, draft, built["_claims"],
                                          type_hints=hints, author=author)
     return {"draft": draft, "entries": [e.id for e in entries], "claims": len(entries),
@@ -559,7 +579,8 @@ def isf_probe_result(image_path: str, probe: str, *, arch: str = "auto",
                      params: Optional[Mapping[str, Any]] = None,
                      case_dir: Optional[str] = None, draft: Optional[str] = None,
                      author: str = DEFAULT_AUTHOR,
-                     cancel: Optional[Callable[[], bool]] = None) -> ServiceResult:
+                     cancel: Optional[Callable[[], bool]] = None,
+                     progress: Optional[Callable[[str, float], None]] = None) -> ServiceResult:
     """Run one pakunoda ``probe`` on a full image; optionally feed it into a draft.
 
     Payload: ``probe``, ``arch`` (+ ``arch_source``), ``capture_id``, ``rows``
@@ -567,8 +588,10 @@ def isf_probe_result(image_path: str, probe: str, *, arch: str = "auto",
     ``warnings`` and, when fed, ``imported``. ``params``: ``limit`` (sample rows,
     default 200), ``va_bits``, ``page_size``, ``type_hints_isf`` (donor ISF whose
     field types label layout claims). ``case_dir`` and ``draft`` go together.
-    ``cancel()`` is polled between stages and right before the draft is fed; a cancel
-    raises ``CapabilityError(code="cancelled")`` and feeds nothing.
+    With ``cancel`` the builder stage runs in a killable child process, so a cancel stops
+    it mid-stage; ``cancel()`` is also checked right before the draft is fed. A cancel
+    raises ``CapabilityError(code="cancelled")`` and feeds nothing. ``progress(stage,
+    elapsed_s)`` is called as each timed stage starts and ends.
     """
     if probe not in PROBES:
         raise _invalid(f"unknown probe {probe!r}; choose one of: {', '.join(PROBES)}",
@@ -586,22 +609,64 @@ def isf_probe_result(image_path: str, probe: str, *, arch: str = "auto",
     store = _store(case_dir) if case_dir else None
     if store is not None and draft and (not arch or arch == "auto"):
         arch = _draft_arch(store, file_sha256(image), draft) or arch
-    session = _Session(image, arch, params)
+    stage = _run_probe_stage(image, probe, arch, params, limit, cancel, progress)
+    _check_cancel(cancel)
+    built, capture = stage["built"], stage["capture"]
+    imported = (_feed_draft(probe, built, capture, params, store, draft, author)
+                if store else None)
+    payload = {"probe": probe, "image": str(image), "capture_id": capture,
+               "arch": stage["arch_name"], "arch_source": stage["arch_source"],
+               **{k: v for k, v in built.items() if not k.startswith("_")},
+               "limit": limit, "timings": stage["timings"], "warnings": stage["warnings"]}
+    payload.setdefault("truncated", False)
+    if imported is not None:
+        payload["imported"] = imported
+    return ServiceResult.ok(payload)
+
+
+def _stage_bridge(progress: Optional[Callable[[str, float], None]]
+                  ) -> Optional[Callable[[Dict[str, Any]], None]]:
+    """``progress(stage, elapsed_s)`` -> the ``dict`` callback a stage / killable child uses."""
+    if progress is None:
+        return None
+    return lambda info: progress(info["stage"], info["elapsed_s"])
+
+
+def _probe_stage(image: str, probe: str, arch: str, params: Mapping[str, Any], limit: int,
+                 progress: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+    """The builder stage: open the image, run ``_BUILDERS[probe]``, return all the parent needs.
+
+    Module-level and picklable-in/out so it runs either in-process or in a killable
+    child (:func:`~memdiver.engine.killable.run_killable`). ``progress`` receives
+    ``{"stage", "elapsed_s", "done"}`` as each timed stage starts and ends.
+    """
+    def on_stage(name: str, elapsed: float, done: bool) -> None:
+        progress({"stage": name, "elapsed_s": elapsed, "done": done})
+    hook = on_stage if progress is not None else None
+    session = _Session(Path(image), arch, params, **({"on_stage": hook} if hook else {}))
     try:
         built = _BUILDERS[probe](session, limit)
-        _check_cancel(cancel)
-        imported = _feed_draft(probe, built, session, store, draft, author) if store else None
-        payload = {"probe": probe, "image": str(image), "capture_id": session.capture,
-                   "arch": session.arch_name, "arch_source": session.arch_source,
-                   **{k: v for k, v in built.items() if not k.startswith("_")},
-                   "limit": limit, "timings": dict(session.timings),
-                   "warnings": list(session.warnings)}
-        payload.setdefault("truncated", False)
-        if imported is not None:
-            payload["imported"] = imported
-        return ServiceResult.ok(payload)
+        return {"built": built, "capture": session.capture, "arch_name": session.arch_name,
+                "arch_source": session.arch_source, "timings": dict(session.timings),
+                "warnings": list(session.warnings)}
     finally:
         session.close()
+
+
+def _run_probe_stage(image: Path, probe: str, arch: str, params: Mapping[str, Any], limit: int,
+                     cancel: Optional[Callable[[], bool]],
+                     progress: Optional[Callable[[str, float], None]]) -> Dict[str, Any]:
+    """Run :func:`_probe_stage` in-process, or - when a ``cancel`` is given - in a killable
+    child so a cancel stops a stage that never polls (kallsyms scan, vol3 stacking)."""
+    bridge = _stage_bridge(progress)
+    if cancel is None:
+        return _probe_stage(str(image), probe, arch, params, limit, bridge)
+    from memdiver.engine.killable import run_killable
+    return run_killable(
+        "memdiver.app.tools_isf:_probe_stage",
+        {"image": str(image), "probe": probe, "arch": arch, "params": dict(params),
+         "limit": limit},
+        cancel=cancel, on_progress=bridge)
 
 
 # -- draft producers ------------------------------------------------------------
@@ -938,25 +1003,40 @@ def isf_draft_export_result(case_dir: str, capture_id: str, name: str, *,
 ISF_TRY_KIND = "isf_try"
 
 
+def _run_try(image: Path, target: Path, cancel: Optional[Callable[[], bool]],
+             progress: Optional[Callable[[str, float], None]],
+             **kwargs: Any) -> Dict[str, Any]:
+    """``try_isf`` in-process, or - when a ``cancel`` is given - in a killable child."""
+    from memdiver.isf.tryloop import try_isf
+    if cancel is None:
+        return try_isf(image, target, **kwargs)
+    from memdiver.engine.killable import run_killable
+    return run_killable("memdiver.isf.tryloop:try_isf_stages",
+                        {"image_path": image, "isf_path": target, **kwargs},
+                        cancel=cancel, on_progress=_stage_bridge(progress))
+
+
 def isf_try_result(image_path: str, *, case_dir: Optional[str] = None,
                    draft: Optional[str] = None, version: Optional[str] = None,
                    isf_path: Optional[str] = None, plugin: str = "linux.pslist",
                    ground_truth: Optional[str] = None, timeout_s: float = 120.0,
                    min_recall: float = 0.95, min_precision: float = 0.95,
                    author: str = "agent",
-                   cancel: Optional[Callable[[], bool]] = None) -> ServiceResult:
+                   cancel: Optional[Callable[[], bool]] = None,
+                   progress: Optional[Callable[[str, float], None]] = None) -> ServiceResult:
     """Try a draft (``case_dir`` + ``draft`` [+ ``version``]) or an ISF file on the image (T4.4).
 
     The outcome (verdict, comparison, implicated entries) is returned and, for a
     draft, appended to the analysis record as an ``isf_try`` entry supported by
     the draft version and the ground-truth file, so the workbench keeps the
-    history of what was tried and why it failed. ``cancel()`` is polled between stages and
-    right before the record append; a cancel raises ``CapabilityError(code="cancelled")``
+    history of what was tried and why it failed. With ``cancel`` the try runs in a killable
+    child process (a cancel stops it mid-stage) and ``cancel()`` is checked again right
+    before the record append; ``progress(stage, elapsed_s)`` reports build / run / compare.
+    A cancel raises ``CapabilityError(code="cancelled")``
     and records nothing.
     """
     from memdiver.analysis.record import AnalysisEntry, Support
     from memdiver.analysis.record_store import AnalysisRecord
-    from memdiver.isf.tryloop import try_isf
     image = _image_file(image_path)
     if (draft is None) == (isf_path is None):
         raise _invalid("pass exactly one of draft (with case_dir) or isf_path",
@@ -975,8 +1055,9 @@ def isf_try_result(image_path: str, *, case_dir: Optional[str] = None,
     else:
         target, state_id = Path(str(isf_path)).expanduser(), None
     _check_cancel(cancel)
-    outcome = try_isf(image, target, plugin=plugin, ground_truth=truth, timeout_s=timeout_s,
-                      min_recall=min_recall, min_precision=min_precision, capture_id=capture)
+    outcome = _run_try(image, target, cancel, progress, plugin=plugin, ground_truth=truth,
+                       timeout_s=timeout_s, min_recall=min_recall, min_precision=min_precision,
+                       capture_id=capture)
     outcome.update(draft=draft, version=version, state_id=state_id, capture_id=capture)
     _check_cancel(cancel)
     if draft is not None and case_dir:

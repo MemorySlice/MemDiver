@@ -74,8 +74,8 @@ memdiver case context-at --case ./case \
 memdiver image probe alma-9.lime
 memdiver image profile alma-9.lime
 memdiver image open alma-9.lime --view process --pid 22176 --case ./case
-memdiver image processes ./case/views/alma-9.process.pid22176.mdview
-memdiver image extract ./case/views/alma-9.process.pid22176.mdview --out sshd.msl
+memdiver image processes ./case/views/alma-9.process.pid22176.isf-<sha8>.mdview
+memdiver image extract ./case/views/alma-9.process.pid22176.isf-<sha8>.mdview --out sshd.msl
 ```
 
 ## YARA rule editor
@@ -179,7 +179,7 @@ beyond that (or with `async`); the MCP server always runs inline.
 
 ```bash
 memdiver vol3 list
-memdiver vol3 run --view ./case/views/alma-9.kernel.mdview --plugin linux.pslist --case ./case
+memdiver vol3 run --view ./case/views/alma-9.kernel.isf-<sha8>.mdview --plugin linux.pslist --case ./case
 memdiver vol3 run --view p.mdview --plugin linux.psscan --arg pid=[1,2] --case ./case
 memdiver vol3 query --case ./case --saved hidden_processes
 memdiver vol3 scaffold my_plugin > scaffold.json

@@ -63,11 +63,38 @@ def _vma_regions(vmas: Sequence[Any], layer_runs: Sequence[Any]) -> List[_RawReg
     return regions
 
 
+def _profile_block(descriptor: ViewDescriptor) -> Optional[Dict[str, Any]]:
+    """The profile's origin, sha256 and ISF FILE NAME (never its full path)."""
+    ref = descriptor.profile
+    if ref is None:
+        return None
+    return {"origin": ref.origin, "sha256": ref.sha256, "isf_name": Path(ref.isf).name}
+
+
+def _paging_block(descriptor: ViewDescriptor) -> Optional[Dict[str, Any]]:
+    spec = descriptor.paging
+    if spec is None:
+        return None
+    return {"pgd_phys": spec.pgd_phys, "arch": spec.arch,
+            "va_bits": spec.va_bits, "page_size": spec.page_size}
+
+
 def view_block(descriptor: ViewDescriptor, path: "str | Path") -> Dict[str, Any]:
     """The active view of an ``.mdview``: ``kind``, descriptor ``pid`` (or ``None``),
-    ``capture_id`` and ``view_path`` — so a UI knows the view's pid without a pid argument."""
+    ``capture_id`` and ``view_path`` — so a UI knows the view's pid without a pid argument.
+
+    The view's other facts ride along so one request answers "what can this view
+    do": ``has_profile``, ``profile`` (origin / sha256 / ISF file name, or ``None``;
+    ``to_dict()`` omits it when absent, this block always carries the key),
+    ``paging`` (manual paging spec or ``None``), and the resolved ``image_path``
+    with its ``image_sha256``."""
     return {"kind": descriptor.view.value, "pid": descriptor.pid,
-            "capture_id": descriptor.capture_id, "view_path": str(path)}
+            "capture_id": descriptor.capture_id, "view_path": str(path),
+            "has_profile": descriptor.profile is not None,
+            "profile": _profile_block(descriptor),
+            "paging": _paging_block(descriptor),
+            "image_path": str(descriptor.image_path(Path(path))),
+            "image_sha256": descriptor.image_sha256}
 
 
 def _payload(kind: ViewKind, regions: List[Any],

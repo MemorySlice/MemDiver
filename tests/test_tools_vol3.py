@@ -186,7 +186,11 @@ def test_run_payload_carries_the_active_view(env):
                                             profile=ProfileRef("p.json"))
     env["result"] = _pslist_result([[KVA, 77, "x"]])
     view = tv.vol3_run_result(env["view"], "linux.pslist").payload["view"]
-    assert view == {"kind": "process", "pid": 77, "capture_id": SHA, "view_path": env["view"]}
+    assert {k: view[k] for k in ("kind", "pid", "capture_id", "view_path")} == {
+        "kind": "process", "pid": 77, "capture_id": SHA, "view_path": env["view"]}
+    # additive view facts (app.image_preview.view_block)
+    assert view["has_profile"] is True and view["image_sha256"] == SHA
+    assert view["profile"]["isf_name"] == "p.json" and view["paging"] is None
 
 
 def test_run_payload_view_pid_is_null_for_a_kernel_view(env):

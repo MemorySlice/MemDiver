@@ -60,7 +60,7 @@ class FakeSession:
     capture = CAP
     arch_name, arch_source = "x86_64", "banner_string"
 
-    def __init__(self, image, arch, params):
+    def __init__(self, image, arch, params, on_stage=None):
         self.params, self.timings, self.warnings = params, {"open": 0.0}, []
         self.syms = {f"sym{i}": 0xFFFFFFFF81000000 + i * 16 for i in range(10)}
 
@@ -265,8 +265,19 @@ def test_rest_probe_and_try_submit_image_jobs_when_async(image, client, manager,
     assert manager.submitted[-1][1]["args"]["draft"] == "d"
 
 
-def test_image_job_runner_runs_the_isf_probe(image, tmp_path):
+def _in_process_killable(target, kwargs, *, cancel, on_progress=None, **_):
+    """Stand-in for ``run_killable`` so this file's in-process fakes stay visible (a real
+    spawned child re-imports pakunoda and never sees them); ``tests/test_killable.py`` and
+    the gated real tests cover the real child."""
+    import importlib
+    module, _, name = target.partition(":")
+    return getattr(importlib.import_module(module), name)(
+        **kwargs, **({"progress": on_progress} if on_progress else {}))
+
+
+def test_image_job_runner_runs_the_isf_probe(image, tmp_path, monkeypatch):
     from memdiver.app.pipeline.image_task_runner import JOBS, run_image_job
+    monkeypatch.setattr("memdiver.engine.killable.run_killable", _in_process_killable)
     assert "isf_probe" in JOBS and "isf_try" in JOBS
     events = []
     ctx = SimpleNamespace(emit=lambda kind, **kw: events.append(kind), is_cancelled=lambda: False)
