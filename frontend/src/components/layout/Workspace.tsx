@@ -84,6 +84,7 @@ import { Vol3Panel } from "@/components/vol3/Vol3Panel";
 import { KeyFindersPanel } from "@/components/keyfinders/KeyFindersPanel";
 import { YaraPanel } from "@/components/yara/YaraPanel";
 import { IsfBuilder } from "@/components/isf/IsfBuilder";
+import { ObjectModelPanel } from "@/components/semantic/ObjectModelPanel";
 import { useKeyFinderStore } from "@/stores/keyfinder-store";
 import { isMdview } from "@/components/image/open-view-in-workspace";
 import { useImageStore } from "@/stores/image-store";
@@ -157,7 +158,7 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara" | "isf";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara" | "isf" | "object";
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
 
 const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
@@ -178,7 +179,7 @@ function Sidebar() {
   const baseTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
   const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const, "isf" as const] : baseTabs;
   // Key finders scan any open dump, so the tab follows the dump, not the image.
-  const sideTabs = activeViewPath ? [...withImage, "keyfinders" as const, "yara" as const] : withImage;
+  const sideTabs = activeViewPath ? [...withImage, "keyfinders" as const, "yara" as const, "object" as const] : withImage;
   // Entering heap mode opens its overview; leaving it drops a tab that no
   // longer exists. Adjusted during render, guarded by the last mode seen.
   const [prevMode, setPrevMode] = useState(mode);
@@ -194,7 +195,7 @@ function Sidebar() {
     if (imagePath) setSideTab("image");
   }
   if ((sideTab === "image" || sideTab === "vol3" || sideTab === "isf") && !showImageTab) setSideTab("bookmarks");
-  if ((sideTab === "keyfinders" || sideTab === "yara") && !activeViewPath) setSideTab("bookmarks");
+  if ((sideTab === "keyfinders" || sideTab === "yara" || sideTab === "object") && !activeViewPath) setSideTab("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";
   const { bookmarks, addBookmark, removeBookmarkEntry, jumpToBookmark, multiView } = useHexStore(
@@ -310,6 +311,7 @@ function Sidebar() {
         {sideTab === "keyfinders" && <KeyFindersPanel />}
         {sideTab === "yara" && <YaraPanel />}
         {sideTab === "isf" && <IsfBuilder />}
+        {sideTab === "object" && <ObjectModelPanel />}
       </div>
     </div>
   );

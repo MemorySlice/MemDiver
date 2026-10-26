@@ -76,6 +76,54 @@ def add_allocator_argument(parser: argparse.ArgumentParser) -> None:
              "(default: auto-detect; 'off' disables heap analysis)")
 
 
+def add_mixed_ok_argument(parser: argparse.ArgumentParser) -> None:
+    """Register ``--mixed-ok`` (allow dumps from several experiment cohorts)."""
+    parser.add_argument(
+        "--mixed-ok", action="store_true",
+        help="Allow dumps whose meta.json declare different experiment "
+             "cohorts in one build (refused with code cohort.mixed otherwise)")
+
+
+def add_keylog_anchor_arguments(parser: argparse.ArgumentParser, *,
+                                shared_only: bool = False) -> None:
+    """Register the key-log anchor flags (``--keylog`` and friends).
+
+    ``shared_only`` (model-validate) omits the per-dump and anchor-selection
+    flags: held-out scoring only needs one shared key log.
+    """
+    parser.add_argument(
+        "--keylog", metavar="PATH",
+        help="NSS key log (SSLKEYLOGFILE) shared by all dumps; each dump is "
+             "matched to the session whose secret it contains")
+    if shared_only:
+        return
+    parser.add_argument(
+        "--keylog-per-dump", metavar="JSON",
+        help="One key log per dump: inline JSON or a JSON file "
+             "{dump_path: keylog_path}")
+    parser.add_argument(
+        "--anchor-label", metavar="LABEL",
+        help="NSS label whose secret anchors each dump (default: "
+             "CLIENT_TRAFFIC_SECRET_0, else CLIENT_RANDOM's master secret)")
+    parser.add_argument(
+        "--related-labels", nargs="+", metavar="LABEL",
+        help="Other labels of the session to locate (default: all of them)")
+
+
+def keylog_spec_from_args(args: argparse.Namespace):
+    """The ``keylog`` producer input from ``--keylog`` / ``--keylog-per-dump``."""
+    shared = getattr(args, "keylog", None)
+    per_dump = getattr(args, "keylog_per_dump", None)
+    if shared and per_dump:
+        raise ValueError("pass --keylog or --keylog-per-dump, not both")
+    if shared:
+        return {"path": shared}
+    if per_dump:
+        raw = per_dump if per_dump.lstrip().startswith("{") else Path(per_dump).read_text()
+        return {"per_dump": json.loads(raw)}
+    return None
+
+
 def add_heap_policy_argument(parser: argparse.ArgumentParser) -> None:
     """Register ``--heap-policy`` (how candidates treat allocator metadata)."""
     parser.add_argument(

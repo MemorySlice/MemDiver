@@ -462,6 +462,35 @@ def run_over_file(
     )
 
 
+def run_rows_over_buffer(
+    source: str,
+    data: bytes,
+    *,
+    extra_config: Optional[Mapping[str, Any]] = None,
+    module_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Run an emitted plugin over *data* and return its rows as dicts.
+
+    Keys are the plugin's own column names; ``format_hints.Hex`` cells become
+    plain ``int``. Used for plugins whose columns differ from the byte-pattern
+    template's (the structure-model plugin).
+    """
+    _require_volatility3()
+    plugin_cls = load_plugin_class(source, module_name or _default_module_name(source))
+    context = vol3_contexts.Context()
+    layer = vol3_physical.BufferDataLayer(
+        context, "base", FLAT_LAYER_NAME, bytes(data),
+    )
+    context.add_layer(layer)
+    grid = _run_plugin(plugin_cls, context, FLAT_LAYER_NAME, extra_config=extra_config)
+    names = [column.name for column in grid.columns]
+    return [
+        {name: int(cell) if isinstance(cell, int) and not isinstance(cell, bool) else cell
+         for name, cell in zip(names, row)}
+        for row in _rows(grid)
+    ]
+
+
 def verify_key_recovered(source: str, data: bytes, key: bytes) -> bool:
     """Did the emitted plugin report *key* verbatim among its hits?
 

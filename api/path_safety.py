@@ -25,6 +25,19 @@ def ensure_within(base: Path, candidate: Path) -> Path:
     return cand_resolved
 
 
+def write_denial_detail(field: str, candidate: str | Path, roots: list[Path],
+                        example_name: str = "output", where: str = "") -> str:
+    """Actionable text for a refused WRITE path: the path, the allowed write
+    locations (resolved) and a concrete example under the first of them."""
+    resolved = [Path(r).resolve() for r in roots]
+    listed = ", ".join(str(r) for r in resolved) or "(none configured)"
+    example = f"{resolved[0] / example_name}" if resolved else example_name
+    return (
+        f"{field} {str(candidate)!r} escapes the locations the server may write to. "
+        f"Allowed write locations{f' ({where})' if where else ''}: {listed}. Example of an accepted path: {example}"
+    )
+
+
 def safe_filename(base: Path, name: str, suffix: str = "") -> Path:
     """Resolve ``name + suffix`` as a direct child *file* of *base*.
 

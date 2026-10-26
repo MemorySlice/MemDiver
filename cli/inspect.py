@@ -230,6 +230,22 @@ def _cmd_inspect_xref(args: argparse.Namespace) -> int:
     return _emit_inspect(machine_payload, args.output)
 
 
+def _cmd_xref_pointers(args: argparse.Namespace) -> int:
+    """Who points here; the sibling of ``POST /api/inspect/xref/pointers``."""
+    from memdiver.app.tools_xref import xref_pointers_result
+    from memdiver.core.service_errors import CapabilityError
+    try:
+        result = xref_pointers_result(
+            _new_tool_session(), dump_path=args.dump_path, target_va=args.target,
+            span_before=args.before, span_after=args.after,
+            word_size=args.word_size, alignment=args.alignment,
+            max_refs=args.max_refs, exclude_target=args.exclude_target)
+    except CapabilityError as exc:
+        print(f"memdiver: {exc}", file=sys.stderr)
+        return 1
+    return _emit_inspect(result.payload, args.output)
+
+
 def _cmd_inspect_structure(args: argparse.Namespace) -> int:
     """Identify a data structure at the given offset."""
     from memdiver.mcp_server.tools_xref import identify_structure_result

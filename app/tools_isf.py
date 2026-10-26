@@ -17,11 +17,15 @@ Honesty rules:
 * **Big outputs say so.** kallsyms (100k symbols), BTF (10k types) and layout
   claims return counts plus a ``limit``-row sample with ``truncated`` set; the
   draft import always receives the complete set.
-* **init_task is derived, not trusted.** ``probes.find_init_task`` can be off by
-  kilobytes (measured: 2240 bytes on arista), which makes the layout legs crash.
-  With kallsyms available the physical address is ``init_task`` VA minus the
-  banner's VA->phys delta; the probe's value is only reported as a hint, with
-  the disagreement.
+* **init_task is verified, not guessed.** The base comes from pakunoda's
+  ``probes.find_init_task``, given the kallsyms runtime symbols and the swept
+  vmcoreinfo note, and is trusted only when it reports ``verified`` (page-table
+  walk or exact self-reference agreement). The older banner-delta derivation
+  (``init_task`` VA minus the banner's VA->phys delta) can land on a stale,
+  never-booted kernel copy; it is kept only as the labelled, always-unverified
+  ``banner_delta`` fallback and as a disagreement witness. The layout legs
+  REFUSE an unverified base (``isf.init_task_unverified``); ``init_task`` still
+  reports it, with a warning.
 """
 
 from __future__ import annotations
@@ -148,6 +152,14 @@ def _timed(timings: Dict[str, float], name: str, fn: Callable[[], Any]) -> Any:
 
 #: Architectures the paging self-test tries, in order.
 _SELF_TEST_ARCHES: Tuple[str, ...] = ("x86_64", "aarch64")
+#: Alternative init_task bases an anchor lists (best first).
+_MAX_CANDIDATES = 8
+
+
+def _candidate_row(candidate: Any) -> Dict[str, Any]:
+    return {"phys": candidate.phys, "va": candidate.va, "score": candidate.score,
+            "source": candidate.source, "checks": list(candidate.checks),
+            "trusted": candidate.trusted}
 
 
 class _Session:
@@ -164,6 +176,8 @@ class _Session:
         self.dump = _timed(self.timings, "open", lambda: probes.open_dump(image))
         self._banner: Any = False
         self._kallsyms: Any = False
+        self._init_task: Any = False
+        self._init_task_view: Optional[Dict[str, Any]] = None
         try:
             self.arch_name, self.arch_source = self._resolve_arch(arch)
             self.arch = probes.resolve_arch(self.arch_name)
@@ -288,22 +302,55 @@ class _Session:
                                 if self.banner() else "")
         return match.group(0) if match else None
 
+    def init_task_result(self) -> Any:
+        """pakunoda's ``InitTaskResult`` (or ``None``), computed ONCE per session.
+
+        Fed the kallsyms runtime VAs and the once-swept vmcoreinfo note so it can
+        place ``init_task`` by symbol and verify it, instead of guessing.
+        """
+        if self._init_task is False:
+            self._init_task = _timed(self.timings, "init_task_probe", lambda: self.probes.find_init_task(
+                self.dump, self.arch_name, runtime_symbols=self.symbols() or None,
+                vmcoreinfo=self._scan_vmcoreinfo_once()))
+        return self._init_task
+
     def init_task(self) -> Dict[str, Any]:
-        """``{va, phys, source, probe, disagreement}``; derived from kallsyms when it can be."""
-        probe = _timed(self.timings, "init_task_probe",
-                       lambda: self.probes.find_init_task(self.dump, self.arch_name))
-        hint = ({"va": probe.va, "phys": probe.phys} if probe else None)
+        """The init_task anchor every row shares.
+
+        Keys: ``va``/``phys``/``source``/``verified``/``checks``/``va_to_pa_delta``
+        come from pakunoda's result; ``candidates`` are its alternatives (plain
+        dicts, at most :data:`_MAX_CANDIDATES`); ``probe`` is pakunoda's raw
+        ``{va, phys}`` (``None`` when it found nothing); ``banner_delta`` is the
+        old derivation as an UNVERIFIED fallback (or ``None``); ``disagreement``
+        compares pakunoda's phys with ``banner_delta``'s when both exist and differ.
+        When pakunoda finds nothing, ``banner_delta`` supplies va/phys with
+        ``source="banner_delta"`` and ``verified=False``.
+        """
+        if self._init_task_view is None:
+            self._init_task_view = self._build_init_task_view()
+        return self._init_task_view
+
+    def _build_init_task_view(self) -> Dict[str, Any]:
+        found = self.init_task_result()
         derived = self._derive_init_task_phys()
-        out: Dict[str, Any] = {"probe": hint, "disagreement": None}
-        if derived is not None:
-            out.update(va=self.symbols()["init_task"], phys=derived, source="kallsyms")
-            if hint and hint["phys"] != derived:
-                out["disagreement"] = {"probe_phys": hint["phys"], "derived_phys": derived,
-                                       "delta": hint["phys"] - derived}
-        elif hint:
-            out.update(va=hint["va"], phys=hint["phys"], source="probe")
-        else:
-            out.update(va=None, phys=None, source=None)
+        fallback = (None if derived is None else {
+            "phys": derived, "va": self.symbols()["init_task"],
+            "source": "banner_delta", "verified": False})
+        out: Dict[str, Any] = {
+            "va": None, "phys": None, "source": None, "verified": False, "checks": [],
+            "va_to_pa_delta": None, "candidates": [], "probe": None,
+            "banner_delta": fallback, "disagreement": None}
+        if found is not None:
+            out.update(
+                va=found.va, phys=found.phys, source=found.source,
+                verified=bool(found.verified), checks=list(found.checks),
+                va_to_pa_delta=found.va_to_pa_delta, probe={"va": found.va, "phys": found.phys},
+                candidates=[_candidate_row(c) for c in found.candidates[:_MAX_CANDIDATES]])
+            if fallback and fallback["phys"] != found.phys:
+                out["disagreement"] = {"probe_phys": found.phys, "derived_phys": fallback["phys"],
+                                       "delta": found.phys - fallback["phys"]}
+        elif fallback:
+            out.update(va=fallback["va"], phys=fallback["phys"], source="banner_delta")
         return out
 
     def _derive_init_task_phys(self) -> Optional[int]:
@@ -404,18 +451,25 @@ def _row_init_task(s: _Session, limit: int) -> Dict[str, Any]:
     found = s.init_task()
     row = dict(found, va=_hex(found["va"]),
                probe=None if found["probe"] is None
-               else dict(found["probe"], va=_hex(found["probe"]["va"])))
+               else dict(found["probe"], va=_hex(found["probe"]["va"])),
+               candidates=[dict(c, va=_hex(c["va"])) for c in found.get("candidates") or []],
+               banner_delta=None if found.get("banner_delta") is None
+               else dict(found["banner_delta"], va=_hex(found["banner_delta"]["va"])))
     if found["phys"] is not None:
         row["location"] = _loc(AddressSpace.PHYSICAL, found["phys"], s.capture)
         row["va_location"] = _loc(AddressSpace.KERNEL_VA, found["va"], s.capture)
     if found["disagreement"]:
-        s.warnings.append("find_init_task probe disagrees with the kallsyms-derived address "
-                          f"by {found['disagreement']['delta']} bytes; the derived value is used")
+        s.warnings.append("find_init_task disagrees with the banner-delta derivation by "
+                          f"{found['disagreement']['delta']} bytes; the banner delta is "
+                          "unverified and is not used")
+    if found["phys"] is not None and not found.get("verified", False):
+        s.warnings.append(f"init_task base (source={found['source']}) is UNVERIFIED and will "
+                          "not be used by the layout legs")
     return {"rows": [row], "counts": {"init_task": int(found["phys"] is not None)}}
 
 
 def _row_page_table_root(s: _Session, limit: int) -> Dict[str, Any]:
-    it = _timed(s.timings, "init_task_probe", lambda: s.probes.find_init_task(s.dump, s.arch_name))
+    it = s.init_task_result()
     paging = _timed(s.timings, "page_table_root",
                     lambda: s.probes.find_page_table_root(s.dump, s.arch_name, it))
     if paging is None:
@@ -481,6 +535,14 @@ def _run_legs(s: _Session) -> Tuple[Any, Dict[str, Any]]:
     if anchor["phys"] is None:
         raise CapabilityError("init_task could not be located",
                               category=ErrorCategory.PRECONDITION, code="isf.init_task_required")
+    if not anchor.get("verified", False):
+        top = "; ".join(f"phys=0x{c['phys']:x} source={c['source']} score={c['score']}"
+                        for c in anchor.get("candidates", [])[:3]) or "none"
+        raise CapabilityError(
+            f"init_task base 0x{anchor['phys']:x} is unverified (source={anchor['source']}, "
+            f"checks={anchor.get('checks') or []}); top candidates: {top}. Walking task_struct "
+            "fields from an unverified base yields plausible wrong layouts",
+            category=ErrorCategory.PRECONDITION, code="isf.init_task_unverified")
     reads, report = _timed(s.timings, "image_reads", lambda: image_reads_for(
         s.dump, s.arch, symbols, anchor["phys"]))
     if reads is None:

@@ -500,6 +500,7 @@ def _run_nsweep(
     artifact_dir: Path,
     artifacts: List[Dict[str, Any]],
     region_filter: Optional[str] = None,
+    mixed_ok: bool = False,
 ) -> Dict[str, Any]:
     """Run the N-sweep harness and persist report.{json,md,html}.
 
@@ -551,6 +552,7 @@ def _run_nsweep(
         on_progress=_producer_sink(ctx),
         is_cancelled=ctx.is_cancelled,
         region_filter=region_filter,
+        mixed_ok=mixed_ok,
     )
     # Register in the same order the pre-refactor write_nsweep_artifacts dict
     # yielded (json, html, md); the filenames are fixed by the writer.
@@ -797,6 +799,9 @@ class PipelineState:
     # Memory-guard override (params key ``force_memory``) forwarded to the
     # budget-gated consensus stage as ``force=``.
     force_memory: bool = False
+    # Cohort-mix override (params key ``mixed_ok``) forwarded to the consensus
+    # and n-sweep stages; unset, a multi-cohort source set is refused.
+    mixed_ok: bool = False
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
     # Opt-in escalation (floor-free fall-through when brute-force finds no hit).
@@ -875,6 +880,7 @@ def _stage_consensus(state: "PipelineState") -> None:
         is_cancelled=state.ctx.is_cancelled,
         region_filter=state.region_filter,
         force=state.force_memory,
+        mixed_ok=state.mixed_ok,
     )
     register_artifact(
         state.artifacts, state.artifact_dir,
@@ -944,6 +950,7 @@ def _stage_nsweep(state: "PipelineState") -> None:
         artifact_dir=state.artifact_dir,
         artifacts=state.artifacts,
         region_filter=state.region_filter,
+        mixed_ok=state.mixed_ok,
     )
 
 
@@ -1259,6 +1266,7 @@ def run_pipeline(params: Dict[str, Any], ctx) -> Dict[str, Any]:
         source_paths=source_paths,
         region_filter=params.get("region_filter"),
         force_memory=bool(params.get("force_memory", False)),
+        mixed_ok=bool(params.get("mixed_ok", False)),
         reduce_kwargs=reduce_kwargs,
         oracle_path=oracle_path,
         oracle_config=oracle_config,

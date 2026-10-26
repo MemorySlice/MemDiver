@@ -70,6 +70,17 @@ def _add_probe_and_try(actions, limit_default: int) -> None:
     run.add_argument("--author", default="agent")
 
 
+def _add_code_evidence(actions) -> None:
+    ce = actions.add_parser("code-evidence", parents=[_output_parser()],
+                            help="Struct fields a kernel function touches (code evidence)")
+    ce.add_argument("image", metavar="IMAGE")
+    ce.add_argument("function", metavar="FUNCTION", help="kallsyms name or 0x VA")
+    ce.add_argument("--arch")
+    ce.add_argument("--max-bytes", type=int, default=4096)
+    ce.add_argument("--isf", help="ISF JSON to join `current` accesses against")
+    ce.add_argument("--base", help="Keep one symbolic base, e.g. current")
+
+
 def _add_provenance(p: argparse.ArgumentParser, source: str, tier: str) -> None:
     p.add_argument("--source", default=source)
     p.add_argument("--tier", default=tier)
@@ -127,6 +138,7 @@ def add_isf_parser(sub) -> None:
     group = sub.add_parser("isf", help="ISF workbench: probe an image, edit drafts, try them")
     actions = group.add_subparsers(dest="isf_action")
     _add_probe_and_try(actions, DEFAULT_LIMIT)
+    _add_code_evidence(actions)
     _add_draft_group(actions, DEFAULT_LIMIT)
 
 
@@ -149,6 +161,14 @@ def _cmd_try(args: argparse.Namespace) -> int:
         isf_path=args.isf_path, plugin=args.plugin, ground_truth=args.ground_truth,
         timeout_s=args.timeout_s, min_recall=args.min_recall,
         min_precision=args.min_precision, author=args.author))
+
+
+def _cmd_code_evidence(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_code_evidence import code_evidence_result
+    return _emit(args, code_evidence_result(
+        image_path=args.image, function=args.function, arch=args.arch,
+        max_bytes=args.max_bytes, base=args.base,
+        params={"isf": args.isf} if args.isf else None))
 
 
 def _draft_handlers() -> Dict[str, Callable[[argparse.Namespace], Any]]:
@@ -194,6 +214,7 @@ def _cmd_draft(args: argparse.Namespace) -> int:
 
 _ISF_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "probe": _cmd_probe, "try": _cmd_try, "draft": _cmd_draft,
+    "code-evidence": _cmd_code_evidence,
 }
 
 

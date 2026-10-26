@@ -88,7 +88,7 @@ def create_server():
     # result lands in the model's context window.
     MCP_CASE_QUERY_LIMIT = 200
     from memdiver.app import (
-        tools_annotations, tools_case, tools_detector_fixtures, tools_disasm, tools_heap, tools_image,
+        tools_annotations, tools_case, tools_code_evidence, tools_detector_fixtures, tools_disasm, tools_heap, tools_image,
         tools_isf, tools_keyfinders, tools_strings,
         tools_yara, tools_yara_rules, tools_vol3, tools_vol3_dev, tools_vol3_fixtures, tools_vol3_sources,
     )
@@ -111,6 +111,8 @@ def create_server():
     )
     from memdiver.heap.analyze import DEFAULT_MAX_CHUNKS as HEAP_DEFAULT_MAX_CHUNKS
 
+    from memdiver.app import tools_semantic
+
     from . import tools, tools_inspect, tools_pipeline, tools_xref
     from .presenters import mcp_error_funnel, present_inspect_mcp_call
 
@@ -120,6 +122,18 @@ def create_server():
         version=__version__,
     )
     _session = build_tool_session()
+
+    # ONE central read-sandbox hook (policy ON only; see mcp_server/path_guard.py):
+    # every tool registered below has its path arguments checked against
+    # MEMDIVER_ALLOWED_ROOTS exactly as the REST API does. Policy OFF: no-op.
+    from .path_guard import guard_tool
+
+    _register_tool = mcp.add_tool
+
+    def _add_guarded_tool(fn, *a, **k):
+        return _register_tool(guard_tool(fn, _session), *a, **k)
+
+    mcp.add_tool = _add_guarded_tool
 
     def _session_region_filter(region_filter: Optional[str]) -> Optional[str]:
         """Explicit ``region_filter`` wins (``"all"`` = none); else the session's."""
@@ -776,6 +790,22 @@ def create_server():
         return json.dumps(present_inspect_mcp_call(
             lambda: tools_isf.isf_probe_result(
                 image_path, probe, arch=arch, params=params, case_dir=case_dir, draft=draft)))
+
+    @mcp.tool()
+    def code_evidence(image_path: str, function: str, arch: Optional[str] = None,
+                      max_bytes: int = 4096, isf: Optional[str] = None,
+                      base: Optional[str] = None) -> str:
+        """Decode which struct fields a kernel function touches (code evidence).
+
+        Resolves ``function`` (a kallsyms name or ``0x`` VA) in a FULL kernel image, decodes
+        its body and returns one ``kernel_va`` ``Location`` per ``current``/deref access.
+        ``isf`` joins ``current`` accesses against that ISF's task_struct members;
+        ``base`` keeps one symbolic base (e.g. ``current``). Runs inline (~35 s session setup).
+        """
+        return json.dumps(present_inspect_mcp_call(
+            lambda: tools_code_evidence.code_evidence_result(
+                image_path=image_path, function=function, arch=arch, max_bytes=max_bytes,
+                base=base, params={"isf": isf} if isf else None)))
 
     @mcp.tool()
     def isf_draft_create(case_dir: str, capture_id: str, name: str, arch: str,
@@ -1689,8 +1719,13 @@ def create_server():
         region_filter: Optional[str] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
+        mixed_ok: bool = False,
     ) -> str:
         """Run the N-scaling harness and emit the Plotly survivor report.
+
+        ``mixed_ok`` allows dumps from different experiment cohorts (declared
+        in each run's ``meta.json``); by default such a mix is refused with
+        code ``cohort.mixed``. The result echoes the single ``cohort``.
 
         Supply exactly one oracle source, the same pair ``brute_force`` takes:
         ``oracle_path`` (a BYO decryption oracle script) or ``pcap_path`` (a
@@ -1738,6 +1773,7 @@ def create_server():
             key_file=key_file,
             passphrase=passphrase,
             kem_key_file=kem_key_file,
+            mixed_ok=mixed_ok,
         ))
 
     @mcp.tool()
@@ -1858,8 +1894,18 @@ def create_server():
         kem_key_file: Optional[str] = None,
         force_memory: bool = False,
         allocator: str = "auto",
+        mixed_ok: bool = False,
+        group_by: Optional[str] = None,
     ) -> str:
         """Build a per-byte consensus variance vector; writes variance.npy.
+
+        ``mixed_ok`` allows dumps from different experiment cohorts (declared
+        in each run's ``meta.json``); by default such a mix is refused with
+        code ``cohort.mixed``. The result echoes the single ``cohort``.
+
+        ``group_by="cohort"`` builds one consensus per cohort (under
+        ``output_dir/<cohort>``) and returns ``{"cohorts": [...], "skipped":
+        [...]}`` instead of one result.
 
         Originates the MCP pipeline: the returned ``variance_path`` +
         ``num_dumps`` + ``reference_path`` feed straight into ``search_reduce``.
@@ -1884,6 +1930,7 @@ def create_server():
             region_filter=_session_region_filter(region_filter),
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
             force=force_memory, allocator=allocator,
+            mixed_ok=mixed_ok, group_by=group_by,
         ))
 
     @mcp.tool()
@@ -1902,8 +1949,13 @@ def create_server():
         key_material_by_path: Optional[dict] = None,
         force_memory: bool = False,
         allocator: str = "auto",
+        mixed_ok: bool = False,
     ) -> str:
         """Read ONE window in EVERY dump at the address the consensus aligned.
+
+        ``mixed_ok`` allows dumps from different experiment cohorts (declared
+        in each run's ``meta.json``); by default such a mix is refused with
+        code ``cohort.mixed``. The result echoes the single ``cohort``.
 
         The agent-facing form of the N-dump differential view. Every returned
         ``dumps[d].bytes`` is already in WINDOW coordinates — byte ``i`` of
@@ -1939,7 +1991,7 @@ def create_server():
             include_bytes=include_bytes,
             region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
-            force=force_memory, allocator=allocator,
+            force=force_memory, allocator=allocator, mixed_ok=mixed_ok,
         ).payload)
 
     @mcp.tool()
@@ -1960,8 +2012,13 @@ def create_server():
         key_material_by_path: Optional[dict] = None,
         force_memory: bool = False,
         allocator: str = "auto",
+        mixed_ok: bool = False,
     ) -> str:
         """List EVERY occurrence of a consensus class, paginated and jumpable.
+
+        ``mixed_ok`` allows dumps from different experiment cohorts (declared
+        in each run's ``meta.json``); by default such a mix is refused with
+        code ``cohort.mixed``. The result echoes the single ``cohort``.
 
         The complement of ``aligned_window``: that tool answers "what is at
         this offset in all N dumps", this one answers "where are all the
@@ -2015,8 +2072,228 @@ def create_server():
             include_anchor_offsets=include_anchor_offsets, normalize=normalize,
             region_filter=_session_region_filter(region_filter),
             key_material_by_path=_resolve_key_material_by_path(key_material_by_path),
-            force=force_memory, allocator=allocator,
+            force=force_memory, allocator=allocator, mixed_ok=mixed_ok,
         ).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def anchor_consensus(
+        anchors: Optional[List[Dict[str, Any]]] = None,
+        needles: Optional[Dict[str, str]] = None,
+        occurrence: int = 0,
+        delta_start: int = -256,
+        length: int = 768,
+        min_instances: Optional[int] = None,
+        include_bytes: bool = False,
+        mixed_ok: bool = False,
+        dump_paths: Optional[List[str]] = None,
+        keylog: Optional[Dict[str, Any]] = None,
+        anchor_label: Optional[str] = None,
+        related_labels: Optional[List[str]] = None,
+    ) -> str:
+        """Consensus keyed by DELTA from each dump's own anchor (e.g. the key).
+
+        Key-log mode (instead of typing per-dump hex): pass ``dump_paths`` and
+        ``keylog`` = ``{"path": shared NSS key log}`` | ``{"text": content}`` |
+        ``{"per_dump": {dump_path: keylog_path}}``. Each dump is anchored on the
+        session whose ``anchor_label`` secret occurs in it (default
+        ``CLIENT_TRAFFIC_SECRET_0``, else the TLS 1.2 ``CLIENT_RANDOM`` master
+        secret); ``related_labels`` defaults to the session's other labels.
+        The result adds ``keylog_resolution`` and ``suggested_meanings``.
+
+        ``mixed_ok`` allows dumps from different experiment cohorts (declared
+        in each run's ``meta.json``); by default such a mix is refused with
+        code ``cohort.mixed``. The result echoes the single ``cohort``.
+
+        Flat consensus compares the same address in every dump, which is wrong
+        around heap objects the allocator placed differently per run. Here each
+        dump contributes ``[anchor+delta_start, +length)`` around ITS OWN anchor.
+
+        Pass exactly one of ``anchors`` (``[{"dump_path", "va"}]``, or
+        ``{"dump_path", "offset"}`` for raw files) or ``needles``
+        (``{dump_path: hex}``; every occurrence is an alternative and
+        ``occurrence`` picks the k-th per dump). Dumps lacking that occurrence
+        are listed under ``unanchored``; ``alternatives`` counts occurrences.
+        Bytes a dump never captured are never zeros: a delta captured in fewer
+        than ``min_instances`` (default: all) is ``undetermined``.
+        ``include_bytes`` adds per-delta ``classes`` and ``reference_hex``
+        (anchor 0's window; uncaptured bytes are ``??``).
+        """
+        return json.dumps(tools_consensus.anchor_consensus_result(
+            _session, anchors=anchors, needles=needles, occurrence=occurrence,
+            delta_start=delta_start, length=length, min_instances=min_instances,
+            include_bytes=include_bytes, mixed_ok=mixed_ok, dump_paths=dump_paths,
+            keylog=keylog, anchor_label=anchor_label, related_labels=related_labels,
+        ).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def xref_pointers(
+        dump_path: str, target_va: int, span_before: int = 0,
+        span_after: int = 1, word_size: int = 8, alignment: int = 8,
+        max_refs: int = 1000, exclude_target: bool = False,
+    ) -> str:
+        """Who points here: captured words holding a pointer into a target.
+
+        Target interval is ``[target_va - span_before, target_va + span_after)``
+        in a VA-bearing dump (.msl / core; a raw dump is an ``xref.no_va_view``
+        error). Each ref carries ``holder_va``, ``value``, ``target_delta`` (the
+        field offset it points at) and ``holder_region``. ``coverage`` states
+        ``uncaptured_gap_bytes`` -- memory never captured is NOT scanned, not
+        "no pointers"; ``truncated`` means ``max_refs`` cut the list short.
+        """
+        return json.dumps(tools_xref.xref_pointers_result(
+            _session, dump_path=dump_path, target_va=target_va,
+            span_before=span_before, span_after=span_after,
+            word_size=word_size, alignment=alignment, max_refs=max_refs,
+            exclude_target=exclude_target).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def propose_layout(
+        needles: Optional[Dict[str, str]] = None,
+        anchors: Optional[List[Dict[str, Any]]] = None,
+        occurrence: int = 0,
+        delta_start: int = -2048,
+        length: int = 6144,
+        anchor_length: Optional[int] = None,
+        related: Optional[Dict[str, Dict[str, str]]] = None,
+        pointer_quorum: Optional[int] = None,
+        heap: bool = True,
+        mixed_ok: bool = False,
+        case_dir: Optional[str] = None,
+        dump_paths: Optional[List[str]] = None,
+        keylog: Optional[Dict[str, Any]] = None,
+        anchor_label: Optional[str] = None,
+        related_labels: Optional[List[str]] = None,
+    ) -> str:
+        """Propose field boundaries around a verified anchor, learned from N dumps.
+
+        Key-log mode (instead of typing per-dump hex): pass ``dump_paths`` and
+        ``keylog`` = ``{"path": shared NSS key log}`` | ``{"text": content}`` |
+        ``{"per_dump": {dump_path: keylog_path}}``. Each dump is anchored on the
+        session whose ``anchor_label`` secret occurs in it (default
+        ``CLIENT_TRAFFIC_SECRET_0``, else the TLS 1.2 ``CLIENT_RANDOM`` master
+        secret); ``related_labels`` defaults to the session's other labels.
+        The result adds ``keylog_resolution`` and ``suggested_meanings``.
+
+        Anchors resolve exactly as in ``anchor_consensus`` (exactly one of
+        ``needles`` ``{dump_path: hex}`` or ``anchors``). ``anchor_length``
+        defaults to the needle length (required with anchors). ``related`` is
+        ``{name: {dump_path: hex}}``: other verified values (e.g. client_random)
+        expected at one constant delta; ``heap`` proposes object bounds from the
+        allocator chunk. Returns the ``fields`` (delta, length, kind, evidence,
+        alternatives), ``base_delta``/``total_size``, a ``structure`` and
+        ``class_counts``. With ``case_dir`` one ``structure_proposal`` record
+        entry per capture is appended (ids in ``record_entries``).
+        """
+        return json.dumps(tools_semantic.propose_layout_result(
+            _session, needles=needles, anchors=anchors, occurrence=occurrence,
+            delta_start=delta_start, length=length, anchor_length=anchor_length,
+            related=related, pointer_quorum=pointer_quorum, heap=heap,
+            mixed_ok=mixed_ok, case_dir=case_dir, dump_paths=dump_paths,
+            keylog=keylog, anchor_label=anchor_label,
+            related_labels=related_labels).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def artifact_model_build(
+        name: str,
+        out_path: str,
+        needles: Optional[Dict[str, str]] = None,
+        anchors: Optional[List[Dict[str, Any]]] = None,
+        meanings: Optional[List[Dict[str, Any]]] = None,
+        relationships: Optional[List[Dict[str, Any]]] = None,
+        applicability: Optional[Dict[str, Any]] = None,
+        occurrence: int = 0,
+        delta_start: int = -2048,
+        length: int = 6144,
+        anchor_length: Optional[int] = None,
+        related: Optional[Dict[str, Dict[str, str]]] = None,
+        pointer_quorum: Optional[int] = None,
+        heap: bool = True,
+        prefilter_length: int = 64,
+        mixed_ok: bool = False,
+        case_dir: Optional[str] = None,
+        dump_paths: Optional[List[str]] = None,
+        keylog: Optional[Dict[str, Any]] = None,
+        anchor_label: Optional[str] = None,
+        related_labels: Optional[List[str]] = None,
+    ) -> str:
+        """Learn a layout (see ``propose_layout``) and build the artifact model.
+
+        Keylog-driven with ``meanings`` / ``relationships`` omitted, they
+        default from the key log: the anchor and each related secret labelled
+        with its NSS label, ``client_random`` unlabelled, each secret
+        ``owned_by`` ``client_random`` (only fields actually found).
+
+        ``meanings`` is ``[{field, meaning, label, support: [{kind, ref}]}]``,
+        ``relationships`` ``[{kind, source, target}]`` (kind owned_by /
+        same_object / pointer); both must name PROPOSED fields, else the call is
+        refused (INVALID_INPUT, e.g. "names an unproposed field").
+        ``applicability`` is ``{library, library_version, arch, os, states,
+        cohorts}``. The model JSON is written to ``out_path`` (a NEW ``.json``
+        file, never overwritten); returns the model, ``path`` and ``sha256``.
+        """
+        return json.dumps(tools_semantic.artifact_model_build_result(
+            _session, needles=needles, anchors=anchors, occurrence=occurrence,
+            delta_start=delta_start, length=length, anchor_length=anchor_length,
+            related=related, pointer_quorum=pointer_quorum, heap=heap,
+            mixed_ok=mixed_ok, case_dir=case_dir, name=name,
+            meanings=meanings or [], relationships=relationships or [],
+            applicability=applicability, prefilter_length=prefilter_length,
+            out_path=out_path, dump_paths=dump_paths, keylog=keylog,
+            anchor_label=anchor_label, related_labels=related_labels).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def artifact_model_export(
+        model_path: str,
+        out_path: str,
+        plugin_name: Optional[str] = None,
+    ) -> str:
+        """Export an artifact model (JSON) as a Volatility3 plugin.
+
+        The model must load and pass ``check()`` (else INVALID_INPUT listing the
+        problems). The plugin is written to ``out_path`` (a NEW ``.py`` file,
+        never overwritten); returns ``path``, ``sha256``, ``locator_kind``,
+        ``class_name`` and ``bytes``. Volatility3 is not needed to export.
+        """
+        return json.dumps(tools_semantic.artifact_model_export_result(
+            _session, model_path=model_path, out_path=out_path,
+            plugin_name=plugin_name).payload)
+
+    @mcp.tool()
+    @mcp_error_funnel
+    def artifact_model_validate(
+        model_path: str,
+        held_out: List[Dict[str, Any]],
+        labels: Optional[List[str]] = None,
+        plugin_path: Optional[str] = None,
+        out_path: Optional[str] = None,
+        min_run: int = 64,
+        keylog: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Validate a model's plugin on held-out captures against ground truth.
+
+        ``keylog`` (``{"path"}`` | ``{"text"}``, one shared NSS key log) gives
+        the expected values of captures naming neither ``keylog_path`` nor
+        ``expected``: only sessions whose client_random occurs in the capture
+        count, and a capture with none is ``indeterminate``.
+
+        ``held_out`` is ``[{dump_path, keylog_path}]`` (NSS keylog file) or
+        ``[{dump_path, expected: [{label, owner_hex, value_hex}]}]`` -- exactly
+        one per capture. A dump the model was learned on is refused
+        (``semantic.held_out_leak``). ``labels`` defaults to the model's
+        labelled assertions. Returns per-capture results, ``totals``
+        (expected/tp/fp/fn/relationships) and a ``verdict``. ``out_path`` (a NEW
+        ``.json``) receives the model with its validation recorded. Needs the
+        volatility3 extra.
+        """
+        return json.dumps(tools_semantic.artifact_model_validate_result(
+            _session, model_path=model_path, held_out=held_out, labels=labels,
+            plugin_path=plugin_path, out_path=out_path, min_run=min_run,
+            keylog=keylog).payload)
 
     @mcp.tool()
     @mcp_error_funnel

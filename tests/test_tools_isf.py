@@ -525,3 +525,94 @@ def test_probe_stage_returns_everything_the_parent_needs(tiny_image):
     stage = T._probe_stage(tiny_image, "banner", "x86_64", {}, 5)
     assert set(stage) == {"built", "capture", "arch_name", "arch_source", "timings", "warnings"}
     assert stage["arch_name"] == "x86_64" and len(stage["capture"]) == 64
+
+
+# -- init_task: verified anchor, refusal of unverified bases -----------------------
+
+def _anchor_session(found, *, symbols=None, banner_offset=0x2000000, find_calls=None):
+    """A bare _Session whose probes return ``found`` (a real InitTaskResult or None)."""
+    pytest.importorskip("pakunoda")
+    calls = find_calls if find_calls is not None else []
+    probes = SimpleNamespace(
+        find_init_task=lambda dump, arch, **kw: calls.append(kw) or found,
+        find_page_table_root=lambda dump, arch, it: SimpleNamespace(
+            pgd_phys=0x1000, levels=4, va_bits=48, page_size=4096, source="t",
+            la57_source=None, verified=True, init_task=it),
+        scan_vmcoreinfo=lambda dump, arch: ["NOTE"], resolve_arch=lambda name: name)
+    s = object.__new__(T._Session)
+    s.probes, s.dump, s.arch_name, s.capture = probes, object(), "x86_64", "c" * 64
+    s.timings, s.warnings, s.params = {}, [], {}
+    s._init_task, s._init_task_view = False, None
+    s._kallsyms = SimpleNamespace(metadata={"symbols": symbols if symbols is not None else {
+        "init_task": 0xFFFFFFFF82000000, "linux_banner": 0xFFFFFFFF81000000}})
+    s._banner = SimpleNamespace(offset=banner_offset, metadata={})
+    return s, calls
+
+
+def _result(*, verified, phys=0x3000000, source="kallsyms", checks=("page_table_maps",)):
+    from pakunoda.init_task import InitTaskCandidate, InitTaskResult
+    cand = InitTaskCandidate(phys=phys, va=0xFFFFFFFF82000000, score=9.0, source=source,
+                             checks=tuple(checks), trusted=verified)
+    return InitTaskResult(va=0xFFFFFFFF82000000, phys=phys, va_to_pa_delta=0xFFFFFFFF7F000000,
+                          source=source, verified=verified, checks=tuple(checks),
+                          candidates=(cand,))
+
+
+def test_init_task_uses_pakunoda_verified_result_with_symbols_and_note():
+    s, calls = _anchor_session(_result(verified=True))
+    a = s.init_task()
+    assert (a["phys"], a["source"], a["verified"]) == (0x3000000, "kallsyms", True)
+    assert a["checks"] == ["page_table_maps"] and a["candidates"][0]["trusted"] is True
+    assert a["probe"] == {"va": 0xFFFFFFFF82000000, "phys": 0x3000000}
+    assert calls[0]["runtime_symbols"]["init_task"] == 0xFFFFFFFF82000000
+    assert calls[0]["vmcoreinfo"] == "NOTE"
+    # banner delta stays a labelled, unverified witness (0x1000000 + 0x2000000 = 0x3000000)
+    assert a["banner_delta"]["verified"] is False and a["disagreement"] is None
+
+
+def test_init_task_disagreement_against_banner_delta():
+    s, _ = _anchor_session(_result(verified=True, phys=0x5000000))
+    a = s.init_task()
+    assert a["phys"] == 0x5000000 and a["banner_delta"]["phys"] == 0x3000000
+    assert a["disagreement"] == {"probe_phys": 0x5000000, "derived_phys": 0x3000000,
+                                 "delta": 0x2000000}
+
+
+def test_run_legs_refuses_unverified_base():
+    s, _ = _anchor_session(_result(verified=False, source="ranked", checks=("comm",)))
+    with pytest.raises(CapabilityError) as exc:
+        T._run_legs(s)
+    assert exc.value.code == "isf.init_task_unverified"
+    assert "ranked" in str(exc.value) and "comm" in str(exc.value) and "0x3000000" in str(exc.value)
+
+
+def test_none_with_banner_delta_is_unverified_and_refused():
+    s, _ = _anchor_session(None)
+    a = s.init_task()
+    assert (a["phys"], a["source"], a["verified"]) == (0x3000000, "banner_delta", False)
+    assert a["probe"] is None and a["disagreement"] is None
+    with pytest.raises(CapabilityError) as exc:
+        T._run_legs(s)
+    assert exc.value.code == "isf.init_task_unverified"
+
+
+def test_run_legs_without_any_anchor_keeps_required_code():
+    s, _ = _anchor_session(None, symbols={"init_task": 1})
+    with pytest.raises(CapabilityError) as exc:
+        T._run_legs(s)
+    assert exc.value.code == "isf.init_task_required"
+
+
+def test_init_task_row_warns_unverified():
+    s, _ = _anchor_session(_result(verified=False, source="ranked"))
+    row = T._row_init_task(s, 10)["rows"][0]
+    assert row["verified"] is False and row["va"] == "0xffffffff82000000"
+    assert any("UNVERIFIED" in w for w in s.warnings)
+
+
+def test_page_table_root_reuses_memoized_init_task():
+    found = _result(verified=True)
+    s, calls = _anchor_session(found)
+    s.init_task()
+    row = T._row_page_table_root(s, 10)
+    assert len(calls) == 1 and row["counts"]["page_table_root"] == 1

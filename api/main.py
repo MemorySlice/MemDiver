@@ -248,6 +248,7 @@ def create_app() -> FastAPI:
         pcaps,
         pipeline,
         scan,
+        semantic,
         sessions,
         settings as settings_router,
         structures,
@@ -310,6 +311,10 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         isf.router, prefix="/api/isf", tags=["isf"],
+        dependencies=_read_path_policy,
+    )
+    app.include_router(
+        semantic.router, prefix="/api/semantic", tags=["semantic"],
         dependencies=_read_path_policy,
     )
     app.include_router(

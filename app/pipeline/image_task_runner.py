@@ -20,7 +20,8 @@ from typing import Any, Dict
 from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
 
 STAGE = "image"
-JOBS = ("profile", "open_view", "extract_process", "case_export", "isf_probe", "isf_try")
+JOBS = ("profile", "open_view", "extract_process", "case_export", "isf_probe", "isf_try",
+        "code_evidence")
 
 
 def _pakunoda_progress(ctx):
@@ -41,8 +42,9 @@ def _job_controls(job: str, ctx) -> Dict[str, Any]:
 
 
 def _call_producer(job: str, args: Dict[str, Any], **controls: Any) -> Dict[str, Any]:
-    from memdiver.app import tools_case, tools_image, tools_isf
-    producers = {"profile": tools_image.image_profile_result,
+    from memdiver.app import tools_case, tools_code_evidence, tools_image, tools_isf
+    producers = {"code_evidence": tools_code_evidence.code_evidence_result,
+"profile": tools_image.image_profile_result,
                  "open_view": tools_image.image_open_view_result,
                  "extract_process": tools_image.image_extract_process_result,
                  "case_export": tools_case.case_export_result,

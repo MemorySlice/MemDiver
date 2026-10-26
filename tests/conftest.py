@@ -291,3 +291,19 @@ def _isolate_user_structures(tmp_path_factory, monkeypatch):
     structure_library._library = None
     yield
     structure_library._library = None
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_without_implicit_temp_root(monkeypatch):
+    """Keep the opt-in read sandbox's implicit system-temp root out of tests.
+
+    With ``MEMDIVER_ALLOWED_ROOTS`` set the sandbox also admits the system temp
+    dir; every test's ``tmp_path`` lives there, which would make a "path outside
+    the sandbox" fixture inside ``tmp_path`` admitted. Tests of the temp-root
+    behaviour itself restore ``path_sandbox.temp_roots`` (see
+    tests/test_path_sandbox_and_messages.py).
+    """
+    from memdiver.core import path_sandbox
+
+    monkeypatch.setattr(path_sandbox, "temp_roots", lambda: [])
+    yield

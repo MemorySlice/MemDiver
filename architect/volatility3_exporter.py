@@ -6,6 +6,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
+from .artifact_model import ArtifactModel, structure_base_delta
 from .yara_exporter import YaraExporter, key_locator_from_pattern
 
 logger = logging.getLogger("memdiver.architect.volatility3_exporter")
@@ -376,6 +377,379 @@ class $class_name(interfaces.plugins.PluginInterface):
         return self._grid(layer_name)
 ''')
 
+_STRUCTURE_TEMPLATE = Template('''\
+"""MemDiver Volatility3 plugin (structure model): $plugin_name
+$description
+Generated: $timestamp | Prefilter: $pattern_name ($pattern_length bytes)
+
+What it does
+------------
+A short invariant prefilter window finds CANDIDATE object instances; for each
+candidate the plugin decodes the model's fields at their fixed deltas from the
+object base (``base = hit + BASE_DELTA``) and reports one row per ASSERTION
+(what a field means, its label, its value, and the owner it belongs to).
+``MODEL`` below is the complete artifact model this plugin was emitted from.
+
+Memory-access contract
+----------------------
+Fields at fixed deltas are decoded ONLY when the scanned layer is virtually
+contiguous: a process/VA layer (``--pid``), the configured translation layer
+(``--virtual``), or a VA-materialized buffer (``--contiguous``). On any other
+layer (a flat file/physical layer, where neighbouring virtual pages are not
+neighbouring file offsets, and a file offset is not a physical page) only
+fields lying ENTIRELY inside the prefilter's matched window
+``[hit, hit + PATTERN_LENGTH)`` are decoded -- the match itself proved those
+bytes adjacent in that layer. Every other field gets Status ``not_contiguous``
+-- it is never guessed. A read that fails gives Status ``unreadable`` -- never zeros.
+
+A hit whose anchor field is unreadable or violates its constraints is a
+prefilter false positive and is skipped entirely.
+
+Status: ok | unreadable | not_contiguous | constraint_failed. A row whose field
+is fine but whose OWNER field is not carries the owner's status.
+
+Scan target
+-----------
+By DEFAULT this plugin scans the LOWEST layer beneath the configured
+``primary`` (the file/physical layer; offsets are FILE offsets). Pass
+``--virtual`` to scan the configured translation layer instead.
+
+--pid
+-----
+``--pid`` needs a kernel module (kernel image + matching symbols). When it
+cannot be honoured this plugin logs a LOUD warning and scans the whole layer
+anyway -- it never silently pretends results are restricted to that process.
+"""
+import importlib
+import logging
+import re
+import struct
+from typing import List
+from volatility3.framework import exceptions, interfaces, renderers
+from volatility3.framework.configuration import requirements
+from volatility3.framework.layers import scanners
+# Explicit submodule import: ``renderers`` is a package that does not bind
+# ``format_hints`` by itself (see the byte-pattern template).
+from volatility3.framework.renderers import format_hints
+
+vollog = logging.getLogger(__name__)
+
+PATTERN_LENGTH = $pattern_length
+PATTERN_NAME = "$pattern_name"
+KEY_OFFSET = $key_offset
+SCAN_REGEX = $scan_regex_repr
+ANCHOR_FIELD = $anchor_repr
+#: Structure base minus the prefilter hit (window start).
+BASE_DELTA = $base_delta
+#: field -> (offset in structure, size, constraints)
+FIELDS = $fields_repr
+FIELD_TYPES = $field_types_repr
+#: (field, meaning, label), one output row each
+ASSERTIONS = $assertions_repr
+#: owned field -> the field identifying its owner object
+OWNERS = $owners_repr
+MODEL = $model_repr
+
+STATUS_OK = "ok"
+STATUS_UNREADABLE = "unreadable"
+STATUS_NOT_CONTIGUOUS = "not_contiguous"
+STATUS_CONSTRAINT_FAILED = "constraint_failed"
+
+_COLUMNS = [
+    ("StructOffset", format_hints.Hex),
+    ("Field", str),
+    ("Meaning", str),
+    ("Label", str),
+    ("ValueHex", str),
+    ("OwnerField", str),
+    ("OwnerHex", str),
+    ("Status", str),
+    ("PatternOffset", format_hints.Hex),
+]
+
+_INT_FORMATS = {
+    "uint8": "B", "uint16_le": "<H", "uint16_be": ">H", "uint32_le": "<I",
+    "uint32_be": ">I", "uint64_le": "<Q", "uint64_be": ">Q", "pointer": "<Q",
+}
+
+_OS_BRANCHES = (
+    ("volatility3.plugins.linux.pslist", "list_tasks", "LinuxMetadata"),
+    ("volatility3.plugins.windows.pslist", "list_processes", "WindowsMetadata"),
+)
+
+
+def _decode(field_type, raw):
+    fmt = _INT_FORMATS.get(field_type)
+    if fmt is not None and struct.calcsize(fmt) == len(raw):
+        return struct.unpack(fmt, raw)[0]
+    if fmt is not None:
+        return int.from_bytes(raw, "little")
+    if field_type == "utf8_string":
+        return raw.rstrip(bytes(1)).decode("utf-8", errors="replace")
+    return raw
+
+
+def _equals(value, expected):
+    if isinstance(value, (bytes, bytearray)) and isinstance(expected, str):
+        try:
+            return bytes(value) == bytes.fromhex(expected)
+        except ValueError:
+            return False
+    return value == expected
+
+
+def _check_constraints(value, constraints):
+    """Same rules as memdiver.core.structure_defs._check_constraints."""
+    if value is None:
+        return False
+    for key, expected in constraints.items():
+        if key == "min":
+            if not isinstance(value, (int, float)) or value < expected:
+                return False
+        if key == "max":
+            if not isinstance(value, (int, float)) or value > expected:
+                return False
+        if key == "equals" and not _equals(value, expected):
+            return False
+        if key == "not_zero" and expected:
+            if isinstance(value, (bytes, bytearray)):
+                if not any(value):
+                    return False
+            elif value == 0:
+                return False
+        if key == "byte_equals" and isinstance(value, (bytes, bytearray)):
+            for off_str, expected_byte in expected.items():
+                idx = int(off_str)
+                if idx >= len(value) or value[idx] != expected_byte:
+                    return False
+        if key == "byte_in" and isinstance(value, (bytes, bytearray)):
+            for off_str, allowed in expected.items():
+                idx = int(off_str)
+                if idx >= len(value) or value[idx] not in allowed:
+                    return False
+    return True
+
+
+def _value_hex(value):
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    if isinstance(value, str):
+        return value.encode("utf-8").hex()
+    return hex(value)
+
+
+def _in_matched_window(hit, address, size):
+    """True when the field lies wholly inside ``[hit, hit + PATTERN_LENGTH)``."""
+    return hit <= address and address + size <= hit + PATTERN_LENGTH
+
+
+class $class_name(interfaces.plugins.PluginInterface):
+    """Decode MemDiver structure model: $pattern_name."""
+    _required_framework_version = (2, 0, 0)
+    _version = (2, 0, 0)
+
+    @classmethod
+    def get_requirements(cls) -> List[interfaces.configuration.RequirementInterface]:
+        return [
+            requirements.TranslationLayerRequirement(
+                name="primary", description="Memory layer", optional=False),
+            requirements.SymbolTableRequirement(
+                name="symbols", description="OS kernel symbols", optional=True),
+            # OPTIONAL is load-bearing: see the byte-pattern template.
+            requirements.ModuleRequirement(
+                name="kernel", description="OS kernel module (required for --pid)",
+                architectures=["Intel32", "Intel64"], optional=True),
+            requirements.IntRequirement(
+                name="pid", description="Target process PID",
+                optional=True, default=None),
+            requirements.BooleanRequirement(
+                name="full_scan",
+                description="Scan full memory instead of PID-filtered",
+                optional=True, default=False),
+            requirements.BooleanRequirement(
+                name="virtual",
+                description=("Scan the configured translation layer instead of "
+                             "the underlying physical/file layer"),
+                optional=True, default=False),
+            requirements.BooleanRequirement(
+                name="contiguous",
+                description=("The scanned layer is virtually contiguous (a "
+                             "process/VA layer or a VA-materialized buffer)"),
+                optional=True, default=False),
+        ]
+
+    def _scan_layer_name(self) -> str:
+        """The layer this plugin actually scans (lowest layer unless --virtual)."""
+        configured = self.config["primary"]
+        if self.config.get("virtual", False):
+            vollog.info("--virtual: scanning the translation layer %r", configured)
+            return configured
+
+        name = configured
+        seen = {name}
+        while True:
+            candidates = [
+                dep for dep in self.context.layers[name].dependencies
+                if dep not in seen
+            ]
+            if not candidates:
+                break
+            name = candidates[0]
+            seen.add(name)
+
+        layer = self.context.layers[name]
+        size = layer.maximum_address - layer.minimum_address + 1
+        vollog.info(
+            "scanning lowest layer %r (%d bytes) beneath %r; pass --virtual to "
+            "scan %r itself", name, size, configured, configured,
+        )
+        return name
+
+    def _scan_hits(self, layer_name: str):
+        """Prefilter hits (window start offsets) in *layer_name*.
+
+        A regex that does not compile is raised, not degraded to a weaker
+        detector: this plugin has no fallback needle.
+        """
+        layer = self.context.layers[layer_name]
+        scanner = scanners.RegExScanner(SCAN_REGEX)
+        seen = set()
+        for offset in layer.scan(context=self.context, scanner=scanner):
+            if offset in seen:
+                continue
+            seen.add(offset)
+            yield offset
+
+    def _read_field(self, layer, hit: int, base: int, name: str, contiguous: bool):
+        """``(status, value, address)`` of one field; never guesses."""
+        offset, size, constraints = FIELDS[name]
+        address = base + offset
+        if not contiguous and not _in_matched_window(hit, address, size):
+            return (STATUS_NOT_CONTIGUOUS, None, address)
+        if address < 0:
+            return (STATUS_UNREADABLE, None, address)
+        try:
+            raw = layer.read(address, size, pad=False)
+        except exceptions.InvalidAddressException:
+            return (STATUS_UNREADABLE, None, address)
+        if len(raw) != size:
+            return (STATUS_UNREADABLE, None, address)
+        value = _decode(FIELD_TYPES[name], raw)
+        if not _check_constraints(value, constraints):
+            return (STATUS_CONSTRAINT_FAILED, value, address)
+        return (STATUS_OK, value, address)
+
+    def _rows_for_hit(self, layer, hit: int, contiguous: bool):
+        base = hit + BASE_DELTA
+        fields = {n: self._read_field(layer, hit, base, n, contiguous) for n in FIELDS}
+        anchor_status = fields[ANCHOR_FIELD][0]
+        if anchor_status in (STATUS_UNREADABLE, STATUS_CONSTRAINT_FAILED):
+            return  # prefilter false positive
+        for name, meaning, label in ASSERTIONS:
+            status, value, address = fields[name]
+            owner = OWNERS.get(name)
+            owner_hex = ""
+            if owner is not None:
+                owner_status, owner_value, _ = fields[owner]
+                owner_hex = _value_hex(owner_value)
+                if status == STATUS_OK:
+                    status = owner_status
+            yield (0, (
+                format_hints.Hex(address), name, meaning, label,
+                _value_hex(value), owner or "", owner_hex, status,
+                format_hints.Hex(hit),
+            ))
+
+    def _generator(self, layer_name: str, contiguous: bool):
+        layer = self.context.layers[layer_name]
+        for hit in self._scan_hits(layer_name):
+            yield from self._rows_for_hit(layer, hit, contiguous)
+
+    def _grid(self, layer_name: str, contiguous: bool):
+        return renderers.TreeGrid(_COLUMNS, self._generator(layer_name, contiguous))
+
+    def _kernel_flavour(self, kernel_module_name: str):
+        """Metadata class name of the kernel's symbol table, or ``None``."""
+        try:
+            module = self.context.modules[kernel_module_name]
+            table = self.context.symbol_space[module.symbol_table_name]
+            metadata = table.metadata
+        except (KeyError, AttributeError) as err:
+            vollog.debug("kernel symbol-table metadata unavailable: %s", err)
+            return None
+        return None if metadata is None else type(metadata).__name__
+
+    def _os_branches(self, kernel_module_name: str):
+        """``(module, listing classmethod)`` pairs, most likely OS first."""
+        flavour = self._kernel_flavour(kernel_module_name)
+        ordered = sorted(
+            _OS_BRANCHES,
+            key=lambda row: flavour is None or row[2] != flavour,
+        )
+        return [(module, listing) for module, listing, _meta in ordered]
+
+    def _pid_scan(self, pid: int):
+        """Scan only *pid*'s own process layer (contiguous), or return ``None``."""
+        kernel_module_name = self.config.get("kernel", None)
+        if not kernel_module_name:
+            return None
+
+        for module_name, listing in self._os_branches(kernel_module_name):
+            try:
+                plugin = importlib.import_module(module_name)
+            except ImportError:
+                vollog.debug("%s is absent from this framework", module_name)
+                continue
+            pslist = plugin.PsList
+            try:
+                for proc in getattr(pslist, listing)(
+                    self.context, kernel_module_name,
+                    pslist.create_pid_filter([pid]),
+                ):
+                    proc_layer = proc.add_process_layer()
+                    if proc_layer:
+                        vollog.info(
+                            "--pid %s resolved via %s to process layer %r",
+                            pid, module_name, proc_layer,
+                        )
+                        return self._grid(proc_layer, True)
+            except (exceptions.SymbolError,
+                    exceptions.InvalidAddressException,
+                    KeyError, TypeError) as err:
+                vollog.debug(
+                    "%s.%s did not apply to this image: %s",
+                    module_name, listing, err,
+                )
+                continue
+        return None
+
+    def run(self):
+        layer_name = self._scan_layer_name()
+        contiguous = bool(self.config.get("contiguous", False)
+                          or self.config.get("virtual", False))
+        full_scan = self.config.get("full_scan", False)
+        pid = self.config.get("pid", None)
+
+        if full_scan:
+            return self._grid(layer_name, contiguous)
+
+        if pid is not None:
+            result = self._pid_scan(pid)
+            if result is not None:
+                return result
+            vollog.warning(
+                "--pid %s could NOT be honoured: no kernel module is available "
+                "(a flat process dump has no kernel symbols). Scanning the "
+                "whole layer instead -- results are not restricted to that "
+                "process.", pid,
+            )
+            return self._grid(layer_name, contiguous)
+
+        return self._grid(layer_name, contiguous)
+''')
+
 
 def _sanitize_class_name(name: str) -> str:
     """Convert to valid Python class name (CamelCase)."""
@@ -438,6 +812,52 @@ def _wildcard_to_regex(wildcard_pattern: str) -> bytes:
 
 
 _REGEX_META = frozenset(b"\\^$.|?*+()[]{}")
+
+
+def _safe_name(name: str) -> str:
+    """A name safe inside a double-quoted literal and a docstring."""
+    return "".join(c if c.isprintable() and c not in '"\\' else "_" for c in name)
+
+
+def _model_field_names(model: ArtifactModel) -> list:
+    """Fields to decode: anchor, assertion fields, relationship ends (ordered, unique)."""
+    names = [model.locator.anchor_field]
+    names += [a.field for a in model.assertions]
+    for rel in model.relationships:
+        names += [rel.source, rel.target]
+    return list(dict.fromkeys(names))
+
+
+def _export_structure(model: ArtifactModel, plugin_name: Optional[str],
+                      description: Optional[str]) -> str:
+    pattern = model.locator.pattern
+    raw_name = _safe_name(model.name)
+    class_name = plugin_name or ("MemDiverModel" + _sanitize_class_name(raw_name))
+    fields = {}
+    types = {}
+    for name in _model_field_names(model):
+        f = model.layout.field_by_name(name)
+        fields[name] = (f.offset, f.size, dict(f.constraints))
+        types[name] = f.field_type.value
+    owners: dict = {}
+    for rel in model.relationships:
+        if rel.kind == "owned_by":
+            owners.setdefault(rel.source, rel.target)
+    assertions = [(a.field, a.meaning, a.label) for a in model.assertions]
+    desc = description or model.description or f"Decode MemDiver artifact model: {raw_name}"
+    source = _STRUCTURE_TEMPLATE.substitute(
+        plugin_name=raw_name, description=_safe_name(desc).replace("$", "_"),
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        pattern_name=raw_name, pattern_length=pattern.get("length", 0),
+        key_offset=int(pattern.get("key_offset", 0)), class_name=class_name,
+        scan_regex_repr=repr(_wildcard_to_regex(pattern.get("wildcard_pattern", ""))),
+        anchor_repr=repr(model.locator.anchor_field),
+        base_delta=structure_base_delta(model), fields_repr=repr(fields),
+        field_types_repr=repr(types), assertions_repr=repr(assertions),
+        owners_repr=repr(owners), model_repr=repr(model.to_dict()),
+    )
+    logger.info("Exported Volatility3 structure plugin: %s", class_name)
+    return source
 
 
 class Volatility3Exporter:
@@ -512,6 +932,27 @@ class Volatility3Exporter:
         logger.info("Exported Volatility3 plugin: %s (%d bytes)",
                      class_name, pattern.get("length", 0))
         return source
+
+    @staticmethod
+    def export_model(
+        model: ArtifactModel,
+        plugin_name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> str:
+        """Export an artifact model as a Volatility3 plugin Python source.
+
+        ``byte_pattern`` models go through :meth:`export` unchanged. A
+        ``structure`` model becomes a plugin that decodes the model's fields
+        around each prefilter hit (see ``_STRUCTURE_TEMPLATE``). An
+        inconsistent model raises ``ValueError`` listing every problem.
+        """
+        problems = model.check()
+        if problems:
+            raise ValueError("inconsistent artifact model: " + "; ".join(problems))
+        if model.locator.kind == "byte_pattern":
+            return Volatility3Exporter.export(
+                model.locator.pattern, plugin_name, description)
+        return _export_structure(model, plugin_name, description)
 
     @staticmethod
     def save(content: str, output_path: Path) -> None:

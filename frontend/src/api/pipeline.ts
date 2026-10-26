@@ -76,6 +76,8 @@ export interface PipelineRunRequest {
   emit?: EmitParams | null;
   /** Re-send past the server memory guard (see `@/api/memory-budget`). */
   force_memory?: boolean;
+  /** Allow dumps from different experiment cohorts (else refused: `cohort.mixed`). */
+  mixed_ok?: boolean;
 }
 
 export interface PipelineRunResponse {

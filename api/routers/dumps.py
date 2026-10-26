@@ -20,7 +20,7 @@ from memdiver.api.dependencies import (
     upload_dir_or_409,
 )
 from memdiver.api.models import KeyMaterialFields
-from memdiver.api.path_safety import ensure_within, safe_filename
+from memdiver.api.path_safety import ensure_within, safe_filename, write_denial_detail
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.api.storage_quota import prune_dir_to_quota
 from memdiver.api.upload_dir import ensure_ready
@@ -111,7 +111,11 @@ def _import_dir(output_dir: str, settings: Settings) -> ImportTarget:
         try:
             resolved = ensure_within(upload_dir_or_409(), Path(output_dir))
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(
+                status_code=400,
+                detail=write_denial_detail(
+                    "output_dir", output_dir, [upload_dir_or_409()], "imports",
+                    "upload directory"))
         return ImportTarget(_ensure_caller_dir(resolved), server_owned=False)
 
     base = settings.upload_dir if settings.upload_dir is not None else memdiver_home()

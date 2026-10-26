@@ -1686,8 +1686,13 @@ def n_sweep(
     on_progress: Optional[Callable[..., None]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
     region_filter: Optional[str] = None,
+    mixed_ok: bool = False,
 ) -> Dict[str, Any]:
     """Run the N-scaling harness and emit report.{json,md,html}.
+
+    ``mixed_ok`` lifts the ``cohort.mixed`` refusal raised when ``source_paths``
+    span several experiment cohorts (different conditions must not share one
+    variance accumulator); the result echoes the single ``cohort`` (or None).
 
     ``region_filter`` (``.msl`` only) folds every dump through the region view
     filter; ``first_hit_offset`` is then a filtered-view offset, so the result
@@ -1725,6 +1730,7 @@ def n_sweep(
     """
     from memdiver.app.reports import write_nsweep_artifacts
     from memdiver.app.composition import open_dump
+    from memdiver.engine.cohorts import require_single_cohort
     from memdiver.engine.nsweep import run_nsweep
     from memdiver.engine.oracle import load_oracle, load_oracle_config
     from memdiver.engine.resources.tls_pcap import PcapParseError
@@ -1748,6 +1754,8 @@ def n_sweep(
         else None
     )
 
+    cohort = require_single_cohort(
+        [str(p) for p in source_paths], mixed_ok=mixed_ok)
     region_filter = _note_or_invalid(region_filter)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     sources = []
@@ -1844,6 +1852,7 @@ def n_sweep(
         "first_hit_offset": result.first_hit_offset,
         "total_dumps": result.total_dumps,
         "headline": headline,
+        "cohort": cohort,
     }
     if result.escalation is not None:
         payload["escalation"] = result.escalation
@@ -1989,8 +1998,17 @@ def consensus(
     region_filter: Optional[str] = None,
     force: bool = False,
     allocator: str = "auto",
+    mixed_ok: bool = False,
+    group_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a per-byte consensus variance vector across N dumps.
+
+    ``mixed_ok`` lifts the ``cohort.mixed`` refusal raised when the dumps span
+    several experiment cohorts; the meta echoes the single ``cohort`` (or None).
+    ``group_by="cohort"`` instead builds one consensus PER cohort (each under
+    ``output_dir/<cohort>``; cohort-less dumps under ``_no_cohort``) and returns
+    ``{"group_by": "cohort", "cohorts": [<normal meta + "cohort">, ...],
+    "skipped": [...]}``; cohorts with fewer than 2 dumps are listed as skipped.
 
     This is the pipeline's origin stage: it writes ``variance.npy`` (the
     float32 per-byte variance) and ``reference.bin`` (the parallel
@@ -2045,14 +2063,26 @@ def consensus(
             category=ErrorCategory.PRECONDITION,
         )
 
+    if group_by is not None:
+        return _consensus_by_cohort(
+            group_by, paths, output_dir=output_dir, normalize=normalize,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+            persist_welford=persist_welford, on_progress=on_progress,
+            is_cancelled=is_cancelled, region_filter=region_filter,
+            force=force, allocator=allocator)
+    from memdiver.engine.cohorts import require_single_cohort
+
+    cohort = require_single_cohort([str(p) for p in paths], mixed_ok=mixed_ok)
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     _emit(on_progress, "stage_start", stage="consensus", pct=0.0,
           msg=f"folding {len(paths)} dumps")
     _experiment_check_cancelled(is_cancelled, on_progress)
     if persist_welford:
-        return _consensus_incremental(
+        incremental = _consensus_incremental(
             paths, Path(output_dir), km, normalize, on_progress, is_cancelled,
             region_filter=region_filter)
+        incremental["cohort"] = cohort
+        return incremental
     try:
         # The on_source hook runs per opened source before the vector is built,
         # so a locked (missing/wrong-key) dump surfaces as EncryptedDumpLockedError
@@ -2088,6 +2118,7 @@ def consensus(
         "classification_counts": cm.classification_counts(),
         "normalize": normalize,
         "region_filter": region_filter,
+        "cohort": cohort,
         # Additive: how the dumps were aligned, and its structured notes
         # (e.g. ``classification_basis_mixed``) hoisted for the surfaces.
         "alignment": cm.alignment_report.to_dict(),
@@ -2101,6 +2132,34 @@ def consensus(
           msg=f"variance ready ({cm.size} bytes)",
           extra={"total_bytes": cm.size, "num_dumps": cm.num_dumps})
     return meta
+
+
+NO_COHORT_DIRNAME = "_no_cohort"
+
+
+def _consensus_by_cohort(
+    group_by: str, paths: List[Path], *, output_dir: str, **build_kwargs: Any
+) -> Dict[str, Any]:
+    """One :func:`consensus` per cohort; the per-group body is the normal one."""
+    from memdiver.engine.cohorts import group_by_cohort
+
+    if group_by != "cohort":
+        raise CapabilityError(
+            f"Unsupported group_by {group_by!r}; only 'cohort' is supported",
+            category=ErrorCategory.INVALID_INPUT,
+        )
+    built: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for cohort, members in group_by_cohort([str(p) for p in paths]).items():
+        if len(members) < 2:
+            skipped.append({"cohort": cohort, "num_dumps": len(members),
+                            "reason": "fewer than 2 dumps"})
+            continue
+        sub_dir = Path(output_dir) / (cohort or NO_COHORT_DIRNAME)
+        meta = consensus(dump_paths=members, output_dir=str(sub_dir),
+                         mixed_ok=True, **build_kwargs)
+        built.append({**meta, "cohort": cohort})
+    return {"group_by": "cohort", "cohorts": built, "skipped": skipped}
 
 
 def _consensus_incremental(

@@ -54,6 +54,7 @@ def list_phases(session: ToolSession, library_dir: str) -> dict:
     runs = RunDiscovery.discover_library_runs(path)
     if not runs:
         return {"library_dir": library_dir, "phases": [], "runs": 0}
+    run_rows = [_run_cohort_row(run) for run in runs]
 
     phases = sorted({p for run in runs for p in run.available_phases()})
     return {
@@ -61,6 +62,17 @@ def list_phases(session: ToolSession, library_dir: str) -> dict:
         "library": runs[0].library,
         "phases": phases,
         "runs": len(runs),
+        "run_rows": run_rows,
+    }
+
+
+def _run_cohort_row(run) -> dict:
+    """Per-run ``{run, cohort, condition}``; cohort/condition are empty when unknown."""
+    meta = run.meta
+    return {
+        "run": run.path.name,
+        "cohort": meta.cohort if meta else None,
+        "condition": dict(meta.condition) if meta else {},
     }
 
 

@@ -11,7 +11,13 @@ the admitted roots:
 * the upload directory (where uploaded/imported dumps land),
 * the dataset root (configured or currently loaded),
 * the MemDiver home (``~/.memdiver``: imports, tasks, sessions),
-* the file browser's favourite directories.
+* the file browser's favourite directories,
+* the server's working directory AT STARTUP (captured once at import), and
+* the system temp directory (``tempfile.gettempdir()``, ``$TMPDIR``).
+
+A denial's 403 detail names the offending path, lists the admitted roots and
+says how to admit it. The MCP server applies the same policy via
+``mcp_server/path_guard.py`` (shared logic: ``core/path_sandbox.py``).
 
 When ``allowed_roots`` is unset the policy is DISABLED and every helper here is
 a no-op, so the historical unrestricted behaviour is preserved exactly.
@@ -31,42 +37,32 @@ Write paths are a separate, always-on concern handled by
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 from fastapi import HTTPException, Request
 
-from memdiver.api.config import get_settings, split_list_setting
+from memdiver.api import read_roots
+from memdiver.core import path_sandbox
 
 logger = logging.getLogger("memdiver.api.path_policy")
 
 #: Request field names (query params or JSON keys, at any nesting depth) that
 #: carry a filesystem path the server will READ.
-READ_PATH_KEYS = frozenset({
-    "path", "paths", "dump_path", "dump_paths", "msl_path", "anchor_path",
-    "additional_paths", "source_paths", "selected_dump_paths", "pcap_path",
-    "root", "library_dir", "library_dirs", "input_path", "dataset_root",
-    "variance_path", "plugin_path", "rule_paths", "case_dir",
-    "image_path", "view_path", "isf",
-    "isf_path", "against_isf", "ground_truth", "type_hints_isf",
-    "capture_id",
-})
-
-#: Keys whose value is usually NOT a path: a bare name (``case_dir`` = a case under
-#: ``~/.memdiver/cases``) or a sha256 (``capture_id``). Such a value is admitted as is;
-#: only a path-shaped one (separator, leading ``.`` / ``~``) goes through the sandbox.
-_NAME_OR_PATH_KEYS = frozenset({"case_dir", "capture_id"})
-
-#: Message returned with every 403 so the operator knows which knob to turn.
-_DENIED_DETAIL = (
-    "path is outside the allowed roots (MEMDIVER_ALLOWED_ROOTS); add its "
-    "directory there, or as a favourite, to admit it"
-)
+#: The key tables and tree walking live in the framework-free
+#: :mod:`memdiver.core.path_sandbox` (shared with the MCP server); re-exported
+#: here under the historical names. ``model_path``, ``needles`` (``{dump_path:
+#: hex}``) and ``related`` (``{name: {dump_path: hex}}``) are covered there.
+READ_PATH_KEYS = path_sandbox.READ_PATH_KEYS
+_PATH_MAPPING_KEYS = path_sandbox.PATH_MAPPING_KEYS
+_NAME_OR_PATH_KEYS = path_sandbox.NAME_OR_PATH_KEYS
+_is_path_shaped = path_sandbox.is_path_shaped
+_iter_path_values = path_sandbox.iter_path_values
+_within = path_sandbox.within
 
 
 def _configured_roots() -> list[str]:
-    return split_list_setting(get_settings().allowed_roots, sep=os.pathsep)
+    return read_roots.configured_roots()
 
 
 def policy_enabled() -> bool:
@@ -74,46 +70,27 @@ def policy_enabled() -> bool:
     return bool(_configured_roots())
 
 
-def _dynamic_roots() -> Iterator[str]:
-    """Yield the roots admitted implicitly alongside the configured ones."""
-    settings = get_settings()
-    if settings.upload_dir is not None:
-        yield str(settings.upload_dir)
-    if settings.dataset_root:
-        yield settings.dataset_root
+def _loaded_dataset_root() -> Path | None:
     try:
         from memdiver.api.dependencies import get_tool_session
 
-        loaded = get_tool_session().dataset_root
-        if loaded is not None:
-            yield str(loaded)
+        return get_tool_session().dataset_root
     except Exception:  # pragma: no cover  # nosec B110 - session not initialised
-        pass
-    from memdiver.core.constants import memdiver_home
+        return None
 
-    yield str(memdiver_home())
-    from memdiver.api.favourites import read_favourites
 
-    for fav in read_favourites():
-        if fav.get("path"):
-            yield fav["path"]
+def _dynamic_roots() -> Iterator[str]:
+    """Yield the roots admitted implicitly alongside the configured ones."""
+    yield from read_roots.dynamic_roots(_loaded_dataset_root())
 
 
 def allowed_roots() -> list[Path]:
-    """Return every admitted root, resolved; empty when the policy is off."""
-    configured = _configured_roots()
-    if not configured:
-        return []
-    roots: list[Path] = []
-    for raw in [*configured, *_dynamic_roots()]:
-        resolved = Path(raw).expanduser().resolve(strict=False)
-        if resolved not in roots:
-            roots.append(resolved)
-    return roots
+    """Return every admitted root, resolved; empty when the policy is off.
 
-
-def _within(candidate: Path, roots: Iterable[Path]) -> bool:
-    return any(candidate == root or candidate.is_relative_to(root) for root in roots)
+    Besides the configured roots: the upload dir, dataset root, MemDiver home,
+    favourites, the server's startup working directory and the system temp dir.
+    """
+    return read_roots.sandbox_roots(_loaded_dataset_root())
 
 
 def is_admitted(path: str | Path) -> bool:
@@ -137,7 +114,8 @@ def admit_read_path(path: str | Path) -> Path:
         return candidate
     resolved = candidate.resolve(strict=False)
     if not _within(resolved, roots):
-        raise HTTPException(status_code=403, detail=_DENIED_DETAIL)
+        raise HTTPException(
+            status_code=403, detail=path_sandbox.denial_message(path, roots))
     return resolved
 
 
@@ -159,26 +137,6 @@ def clamp_parent(current: Path) -> str | None:
     if not is_admitted(parent):
         return None
     return str(parent)
-
-
-def _is_path_shaped(key: str, value: str) -> bool:
-    """True when *value* under *key* must be sandbox-checked (see ``_NAME_OR_PATH_KEYS``)."""
-    if key not in _NAME_OR_PATH_KEYS:
-        return True
-    return "/" in value or "\\" in value or value.startswith((".", "~"))
-
-
-def _iter_path_values(value: Any, key_matches: "bool | str") -> Iterator[str]:
-    """Yield every non-blank string under a READ_PATH_KEYS key, recursively."""
-    if isinstance(value, dict):
-        for key, child in value.items():
-            yield from _iter_path_values(child, key if key in READ_PATH_KEYS else False)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _iter_path_values(child, key_matches)
-    elif key_matches and isinstance(value, str) and value.strip():
-        if _is_path_shaped(str(key_matches), value):
-            yield value
 
 
 async def _json_body(request: Request) -> Any:

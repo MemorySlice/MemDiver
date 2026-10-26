@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from memdiver.api.dependencies import get_tool_session
-from memdiver.api.models import ImportProvenanceResponse
+from memdiver.api.models import ImportProvenanceResponse, XrefPointersRequest
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.app.composition import key_material_scope
 from memdiver.app.session import ToolSession
@@ -298,6 +298,23 @@ def get_cross_references(
 ):
     """Resolve cross-references for an MSL file."""
     return _http_inspect(lambda: tools_xref.get_cross_references_result(session, msl_path))
+
+
+@router.post("/xref/pointers")
+def xref_pointers(
+    req: XrefPointersRequest,
+    session: ToolSession = Depends(get_tool_session),
+):
+    """Who points here: captured words holding a pointer into a target VA span.
+
+    A ``CapabilityError`` (no VA view, bad params, missing file) goes through
+    the app's global handler, so there is deliberately no ``try/except``.
+    """
+    return tools_xref.xref_pointers_result(
+        session, dump_path=req.dump_path, target_va=req.target_va,
+        span_before=req.span_before, span_after=req.span_after,
+        word_size=req.word_size, alignment=req.alignment,
+        max_refs=req.max_refs, exclude_target=req.exclude_target).payload
 
 
 @router.get("/session-info")

@@ -15,6 +15,7 @@ from memdiver.api.dependencies import (
 )
 from memdiver.api.models import (
     AlignedWindowRequest,
+    AnchorConsensusRequest,
     AnalysisCandidatesRequest,
     AnalysisRunResponse,
     AnalyzeFileRequest,
@@ -37,7 +38,7 @@ from memdiver.api.services.consensus_session import (
 )
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
-from memdiver.api.path_safety import ensure_within, safe_filename
+from memdiver.api.path_safety import ensure_within, safe_filename, write_denial_detail
 from memdiver.api.region_filter_resolution import request_region_filter
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
@@ -45,6 +46,7 @@ from memdiver.api.memory_budget_errors import reraise_if_memory_budget
 from memdiver.core.variance import DEFAULT_THRESHOLDS
 from memdiver.engine.consensus import MAX_CONSENSUS_WINDOW
 from memdiver.engine.consensus_service import build_consensus
+from memdiver.engine.cohorts import require_single_cohort
 
 logger = logging.getLogger("memdiver.api.routers.analysis")
 
@@ -107,6 +109,7 @@ def run_consensus(
             status_code=404, detail=f"Files not found: {missing[:3]}"
         )
 
+    cohort = require_single_cohort(req.dump_paths, mixed_ok=req.mixed_ok)
     km = decode_key_material(req.passphrase, req.key_hex, req.kem_key_hex) or {}
     # open+build is the shared skeleton; build_consensus opens each dump as a
     # context-managed source, builds the vector while they are all live, and
@@ -148,6 +151,7 @@ def run_consensus(
 
     return {
         "consensus_id": built.session_id,
+        "cohort": cohort,
         "size": cm.size,
         "num_dumps": cm.num_dumps,
         "counts": cm.classification_counts(),
@@ -288,9 +292,11 @@ def _contained_output_dir(output_dir: str | None, name: str) -> str | None:
     try:
         resolved = ensure_within(upload_dir_or_409(), Path(output_dir))
     except ValueError as exc:
-        # Do not echo the resolved upload_dir (server layout disclosure).
         raise HTTPException(
-            status_code=400, detail="output_dir escapes the upload directory",
+            status_code=400,
+            detail=write_denial_detail(
+                "output_dir", output_dir, [upload_dir_or_409()], "exports",
+                "upload directory"),
         ) from exc
     try:
         safe_filename(resolved, name)
@@ -491,6 +497,11 @@ def _aligned_window_anchor(req: AlignedWindowRequest) -> tuple[str | None, int |
     return None, req.slab_offset
 
 
+def _vector_cohort(consensus):
+    """Cohort of a registered build's dumps (it was already guarded at build)."""
+    return require_single_cohort(list(consensus.dump_paths), mixed_ok=True)
+
+
 def _consensus_source(req, manager):
     """Resolve the request to ``(consensus vector or None, consensus_id)``.
 
@@ -635,6 +646,7 @@ def consensus_aligned_window(
             include_bytes=req.include_bytes,
             key_material_by_path=key_material_by_path,
         )
+        payload["cohort"] = _vector_cohort(consensus)
     else:
         payload = aligned_window_result(
             build_tool_session(),
@@ -651,6 +663,7 @@ def consensus_aligned_window(
             region_filter=request_region_filter(req),
             force=req.force_memory,
             allocator=req.allocator,
+            mixed_ok=req.mixed_ok,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload
@@ -732,6 +745,7 @@ def consensus_regions(
             include_anchor_offsets=req.include_anchor_offsets,
             key_material_by_path=key_material_by_path,
         )
+        payload["cohort"] = _vector_cohort(consensus)
     else:
         payload = class_regions_result(
             build_tool_session(),
@@ -750,9 +764,39 @@ def consensus_regions(
             region_filter=request_region_filter(req),
             force=req.force_memory,
             allocator=req.allocator,
+            mixed_ok=req.mixed_ok,
         ).payload
     payload["consensus_id"] = consensus_id
     return payload
+
+
+@router.post("/consensus/anchor")
+def consensus_anchor(req: AnchorConsensusRequest):
+    """Consensus keyed by delta from each dump's own anchor (e.g. the key).
+
+    Exactly one of ``anchors`` / ``needles``. Dump paths follow the same
+    policy as the neighbouring consensus routes (existence is checked by the
+    producer, a missing file is a 404); a ``CapabilityError`` goes through the
+    app's global handler, so there is deliberately no ``try/except`` here.
+    """
+    from memdiver.app.composition import build_tool_session
+    from memdiver.app.tools_consensus import anchor_consensus_result
+
+    return anchor_consensus_result(
+        build_tool_session(),
+        dump_paths=req.dump_paths,
+        anchors=req.anchors,
+        needles=req.needles,
+        occurrence=req.occurrence,
+        delta_start=req.delta_start,
+        length=req.length,
+        min_instances=req.min_instances,
+        include_bytes=req.include_bytes,
+        mixed_ok=req.mixed_ok,
+        keylog=req.keylog,
+        anchor_label=req.anchor_label,
+        related_labels=req.related_labels,
+    ).payload
 
 
 @router.post("/run-file", response_model=AnalysisRunResponse)
@@ -1032,11 +1076,11 @@ def export_keylog(
                 ensure_within(upload_dir_or_409(), Path(req.output_path))
             )
         except ValueError as exc:
-            # Do not echo the resolved upload_dir — the ValueError message
-            # embeds it, which would disclose the server's on-disk layout.
             raise HTTPException(
                 status_code=400,
-                detail="output_path escapes the upload directory",
+                detail=write_denial_detail(
+                    "output_path", req.output_path, [upload_dir_or_409()],
+                    "keylog.txt", "upload directory"),
             ) from exc
 
     try:

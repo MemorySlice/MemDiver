@@ -72,6 +72,12 @@ class DatasetMeta:
     # attribute that did not exist, so a future multi-build corpus would have
     # silently collapsed every build into "unknown".
     library_version: Optional[str] = None
+    # Optional experiment-cohort label (``"cohort"``) and the flat str->str
+    # ``"condition"`` mapping describing what differs between cohorts (input
+    # length, secret reuse, lifecycle phase, ...). Runs of different cohorts
+    # must never be merged into one variance accumulator; see engine.cohorts.
+    cohort: Optional[str] = None
+    condition: Dict[str, str] = field(default_factory=dict)
     source_path: Path = field(default_factory=Path)
 
     def dump(self, kind: str) -> Optional[DumpRef]:
@@ -196,6 +202,8 @@ def _build_meta(
     vault_cipher_dir = str(vault_cipher_dir) if vault_cipher_dir else None
     library_version = payload.get("library_version")
     library_version = str(library_version) if library_version else None
+    cohort = _parse_cohort(payload.get("cohort"), source_path)
+    condition = _parse_condition(payload.get("condition"), source_path)
 
     return DatasetMeta(
         run_id=run_id,
@@ -209,8 +217,33 @@ def _build_meta(
         capture=capture,
         vault_cipher_dir=vault_cipher_dir,
         library_version=library_version,
+        cohort=cohort,
+        condition=condition,
         source_path=source_path,
     )
+
+
+def _parse_cohort(value: object, source_path: Path) -> Optional[str]:
+    """``cohort`` must be a non-empty string; anything else is ignored (logged)."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        logger.warning("Ignoring non-string cohort %r in %s", value, source_path)
+        return None
+    return value
+
+
+def _parse_condition(value: object, source_path: Path) -> Dict[str, str]:
+    """``condition`` must be a flat str->str object; bad entries are dropped (logged)."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        logger.warning("Ignoring non-object condition in %s", source_path)
+        return {}
+    kept = {k: v for k, v in value.items() if isinstance(v, str)}
+    if len(kept) != len(value):
+        logger.warning("Dropped non-string condition values in %s", source_path)
+    return kept
 
 
 def _decode_hex(value: str) -> bytes:

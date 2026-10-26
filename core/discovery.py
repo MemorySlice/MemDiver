@@ -511,6 +511,7 @@ class DatasetInfo:
     total_runs: int = 0
     runs_with_capture: int = 0                                      # runs owning a packet capture
     captures: Dict[str, int] = field(default_factory=dict)          # library_key -> capture count
+    cohorts: Dict[str, int] = field(default_factory=dict)           # cohort label -> run count
     protocols_info: Dict[str, Set[str]] = field(default_factory=dict)
     root: Path = field(default_factory=Path)
 
@@ -591,6 +592,9 @@ class DatasetScanner:
             if parsed:
                 info.total_runs += 1
                 lib_key = f"{ver}/{scenario_name}/{lib_name}"
+                run_meta = RunDiscovery.meta_for_dump(run_dir)
+                if run_meta is not None and run_meta.cohort:
+                    info.cohorts[run_meta.cohort] = info.cohorts.get(run_meta.cohort, 0) + 1
                 if self._has_capture(run_dir):
                     info.runs_with_capture += 1
                     info.captures[lib_key] = info.captures.get(lib_key, 0) + 1

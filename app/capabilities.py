@@ -185,6 +185,30 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("consensus.class_regions",
          "memdiver.app.tools_consensus.class_regions_result",
          ("library", "cli", "web", "mcp")),
+    # Anchor-relative consensus: statistics keyed by delta from each dump's OWN
+    # anchor (e.g. the located key), the correct frame around heap objects.
+    _cap("consensus.anchor",
+         "memdiver.app.tools_consensus.anchor_consensus_result",
+         ("library", "cli", "web", "mcp")),
+    # Who points here: captured words holding a pointer into a target VA
+    # interval, with explicit uncaptured-gap coverage.
+    _cap("xref.pointers_to",
+         "memdiver.app.tools_xref.xref_pointers_result",
+         ("library", "cli", "web", "mcp")),
+    # Semantic producers: field-boundary proposal around a verified anchor, and
+    # the validated artifact model built from it (written to a new .json file).
+    _cap("semantic.propose_layout",
+         "memdiver.app.tools_semantic.propose_layout_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("artifact_model.build",
+         "memdiver.app.tools_semantic.artifact_model_build_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("artifact_model.export",
+         "memdiver.app.tools_semantic.artifact_model_export_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("artifact_model.validate",
+         "memdiver.app.tools_semantic.artifact_model_validate_result",
+         ("library", "cli", "web", "mcp")),
     # -- pcap arm/validate (the pcap verification oracle's first step) -------
     # Wired on all four surfaces since Phase 1 (services.py, CLI `inspect-pcap`,
     # POST /api/pcaps/validate, MCP `inspect_pcap`) but never registered here, so
@@ -441,6 +465,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("isf.draft.export", "memdiver.app.tools_isf.isf_draft_export_result",
          ("library", "cli", "web", "mcp")),
     _cap("isf.try", "memdiver.app.tools_isf.isf_try_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("code_evidence.field_accesses",
+         "memdiver.app.tools_code_evidence.code_evidence_result",
          ("library", "cli", "web", "mcp")),
     _cap("disasm", "memdiver.app.tools_disasm.disasm_result",
          ("library", "cli", "web", "mcp")),

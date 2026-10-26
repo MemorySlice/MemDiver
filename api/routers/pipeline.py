@@ -38,7 +38,7 @@ from memdiver.api.services.oracle_registry import (
     OracleNotFound,
     OracleRegistryError,
 )
-from memdiver.api.models import MemoryOverrideFields, RegionFilterFields
+from memdiver.api.models import MemoryOverrideFields, MixedCohortFields, RegionFilterFields
 from memdiver.api.region_filter_resolution import request_region_filter
 from memdiver.api.services.task_manager import TERMINAL_STATUSES
 from memdiver.app.pipeline.pipeline_runner import get_pipeline_stages
@@ -125,7 +125,7 @@ class InferFieldsRequest(BaseModel):
     variance_threshold: Optional[float] = None
 
 
-class PipelineRunRequest(RegionFilterFields, MemoryOverrideFields):
+class PipelineRunRequest(RegionFilterFields, MemoryOverrideFields, MixedCohortFields):
     source_paths: List[str] = Field(..., min_length=1)
     #: Exactly one oracle source must be supplied: an armed BYO oracle from the
     #: registry (``oracle_id``) OR a pcap/pcapng of the same TLS session
@@ -322,6 +322,8 @@ def _build_worker_params(
     # Memory-budget override for the consensus stage (runner reads
     # ``params["force_memory"]`` and forwards it as the producer's ``force=``).
     worker["force_memory"] = request.force_memory
+    # Cohort-mix override for the consensus + n-sweep stages (``cohort.mixed``).
+    worker["mixed_ok"] = request.mixed_ok
     return worker
 
 

@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from memdiver.api.config import get_settings
-from memdiver.api.path_safety import ensure_within
+from memdiver.api.path_safety import ensure_within, write_denial_detail
 from memdiver.app import tools_annotations
 from memdiver.core.constants import memdiver_home
 
@@ -85,7 +85,8 @@ def contained_case_dir(case_dir: str) -> str:
             continue
     raise HTTPException(
         status_code=403,
-        detail="case_dir must be inside the upload directory or ~/.memdiver")
+        detail=write_denial_detail(
+            "case_dir / out_path", case_dir, _write_roots(), "out/result"))
 
 
 @router.get("")

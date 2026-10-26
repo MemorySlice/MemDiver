@@ -1,0 +1,178 @@
+{
+  "title": "Object model",
+  "noDumps": "Open dumps to anchor an object across them.",
+  "dumpsHeading": "Anchor needle per dump (hex)",
+  "sameForAll": "Same needle for all dumps",
+  "needleFor": "Needle for {{dump}}",
+  "sharedNeedle": "Needle (hex)",
+  "keylog": {
+    "modeLabel": "Anchor input",
+    "modeNeedle": "Hex needle per dump",
+    "modeKeylog": "Key log",
+    "explain": "A key log is a file in NSS key log format (SSLKEYLOGFILE): the format friTap writes and Wireshark reads. Each dump is anchored on the key log session whose secret it contains, so no hex needs to be typed.",
+    "sourceLabel": "Key log source",
+    "source": {
+      "file": "Choose a key log file from this browser",
+      "path": "One key log path on the server, for all dumps",
+      "perDump": "A key log path on the server per dump"
+    },
+    "chooseFile": "Key log file",
+    "fileSummary": "{{name}}: {{count}} line(s)",
+    "fileTooLarge": "{{name}} is larger than {{max}} MiB and was not loaded. Use a server path instead.",
+    "fileReadFailed": "{{name}} could not be read.",
+    "pathLabel": "Key log path on the server",
+    "pathFor": "Key log path for {{dump}}",
+    "anchorLabel": "Anchor label",
+    "anchorAutomatic": "Automatic (TLS 1.3 traffic secret, else TLS 1.2 master secret)",
+    "anchorHint": "Automatic uses CLIENT_TRAFFIC_SECRET_0 when the key log has it, otherwise the TLS 1.2 CLIENT_RANDOM master secret; the label used is shown in the result. Pick a label to force it.",
+    "relatedLabels": "Related labels (other secrets of the same session)",
+    "relatedLabel": "Include related label {{label}}",
+    "parse": {
+      "malformedTitle": "{{count}} malformed key log line(s) in {{source}} were dropped and not searched",
+      "line": "Line {{line}}",
+      "more": "+{{count}} more",
+      "lengthMismatch": "{{count}} session(s) have TLS 1.3 secrets of differing lengths (kept): {{sessions}}",
+      "ignored": "{{count}} line(s) ignored (not searchable secrets): {{labels}}"
+    },
+    "resolution": {
+      "title": "Key log resolution (anchor label {{label}})",
+      "failedTitle": "{{count}} dump(s) could not be anchored by the key log and are NOT in this result",
+      "dump": "Dump",
+      "status": "Status",
+      "clientRandom": "Chosen client_random",
+      "candidates": "Candidates searched",
+      "reason": "Reason",
+      "anchored": "anchored",
+      "absent": "absent",
+      "ambiguous": "ambiguous"
+    }
+  },
+  "related": {
+    "title": "Related values",
+    "add": "Add related value",
+    "name": "Related value name",
+    "hexFor": "{{name}} hex for {{dump}}",
+    "remove": "Remove"
+  },
+  "params": {
+    "deltaStart": "Delta start",
+    "length": "Window length",
+    "occurrence": "Occurrence"
+  },
+  "actions": {
+    "anchor": "Anchor consensus",
+    "propose": "Propose layout",
+    "running": "Working…"
+  },
+  "errors": {
+    "badHex": "{{dump}}: needle must be even-length hex.",
+    "badRelated": "Related value \"{{name}}\" must be even-length hex for {{dump}} (or left empty for that dump).",
+    "noNeedles": "Enter a needle for at least one dump.",
+    "noKeylog": "Choose a key log file or enter a key log path first.",
+    "failed": "Request failed: {{message}}",
+    "notOpen": "That dump is not open in the workspace."
+  },
+  "unanchored": {
+    "title": "{{count}} dump(s) have no anchor and are NOT in this result",
+    "occurrences": "{{count}} occurrence(s) found"
+  },
+  "instances": {
+    "title": "Instances ({{count}})",
+    "dump": "Dump",
+    "basis": "Anchor basis",
+    "captured": "Captured bytes"
+  },
+  "regions": {
+    "delta": "Delta",
+    "length": "Length",
+    "class": "Class",
+    "minCaptured": "Min captured",
+    "maxDistinct": "Max distinct"
+  },
+  "layout": {
+    "bounds": "Object base {{base}}, total size {{size}} bytes",
+    "noBounds": "No object bounds proposed.",
+    "filterKind": "Filter by kind",
+    "allKinds": "All kinds",
+    "delta": "Delta",
+    "length": "Length",
+    "kind": "Kind",
+    "name": "Name",
+    "evidence": "Evidence",
+    "alternatives": "(+{{count}} alternative(s))"
+  },
+  "build": {
+    "title": "Build model",
+    "name": "Model name",
+    "outPath": "Model JSON output path (new .json file)",
+    "prefilled": "Meanings, labels and owned_by relationships were pre-filled from the key log. Edit them freely.",
+    "fieldsHeading": "Field meanings (only fields you assign are asserted)",
+    "meaning": "Meaning for {{field}}",
+    "label": "Output label for {{field}}",
+    "noMeaning": "(no meaning)",
+    "relationshipsHeading": "Relationships",
+    "addRelationship": "Add relationship",
+    "removeRelationship": "Remove",
+    "relKind": "Relationship kind",
+    "relSource": "Source field",
+    "relTarget": "Target field",
+    "library": "Applicability: library",
+    "states": "Applicability: states (comma separated)",
+    "action": "Build model",
+    "needLayout": "Propose a layout first.",
+    "needNameAndPath": "Enter a model name and an output path.",
+    "refused": "Model not built: {{message}}",
+    "built": "Model written",
+    "path": "Path",
+    "sha256": "SHA-256",
+    "problems": "Model problems"
+  },
+  "export": {
+    "title": "Export plugin",
+    "outPath": "Plugin output path (new .py file)",
+    "action": "Export plugin",
+    "needPath": "Enter a plugin output path.",
+    "refused": "Export refused: {{message}}",
+    "path": "Path",
+    "sha256": "SHA-256",
+    "className": "Class",
+    "bytes": "Size (bytes)"
+  },
+  "validate": {
+    "title": "Validate on held-out dumps",
+    "dump": "Held-out dump path",
+    "keylog": "Keylog path",
+    "keylogMode": "Key log for the held-out dumps",
+    "keylogModes": {
+      "perRow": "A key log path per held-out dump",
+      "file": "One key log file (from this browser) for all held-out dumps",
+      "path": "One key log path on the server for all held-out dumps"
+    },
+    "sharedPath": "Shared key log path on the server",
+    "needDumps": "Add at least one held-out dump.",
+    "needSharedKeylog": "Choose the shared key log file or enter its path.",
+    "indeterminateNote": "Indeterminate: no sessions were checked in this capture. This is not a pass.",
+    "add": "Add held-out dump",
+    "remove": "Remove",
+    "action": "Validate",
+    "needModel": "Build a model first.",
+    "needEntries": "Add at least one held-out dump with a keylog.",
+    "leakWarning": "{{dump}} was used for learning this model; the server will refuse it.",
+    "refused": "Validation refused: {{message}}",
+    "capture": "Capture",
+    "expected": "Expected",
+    "tp": "TP",
+    "fp": "FP",
+    "fn": "FN",
+    "relationships": "Relationships correct/checked",
+    "detail": "Detail",
+    "totals": "Totals",
+    "verdictLabel": "Verdict",
+    "verdict": {
+      "pass": "pass",
+      "fail": "fail",
+      "indeterminate": "indeterminate"
+    },
+    "unknownVerdict": "unknown ({{verdict}})"
+  }
+}

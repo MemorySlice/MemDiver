@@ -80,7 +80,7 @@ memdiver image extract ./case/views/alma-9.process.pid22176.isf-<sha8>.mdview --
 
 ## YARA rule editor
 
-`isf` is the ISF workbench: `isf probe IMAGE kallsyms` runs a pakunoda probe, `isf draft create|set|import|get|diff|validate|export` edits a versioned ISF draft in a case, and `isf try IMAGE --case C --draft D` tries it with a Volatility plugin.
+`isf` is the ISF workbench: `isf probe IMAGE kallsyms` runs a pakunoda probe, `isf draft create|set|import|get|diff|validate|export` edits a versioned ISF draft in a case, and `isf try IMAGE --case C --draft D` tries it with a Volatility plugin. `isf code-evidence IMAGE FUNCTION [--isf FILE]` decodes which struct fields a kernel function touches (`current`/deref accesses, joined to ISF members).
 `disasm` (`disasm DUMP ADDRESS LENGTH`) decodes captured bytes only (`--arch`, `--mode thumb`, `--max-insns`, `--case`).
 
 `yara` is the editor backend. `yara check RULE.yar` compiles a rule and prints its names, or the failing line
@@ -282,6 +282,9 @@ Consensus (incremental Welford)
 
 Pipeline (Phase-25 orchestration)
 : `search-reduce`, `analyze-candidates`, `brute-force`, `n-sweep`, `auto-floor`, `emit-plugin`
+
+Semantic layout &amp; artifact model
+: `propose-layout`, `model-build`, `model-export`, `model-validate`, `consensus-anchor`, `xref-pointers`
 
 Known secret &amp; detectors
 : `locate-key`, `locate-field-pairs`, `export-key-pattern`, `scan-yara`, `verify-plugin`, `score-detector`

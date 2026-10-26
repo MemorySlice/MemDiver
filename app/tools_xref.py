@@ -228,3 +228,88 @@ def apply_structure_result(
     payload = serialize_overlay_result(struct_def, overlays, total_size)
     payload["offset"] = offset
     return ServiceResult.ok({"structure": payload})
+
+
+# ---------------------------------------------------------------------------
+# Who points here (xref.pointers_to)
+# ---------------------------------------------------------------------------
+
+
+def _holder_region(runs, holder_va: int) -> Optional[dict]:
+    """The captured run ``[va, va+length)`` that contains ``holder_va``."""
+    import bisect
+
+    starts = [r[0] for r in runs]
+    i = bisect.bisect_right(starts, holder_va) - 1
+    if i >= 0 and holder_va < runs[i][0] + runs[i][1]:
+        return {"va": runs[i][0], "va_hex": hex(runs[i][0]), "length": runs[i][1]}
+    return None
+
+
+def _pointer_ref_rows(scan, runs) -> list:
+    return [
+        {"holder_va": r.holder_va, "holder_va_hex": hex(r.holder_va),
+         "value": r.value, "value_hex": hex(r.value),
+         "target_delta": r.target_delta,
+         "holder_region": _holder_region(runs, r.holder_va)}
+        for r in scan.refs
+    ]
+
+
+def xref_pointers_result(
+    session: ToolSession,
+    *,
+    dump_path: str,
+    target_va: int,
+    span_before: int = 0,
+    span_after: int = 1,
+    word_size: int = 8,
+    alignment: int = 8,
+    max_refs: int = 1000,
+    exclude_target: bool = False,
+) -> ServiceResult:
+    """Which captured words point into ``[target_va - before, target_va + after)``.
+
+    The reverse of following a pointer. Needs a VA-bearing dump (``.msl`` /
+    core): a raw dump is a PRECONDITION error ``xref.no_va_view``. Memory that
+    was never captured is reported as ``uncaptured_gap_bytes`` (NOT scanned),
+    never as "no pointers there"; ``truncated`` means ``max_refs`` stopped the
+    scan, so ``refs`` is a prefix.
+    """
+    from contextlib import ExitStack
+
+    from memdiver.app.tools_consensus import _open_one
+    from memdiver.engine.xref_pointers import _captured_runs, find_pointers_to
+
+    lo, hi = int(target_va) - int(span_before), int(target_va) + int(span_after)
+    with ExitStack() as stack:
+        source = _open_one(stack, str(dump_path), None)
+        has_va = (getattr(source, "format_name", "") != "raw"
+                  and hasattr(source, "va_span_start")
+                  and source.va_span_start() is not None)
+        if not has_va:
+            raise CapabilityError(
+                f"{dump_path!r} has no virtual-address view; pointer scan needs "
+                f"a VA-bearing dump (.msl / core)",
+                category=ErrorCategory.PRECONDITION, code="xref.no_va_view")
+        try:
+            scan = find_pointers_to(
+                source, lo, hi, word_size=int(word_size),
+                alignment=int(alignment), max_refs=int(max_refs),
+                exclude=(lo, hi) if exclude_target else None)
+        except ValueError as exc:
+            raise CapabilityError(str(exc)) from exc
+        runs = _captured_runs(source)
+    payload = {
+        "target": {"va": int(target_va), "va_hex": hex(int(target_va)),
+                   "lo": lo, "lo_hex": hex(lo), "hi": hi, "hi_hex": hex(hi)},
+        "refs": _pointer_ref_rows(scan, runs),
+        "coverage": {"scanned_bytes": scan.scanned_bytes,
+                     "scanned_runs": scan.scanned_runs,
+                     "uncaptured_gap_bytes": scan.skipped_bytes,
+                     "truncated": scan.truncated},
+        "params": {"span_before": int(span_before), "span_after": int(span_after),
+                   "word_size": int(word_size), "alignment": int(alignment),
+                   "max_refs": int(max_refs), "exclude_target": bool(exclude_target)},
+    }
+    return ServiceResult(payload=payload)

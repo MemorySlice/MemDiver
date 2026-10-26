@@ -134,8 +134,37 @@ class HeapAllocatorFields(BaseModel):
     )
 
 
+class KeylogAnchorFields(BaseModel):
+    """Mixin: the ``keylog`` anchor mode (NSS key log -> per-dump anchors).
+
+    ``keylog`` is ``{"path"}`` | ``{"text"}`` (one shared key log) |
+    ``{"per_dump": {dump_path: keylog_path}}``; see ``app.keylog_input``.
+    """
+
+    keylog: dict | None = None
+    anchor_label: str | None = None
+    related_labels: list[str] | None = None
+
+
+class MixedCohortFields(BaseModel):
+    """Mixin: opt-in override for the experiment-cohort mix guard.
+
+    Dumps whose ``meta.json`` declare different cohorts are refused
+    (``cohort.mixed``) rather than merged into one variance accumulator;
+    ``mixed_ok: true`` lifts that for the request.
+    """
+
+    mixed_ok: bool = Field(
+        default=False,
+        description=(
+            "Allow dumps from different experiment cohorts in one consensus "
+            "(refused with code cohort.mixed otherwise)."
+        ),
+    )
+
+
 class ConsensusRequest(KeyMaterialFields, RegionFilterFields, MemoryOverrideFields,
-                       HeapAllocatorFields):
+                       HeapAllocatorFields, MixedCohortFields):
     """Request body for consensus matrix computation."""
 
     dump_paths: list[str]
@@ -155,7 +184,8 @@ class AlignedWindowKey(KeyMaterialFields):
     dump_path: str
 
 
-class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields):
+class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields,
+                           MixedCohortFields):
     """Request body for ``POST /api/analysis/consensus/aligned-window``.
 
     POST rather than GET for two reasons that are not style: N dump paths plus
@@ -200,7 +230,43 @@ class AlignedWindowRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocat
     keys: list[AlignedWindowKey] = Field(default_factory=list)
 
 
-class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields):
+class AnchorConsensusRequest(KeylogAnchorFields, MixedCohortFields):
+    """Request body for ``POST /api/analysis/consensus/anchor``.
+
+    Exactly ONE of ``anchors`` (``[{dump_path, va}]`` or ``[{dump_path,
+    offset}]``), ``needles`` (``{dump_path: hex}``) or ``keylog``. See
+    ``app.tools_consensus.anchor_consensus_result``.
+    """
+
+    dump_paths: list[str] | None = None
+    anchors: list[dict] | None = None
+    needles: dict[str, str] | None = None
+    occurrence: int = Field(default=0, ge=0)
+    delta_start: int = -256
+    length: int = Field(default=768, ge=1)
+    min_instances: int | None = None
+    include_bytes: bool = False
+
+
+class XrefPointersRequest(BaseModel):
+    """Request body for ``POST /api/inspect/xref/pointers``.
+
+    Target interval ``[target_va - span_before, target_va + span_after)``. See
+    ``app.tools_xref.xref_pointers_result``.
+    """
+
+    dump_path: str
+    target_va: int
+    span_before: int = Field(default=0, ge=0)
+    span_after: int = Field(default=1, ge=1)
+    word_size: int = 8
+    alignment: int = Field(default=8, ge=1)
+    max_refs: int = Field(default=1000, ge=1)
+    exclude_target: bool = False
+
+
+class ConsensusRegionsRequest(RegionFilterFields, MemoryOverrideFields, HeapAllocatorFields,
+                              MixedCohortFields):
     """Request body for ``POST /api/analysis/consensus/regions``.
 
     Every occurrence of a consensus class, paginated and JUMPABLE — the list

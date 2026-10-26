@@ -49,6 +49,12 @@ EXPECTED_TOOLS = {
     # the change that introduced it, for the same reason -- a surface without
     # it re-derives the slab -> VA -> offset arithmetic of its own.
     "consensus_regions",
+    "anchor_consensus",
+    "xref_pointers",
+    "propose_layout",
+    "artifact_model_build",
+    "artifact_model_export",
+    "artifact_model_validate",
     # P2.3: the manual complement of export_pattern — "I know the offset, I do
     # not have the key bytes". Wired on web + MCP + library in one atomic change
     # so the producer could leave EXEMPT_PRODUCERS and be registered truthfully
@@ -131,6 +137,7 @@ EXPECTED_TOOLS = {
     "isf_probe", "isf_draft_create", "isf_draft_list", "isf_draft_get", "isf_draft_set",
     "isf_draft_import", "isf_draft_retract", "isf_draft_versions", "isf_draft_diff",
     "isf_draft_validate", "isf_draft_export", "isf_try", "disasm",
+    "code_evidence",
     # T3.7: detector fixtures (YARA rules / key finders): positive controls + decoys.
     "detector_fixtures_run", "detector_fixtures_add", "detector_fixtures_list",
     "detector_fixtures_remove",
@@ -140,7 +147,7 @@ EXPECTED_TOOLS = {
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 112
+EXPECTED_TOOL_COUNT = 119
 
 
 def _registered_tool_names(server) -> set:

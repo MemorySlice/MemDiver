@@ -71,6 +71,8 @@ from ._shared import (
     add_allocator_argument,
     add_force_memory_argument,
     add_heap_policy_argument,
+    add_keylog_anchor_arguments,
+    add_mixed_ok_argument,
     to_cli_exit,
 )
 from .import_keys import decrypt_output_parent_parser
@@ -86,6 +88,7 @@ from .dataset import (
 from .consensus import (
     _cmd_consensus,
     _cmd_consensus_add,
+    _cmd_consensus_anchor,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
     _cmd_consensus_regions,
@@ -129,6 +132,13 @@ from .pipeline import (
 
 from .inspect import (
     _cmd_inspect,
+    _cmd_xref_pointers,
+)
+from .semantic import (
+    _cmd_model_build,
+    _cmd_model_export,
+    _cmd_model_validate,
+    _cmd_propose_layout,
 )
 
 logger = logging.getLogger("memdiver.cli")
@@ -212,6 +222,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_region_filter_arguments(cs)
     add_force_memory_argument(cs)
     add_allocator_argument(cs)
+    add_mixed_ok_argument(cs)
     # incremental consensus (Welford-backed, persisted state)
     cb = sub.add_parser(
         "consensus-begin",
@@ -220,6 +231,11 @@ def _build_parser() -> argparse.ArgumentParser:
     cb.add_argument("--state", required=True, help="Path to session state JSON")
     cb.add_argument("--size", type=int, required=True,
                     help="Consensus width in bytes")
+    cb.add_argument("dumps", nargs="*",
+                    help="Optional dumps the session will be fed: their "
+                         "experiment cohort is recorded and enforced by "
+                         "consensus-add")
+    add_mixed_ok_argument(cb)
     cb.add_argument("-v", "--verbose", action="store_true")
     ca = sub.add_parser(
         "consensus-add",
@@ -228,6 +244,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ca.add_argument("--state", required=True, help="Path to session state JSON")
     ca.add_argument("dump", help="Path to a .dump or .msl file")
+    add_mixed_ok_argument(ca)
     ca.add_argument("-v", "--verbose", action="store_true")
     cf = sub.add_parser(
         "consensus-finalize",
@@ -267,6 +284,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_region_filter_arguments(cw)
     add_force_memory_argument(cw)
     add_allocator_argument(cw)
+    add_mixed_ok_argument(cw)
     # consensus-regions — EVERY occurrence of a class, paginated and jumpable
     cr = sub.add_parser(
         "consensus-regions",
@@ -307,6 +325,106 @@ def _build_parser() -> argparse.ArgumentParser:
     add_region_filter_arguments(cr)
     add_force_memory_argument(cr)
     add_allocator_argument(cr)
+    add_mixed_ok_argument(cr)
+    # consensus-anchor — statistics keyed by delta from each dump's own anchor
+    ca = sub.add_parser(
+        "consensus-anchor",
+        help="Consensus relative to each dump's own anchor (e.g. the key)",
+    )
+    ca.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+    ca.add_argument("--needle", help="Hex needle searched in EVERY dump")
+    ca.add_argument("--needle-file",
+                    help="JSON {dump_path: hex} (one needle per dump)")
+    ca.add_argument("--anchor", action="append", metavar="PATH=VA",
+                    help="Explicit anchor (absolute VA); repeatable")
+    ca.add_argument("--occurrence", type=int, default=0,
+                    help="Which needle occurrence per dump (default: 0)")
+    ca.add_argument("--delta-start", type=int, default=-256,
+                    help="Window start relative to the anchor (default: -256)")
+    ca.add_argument("--length", type=int, default=768,
+                    help="Window length in bytes (default: 768)")
+    ca.add_argument("--min-instances", type=int, default=None,
+                    help="Instances that must capture a delta (default: all)")
+    ca.add_argument("--include-bytes", action="store_true",
+                    help="Also emit per-delta classes and reference_hex")
+    ca.add_argument("-o", "--output", help="Output JSON file")
+    ca.add_argument("-v", "--verbose", action="store_true")
+    add_mixed_ok_argument(ca)
+    add_keylog_anchor_arguments(ca)
+    # propose-layout / model-build — semantic producers (app.tools_semantic)
+    for cmd, help_text in (
+            ("propose-layout", "Propose field boundaries around a verified anchor (N dumps)"),
+            ("model-build", "Build an artifact model from the proposal; writes a NEW .json")):
+        sp = sub.add_parser(cmd, help=help_text)
+        sp.add_argument("dumps", nargs="+", help="Dump file paths or directories")
+        sp.add_argument("--needle", help="Hex needle searched in EVERY dump")
+        sp.add_argument("--needles-file", help="JSON {dump_path: hex} (one needle per dump)")
+        sp.add_argument("--anchor", action="append", metavar="PATH=VA",
+                        help="Explicit anchor (absolute VA); repeatable")
+        sp.add_argument("--related-file", help="JSON {name: {dump_path: hex}}")
+        sp.add_argument("--occurrence", type=int, default=0)
+        sp.add_argument("--delta-start", type=int, default=-2048)
+        sp.add_argument("--length", type=int, default=6144)
+        sp.add_argument("--anchor-length", type=int, default=None,
+                        help="Anchor bytes (default: needle length; required with --anchor)")
+        sp.add_argument("--pointer-quorum", type=int, default=None)
+        sp.add_argument("--no-heap", action="store_true",
+                        help="Skip allocator-chunk object bounds")
+        sp.add_argument("--case-dir", help="File one structure_proposal entry per capture")
+        sp.add_argument("-o", "--output", help="Output JSON file")
+        sp.add_argument("-v", "--verbose", action="store_true")
+        add_mixed_ok_argument(sp)
+        add_keylog_anchor_arguments(sp)
+        if cmd == "model-build":
+            sp.add_argument("--name", required=True, help="Model name")
+            sp.add_argument("--spec-file",
+                            help="JSON {meanings, relationships, applicability}")
+            sp.add_argument("--prefilter-length", type=int, default=64)
+            sp.add_argument("--out-path", required=True,
+                            help="NEW .json file the model is written to")
+    # model-export / model-validate — plugin from a model; held-out scoring
+    me = sub.add_parser("model-export",
+                        help="Export an artifact model as a Volatility3 plugin (NEW .py)")
+    me.add_argument("model", help="Artifact model JSON")
+    me.add_argument("--out-path", required=True, help="NEW .py file the plugin is written to")
+    me.add_argument("--plugin-name", help="Plugin class name")
+    me.add_argument("-o", "--output", help="Output JSON file")
+    me.add_argument("-v", "--verbose", action="store_true")
+    mv = sub.add_parser("model-validate",
+                        help="Score a model's plugin on held-out captures (needs volatility3)")
+    mv.add_argument("model", help="Artifact model JSON")
+    mv.add_argument("--held-out-file",
+                    help="JSON [{dump_path, keylog_path | expected:[{label,owner_hex,value_hex}]}]")
+    mv.add_argument("--keylog-run-dir", nargs="+", metavar="DIR",
+                    help="Run dirs pairing DIR/dumps/msl/*.msl with DIR/keylog.csv")
+    mv.add_argument("--held-out-dumps", nargs="+", metavar="DUMP",
+                    help="Held-out dumps scored against the shared --keylog")
+    mv.add_argument("--labels", nargs="+", help="Labels to score (default: the model's)")
+    mv.add_argument("--plugin", help="Use this exported plugin instead of exporting in memory")
+    mv.add_argument("--out-path", help="NEW .json: the model with its validation recorded")
+    mv.add_argument("--min-run", type=int, default=64)
+    add_keylog_anchor_arguments(mv, shared_only=True)
+    mv.add_argument("-o", "--output", help="Output JSON file")
+    mv.add_argument("-v", "--verbose", action="store_true")
+    # xref-pointers — which captured words point into a target VA span
+    xp = sub.add_parser(
+        "xref-pointers",
+        help="Who points here: captured words holding a pointer into a target VA",
+    )
+    xp.add_argument("dump_path", metavar="DUMP", help=".msl / core dump (needs VAs)")
+    xp.add_argument("--target", type=lambda x: int(x, 0), required=True,
+                    help="Target VA (hex or decimal)")
+    xp.add_argument("--before", type=lambda x: int(x, 0), default=0,
+                    help="Bytes below the target included in the interval")
+    xp.add_argument("--after", type=lambda x: int(x, 0), default=1,
+                    help="Bytes from the target up (exclusive end; default: 1)")
+    xp.add_argument("--word-size", type=int, choices=(4, 8), default=8)
+    xp.add_argument("--alignment", type=int, default=8)
+    xp.add_argument("--max-refs", type=int, default=1000)
+    xp.add_argument("--exclude-target", action="store_true",
+                    help="Skip holders lying inside the target interval itself")
+    xp.add_argument("-o", "--output", help="Output JSON file")
+    xp.add_argument("-v", "--verbose", action="store_true")
     # search-reduce
     sr = sub.add_parser(
         "search-reduce",
@@ -484,6 +602,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Optional cap on oracle calls during escalation "
                          "(default: exhaustive)")
     ns.add_argument("--output-dir", required=True, help="Directory for report.{json,md,html}")
+    add_mixed_ok_argument(ns)
     ns.add_argument("-v", "--verbose", action="store_true")
     # auto-floor
     af = sub.add_parser(
@@ -1290,6 +1409,12 @@ def main():
         "consensus-finalize": _cmd_consensus_finalize,
         "consensus-window": _cmd_consensus_window,
         "consensus-regions": _cmd_consensus_regions,
+        "consensus-anchor": _cmd_consensus_anchor,
+        "xref-pointers": _cmd_xref_pointers,
+        "propose-layout": _cmd_propose_layout,
+        "model-build": _cmd_model_build,
+        "model-export": _cmd_model_export,
+        "model-validate": _cmd_model_validate,
         "search-reduce": _cmd_search_reduce,
         "analyze-candidates": _cmd_analyze_candidates,
         "brute-force": _cmd_brute_force,

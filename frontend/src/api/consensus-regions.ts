@@ -181,6 +181,8 @@ export interface ConsensusRegionsRequest {
   keys?: AlignedWindowKey[];
   /** Re-send past the server memory guard (see `@/api/memory-budget`). */
   force_memory?: boolean;
+  /** Allow dumps from different experiment cohorts (else refused: `cohort.mixed`). */
+  mixed_ok?: boolean;
 }
 
 /** Which dump the page's jump offsets are expressed in, and whether they exist. */

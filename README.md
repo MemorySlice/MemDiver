@@ -224,6 +224,10 @@ Newer subcommands at a glance:
 - `consensus-window` — read one window in every dump at the address the consensus aligned
 - `consensus-regions` — list every occurrence of a consensus class, with jump offsets
 - `analyze-candidates` — rank candidate regions across N dumps (no oracle needed)
+- `propose-layout` / `model-build` — propose field boundaries around a verified anchor across N dumps, and build the validated artifact model (written to a new `.json`)
+- `consensus-anchor` — anchor-relative consensus across N dumps around a verified value
+- `xref-pointers` — who points here: captured words holding a pointer into a target VA
+- `model-export` / `model-validate` — export an artifact model as a Volatility3 plugin (new `.py`), and score it on held-out captures against ground truth (verdict pass/fail)
 - `locate-key` — locate a KNOWN secret across N dumps ([guide](https://memoryslice.github.io/MemDiver/user_guide/locate_key.html))
 - `locate-field-pairs` — locate a handshake FIELD across N dumps, each dump taking the field from its own capture
 - `export-key-pattern` — export a scanning signature anchored on a KNOWN secret (wildcards the key, keeps its neighbourhood)
@@ -234,7 +238,7 @@ Newer subcommands at a glance:
 - `annotations` — versioned, append-only analysis record per capture (`list`, `add`, `supersede`, `retract`; `--case` required), e.g. `memdiver annotations list --case ./case --capture <id>`
 - `case` — the case data lake: Parquet tables, read-only SQL and `locate_context` (`init`, `status`, `schema`, `query`, `context-at`, `export`), e.g. `memdiver case query --case ./case --sql "SELECT name, count(*) FROM annotations GROUP BY 1"`
 - `image` — memory-image views via Volatility 3 (`probe`, `profile`, `open`, `processes`, `extract`), e.g. `memdiver image open alma-9.lime --view process --pid 22176 --case ./case`
-- `isf` — ISF workbench: run pakunoda probes on a full image and edit versioned ISF drafts in a case (`probe`, `draft create|list|get|set|import|retract|versions|diff|validate|export`, `try`), e.g. `memdiver isf draft set ./case $SHA d struct --args '{"name": "task_struct", "size": 9792}'`
+- `isf` — ISF workbench: run pakunoda probes on a full image and edit versioned ISF drafts in a case (`probe`, `draft create|list|get|set|import|retract|versions|diff|validate|export`, `try`, `code-evidence`), e.g. `memdiver isf draft set ./case $SHA d struct --args '{"name": "task_struct", "size": 9792}'`
 - `disasm` — disassemble the captured bytes at an address of a dump (never across a capture gap), e.g. `memdiver disasm kernel.mdview 0xffffffff81000000 64`
 - `vol3` — run Volatility 3 plugins over a `.mdview` into a case and query them (`list`, `describe`, `run`, `query`, `annotate`, `scaffold`, `check`, `import`, `write-config`), e.g. `memdiver vol3 run --view p.mdview --plugin linux.pslist --case ./case`
 - `yara` — YARA rule editor backend: compile-check a rule with its failing line, scan one dump's captured bytes with VA coordinates and coverage (`check`, `scan`, `rules list|get|put|delete` for stored library/case rules; put/delete default to the case when `--case` is given, `get --scope library|case|auto`), e.g. `memdiver yara scan rule.yar dump.msl --offset 0x7f0000000000 --length 0x1000`

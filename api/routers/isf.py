@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from memdiver.api.routers.image import _case_target, _contained, _submit
 from memdiver.app import tools_isf
+from memdiver.app.tools_code_evidence import code_evidence_result
 from memdiver.app.tools_isf import DEFAULT_AUTHOR, DEFAULT_LIMIT
 
 router = APIRouter()
@@ -62,6 +63,16 @@ class TryRequest(_Strict):
     min_recall: float = 0.95
     min_precision: float = 0.95
     author: str = "agent"
+    async_: bool = Field(default=False, alias="async")
+
+
+class CodeEvidenceRequest(_Strict):
+    image_path: str
+    function: str
+    arch: Optional[str] = None
+    max_bytes: int = 4096
+    isf: Optional[str] = None
+    base: Optional[str] = None
     async_: bool = Field(default=False, alias="async")
 
 
@@ -166,6 +177,17 @@ def try_isf(req: TryRequest):
             "timeout_s": req.timeout_s, "min_recall": req.min_recall,
             "min_precision": req.min_precision, "author": req.author}
     return _job_or_inline("isf_try", req.async_, args, tools_isf.isf_try_result)
+
+
+@router.post("/code-evidence")
+def code_evidence(req: CodeEvidenceRequest):
+    """Struct fields a kernel function touches (code evidence), inline or as a job with
+    ``async: true`` (session setup on a multi-GB image takes ~35 s)."""
+    args = {"image_path": req.image_path, "function": req.function, "arch": req.arch,
+            "max_bytes": req.max_bytes, "base": req.base,
+            "params": {"isf": req.isf} if req.isf else None}
+    return _job_or_inline("code_evidence", req.async_, args,
+                          code_evidence_result)
 
 
 @router.post("/drafts")

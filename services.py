@@ -68,7 +68,14 @@ from memdiver.app.tools_inspect import (
 )
 
 # --- xref / structure -------------------------------------------------------
+from memdiver.app.tools_semantic import (
+    artifact_model_build_result,
+    artifact_model_export_result,
+    artifact_model_validate_result,
+    propose_layout_result,
+)
 from memdiver.app.tools_xref import (
+    xref_pointers_result,
     apply_structure_result,
     get_cross_references_result,
     identify_structure_result,
@@ -120,6 +127,7 @@ from memdiver.app.tools_consensus import (
     aligned_window_result,
     class_regions_from_vector,
     class_regions_result,
+    anchor_consensus_result,
 )
 
 # --- frontend-serving producers (field inference / algorithm availability) --
@@ -171,6 +179,7 @@ from memdiver.app.tools_keyfinders import (
 
 # --- ISF workbench (pakunoda probes, ISF drafts, try-loop) and disassembly ---------
 from memdiver.app.tools_disasm import disasm_result
+from memdiver.app.tools_code_evidence import code_evidence_result
 from memdiver.app.tools_isf import (
     isf_probe_result,
     isf_draft_create_result,
@@ -295,6 +304,12 @@ __all__ = [
     # all N dumps", this answers "where are all the offsets worth looking at",
     # and each row carries the navigable offset to go there.
     "class_regions_result",
+    "anchor_consensus_result",
+    "xref_pointers_result",
+    "propose_layout_result",
+    "artifact_model_build_result",
+    "artifact_model_export_result",
+    "artifact_model_validate_result",
     "class_regions_from_vector",
     # verify / experiment / capture
     "verify_key_result",
@@ -363,6 +378,7 @@ __all__ = [
     "isf_draft_export_result",
     "isf_try_result",
     "disasm_result",
+    "code_evidence_result",
     "detector_fixtures_run_result",
     "detector_fixtures_add_result",
     "detector_fixtures_list_result",

@@ -12,6 +12,7 @@ from ._shared import (
     _warn_tag_status,
     _write_output,
     force_memory_requested,
+    keylog_spec_from_args,
 )
 from .heap_report import report_consensus_heap
 
@@ -91,6 +92,7 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
     key-material + ``on_source`` contract), so there is no forked orchestration
     to collapse here — only the per-surface region/artifact shaping differs.
     """
+    from memdiver.engine.cohorts import require_single_cohort
     from memdiver.engine.consensus_service import build_consensus
 
     dump_paths = _resolve_dump_paths(args.dumps)
@@ -102,6 +104,8 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
     ok, region_filter = _region_filter_or_exit(args)
     if not ok:
         return 2
+    cohort = require_single_cohort(
+        [str(p) for p in dump_paths], mixed_ok=getattr(args, "mixed_ok", False))
     logger.info("Building consensus from %d dumps", len(dump_paths))
     key_material = _key_material_from_args(args)
     # build_consensus opens each dump as a context-managed source, warns on
@@ -123,6 +127,7 @@ def _cmd_consensus(args: argparse.Namespace) -> int:
     static = cm.get_static_regions(min_length=min_len)
 
     result = {
+        "cohort": cohort,
         "num_dumps": cm.num_dumps,
         "size": cm.size,
         "classification_counts": cm.classification_counts(),
@@ -202,22 +207,86 @@ def _cmd_consensus_begin(args: argparse.Namespace) -> int:
     """Create a new incremental consensus session persisted on disk."""
     import numpy as np
 
+    from memdiver.engine.cohorts import require_single_cohort
+
     state_path = Path(args.state)
     mean_path, m2_path = _consensus_state_paths(state_path)
+    # Cohort guard: the dumps named at begin (optional) fix the session's cohort.
+    cohort = require_single_cohort(
+        [str(p) for p in (getattr(args, "dumps", None) or [])],
+        mixed_ok=getattr(args, "mixed_ok", False))
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     mean = np.zeros(args.size, dtype=np.float32)
     m2 = np.zeros(args.size, dtype=np.float32)
     np.save(mean_path, mean)
     np.save(m2_path, m2)
-    state_path.write_text(json.dumps({
+    state = {
         "size": args.size,
         "num_dumps": 0,
         "mean_path": str(mean_path),
         "m2_path": str(m2_path),
-    }, indent=2))
+    }
+    if cohort is not None:
+        state["cohort"] = cohort
+    state_path.write_text(json.dumps(state, indent=2))
     print(f"Begun consensus session: size={args.size} state={state_path}")
     return 0
+
+
+def _cohort_of_prefolded(state: dict, args: argparse.Namespace) -> "str | None":
+    """Cohort of dumps already folded into a session that recorded no cohort.
+
+    A session that predates cohort recording must not adopt the next dump's
+    cohort silently. With listed folded paths (``dump_paths``) their cohort is
+    computed (``require_single_cohort``); without them the add is refused unless
+    ``--mixed-ok``. An empty session (``num_dumps == 0``) returns ``None``.
+    """
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+    from memdiver.engine.cohorts import require_single_cohort
+
+    mixed_ok = getattr(args, "mixed_ok", False)
+    if int(state.get("num_dumps", 0)) <= 0:
+        return None
+    folded = [str(p) for p in (state.get("dump_paths") or [])]
+    if folded:
+        return require_single_cohort(folded, mixed_ok=mixed_ok)
+    if mixed_ok:
+        return None
+    raise CapabilityError(
+        "State predates cohort recording and already folded "
+        f"{int(state['num_dumps'])} dump(s) of unknown cohort; re-run "
+        "consensus-begin or pass --mixed-ok.",
+        category=ErrorCategory.INVALID_INPUT, code="cohort.unknown_state",
+        details={"num_dumps": int(state["num_dumps"])})
+
+
+def _guard_add_cohort(state: dict, args: argparse.Namespace) -> None:
+    """Refuse (``cohort.mixed``) a dump whose cohort differs from the session's.
+
+    A dump without a cohort never refuses; a session with no recorded cohort
+    adopts the first known one (written into ``state``, saved by the caller).
+    ``--mixed-ok`` skips the refusal but still never rewrites a recorded cohort.
+    """
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+    from memdiver.engine.cohorts import cohort_of
+
+    dump_cohort = cohort_of(str(args.dump))
+    if dump_cohort is None:
+        return
+    recorded = state.get("cohort")
+    if recorded is None:
+        recorded = _cohort_of_prefolded(state, args)
+    if recorded is None:
+        state["cohort"] = dump_cohort
+    elif recorded != dump_cohort and not getattr(args, "mixed_ok", False):
+        raise CapabilityError(
+            f"Dump {args.dump} belongs to cohort {dump_cohort!r} but this "
+            f"incremental consensus session is for cohort {recorded!r}; "
+            "different conditions must not be merged into one variance "
+            "accumulator. Use a dump of the same cohort, or pass --mixed-ok.",
+            category=ErrorCategory.INVALID_INPUT, code="cohort.mixed",
+            details={"session_cohort": recorded, "dump_cohort": dump_cohort})
 
 
 def _cmd_consensus_add(args: argparse.Namespace) -> int:
@@ -229,6 +298,7 @@ def _cmd_consensus_add(args: argparse.Namespace) -> int:
     state_path = Path(args.state)
     state, welford = _load_welford_session(state_path)
     size = int(state["size"])
+    _guard_add_cohort(state, args)
 
     with open_dump(Path(args.dump), **_key_material_from_args(args)) as source:
         _warn_tag_status(source)
@@ -332,6 +402,7 @@ def _cmd_consensus_window(args: argparse.Namespace) -> int:
         region_filter=region_filter,
         force=force_memory_requested(args),
         allocator=getattr(args, "allocator", "auto"),
+        mixed_ok=getattr(args, "mixed_ok", False),
     )
     _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
     _write_output(result.payload, args.output)
@@ -389,7 +460,48 @@ def _cmd_consensus_regions(args: argparse.Namespace) -> int:
         region_filter=region_filter,
         force=force_memory_requested(args),
         allocator=getattr(args, "allocator", "auto"),
+        mixed_ok=getattr(args, "mixed_ok", False),
     )
     _warn_alignment_diagnostics(_payload_alignment_diagnostics(result.payload))
+    _write_output(result.payload, args.output)
+    return 0
+
+
+def _anchor_specs_from_args(args: argparse.Namespace, dump_paths: list):
+    """``(anchors, needles)`` from ``--anchor PATH=VA`` / ``--needle`` / ``--needle-file``."""
+    if args.anchor:
+        specs = []
+        for item in args.anchor:
+            path, _, va = item.rpartition("=")
+            specs.append({"dump_path": path, "va": int(va, 0)})
+        return specs, None
+    if args.needle_file:
+        raw = json.loads(Path(args.needle_file).read_text())
+        return None, {str(k): str(v) for k, v in raw.items()}
+    if args.needle:
+        return None, {str(p): args.needle for p in dump_paths}
+    return None, None
+
+
+def _cmd_consensus_anchor(args: argparse.Namespace) -> int:
+    """Anchor-relative consensus; the sibling of ``POST /consensus/anchor``."""
+    from memdiver.app.composition import build_tool_session
+    from memdiver.app.tools_consensus import anchor_consensus_result
+    from memdiver.core.service_errors import CapabilityError
+
+    dump_paths = [str(p) for p in _resolve_dump_paths(args.dumps)]
+    anchors, needles = _anchor_specs_from_args(args, dump_paths)
+    try:
+        result = anchor_consensus_result(
+            build_tool_session(), dump_paths=dump_paths, anchors=anchors,
+            needles=needles, occurrence=args.occurrence,
+            delta_start=args.delta_start, length=args.length,
+            min_instances=args.min_instances, include_bytes=args.include_bytes,
+            mixed_ok=getattr(args, "mixed_ok", False),
+            keylog=keylog_spec_from_args(args),
+            anchor_label=args.anchor_label, related_labels=args.related_labels)
+    except (CapabilityError, OSError, ValueError) as exc:
+        print(f"memdiver: {exc}", file=sys.stderr)
+        return 1
     _write_output(result.payload, args.output)
     return 0

@@ -26,6 +26,7 @@ from ._shared import (
 from .consensus import (
     _cmd_consensus,
     _cmd_consensus_add,
+    _cmd_consensus_anchor,
     _cmd_consensus_begin,
     _cmd_consensus_finalize,
     _cmd_consensus_window,
@@ -84,11 +85,18 @@ from .inspect import (
     _cmd_inspect_structure,
     _cmd_inspect_vas,
     _cmd_inspect_xref,
+    _cmd_xref_pointers,
     _emit_inspect,
     _inspect_key_kwargs,
     _new_tool_session,
     _present_inspect_cli_call,
     present_inspect_cli,
+)
+from .semantic import (
+    _cmd_model_build,
+    _cmd_model_export,
+    _cmd_model_validate,
+    _cmd_propose_layout,
 )
 from .main import _build_parser, build_parser, main
 from .pipeline import (
@@ -141,6 +149,7 @@ __all__ = [
     "_cmd_consensus",
     "_cmd_consensus_begin",
     "_cmd_consensus_add",
+    "_cmd_consensus_anchor",
     "_cmd_consensus_finalize",
     "_cmd_consensus_window",
     "_consensus_state_paths",
@@ -189,6 +198,11 @@ __all__ = [
     "_cmd_inspect_handles",
     "_cmd_inspect_provenance",
     "_cmd_inspect_xref",
+    "_cmd_xref_pointers",
+    "_cmd_propose_layout",
+    "_cmd_model_build",
+    "_cmd_model_export",
+    "_cmd_model_validate",
     "_cmd_inspect_structure",
     # annotations
     "add_annotations_parser",

@@ -284,4 +284,5 @@ def serialize_dataset_info(info) -> Dict[str, Any]:
         "total_runs": info.total_runs,
         "runs_with_capture": info.runs_with_capture,
         "captures": _convert_value(info.captures),
+        "cohorts": _convert_value(info.cohorts),
     }

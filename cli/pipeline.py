@@ -296,6 +296,7 @@ def _cmd_n_sweep(args: argparse.Namespace) -> int:
         oracle_config_path=args.oracle_config,
         escalate=args.escalate,
         escalate_oracle_budget=args.escalate_oracle_budget,
+        mixed_ok=getattr(args, "mixed_ok", False),
         key_file=args.key_file,
         passphrase=args.passphrase,
         kem_key_file=args.kem_key_file,

@@ -1411,6 +1411,13 @@ def aligned_window_from_vector(
     }
 
 
+def _single_cohort(paths: Sequence[str], mixed_ok: bool) -> Optional[str]:
+    """The one cohort ``paths`` belong to; refuse (``cohort.mixed``) a mix."""
+    from memdiver.engine.cohorts import require_single_cohort
+
+    return require_single_cohort(paths, mixed_ok=mixed_ok)
+
+
 def aligned_window_result(
     session: ToolSession,
     *,
@@ -1427,8 +1434,12 @@ def aligned_window_result(
     region_filter: Optional[str] = None,
     force: bool = False,
     allocator: str = "auto",
+    mixed_ok: bool = False,
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one aligned window.
+
+    ``mixed_ok`` lifts the ``cohort.mixed`` refusal for dumps spanning several
+    experiment cohorts; the payload echoes the single ``cohort`` (or None).
 
     ``allocator`` ("auto", an allocator name, or "off") drives the heap-role
     annotation the window's ``heap_roles`` are read from; "off" omits them.
@@ -1450,6 +1461,7 @@ def aligned_window_result(
     from memdiver.core.service_result import Resolution, ServiceResult, StatusBlock
 
     paths = [str(p) for p in (dump_paths or [])]
+    cohort = _single_cohort(paths, mixed_ok)
     consensus: Optional[ConsensusVector] = None
     if classify:
         if len(paths) < 2:
@@ -1478,6 +1490,7 @@ def aligned_window_result(
         session=session,
         region_filter=region_filter,
     )
+    payload["cohort"] = cohort
     locked = [d for d in payload["dumps"] if not d["key_status"]["decrypted"]]
     resolution = Resolution.PARTIAL if locked else Resolution.OK
     return ServiceResult(payload=payload, status=StatusBlock(
@@ -1964,8 +1977,12 @@ def class_regions_result(
     region_filter: Optional[str] = None,
     force: bool = False,
     allocator: str = "auto",
+    mixed_ok: bool = False,
 ) -> "ServiceResult":
     """Build a consensus over ``dump_paths`` and serve one page of regions.
+
+    ``mixed_ok`` lifts the ``cohort.mixed`` refusal for dumps spanning several
+    experiment cohorts; the payload echoes the single ``cohort`` (or None).
 
     ``allocator`` is forwarded to ``build_consensus`` (heap annotation;
     "off" skips the heap analysis, which this page does not report).
@@ -1985,6 +2002,7 @@ def class_regions_result(
     paths = [str(p) for p in (dump_paths or [])]
     if len(paths) < 2:
         raise CapabilityError("Need at least 2 dumps to build a consensus")
+    cohort = _single_cohort(paths, mixed_ok)
 
     from memdiver.engine.consensus_service import build_consensus
 
@@ -2011,6 +2029,7 @@ def class_regions_result(
         session=session,
         region_filter=region_filter,
     )
+    payload["cohort"] = cohort
     # PARTIAL when an anchor was asked for and could not be answered: the rows
     # are complete but carry no navigable offsets, which is exactly the
     # "answered, but not fully" state the status block exists to name.
@@ -2022,3 +2041,274 @@ def class_regions_result(
     )
     return ServiceResult(payload=payload, status=StatusBlock(
         resolution=resolution, diagnostics=_alignment_diagnostics(consensus)))
+
+
+# ---------------------------------------------------------------------------
+# Anchor-relative consensus (consensus.anchor)
+# ---------------------------------------------------------------------------
+
+
+def _anchor_view_for(source: Any) -> str:
+    """``"va"`` when the source has a VA span, else ``"raw"`` (flat files)."""
+    has_va = hasattr(source, "va_span_start") and source.va_span_start() is not None
+    return "va" if has_va else "raw"
+
+
+def _explicit_anchor(source: Any, spec: Dict[str, Any]) -> Any:
+    """One caller-asserted anchor: ``{dump_path, va}`` or ``{dump_path, offset}``."""
+    from memdiver.engine.anchor_consensus import Anchor
+
+    path = str(spec.get("dump_path", ""))
+    if (spec.get("va") is None) == (spec.get("offset") is None):
+        raise CapabilityError(
+            f"anchor for {path!r} needs exactly one of 'va' or 'offset'")
+    view = _anchor_view_for(source)
+    if spec.get("va") is not None:
+        base = source.va_span_start() if view == "va" else None
+        if base is None:
+            raise CapabilityError(
+                f"{path!r} has no VA map; give 'offset' (raw file offset) instead")
+        va = int(spec["va"])
+        return Anchor(path, va - base, "va", va, "caller-asserted VA")
+    return Anchor(path, int(spec["offset"]), view, None,
+                  f"caller-asserted {view} offset")
+
+
+def _needle_anchors(sources: Dict[str, Any], hex_by_path: Dict[str, str],
+                    occurrence: int) -> Tuple[List[Any], List[Dict[str, Any]],
+                                              Dict[str, int], Dict[str, bool]]:
+    """Pick occurrence ``k`` per dump; name dumps lacking it (never dropped).
+
+    The last element flags dumps whose search hit the cap: there the count is
+    a lower bound and an occurrence beyond it is "not searched", not absent.
+    """
+    from memdiver.engine.anchor_consensus import search_needles
+
+    try:
+        needles = {p: bytes.fromhex(h) for p, h in hex_by_path.items()}
+    except ValueError as exc:
+        raise CapabilityError(f"needle is not valid hex: {exc}") from exc
+    if any(not n for n in needles.values()):
+        raise CapabilityError("needle must not be empty")
+    found = {}
+    for path, needle in needles.items():
+        found.update(search_needles(
+            {path: sources[path]}, {path: needle},
+            view=_anchor_view_for(sources[path])))
+    chosen = [r.anchors[occurrence] for r in found.values()
+              if occurrence < len(r.anchors)]
+    unanchored = [_missing_occurrence_row(p, r, occurrence)
+                  for p, r in found.items() if occurrence >= len(r.anchors)]
+    return (chosen, unanchored, {p: len(r.anchors) for p, r in found.items()},
+            {p: r.truncated for p, r in found.items()})
+
+
+def _missing_occurrence_row(path: str, search: Any, occurrence: int) -> Dict[str, Any]:
+    reason = (f"occurrence {occurrence} not searched beyond {search.cap} hits"
+              if search.truncated else f"occurrence {occurrence} not present")
+    return {"dump_path": path, "occurrences": len(search.anchors),
+            "reason": reason}
+
+
+def _anchor_instance_rows(consensus: Any) -> List[Dict[str, Any]]:
+    return [{"dump_path": w.anchor.dump_path, "va": w.anchor.va,
+             "offset": w.anchor.offset, "view": w.anchor.view,
+             "basis": w.anchor.basis, "captured_bytes": w.captured_bytes}
+            for w in consensus.instances]
+
+
+def _anchor_bytes_payload(consensus: Any) -> Dict[str, Any]:
+    """Per-delta arrays. ``reference_hex`` is anchor-0's window; bytes it did
+    not capture are NEVER shown as ``00`` -- they are ``??`` in the hex and
+    outside every ``reference_captured`` run ``[[start, len], ...]``."""
+    from memdiver.engine.anchor_consensus import CLASS_NAMES
+
+    ref = consensus.instances[0]
+    hex_pairs = [f"{b:02x}" if ok else "??"
+                 for b, ok in zip(ref.data, ref.captured.tolist())]
+    return {
+        "classes": [int(c) for c in consensus.classes],
+        "class_names": {str(k): v for k, v in CLASS_NAMES.items()},
+        "captured_count": [int(c) for c in consensus.captured_count],
+        "distinct_values": [int(c) for c in consensus.distinct_values],
+        "reference_hex": "".join(hex_pairs),
+    }
+
+
+def _anchored_sources(
+    stack: ExitStack,
+    anchors: Optional[Sequence[Dict[str, Any]]],
+    needles: Optional[Dict[str, str]],
+    occurrence: int,
+    mixed_ok: bool,
+    keylog: Any = None,
+) -> Tuple[Optional[str], Dict[str, Any], List[Any], List[Dict[str, Any]],
+           Dict[str, int]]:
+    """Open every dump on ``stack`` and resolve one anchor per instance.
+
+    Shared by anchor consensus and the semantic producers (layout proposal,
+    model build). Returns ``(cohort, sources, chosen, unanchored,
+    alternatives)``; the sources stay live until ``stack`` unwinds. Use
+    :func:`_anchored_sources_ex` for the per-dump search-truncation flags.
+    """
+    return _anchored_sources_ex(stack, anchors, needles, occurrence,
+                                mixed_ok, keylog)[:5]
+
+
+def _anchored_sources_ex(
+    stack: ExitStack,
+    anchors: Optional[Sequence[Dict[str, Any]]],
+    needles: Optional[Dict[str, str]],
+    occurrence: int,
+    mixed_ok: bool,
+    keylog: Any = None,
+) -> Tuple[Optional[str], Dict[str, Any], List[Any], List[Dict[str, Any]],
+           Dict[str, int], Dict[str, bool]]:
+    """:func:`_anchored_sources` plus ``truncated`` (dump -> search capped).
+
+    ``keylog`` is a :class:`memdiver.app.keylog_input.KeylogAnchoring`: the
+    third anchor mode. Its needles are resolved from the key log against the
+    opened dumps and the object is filled in with the per-dump resolution.
+    """
+    if sum(x is not None for x in (anchors, needles, keylog)) != 1:
+        raise CapabilityError("pass exactly one of 'anchors', 'needles' or 'keylog'")
+    if occurrence < 0:
+        raise CapabilityError("occurrence must be >= 0")
+    if keylog is not None:
+        paths = [str(p) for p in keylog.dump_paths]
+    elif anchors is not None:
+        paths = list(dict.fromkeys(str(a.get("dump_path", "")) for a in anchors))
+    else:
+        paths = [str(p) for p in (needles or {})]
+    cohort = _single_cohort(paths, mixed_ok)
+    sources = {p: _open_one(stack, p, None) for p in paths}
+    unanchored: List[Dict[str, Any]] = []
+    alternatives: Dict[str, int] = {}
+    truncated: Dict[str, bool] = {}
+    if keylog is not None:
+        keylog.resolve(sources, _anchor_view_for)
+        unanchored = keylog.unanchored
+        chosen, more, alternatives, truncated = (
+            _needle_anchors(sources, keylog.needles, int(occurrence))
+            if keylog.needles else ([], [], {}, {}))
+        unanchored = unanchored + more
+    elif anchors is not None:
+        chosen = [_explicit_anchor(sources[str(a.get("dump_path", ""))], a)
+                  for a in anchors]
+    else:
+        chosen, unanchored, alternatives, truncated = _needle_anchors(
+            sources, needles or {}, int(occurrence))
+    if len(chosen) < 2:
+        raise CapabilityError(
+            f"need at least 2 anchored instances, got {len(chosen)}; "
+            f"unanchored: {[u['dump_path'] for u in unanchored]}"
+            + (f" ({unanchored[0]['reason']})" if unanchored else ""))
+    return cohort, sources, chosen, unanchored, alternatives, truncated
+
+
+def _restrict_to_dumps(items: Any, dump_paths: Optional[Sequence[str]]
+                       ) -> Tuple[Any, List[str]]:
+    """Keep entries naming a dump in ``dump_paths``; also return the dropped
+    paths so the caller can REPORT them (never a silent drop)."""
+    if dump_paths is None or items is None:
+        return items, []
+    wanted = {str(p) for p in dump_paths}
+    if isinstance(items, dict):
+        kept = {p: v for p, v in items.items() if str(p) in wanted}
+        return kept, [str(p) for p in items if str(p) not in wanted]
+    kept_items = [a for a in items if str(a.get("dump_path", "")) in wanted]
+    dropped = [str(a.get("dump_path", "")) for a in items
+               if str(a.get("dump_path", "")) not in wanted]
+    return kept_items, list(dict.fromkeys(dropped))
+
+
+def _keylog_anchoring(keylog: Any, dump_paths: Optional[Sequence[str]],
+                      anchor_label: Optional[str],
+                      related_labels: Optional[Sequence[str]]) -> Any:
+    """The key-log anchoring request, or None when ``keylog`` is not given."""
+    if keylog is None:
+        if anchor_label or related_labels:
+            raise CapabilityError("anchor_label / related_labels need 'keylog'")
+        return None
+    from memdiver.app.keylog_input import KeylogAnchoring
+
+    if not dump_paths:
+        raise CapabilityError("'keylog' anchoring needs dump_paths")
+    return KeylogAnchoring(keylog, [str(p) for p in dump_paths], anchor_label,
+                           related_labels)
+
+
+def anchor_consensus_result(
+    session: ToolSession,
+    *,
+    dump_paths: Optional[Sequence[str]] = None,
+    anchors: Optional[Sequence[Dict[str, Any]]] = None,
+    needles: Optional[Dict[str, str]] = None,
+    occurrence: int = 0,
+    delta_start: int = -256,
+    length: int = 768,
+    min_instances: Optional[int] = None,
+    include_bytes: bool = False,
+    mixed_ok: bool = False,
+    keylog: Optional[Dict[str, Any]] = None,
+    anchor_label: Optional[str] = None,
+    related_labels: Optional[Sequence[str]] = None,
+) -> "ServiceResult":
+    """Consensus keyed by ``delta`` relative to each dump's own anchor.
+
+    Third anchor mode ``keylog`` (needs ``dump_paths``): ``{"path"}`` /
+    ``{"text"}`` (one shared NSS key log) or ``{"per_dump": {dump: path}}``.
+    Each dump is anchored on the key-log session whose ``anchor_label`` secret
+    occurs in it (default ``CLIENT_TRAFFIC_SECRET_0``, else ``CLIENT_RANDOM``'s
+    master secret); no match or several is ``unanchored``, never guessed. The
+    payload adds ``keylog_resolution`` and ``suggested_meanings``.
+
+    ``mixed_ok`` lifts the ``cohort.mixed`` refusal for dumps spanning several
+    experiment cohorts; the payload echoes the single ``cohort`` (or None).
+
+    Exactly one of ``anchors`` (``[{dump_path, va} | {dump_path, offset}]``),
+    ``keylog`` or ``needles`` (``{dump_path: hex}``; every occurrence is an alternative,
+    ``occurrence`` picks the k-th per dump). Dumps lacking that occurrence are
+    listed under ``unanchored`` (resolution PARTIAL), never dropped silently;
+    ``alternatives`` reports each dump's occurrence count. Uncaptured bytes
+    never contribute zeros; see ``engine.anchor_consensus``.
+    """
+    from memdiver.core.service_result import Resolution, ServiceResult, StatusBlock
+    from memdiver.engine.anchor_consensus import (
+        MAX_WINDOW, CLASS_NAMES, anchor_consensus, read_instance)
+
+    if not 0 < int(length) <= MAX_WINDOW:
+        raise CapabilityError(f"length must be in [1, {MAX_WINDOW}], got {length}")
+    needles, dropped_n = _restrict_to_dumps(needles, dump_paths)
+    anchors, dropped_a = _restrict_to_dumps(anchors, dump_paths)
+    dropped = list(dict.fromkeys(dropped_n + dropped_a))
+    anchoring = _keylog_anchoring(keylog, dump_paths, anchor_label, related_labels)
+    with ExitStack() as stack:
+        (cohort, sources, chosen, unanchored, alternatives,
+         truncated) = _anchored_sources_ex(
+            stack, anchors, needles, occurrence, mixed_ok, anchoring)
+        windows = [read_instance(sources[a.dump_path], a, int(delta_start),
+                                 int(length)) for a in chosen]
+    try:
+        cons = anchor_consensus(windows, delta_start=int(delta_start),
+                                min_instances=min_instances)
+    except ValueError as exc:
+        raise CapabilityError(str(exc)) from exc
+    counts = {name: int((cons.classes == code).sum())
+              for code, name in CLASS_NAMES.items()}
+    payload: Dict[str, Any] = {
+        "cohort": cohort,
+        "delta_start": cons.delta_start, "length": cons.length,
+        "min_instances": cons.min_instances, "occurrence": int(occurrence),
+        "instances": _anchor_instance_rows(cons), "unanchored": unanchored,
+        "alternatives": alternatives, "alternatives_truncated": truncated,
+        "outside_dump_paths": dropped, "regions": cons.regions(),
+        "class_counts": counts, "warnings": list(cons.warnings),
+    }
+    if include_bytes:
+        payload.update(_anchor_bytes_payload(cons))
+    if anchoring is not None:
+        payload.update(anchoring.payload())
+    resolution = Resolution.PARTIAL if unanchored else Resolution.OK
+    return ServiceResult(payload=payload, status=StatusBlock(
+        resolution=resolution))
