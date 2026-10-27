@@ -15,9 +15,10 @@
  * and the producer payload arrives as the terminal `done` event's `extra`.
  */
 
-import { ApiError, request } from "./client";
+import { ApiError, compact, postJson as post, request } from "./client";
 import type { PageStatesResponse } from "./types";
-import { parseJsonLossless, postLossless } from "./lossless-json";
+import { getTaskPayload, parseJsonLossless, postLossless } from "./lossless-json";
+import { hasKey } from "./guards";
 
 export interface Vol3Plugin {
   name: string;
@@ -136,18 +137,7 @@ export interface Vol3AnnotateRequest {
 }
 
 /** A run answers inline with its result, or as a job ticket. */
-export const isJobTicket = (r: Vol3RunResult | Vol3JobTicket): r is Vol3JobTicket =>
-  "task_id" in r;
-
-const post = <T>(url: string, body: object) =>
-  request<T>(url, { method: "POST", body: JSON.stringify(body) });
-
-/** Drop undefined / empty-string optionals so the backend sees `null`, not `""`. */
-function compact<T extends object>(body: T): Partial<T> {
-  return Object.fromEntries(
-    Object.entries(body).filter(([, v]) => v !== undefined && v !== ""),
-  ) as Partial<T>;
-}
+export const isJobTicket = (r: unknown): r is Vol3JobTicket => hasKey(r, "task_id");
 
 export const listVol3Plugins = (osFamily = "linux") =>
   request<Vol3PluginList>(`/api/vol3/plugins?os_family=${encodeURIComponent(osFamily)}`);
@@ -167,12 +157,7 @@ export const annotateVol3Run = (req: Vol3AnnotateRequest) =>
  * `.payload`), parsed losslessly; `null` when the server stored none. The task
  * WebSocket's copy went through `JSON.parse` and has rounded kernel addresses.
  */
-export async function getVol3JobPayload(taskId: string): Promise<Vol3RunResult | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  const body = parseJsonLossless(await res.text()) as { payload?: Vol3RunResult | null } | null;
-  return body?.payload ?? null;
-}
+export const getVol3JobPayload = (taskId: string) => getTaskPayload<Vol3RunResult>(taskId);
 
 /**
  * The VA -> packed-offset map of a view (`page-states?view=vas`), parsed

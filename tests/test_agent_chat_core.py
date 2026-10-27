@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 
 import pytest
 
@@ -168,6 +169,30 @@ def test_gate_resolve_unknown_id_and_timeout():
         assert not d.allow and "timed out" in d.message
         assert ev[-1].type == "approval_resolved"
     run(go())
+
+
+def test_gate_failed_resolution_event_is_logged_and_its_task_released(caplog):
+    async def go():
+        sent = []
+
+        async def emit(ev: ChatEvent):
+            sent.append(ev.type)
+            if ev.type == "approval_resolved":
+                raise RuntimeError("socket gone")
+
+        gate = ApprovalGate(ACCESS, emit, id_factory=lambda: "r1")
+        t = asyncio.create_task(gate.decide(P + "case_init", {}))
+        await _settle()
+        assert gate.resolve("r1", True)  # the failing send must not raise here...
+        assert len(gate._pending_events) == 1  # ...and its task is held strongly
+        assert (await t).allow
+        await _settle()
+        assert sent == ["approval_request", "approval_resolved"]
+        assert gate._pending_events == set()  # drained once the send finished
+
+    with caplog.at_level(logging.DEBUG, logger="memdiver.app.agent_chat.gate"):
+        run(go())
+    assert "chat event approval_resolved not delivered: socket gone" in caplog.text
 
 
 # -- system prompt --------------------------------------------------------------------

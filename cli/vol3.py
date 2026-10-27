@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from ._shared import _write_output
+from ._shared import emit, output_parent_parser
 
 
 def _json_or_string(text: str) -> Any:
@@ -42,13 +42,6 @@ def _json_object(text: str) -> Dict[str, Any]:
     return value
 
 
-def _common_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
-
-
 def _add_source(p: argparse.ArgumentParser) -> None:
     p.add_argument("--source", metavar="FILE",
                    help="Plugin source file (runs UNSANDBOXED in this process; sha256 logged)")
@@ -69,10 +62,10 @@ def add_vol3_parser(sub) -> None:
 
 
 def _add_list_describe(actions) -> None:
-    lst = actions.add_parser("list", parents=[_common_parser()],
+    lst = actions.add_parser("list", parents=[output_parent_parser()],
                              help="Bundled plugins of an OS family")
     lst.add_argument("--os", dest="os_family", default="linux", help="OS family (default: linux)")
-    desc = actions.add_parser("describe", parents=[_common_parser()],
+    desc = actions.add_parser("describe", parents=[output_parent_parser()],
                               help="A plugin's user requirements")
     desc.add_argument("--plugin", default="", help="Bundled plugin, e.g. linux.pslist")
     desc.add_argument("--case", dest="case_dir", help="Case holding --source-name")
@@ -80,7 +73,7 @@ def _add_list_describe(actions) -> None:
 
 
 def _add_run(actions) -> None:
-    run = actions.add_parser("run", parents=[_common_parser()],
+    run = actions.add_parser("run", parents=[output_parent_parser()],
                              help="Run a plugin over a .mdview (inline); --case files the table")
     run.add_argument("--view", required=True, help=".mdview descriptor")
     run.add_argument("--plugin", default="", help="Bundled plugin, e.g. linux.pslist")
@@ -98,7 +91,7 @@ def _add_run(actions) -> None:
 
 
 def _add_query_annotate(actions) -> None:
-    q = actions.add_parser("query", parents=[_common_parser()],
+    q = actions.add_parser("query", parents=[output_parent_parser()],
                            help="SQL or a saved query over a case (neither lists saved queries)")
     q.add_argument("--case", required=True, dest="case_dir", help="Case directory")
     q.add_argument("--sql", help="Read-only SELECT")
@@ -106,7 +99,7 @@ def _add_query_annotate(actions) -> None:
     q.add_argument("--param", action="append", type=_json_or_string, dest="params",
                    help="Positional ? binding (repeatable; JSON values)")
     q.add_argument("--limit", type=int, default=1000, help="Row cap (default: 1000)")
-    ann = actions.add_parser("annotate", parents=[_common_parser()],
+    ann = actions.add_parser("annotate", parents=[output_parent_parser()],
                              help="File plugin_row annotations for a registered run")
     ann.add_argument("--case", required=True, dest="case_dir")
     ann.add_argument("--table", required=True)
@@ -118,18 +111,18 @@ def _add_query_annotate(actions) -> None:
 
 
 def _add_dev(actions) -> None:
-    sc = actions.add_parser("scaffold", parents=[_common_parser()],
+    sc = actions.add_parser("scaffold", parents=[output_parent_parser()],
                             help="Source text of a new plugin")
     sc.add_argument("name")
     sc.add_argument("--os", dest="os_family", default="linux")
     sc.add_argument("--description", default="")
     sc.add_argument("--kernel-only", action="store_true", help="No per-process pid filter")
-    chk = actions.add_parser("check", parents=[_common_parser()],
+    chk = actions.add_parser("check", parents=[output_parent_parser()],
                              help="Load a plugin source file; optionally test it against a view")
     _add_source(chk)
     chk.add_argument("--case", dest="case_dir", help="Case holding --source-name")
     chk.add_argument("--view", help=".mdview to test the requirements against")
-    imp = actions.add_parser("import", parents=[_common_parser()],
+    imp = actions.add_parser("import", parents=[output_parent_parser()],
                              help="Register an external vol3 output file as a case table")
     imp.add_argument("file", metavar="FILE", help="Parquet / CSV / JSON output file")
     imp.add_argument("--case", required=True, dest="case_dir")
@@ -138,7 +131,7 @@ def _add_dev(actions) -> None:
     imp.add_argument("--image-sha256", dest="image_sha256")
     imp.add_argument("--locations", type=_json_object, help='JSON {"Column": "space"}')
     imp.add_argument("--format", default="auto")
-    wc = actions.add_parser("write-config", parents=[_common_parser()],
+    wc = actions.add_parser("write-config", parents=[output_parent_parser()],
                             help="Write a vol config.json reproducing a view's stack")
     wc.add_argument("--view", required=True)
     wc.add_argument("--out", required=True, dest="out_path")
@@ -150,20 +143,20 @@ def _add_dev(actions) -> None:
 def _add_source_fixture(actions) -> None:
     src = actions.add_parser("source", help="Stored plugin sources of a case: put|get|list")
     src_actions = src.add_subparsers(dest="source_action")
-    put = src_actions.add_parser("put", parents=[_common_parser()],
+    put = src_actions.add_parser("put", parents=[output_parent_parser()],
                                  help="Store a plugin source file in the case and check it")
     put.add_argument("name")
     put.add_argument("--case", required=True, dest="case_dir")
     put.add_argument("--file", required=True, metavar="FILE", help="Plugin source file")
     put.add_argument("--view", help=".mdview to test the requirements against")
-    get = src_actions.add_parser("get", parents=[_common_parser()], help="One stored source")
+    get = src_actions.add_parser("get", parents=[output_parent_parser()], help="One stored source")
     get.add_argument("name")
     get.add_argument("--case", required=True, dest="case_dir")
-    lst = src_actions.add_parser("list", parents=[_common_parser()], help="Stored sources")
+    lst = src_actions.add_parser("list", parents=[output_parent_parser()], help="Stored sources")
     lst.add_argument("--case", required=True, dest="case_dir")
     fix = actions.add_parser("fixture", help="Plugin fixtures of a case: put|list|run")
     fix_actions = fix.add_subparsers(dest="fixture_action")
-    fput = fix_actions.add_parser("put", parents=[_common_parser()],
+    fput = fix_actions.add_parser("put", parents=[output_parent_parser()],
                                   help="Store a fixture: plugin + view + row predicates")
     fput.add_argument("name")
     fput.add_argument("--case", required=True, dest="case_dir")
@@ -174,9 +167,9 @@ def _add_source_fixture(actions) -> None:
                       metavar="KEY=VALUE", help="Plugin argument (repeatable; JSON values)")
     fput.add_argument("--expect", action="append", type=_json_object, required=True,
                       help='Predicate JSON, e.g. \'{"min_rows": 1}\' (repeatable)')
-    flst = fix_actions.add_parser("list", parents=[_common_parser()], help="Stored fixtures")
+    flst = fix_actions.add_parser("list", parents=[output_parent_parser()], help="Stored fixtures")
     flst.add_argument("--case", required=True, dest="case_dir")
-    frun = fix_actions.add_parser("run", parents=[_common_parser()],
+    frun = fix_actions.add_parser("run", parents=[output_parent_parser()],
                                   help="Run a fixture and file its verdict")
     frun.add_argument("name")
     frun.add_argument("--case", required=True, dest="case_dir")
@@ -187,30 +180,25 @@ def _add_source_fixture(actions) -> None:
                       help="Also file the plugin table and link the verdict to it")
 
 
-def _emit(args: argparse.Namespace, payload: dict) -> int:
-    _write_output(payload, args.output)
-    return 0
-
-
 def _read_source(path: Optional[str]) -> Optional[str]:
     return Path(path).expanduser().read_text(encoding="utf-8") if path else None
 
 
 def _cmd_vol3_list(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3 import vol3_plugins_result
-    return _emit(args, vol3_plugins_result(args.os_family).payload)
+    return emit(args, vol3_plugins_result(args.os_family).payload)
 
 
 def _cmd_vol3_describe(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3 import vol3_describe_result
-    return _emit(args, vol3_describe_result(
+    return emit(args, vol3_describe_result(
         args.plugin, _read_source(args.source), source_name=args.source_name,
         case_dir=args.case_dir).payload)
 
 
 def _cmd_vol3_run(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3 import vol3_run_result
-    return _emit(args, vol3_run_result(
+    return emit(args, vol3_run_result(
         args.view, args.plugin, dict(args.plugin_args or []), case_dir=args.case_dir,
         limit=args.limit, timeout_s=args.timeout, max_rows=args.max_rows,
         column_map=args.column_map, source=_read_source(args.source),
@@ -219,34 +207,34 @@ def _cmd_vol3_run(args: argparse.Namespace) -> int:
 
 def _cmd_vol3_query(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3 import vol3_query_result
-    return _emit(args, vol3_query_result(
+    return emit(args, vol3_query_result(
         args.case_dir, args.sql, args.saved, args.params, args.limit).payload)
 
 
 def _cmd_vol3_annotate(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3 import vol3_annotate_result
-    return _emit(args, vol3_annotate_result(
+    return emit(args, vol3_annotate_result(
         args.case_dir, args.table, args.run_id, args.column, rows=args.rows,
         label_column=args.label_column, author=args.author).payload)
 
 
 def _cmd_vol3_scaffold(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3_dev import vol3_scaffold_result
-    return _emit(args, vol3_scaffold_result(
+    return emit(args, vol3_scaffold_result(
         args.name, os_family=args.os_family, description=args.description,
         per_process=not args.kernel_only).payload)
 
 
 def _cmd_vol3_check(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3_dev import vol3_check_result
-    return _emit(args, vol3_check_result(
+    return emit(args, vol3_check_result(
         _read_source(args.source), args.view, source_name=args.source_name,
         case_dir=args.case_dir).payload)
 
 
 def _cmd_vol3_import(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3_dev import vol3_import_parquet_result
-    return _emit(args, vol3_import_parquet_result(
+    return emit(args, vol3_import_parquet_result(
         args.case_dir, args.file, table=args.table, capture_id=args.capture_id,
         image_sha256=args.image_sha256, locations=args.locations,
         format=args.format).payload)
@@ -254,7 +242,7 @@ def _cmd_vol3_import(args: argparse.Namespace) -> int:
 
 def _cmd_vol3_write_config(args: argparse.Namespace) -> int:
     from memdiver.app.tools_vol3_dev import vol3_write_config_result
-    return _emit(args, vol3_write_config_result(
+    return emit(args, vol3_write_config_result(
         args.view, args.out_path, args.plugin, source=_read_source(args.source),
         source_name=args.source_name, case_dir=args.case_dir).payload)
 
@@ -263,12 +251,12 @@ def _cmd_vol3_source(args: argparse.Namespace) -> int:
     from memdiver.app import tools_vol3_sources as sources
     action = getattr(args, "source_action", None)
     if action == "put":
-        return _emit(args, sources.vol3_source_put_result(
+        return emit(args, sources.vol3_source_put_result(
             args.case_dir, args.name, _read_source(args.file) or "", args.view).payload)
     if action == "get":
-        return _emit(args, sources.vol3_source_get_result(args.case_dir, args.name).payload)
+        return emit(args, sources.vol3_source_get_result(args.case_dir, args.name).payload)
     if action == "list":
-        return _emit(args, sources.vol3_source_list_result(args.case_dir).payload)
+        return emit(args, sources.vol3_source_list_result(args.case_dir).payload)
     print("memdiver vol3 source: pick an action: put, get, list", file=sys.stderr)
     return 1
 
@@ -277,14 +265,14 @@ def _cmd_vol3_fixture(args: argparse.Namespace) -> int:
     from memdiver.app import tools_vol3_fixtures as fixtures
     action = getattr(args, "fixture_action", None)
     if action == "put":
-        return _emit(args, fixtures.vol3_fixture_put_result(
+        return emit(args, fixtures.vol3_fixture_put_result(
             args.case_dir, args.name, view_path=args.view, expect=args.expect,
             plugin=args.plugin, source_name=args.source_name,
             args=dict(args.plugin_args or [])).payload)
     if action == "list":
-        return _emit(args, fixtures.vol3_fixture_list_result(args.case_dir).payload)
+        return emit(args, fixtures.vol3_fixture_list_result(args.case_dir).payload)
     if action == "run":
-        return _emit(args, fixtures.vol3_fixture_run_result(
+        return emit(args, fixtures.vol3_fixture_run_result(
             args.case_dir, args.name, view_path=args.view, limit=args.limit,
             timeout_s=args.timeout, register_run=args.register_run).payload)
     print("memdiver vol3 fixture: pick an action: put, list, run", file=sys.stderr)

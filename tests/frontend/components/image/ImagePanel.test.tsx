@@ -244,4 +244,27 @@ describe("ImagePanel", () => {
     expect(await screen.findByTestId("processes-need-profile")).toBeInTheDocument();
     expect(api.listImageProcesses).not.toHaveBeenCalledWith("/cases/n.mdview");
   });
+
+  it("probes a typed path only once it has rested, never per keystroke", async () => {
+    render(<ImagePanel />);
+    await screen.findByTestId("probe-format");
+    api.probeImage.mockClear();
+    const input = screen.getByTestId("image-path-input");
+    fireEvent.change(input, { target: { value: "/b" } });
+    fireEvent.change(input, { target: { value: "/b.lime" } });
+    await waitFor(() => expect(api.probeImage).toHaveBeenCalledWith("/b.lime", false, undefined));
+    expect(api.probeImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a late probe answer for an older request", async () => {
+    let resolveOld: (v: unknown) => void = () => {};
+    api.probeImage.mockImplementationOnce(() => new Promise((r) => { resolveOld = r; }));
+    api.probeImage.mockRejectedValueOnce(new Error('{"error":"newer failure"}'));
+    render(<ImagePanel />);
+    act(() => { useImageStore.setState({ isfPath: "/x.isf.json" }); });
+    expect(await screen.findByText("newer failure")).toBeInTheDocument();
+    await act(async () => { resolveOld(PROBE); });
+    expect(screen.queryByTestId("probe-format")).not.toBeInTheDocument();
+    expect(screen.getByText("newer failure")).toBeInTheDocument();
+  });
 });

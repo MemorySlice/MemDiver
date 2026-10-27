@@ -14,10 +14,9 @@ it and an import problem surfaces as a reported task failure.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
-from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+from memdiver.app.pipeline.artifact_paths import task_result_artifact
 
 STAGE = "image"
 JOBS = ("profile", "open_view", "extract_process", "case_export", "isf_probe", "isf_try",
@@ -53,16 +52,6 @@ def _call_producer(job: str, args: Dict[str, Any], **controls: Any) -> Dict[str,
     return dict(producers[job](**args, **controls).payload)
 
 
-def _write_artifact(payload: Dict[str, Any], params: Dict[str, Any], ctx) -> Dict[str, Any]:
-    from memdiver.core.artifact_util import sha256_streamed
-    relpath = "image/result.json"
-    out = resolve_artifact_dir(params, ctx, fallback_subdir="./image_output") / relpath
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2))
-    return {"name": "image_result", "relpath": relpath, "media_type": "application/json",
-            "size": out.stat().st_size, "sha256": sha256_streamed(out)}
-
-
 def run_image_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     """Worker entry. ``params``: ``job`` (one of :data:`JOBS`), ``args`` (producer kwargs),
     ``task_root`` / ``artifact_dir``. Returns ``{"artifacts": [...], "summary": {...}}``."""
@@ -79,6 +68,6 @@ def run_image_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
             raise RuntimeError(f"image {job} cancelled") from exc
         ctx.emit("error", error=exc.message)
         raise ValueError(exc.message) from exc
-    artifact = _write_artifact(payload, params, ctx)
+    artifact = task_result_artifact(payload, params, ctx, "image")
     ctx.emit("stage_end", stage=STAGE, pct=1.0, msg=f"image {job} done", extra=payload)
     return {"artifacts": [artifact], "summary": payload}

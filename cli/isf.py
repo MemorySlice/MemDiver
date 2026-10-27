@@ -12,7 +12,7 @@ import json
 import sys
 from typing import Any, Callable, Dict, Optional
 
-from ._shared import _write_output
+from ._shared import emit, output_parent_parser
 
 DRAFT_ACTIONS = ("create", "list", "get", "set", "import", "retract", "versions", "diff",
                  "validate", "export")
@@ -29,15 +29,8 @@ def _json_arg(text: Optional[str], flag: str) -> Any:
         raise SystemExit(2) from exc
 
 
-def _output_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
-
-
 def _draft_parser(name_arg: bool = True) -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False, parents=[_output_parser()])
+    p = argparse.ArgumentParser(add_help=False, parents=[output_parent_parser()])
     p.add_argument("case_dir", metavar="CASE", help="Case directory")
     p.add_argument("capture_id", metavar="CAPTURE", help="Capture id (image sha256)")
     if name_arg:
@@ -45,8 +38,8 @@ def _draft_parser(name_arg: bool = True) -> argparse.ArgumentParser:
     return p
 
 
-def _add_probe_and_try(actions, limit_default: int) -> None:
-    probe = actions.add_parser("probe", parents=[_output_parser()],
+def _add_probe_and_try(actions) -> None:
+    probe = actions.add_parser("probe", parents=[output_parent_parser()],
                                help="Run one pakunoda probe on a full image")
     probe.add_argument("image", metavar="IMAGE")
     probe.add_argument("probe_name", metavar="PROBE", help="viability, banner, kallsyms, ...")
@@ -55,7 +48,7 @@ def _add_probe_and_try(actions, limit_default: int) -> None:
     probe.add_argument("--case", dest="case_dir", help="Case holding --draft (feed its hits)")
     probe.add_argument("--draft", help="Draft that receives the probe's findings")
     probe.add_argument("--author")
-    run = actions.add_parser("try", parents=[_output_parser()],
+    run = actions.add_parser("try", parents=[output_parent_parser()],
                              help="Try a draft or an ISF file on the image with a vol3 plugin")
     run.add_argument("image", metavar="IMAGE")
     run.add_argument("--case", dest="case_dir")
@@ -71,7 +64,7 @@ def _add_probe_and_try(actions, limit_default: int) -> None:
 
 
 def _add_code_evidence(actions) -> None:
-    ce = actions.add_parser("code-evidence", parents=[_output_parser()],
+    ce = actions.add_parser("code-evidence", parents=[output_parent_parser()],
                             help="Struct fields a kernel function touches (code evidence)")
     ce.add_argument("image", metavar="IMAGE")
     ce.add_argument("function", metavar="FUNCTION", help="kallsyms name or 0x VA")
@@ -137,38 +130,33 @@ def add_isf_parser(sub) -> None:
     from memdiver.app.tools_isf import DEFAULT_LIMIT
     group = sub.add_parser("isf", help="ISF workbench: probe an image, edit drafts, try them")
     actions = group.add_subparsers(dest="isf_action")
-    _add_probe_and_try(actions, DEFAULT_LIMIT)
+    _add_probe_and_try(actions)
     _add_code_evidence(actions)
     _add_draft_group(actions, DEFAULT_LIMIT)
 
 
-def _emit(args: argparse.Namespace, result) -> int:
-    _write_output(result.payload, args.output)
-    return 0
-
-
 def _cmd_probe(args: argparse.Namespace) -> int:
     from memdiver.app.tools_isf import DEFAULT_AUTHOR, isf_probe_result
-    return _emit(args, isf_probe_result(
+    return emit(args, isf_probe_result(
         args.image, args.probe_name, arch=args.arch, params=_json_arg(args.params, "--params"),
-        case_dir=args.case_dir, draft=args.draft, author=args.author or DEFAULT_AUTHOR))
+        case_dir=args.case_dir, draft=args.draft, author=args.author or DEFAULT_AUTHOR).payload)
 
 
 def _cmd_try(args: argparse.Namespace) -> int:
     from memdiver.app.tools_isf import isf_try_result
-    return _emit(args, isf_try_result(
+    return emit(args, isf_try_result(
         args.image, case_dir=args.case_dir, draft=args.draft, version=args.version,
         isf_path=args.isf_path, plugin=args.plugin, ground_truth=args.ground_truth,
         timeout_s=args.timeout_s, min_recall=args.min_recall,
-        min_precision=args.min_precision, author=args.author))
+        min_precision=args.min_precision, author=args.author).payload)
 
 
 def _cmd_code_evidence(args: argparse.Namespace) -> int:
     from memdiver.app.tools_code_evidence import code_evidence_result
-    return _emit(args, code_evidence_result(
+    return emit(args, code_evidence_result(
         image_path=args.image, function=args.function, arch=args.arch,
         max_bytes=args.max_bytes, base=args.base,
-        params={"isf": args.isf} if args.isf else None))
+        params={"isf": args.isf} if args.isf else None).payload)
 
 
 def _draft_handlers() -> Dict[str, Callable[[argparse.Namespace], Any]]:
@@ -209,7 +197,7 @@ def _cmd_draft(args: argparse.Namespace) -> int:
         print("memdiver isf draft: pick an action: " + ", ".join(DRAFT_ACTIONS),
               file=sys.stderr)
         return 1
-    return _emit(args, handler(args))
+    return emit(args, handler(args).payload)
 
 
 _ISF_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {

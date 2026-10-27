@@ -32,6 +32,7 @@ import type {
   ImportPreview,
 } from "./types";
 import { keyMaterialWire } from "./key-material-wire";
+import i18n from "@/i18n";
 
 const BASE = ""; // relative -- Vite proxy handles /api/* during dev
 
@@ -89,7 +90,30 @@ export function readableFailure(err: unknown): string {
   return raw;
 }
 
-export async function request<T>(url: string, init?: RequestInit): Promise<T> {
+/** Decodes a non-empty response body (default `JSON.parse`). */
+export type BodyParser = (text: string) => unknown;
+
+/** Optional decoding inputs of {@link request}. */
+export interface RequestOptions {
+  /**
+   * Decoder for a non-empty body. Default `JSON.parse`; the lossless decoder
+   * (`parseJsonLossless`) keeps integers past 2^53 exact. A throw from it is
+   * reported as the same "Malformed JSON response" `ApiError` either way.
+   */
+  parse?: BodyParser;
+  /**
+   * The endpoint always answers with a result, so an empty body is a server
+   * fault: reject it as an `ApiError` instead of resolving `undefined` (which
+   * a caller's shape guard would then be handed).
+   */
+  requireBody?: boolean;
+}
+
+export async function request<T>(
+  url: string,
+  init?: RequestInit,
+  { parse = JSON.parse, requireBody = false }: RequestOptions = {},
+): Promise<T> {
   const { headers: callerHeaders, ...restInit } = init ?? {};
   const res = await fetch(`${BASE}${url}`, {
     ...restInit,
@@ -104,13 +128,25 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   // keeping `instanceof ApiError` handling consistent for all callers.
   const text = await res.text();
   if (text === "") {
+    if (requireBody) throw new ApiError(res.status, i18n.t("common:emptyResponse"));
     return undefined as T;
   }
   try {
-    return JSON.parse(text) as T;
+    return parse(text) as T;
   } catch {
     throw new ApiError(res.status, `Malformed JSON response: ${text.slice(0, 200)}`);
   }
+}
+
+/** POST `body` as JSON through {@link request}. */
+export const postJson = <T>(url: string, body: unknown, options?: RequestOptions) =>
+  request<T>(url, { method: "POST", body: JSON.stringify(body) }, options);
+
+/** Drop undefined / empty-string optionals so the backend sees `null`, not `""`. */
+export function compact<T extends object>(body: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, v]) => v !== undefined && v !== ""),
+  ) as Partial<T>;
 }
 
 // Dataset

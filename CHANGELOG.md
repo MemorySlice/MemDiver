@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.6] — 2026-10-27
+
 ### Added
 - Full memory images (semantic workbench P1/P2): `.mdview` physical / kernel / process
   views over LiME/ELF/raw images through Volatility 3 (LA57 5-level paging supported),
@@ -20,9 +22,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gutter shows absolute virtual addresses in the `va` view; image views work in
   side-by-side and overlay panes.
 
+### Changed
+- MCP: every tool is encoded and its errors presented at registration; errors from the
+  newer tools are `{error, code, category}` like path-guard denials (the original inspect
+  tools keep the flat `{error}` body). See the MCP reference.
+- REST and MCP share one bare-case-name rule and one write-target containment check;
+  case names containing a backslash are rejected on POSIX (`case.invalid`), as are blank ones.
+- Analysis-record bulk imports (vol3/key-finder annotations, ISF layout claims) are written
+  in one batch and are all-or-nothing; imports of 10k rows drop from minutes to well under a second.
+- Keylog anchoring and semantic validation check all candidate secrets in one pass per dump;
+  parsed ISF import blobs are cached (bounded by size).
+- YARA errors use `yara.*` codes and wording instead of `keyfinders.*`.
+
 ### Fixed
 - `--pid` narrowing of emitted plugins proven end-to-end on a real kernel image
   (`tests/test_vol3_pid_real_image.py`).
+- Case data lake: directories under `<case>/tables/` whose names are not valid table
+  names are ignored instead of being spliced into `CREATE VIEW` SQL.
+- `strings_iocs` saved query uses DuckDB's `lambda x:` syntax (DuckDB 2.0 rejects the
+  `x ->` arrow form); `duckdb>=1.3.0` is now required.
+- Key finders, strings and YARA: the scan windows tile each run exactly, so hits near a
+  run's end are no longer reported twice and `bytes_scanned` matches the captured bytes.
+- Needle searches (anchor consensus, keylog anchoring, semantic validation) work on
+  `.mdview` image views instead of failing with a `TypeError`.
+- Heap analysis on an image view reads the view, not the raw image file; physical views
+  are refused (`heap.physical_view_unsupported`).
+- `case query` accepts SQL ending in a `--` or `/* */` comment.
+- Web UI: an empty server response to a scan request shows a readable error.
 
 ## [1.0.1] — 2026-10-24
 

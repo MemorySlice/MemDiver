@@ -30,9 +30,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from memdiver.analysis.plugin_store import (
+    FILE_MODE,
+    HISTORY_DIR,
     META_SUFFIX,
     NAME_PATTERN,
     archive_previous,
+    read_json_dict,
     safe_directory,
     safe_file,
     sha256_text,
@@ -44,10 +47,8 @@ from memdiver.core.artifact_util import atomic_write_text
 from memdiver.core.service_errors import ErrorCategory
 
 RULES_DIR = "yara_rules"
-HISTORY_DIR = "history"
 RULE_SUFFIX = ".yar"
 MAX_SOURCE_BYTES = 256 * 1024
-_FILE_MODE = 0o600
 _WHAT = "yara rule"
 
 
@@ -97,7 +98,7 @@ class YaraRuleStore:
     def _put_locked(self, name: str, source: str, size: int,
                     check: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         path, meta_path, history = self._paths(name, create=True)
-        previous = self._read_meta(meta_path)
+        previous = read_json_dict(meta_path)
         if path.is_file():
             archive_previous(path, history, name, RULE_SUFFIX, path.read_text(encoding="utf-8"))
         now = utc_now()
@@ -107,8 +108,8 @@ class YaraRuleStore:
                 "version": int((previous or {}).get("version", 0)) + 1,
                 "compiles": check.get("valid"), "errors": list(check.get("errors") or []),
                 "rule_names": list(check.get("rule_names") or [])}
-        atomic_write_text(path, source, mode=_FILE_MODE)
-        atomic_write_text(meta_path, json.dumps(meta, indent=2) + "\n", mode=_FILE_MODE)
+        atomic_write_text(path, source, mode=FILE_MODE)
+        atomic_write_text(meta_path, json.dumps(meta, indent=2) + "\n", mode=FILE_MODE)
         return {**meta, "path": str(path)}
 
     def get(self, name: str) -> Dict[str, Any]:
@@ -120,7 +121,7 @@ class YaraRuleStore:
                               ErrorCategory.NOT_FOUND)
         source = path.read_text(encoding="utf-8")
         actual = sha256_text(source)
-        recorded = self._read_meta(meta_path) or {}
+        recorded = read_json_dict(meta_path) or {}
         drifted = actual != recorded.get("sha256", actual)
         return {"name": name, "created": recorded.get("created"),
                 "updated": recorded.get("updated"), "version": recorded.get("version"),
@@ -163,20 +164,12 @@ class YaraRuleStore:
                                   ErrorCategory.NOT_FOUND)
             source = path.read_text(encoding="utf-8")
             archive_previous(path, history, name, RULE_SUFFIX, source)
-            previous = self._read_meta(meta_path) or {}
+            previous = read_json_dict(meta_path) or {}
             version = previous.get("version")
             path.unlink()
             # Tombstone: keeps version/created so a later re-put continues the numbering.
             tombstone = {"name": name, "deleted": True, "version": int(version or 0),
                          "created": previous.get("created"), "updated": utc_now()}
-            atomic_write_text(meta_path, json.dumps(tombstone, indent=2) + "\n", mode=_FILE_MODE)
+            atomic_write_text(meta_path, json.dumps(tombstone, indent=2) + "\n", mode=FILE_MODE)
         return {"name": name, "deleted": True, "version": version,
                 "sha256": sha256_text(source), "history_dir": str(history)}
-
-    @staticmethod
-    def _read_meta(path: Path) -> "Dict[str, Any] | None":
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        return data if isinstance(data, dict) else None

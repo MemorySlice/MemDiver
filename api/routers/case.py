@@ -22,12 +22,14 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
 from memdiver.api.read_roots import sandbox_roots
+from memdiver.api.routers._common import StrictModel, submit_job
 from memdiver.api.routers.annotations import contained_case_dir
 from memdiver.app import tools_case
+from memdiver.core.path_sandbox import is_bare_case_name
 
 router = APIRouter()
 
@@ -35,23 +37,18 @@ router = APIRouter()
 _RUNNER = "memdiver.app.pipeline.image_task_runner.run_image_job"
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class InitRequest(_Strict):
+class InitRequest(StrictModel):
     case: str
 
 
-class QueryRequest(_Strict):
+class QueryRequest(StrictModel):
     case_dir: str
     sql: str
     limit: int = tools_case.DEFAULT_QUERY_LIMIT
     params: List[Any] = Field(default_factory=list)
 
 
-class ContextAtRequest(_Strict):
+class ContextAtRequest(StrictModel):
     case_dir: str
     location: Dict[str, Any]
     length: int = 1
@@ -59,7 +56,7 @@ class ContextAtRequest(_Strict):
     tables: Optional[List[str]] = None
 
 
-class ExportRequest(_Strict):
+class ExportRequest(StrictModel):
     case_dir: str
     dump_path: str
     what: List[str] = Field(default_factory=lambda: ["auto"])
@@ -67,9 +64,14 @@ class ExportRequest(_Strict):
 
 
 def _init_target(case: str) -> str:
-    """A bare name stays a name (the producer files it under the cases root)."""
-    bare = "/" not in case and "\\" not in case and not case.startswith((".", "~"))
-    return case if bare else contained_case_dir(case)
+    """A bare name stays a name (the producer files it under the cases root).
+
+    Blank passes through so the producer reports ``case_required``; any other
+    non-bare value is a write target and must lie inside the write roots.
+    """
+    if not case.strip() or is_bare_case_name(case):
+        return case
+    return contained_case_dir(case)
 
 
 @router.post("/init")
@@ -116,8 +118,4 @@ def export_case(req: ExportRequest):
     manager = task_manager_or_503()
     args = {"case_dir": contained_case_dir(req.case_dir), "dump_path": req.dump_path,
             "what": list(req.what), "run_id": req.run_id}
-    record = manager.submit(
-        kind="image", params={"job": "case_export", "args": args,
-                              "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["image"])
-    return {"task_id": record.task_id, "status": record.status.value}
+    return submit_job(manager, "image", _RUNNER, {"job": "case_export", "args": args})

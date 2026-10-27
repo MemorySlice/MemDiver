@@ -92,8 +92,10 @@ def _table_layers(case: Case, location: Location, tables: Optional[Sequence[str]
 
 def _containment_select(name: str, location: Location) -> Tuple[str, List[Any]]:
     """One SELECT for one table. ``? - addr < size`` cannot overflow uint64."""
+    # B608: ``name`` comes from case.tables() (validated snake slugs, no quotes);
+    # every value is a bound ? parameter.
     sql = (f"SELECT '{name}' AS table_name, run_id, addr, size, to_json(r) AS row_json "
-           f'FROM "{name}" r WHERE capture_id = ? AND space = ? '
+           f'FROM "{name}" r WHERE capture_id = ? AND space = ? '  # nosec B608
            "AND addr <= ? AND ? - addr < size")
     params: List[Any] = [location.capture_id, location.space.value,
                          location.value, location.value]
@@ -110,7 +112,8 @@ def _layer_from_row(row: Dict[str, Any]) -> ContextLayer:
 
 
 def _annotation_layers(case: Case, location: Location) -> List[ContextLayer]:
-    assert location.capture_id is not None
+    # locate_context() rejects a None capture_id before calling this.
+    assert location.capture_id is not None  # nosec B101
     record = AnalysisRecord(case.dir)
     if location.capture_id not in record.captures():
         return []

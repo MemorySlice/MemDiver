@@ -17,17 +17,19 @@ and an offset window at once, …) is RAISED as a :class:`CapabilityError`.
 from __future__ import annotations
 
 import bisect
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (TYPE_CHECKING, Any, Dict, Iterator, List, Optional,
                     Sequence, Tuple)
 
+from memdiver.core.image.view_descriptor import ViewKind
 from memdiver.core.service_errors import (CapabilityError, ErrorCategory,
                                           FileNotFoundServiceError,
                                           OffsetOutOfRangeError)
 from memdiver.heap.analyze import (DEFAULT_MAX_CHUNKS, analyze_heap,
                                    parse_allocator_hint)
-from memdiver.heap.detect import detect_allocator
+from memdiver.heap.detect import _platform_dict, detect_allocator
 from memdiver.heap.memory import VaMemory
 from memdiver.heap.model import (ChunkState, FreeList, HeapChunk, HeapLayout,
                                  HeapRole)
@@ -95,9 +97,27 @@ def _opened(dump_path: str, key_file: Optional[str], passphrase: Optional[str],
     km = key_material_kwargs(key_file, passphrase, kem_key_file)
     try:
         with open_dump_source(dump_path, km) as source:
+            _refuse_physical_view(source)
             yield source
     except FileNotFoundError:
         raise FileNotFoundServiceError(f"File not found: {dump_path}") from None
+
+
+def _refuse_physical_view(source: Any) -> None:
+    """A PHYSICAL ``.mdview`` reports a "va" map whose addresses are physical.
+
+    The allocator walkers follow virtual pointers, so walking a physical view would
+    chase process VAs through physical frames. Process and kernel views carry
+    genuine virtual addresses and are analysed as usual.
+    """
+    descriptor = getattr(source, "descriptor", None)
+    if getattr(descriptor, "view", None) is not ViewKind.PHYSICAL:
+        return
+    raise CapabilityError(
+        "heap analysis needs a virtual address space; a physical image view "
+        "addresses physical frames. Open a process view of the image instead.",
+        category=ErrorCategory.UNSUPPORTED, code="heap.physical_view_unsupported",
+        details={"view_kind": ViewKind.PHYSICAL.value})
 
 
 def _layout_of(source: Any, allocator: str, base_va: Optional[int],
@@ -117,15 +137,6 @@ def _chunk_row(chunk: HeapChunk, memory: VaMemory, view: str) -> Dict[str, Any]:
     row.pop("roles", None)
     row["view_offset"] = memory.va_to_view_offset(chunk.va, view)
     return row
-
-
-def _platform_dict(layout: HeapLayout) -> Optional[Dict[str, Any]]:
-    platform = layout.platform
-    if platform is None:
-        return None
-    return {"os": platform.os, "arch": platform.arch,
-            "pointer_size": platform.pointer_size,
-            "endianness": platform.endianness, "source": platform.source}
 
 
 # -- heap.detect ------------------------------------------------------------------
@@ -184,7 +195,7 @@ def _summary_payload(layout: HeapLayout) -> Dict[str, Any]:
     overview = layout.to_dict(limit=0)
     return {
         **_allocator_block(layout),
-        "platform": _platform_dict(layout),
+        "platform": _platform_dict(layout.platform),
         "regions": [{"va": r.va, "size": r.size, "name": r.name, "kind": r.kind}
                     for r in layout.regions],
         "chunk_count": len(layout.chunks),
@@ -213,25 +224,19 @@ def _allocator_block(layout: HeapLayout) -> Dict[str, Any]:
 
 
 def _counts_by_state(chunks: Sequence[HeapChunk]) -> Dict[str, int]:
-    counts: Dict[str, int] = {}
-    for chunk in chunks:
-        counts[chunk.state.value] = counts.get(chunk.state.value, 0) + 1
-    return counts
+    return dict(Counter(chunk.state.value for chunk in chunks))
 
 
 def _bytes_by_state(chunks: Sequence[HeapChunk]) -> Dict[str, int]:
-    totals: Dict[str, int] = {}
+    totals: Counter[str] = Counter()
     for chunk in chunks:
-        totals[chunk.state.value] = totals.get(chunk.state.value, 0) + chunk.size
-    return totals
+        totals[chunk.state.value] += chunk.size
+    return dict(totals)
 
 
 def _size_histogram(chunks: Sequence[HeapChunk]) -> List[Dict[str, int]]:
     """Power-of-two buckets ``[2**k, 2**(k+1))``, ascending, empty ones omitted."""
-    buckets: Dict[int, int] = {}
-    for chunk in chunks:
-        exponent = max(chunk.size, 1).bit_length() - 1
-        buckets[exponent] = buckets.get(exponent, 0) + 1
+    buckets = Counter(max(chunk.size, 1).bit_length() - 1 for chunk in chunks)
     return [{"min_size": 1 << k, "max_size": (1 << (k + 1)) - 1, "count": n}
             for k, n in sorted(buckets.items())]
 

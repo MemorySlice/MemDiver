@@ -17,6 +17,7 @@ or calling :meth:`CapabilityError.to_dict`.
 from __future__ import annotations
 
 import enum
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -108,6 +109,25 @@ class FileNotFoundServiceError(CapabilityError):
     def __init__(self, message: str, **kwargs: Any) -> None:
         kwargs.setdefault("category", ErrorCategory.NOT_FOUND)
         super().__init__(message, **kwargs)
+
+
+def require_file(raw: Optional[str], *, param: str, label: str, code: str,
+                 resolve: bool = False) -> Path:
+    """Return the user-supplied path *raw* (``~`` expanded) of an existing file.
+
+    A missing/blank *raw* raises ``INVALID_INPUT`` ``"<param> is required"``
+    (code ``<param>_required``); a path that is not a file raises ``NOT_FOUND``
+    ``"<label> not found: <path>"`` with *code*. ``resolve`` returns the
+    resolved absolute path instead of the expanded one.
+    """
+    if not raw or not str(raw).strip():
+        raise CapabilityError(f"{param} is required", category=ErrorCategory.INVALID_INPUT,
+                              code=f"{param}_required")
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise CapabilityError(f"{label} not found: {path}",
+                              category=ErrorCategory.NOT_FOUND, code=code)
+    return path.resolve() if resolve else path
 
 
 class OffsetOutOfRangeError(CapabilityError):

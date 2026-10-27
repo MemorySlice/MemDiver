@@ -95,7 +95,9 @@ def test_reads_do_not_create_cases_and_bare_names_work(client, tmp_path):
     for path, body in [("/api/isf/drafts/d/validate", {}), ("/api/isf/drafts/d/diff",
                                                             {"against_version": "x"})]:
         r = client.post(path, json={"case_dir": "ghost", "capture_id": CAP, **body})
-        assert r.status_code in (404, 422, 503), r.text
+        # validate checks for pakunoda first: without memdiver[image] it is a 400/UNSUPPORTED
+        assert r.status_code == 404 or (r.status_code == 400 and r.json()["category"]
+                                        == "UNSUPPORTED" and "pakunoda" in r.text), r.text
         assert not (cases_root() / "ghost").exists()
 
 

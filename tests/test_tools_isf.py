@@ -546,6 +546,7 @@ def _anchor_session(found, *, symbols=None, banner_offset=0x2000000, find_calls=
 
 
 def _result(*, verified, phys=0x3000000, source="kallsyms", checks=("page_table_maps",)):
+    pytest.importorskip("pakunoda")
     from pakunoda.init_task import InitTaskCandidate, InitTaskResult
     cand = InitTaskCandidate(phys=phys, va=0xFFFFFFFF82000000, score=9.0, source=source,
                              checks=tuple(checks), trusted=verified)

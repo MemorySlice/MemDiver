@@ -17,25 +17,19 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.routers._common import SYNC_MAX_BYTES, StrictModel, submit_job
 from memdiver.api.routers.image import _case_target, _contained
-from memdiver.app import tools_keyfinders
+from memdiver.app import scan_plan, tools_keyfinders
 
 router = APIRouter()
 
 _RUNNER = "memdiver.app.pipeline.keyfinders_task_runner.run_keyfinders_job"
-#: A scan reading at most this many captured bytes is answered inline.
-SYNC_MAX_BYTES = 64 * 1024 * 1024
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class ScanRequest(_Strict):
+class ScanRequest(StrictModel):
     dump_path: str
     finders: List[str] = Field(default_factory=lambda: list(tools_keyfinders.DEFAULT_FINDERS))
     view: Optional[str] = None
@@ -59,17 +53,8 @@ def _scan_kwargs(req: ScanRequest) -> Dict[str, Any]:
 
 
 def _is_long_scan(req: ScanRequest) -> bool:
-    return req.async_ or tools_keyfinders._scan_size(
+    return req.async_ or scan_plan.scan_size(
         req.dump_path, req.view, req.offset, req.length) > SYNC_MAX_BYTES
-
-
-def _submit_scan(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    manager = task_manager_or_503()
-    record = manager.submit(
-        kind="keyfinders",
-        params={"args": kwargs, "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["keyfinders"])
-    return {"task_id": record.task_id, "status": record.status.value}
 
 
 @router.get("")
@@ -83,5 +68,5 @@ def scan_dump(req: ScanRequest):
     """Scan inline, or as a job for a large capture / ``async: true``."""
     kwargs = _scan_kwargs(req)
     if _is_long_scan(req):
-        return _submit_scan(kwargs)
+        return submit_job(task_manager_or_503(), "keyfinders", _RUNNER, {"args": kwargs})
     return tools_keyfinders.keyfinders_scan_result(**kwargs).payload

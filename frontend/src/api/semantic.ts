@@ -12,7 +12,7 @@
  * turns its JSON envelope into the message to show.
  */
 
-import { request } from "./client";
+import { postJson as post } from "./client";
 
 export type AnchorSpec =
   | { dump_path: string; va: number }
@@ -164,9 +164,6 @@ export interface ProposedLayoutResult extends AnchorCommon, KeylogOutputs {
   /** Present with `case_dir`. */
   record_entries?: string[];
 }
-
-const post = <T>(url: string, body: unknown) =>
-  request<T>(url, { method: "POST", body: JSON.stringify(body) });
 
 export const getAnchorConsensus = (body: AnchorConsensusRequest) =>
   post<AnchorConsensusResult>("/api/analysis/consensus/anchor", body);

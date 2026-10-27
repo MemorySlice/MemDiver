@@ -12,11 +12,7 @@ import json
 import sys
 from typing import Any, Callable, Dict, Optional
 
-from ._shared import _write_output
-
-
-def _auto_int(text: str) -> int:
-    return int(text, 0)
+from ._shared import _auto_int, emit, output_parent_parser
 
 
 def _param_arg(text: str) -> Any:
@@ -38,12 +34,11 @@ def _location_arg(text: str) -> Dict[str, Any]:
 
 
 def _common_parser(with_case: bool = True) -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    if with_case:
-        p.add_argument("--case", required=True, help="Case directory (required)")
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
+    if not with_case:
+        return output_parent_parser()
+    case = argparse.ArgumentParser(add_help=False)
+    case.add_argument("--case", required=True, help="Case directory (required)")
+    return argparse.ArgumentParser(add_help=False, parents=[case, output_parent_parser()])
 
 
 def add_case_parser(sub) -> None:
@@ -98,19 +93,14 @@ def _add_export_parser(actions) -> None:
     exp.add_argument("--run-id", dest="run_id", help="Run id to file the tables under")
 
 
-def _emit(args: argparse.Namespace, payload: dict) -> int:
-    _write_output(payload, args.output)
-    return 0
-
-
 def _cmd_case_init(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_init_result
-    return _emit(args, case_init_result(args.case).payload)
+    return emit(args, case_init_result(args.case).payload)
 
 
 def _cmd_case_status(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_status_result
-    return _emit(args, case_status_result(args.case).payload)
+    return emit(args, case_status_result(args.case).payload)
 
 
 def _manifest_lines(m: dict) -> list:
@@ -139,32 +129,32 @@ def _cmd_case_manifest(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_manifest_result
     payload = case_manifest_result(args.case).payload
     if args.as_json or args.output:
-        return _emit(args, payload)
+        return emit(args, payload)
     print("\n".join(_manifest_lines(payload)))
     return 0
 
 
 def _cmd_case_schema(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_schema_result
-    return _emit(args, case_schema_result(args.case).payload)
+    return emit(args, case_schema_result(args.case).payload)
 
 
 def _cmd_case_query(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_query_result
     sql = sys.stdin.read() if args.sql == "-" else args.sql
-    return _emit(args, case_query_result(
+    return emit(args, case_query_result(
         args.case, sql, args.limit, args.params).payload)
 
 
 def _cmd_case_context_at(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import context_at_result
-    return _emit(args, context_at_result(
+    return emit(args, context_at_result(
         args.case, args.location, args.length, args.dump_path, args.tables).payload)
 
 
 def _cmd_case_export(args: argparse.Namespace) -> int:
     from memdiver.app.tools_case import case_export_result
-    return _emit(args, case_export_result(
+    return emit(args, case_export_result(
         args.case, args.dump_path, tuple(args.what or ("auto",)), args.run_id).payload)
 
 

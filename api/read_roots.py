@@ -1,64 +1,17 @@
-"""Framework-free assembly of the read-sandbox roots (REST and MCP share it).
+"""Re-export shim: the sandbox read/write roots now live in :mod:`memdiver.core.sandbox_roots`.
 
-Admitted when ``MEMDIVER_ALLOWED_ROOTS`` is set: the configured roots, the
-upload directory, the dataset root (configured or loaded), the MemDiver home,
-the file browser favourites, the server's startup working directory and the
-system temp directory. Unset -> :func:`sandbox_roots` is empty (policy OFF).
-This module imports no web framework so the MCP server can use it.
+Kept so ``memdiver.api.read_roots.{configured_roots, dynamic_roots,
+sandbox_roots, write_roots}`` keep working for REST code and tests; the MCP
+guard imports the core module directly (no MCP -> REST dependency).
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Iterator, Optional
+from memdiver.core.sandbox_roots import (
+    configured_roots,
+    dynamic_roots,
+    sandbox_roots,
+    write_roots,
+)
 
-from memdiver.api.config import get_settings, split_list_setting
-from memdiver.core import path_sandbox
-
-
-def configured_roots() -> list[str]:
-    return split_list_setting(get_settings().allowed_roots, sep=os.pathsep)
-
-
-def dynamic_roots(loaded_dataset_root: Optional[Path] = None) -> Iterator[str]:
-    """Yield the roots admitted implicitly alongside the configured ones."""
-    settings = get_settings()
-    if settings.upload_dir is not None:
-        yield str(settings.upload_dir)
-    if settings.dataset_root:
-        yield settings.dataset_root
-    if loaded_dataset_root is not None:
-        yield str(loaded_dataset_root)
-    from memdiver.core.constants import memdiver_home
-
-    yield str(memdiver_home())
-    from memdiver.api.favourites import read_favourites
-
-    for fav in read_favourites():
-        if fav.get("path"):
-            yield fav["path"]
-    yield from path_sandbox.implicit_roots()
-
-
-def sandbox_roots(loaded_dataset_root: Optional[Path] = None) -> list[Path]:
-    """Every admitted root, resolved; empty when the policy is off."""
-    configured = configured_roots()
-    if not configured:
-        return []
-    return path_sandbox.resolve_roots([*configured, *dynamic_roots(loaded_dataset_root)])
-
-
-def write_roots() -> list[Path]:
-    """Where the server may WRITE on behalf of a client: MemDiver home + upload dir.
-
-    Always the same set REST confines its writes to (``contained_case_dir``);
-    the MCP guard applies it when the read sandbox is ON.
-    """
-    from memdiver.core.constants import memdiver_home
-
-    roots = [Path(memdiver_home())]
-    upload_dir = get_settings().upload_dir
-    if upload_dir is not None:
-        roots.append(Path(upload_dir))
-    return path_sandbox.resolve_roots(str(r) for r in roots)
+__all__ = ["configured_roots", "dynamic_roots", "sandbox_roots", "write_roots"]

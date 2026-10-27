@@ -10,6 +10,14 @@ Semantics (plan T1.5, D6/D9):
   opened in append mode, under a per-path lock, so concurrent threads never
   interleave a line. It refuses a ``supersedes`` id that is not in that
   capture's file.
+* ``append_many`` files a batch: it reads each capture's existing ids once,
+  runs the same duplicate / ``supersedes`` checks in batch order (a later
+  entry may supersede an earlier one of the same batch; a repeated id in the
+  batch is a ``duplicate_entry_id``), and only when EVERY entry passes writes
+  all lines with one ``write`` per file under the same per-path locks. A
+  failing entry raises the error the sequential ``append`` loop would have
+  raised for it, but nothing of the batch is written (all-or-nothing).
+  ``append(e)`` is ``append_many([e])[0]``.
 * Superseding an entry that is already superseded is ALLOWED: two entries may
   supersede the same parent (a branch). :meth:`AnalysisRecord.latest` returns
   every chain tip, so a branch yields two tips, and along any single chain the
@@ -24,8 +32,9 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from memdiver.analysis.record import RETRACTION, AnalysisEntry, _CAPTURE_ID
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -75,22 +84,40 @@ class AnalysisRecord:
     # -- writing -------------------------------------------------------------
 
     def append(self, entry: AnalysisEntry) -> AnalysisEntry:
-        path = self.path_for(entry.capture_id)
-        with _lock_for(path):
-            self._check_supersedes(path, entry)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(entry.to_json_line() + "\n")
-        return entry
+        return self.append_many([entry])[0]
 
-    def _check_supersedes(self, path: Path, entry: AnalysisEntry) -> None:
-        existing = {e.id for e in _read_file(path)}
-        if entry.id in existing:
-            raise _invalid(f"entry id {entry.id!r} already exists", "duplicate_entry_id")
-        if entry.supersedes is not None and entry.supersedes not in existing:
-            raise _invalid(
-                f"supersedes {entry.supersedes!r}: no such entry in capture "
-                f"{entry.capture_id!r}", "unknown_supersedes")
+    def append_many(self, entries: Sequence[AnalysisEntry]) -> List[AnalysisEntry]:
+        """Validate the whole batch in order, then write it (all-or-nothing).
+
+        Raises the same error, for the same entry, as ``for e in entries:
+        append(e)`` would, but then nothing of the batch has been written.
+        """
+        batch = list(entries)
+        paths, path_error = self._paths_of(batch)
+        with ExitStack() as stack:
+            for path in sorted(set(paths), key=str):
+                stack.enter_context(_lock_for(path))
+            known: Dict[Path, Set[str]] = {}
+            for entry, path in zip(batch, paths):
+                if path not in known:
+                    known[path] = {e.id for e in _read_file(path)}
+                _check_supersedes(known[path], entry)
+            if path_error is not None:
+                raise path_error
+            for path, group in _grouped(batch, paths).items():
+                _write_lines(path, group)
+        return batch
+
+    def _paths_of(self, batch: Sequence[AnalysisEntry]
+                  ) -> Tuple[List[Path], Optional[CapabilityError]]:
+        """Each entry's file, stopping at the first invalid ``capture_id`` (its error)."""
+        paths: List[Path] = []
+        for entry in batch:
+            try:
+                paths.append(self.path_for(entry.capture_id))
+            except CapabilityError as exc:
+                return paths, exc
+        return paths, None
 
     # -- reading -------------------------------------------------------------
 
@@ -124,6 +151,31 @@ class AnalysisRecord:
             raise _not_found(capture_id, entry_id)
         chain = _ancestors(by_id, entry_id)
         return chain + _descendants(list(by_id.values()), entry_id)
+
+
+def _check_supersedes(existing: Set[str], entry: AnalysisEntry) -> None:
+    """Refuse a duplicate id or an unknown parent; on success ``existing`` gains the id."""
+    if entry.id in existing:
+        raise _invalid(f"entry id {entry.id!r} already exists", "duplicate_entry_id")
+    if entry.supersedes is not None and entry.supersedes not in existing:
+        raise _invalid(
+            f"supersedes {entry.supersedes!r}: no such entry in capture "
+            f"{entry.capture_id!r}", "unknown_supersedes")
+    existing.add(entry.id)
+
+
+def _grouped(batch: Sequence[AnalysisEntry], paths: Sequence[Path]
+             ) -> Dict[Path, List[AnalysisEntry]]:
+    groups: Dict[Path, List[AnalysisEntry]] = {}
+    for entry, path in zip(batch, paths):
+        groups.setdefault(path, []).append(entry)
+    return groups
+
+
+def _write_lines(path: Path, group: Sequence[AnalysisEntry]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("".join(e.to_json_line() + "\n" for e in group))
 
 
 def _ancestors(by_id: Dict[str, AnalysisEntry], entry_id: str) -> List[AnalysisEntry]:

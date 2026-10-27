@@ -256,9 +256,9 @@ class _JobCtx:
 @pytest.fixture
 def multi_window_msl(tmp_path, monkeypatch):
     """Needles in three 4 KiB-windowed pages so the scan has several windows."""
-    from memdiver.app import tools_keyfinders as tk
-    monkeypatch.setattr(tk, "WINDOW_BYTES", PAGE)
-    monkeypatch.setattr(tk, "WINDOW_OVERLAP", 64)
+    from memdiver.app import scan_plan
+    monkeypatch.setattr(scan_plan, "WINDOW_BYTES", PAGE)
+    monkeypatch.setattr(scan_plan, "WINDOW_OVERLAP", 64)
     data = bytearray(_filler(PAGE * 6, 3))
     for at in (0x100, PAGE * 2 + 0x200, PAGE * 5 + 0x300):
         data[at:at + len(NEEDLE)] = NEEDLE

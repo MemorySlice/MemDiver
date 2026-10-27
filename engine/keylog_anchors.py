@@ -27,10 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set,
+                    Union)
 
 from memdiver.core import keylog as _keylog
-from memdiver.engine.anchor_consensus import search_needles
+from memdiver.core.dump_search import present_needles
+from memdiver.engine.anchor_consensus import _require_searchable, search_needles
 
 #: Wireshark-only labels: a decryption aid, not a secret we can anchor on.
 IGNORED_LABELS = frozenset({"RSA", "PMS_CLIENT_RANDOM"})
@@ -219,6 +221,19 @@ def _present(source: Any, path: str, secret: bytes,
     return bool(found[path].anchors)
 
 
+def _present_set(source: Any, path: str, secrets: Sequence[bytes],
+                 view: Union[str, Callable[[Any], str]]) -> Set[bytes]:
+    """Which of *secrets* occur in the dump -- ONE pass, same answer as
+    :func:`_present` per secret (which stays the fallback for sources the
+    shared helper has no window strategy for)."""
+    if not secrets:
+        return set()
+    chosen_view = view(source) if callable(view) else view
+    _require_searchable(source, path, chosen_view)
+    return present_needles(source, secrets, chosen_view,
+                           lambda secret: _present(source, path, secret, chosen_view))
+
+
 def _session_related(session: KeylogSession, anchor_label: str,
                      related_labels: Optional[Sequence[str]],
                      include_client_random: bool):
@@ -243,7 +258,8 @@ def _resolve_one(path: str, source: Any, sessions: Sequence[KeylogSession], anch
     if not candidates:
         return KeylogResolution(path, False, 0,
                                 f"no {anchor_label} secret in the key log (0 candidates searched)")
-    present = [s for s in candidates if _present(source, path, s.secrets[anchor_label], view)]
+    found = _present_set(source, path, [s.secrets[anchor_label] for s in candidates], view)
+    present = [s for s in candidates if s.secrets[anchor_label] in found]
     if not present:
         return KeylogResolution(path, False, len(candidates),
                                 f"no {anchor_label} secret from the key log occurs in this dump "

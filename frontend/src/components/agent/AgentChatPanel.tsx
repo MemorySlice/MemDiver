@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 
 import { listPlaybooks, renderPlaybook, type Playbook } from "@/api/agent";
@@ -49,7 +49,11 @@ function PlaybookMenu({ onText }: { onText: (text: string) => void }) {
   );
 }
 
-function Bubble({ item, onDecide }: { item: TranscriptItem; onDecide: ReturnType<typeof useAgentChat>["sendApproval"] }) {
+/**
+ * Memoized: the reducer keeps every settled item's identity on a streamed token, so only
+ * the bubble that is still streaming re-renders (onDecide is a stable store action).
+ */
+const Bubble = memo(function Bubble({ item, onDecide }: { item: TranscriptItem; onDecide: ReturnType<typeof useAgentChat>["sendApproval"] }) {
   const { t } = useTranslation("agent");
   switch (item.kind) {
     case "user":
@@ -69,7 +73,7 @@ function Bubble({ item, onDecide }: { item: TranscriptItem; onDecide: ReturnType
     case "error":
       return <p role="alert" className="text-xs" style={{ color: "var(--md-accent-red)" }}>{t("chat.error", { code: item.code, message: item.message })}</p>;
   }
-}
+});
 
 export function AgentChatPanel() {
   const { t } = useTranslation("agent");

@@ -47,7 +47,7 @@ from memdiver.core.image.view_descriptor import (
     ViewDescriptor,
     ViewKind,
 )
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import CapabilityError, ErrorCategory, require_file
 from memdiver.core.service_result import ServiceResult
 
 #: Banners a probe reports at most (``banners=True`` only).
@@ -65,13 +65,8 @@ def _invalid(message: str, code: str) -> CapabilityError:
 
 
 def _image_file(image_path: str) -> Path:
-    if not image_path or not str(image_path).strip():
-        raise _invalid("image_path is required", "image_path_required")
-    path = Path(image_path).expanduser()
-    if not path.is_file():
-        raise CapabilityError(f"memory image not found: {path}",
-                              category=ErrorCategory.NOT_FOUND, code="image_not_found")
-    return path.resolve()
+    return require_file(image_path, param="image_path", label="memory image",
+                        code="image_not_found", resolve=True)
 
 
 def _isf_file(isf: Optional[str]) -> Optional[Path]:
@@ -368,12 +363,8 @@ def image_open_view_result(image_path: str, view: str, pid: Optional[int] = None
 
 
 def _read_descriptor(view_path: str) -> "tuple[Path, ViewDescriptor]":
-    if not view_path or not str(view_path).strip():
-        raise _invalid("view_path is required", "view_path_required")
-    path = Path(view_path).expanduser()
-    if not path.is_file():
-        raise CapabilityError(f"view descriptor not found: {path}",
-                              category=ErrorCategory.NOT_FOUND, code="view_not_found")
+    path = require_file(view_path, param="view_path", label="view descriptor",
+                        code="view_not_found")
     try:
         return path, ViewDescriptor.read(path)
     except (ValueError, KeyError, TypeError) as exc:

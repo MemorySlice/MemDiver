@@ -10,6 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Moved DOWN into core (the MCP guard shares it); re-exported for old imports.
+from memdiver.core.path_sandbox import write_denial_detail
+
+__all__ = ["ensure_within", "safe_filename", "write_denial_detail"]
+
 
 def ensure_within(base: Path, candidate: Path) -> Path:
     """Return *candidate* resolved, or raise ``ValueError`` if it escapes *base*.
@@ -23,19 +28,6 @@ def ensure_within(base: Path, candidate: Path) -> Path:
     if cand_resolved != base_resolved and base_resolved not in cand_resolved.parents:
         raise ValueError(f"path {str(candidate)!r} escapes {base_resolved}")
     return cand_resolved
-
-
-def write_denial_detail(field: str, candidate: str | Path, roots: list[Path],
-                        example_name: str = "output", where: str = "") -> str:
-    """Actionable text for a refused WRITE path: the path, the allowed write
-    locations (resolved) and a concrete example under the first of them."""
-    resolved = [Path(r).resolve() for r in roots]
-    listed = ", ".join(str(r) for r in resolved) or "(none configured)"
-    example = f"{resolved[0] / example_name}" if resolved else example_name
-    return (
-        f"{field} {str(candidate)!r} escapes the locations the server may write to. "
-        f"Allowed write locations{f' ({where})' if where else ''}: {listed}. Example of an accepted path: {example}"
-    )
 
 
 def safe_filename(base: Path, name: str, suffix: str = "") -> Path:

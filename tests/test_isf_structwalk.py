@@ -147,6 +147,7 @@ def test_render_struct_partially_unreadable_and_draft_object():
 
 
 def test_rbtree_view_walks_and_reports_gap():
+    pytest.importorskip("pakunoda")
     v = DictView()
     # node layout: left @0, right @8; 0x100 root, 0x200 left, 0x300 right
     for va, l, r in ((0x100, 0x200, 0x300), (0x200, 0, 0), (0x300, 0, 0)):

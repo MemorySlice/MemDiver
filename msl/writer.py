@@ -1129,21 +1129,21 @@ class MslWriter:
             pre_eoc.append(self._encode_block(block_type, payload, block_uuid,
                                               parent_uuid, _ZERO_HASH, flags))
 
-        block_stream = b"".join(pre_eoc)
+        # Collect every plaintext part, then join once (no repeated full-stream copies).
+        stream_parts: List[bytes] = list(pre_eoc)
         if eoc_entry is not None:
             eoc_payload_stub, eoc_uuid = eoc_entry
             file_hash = hash_stream((file_header, kem_ct, *pre_eoc))
             new_eoc_payload = _eoc_payload_with_hash(eoc_payload_stub, file_hash,
                                                      len(ordered))
-            block_stream += self._encode_block(
+            stream_parts.append(self._encode_block(
                 BlockType.END_OF_CAPTURE, new_eoc_payload, eoc_uuid,
                 _ZERO_UUID, _ZERO_HASH, 0,
-            )
+            ))
         # Extension segments inside the encrypted region, after EoC.
-        segment_parts: List[bytes] = []
-        self._emit_extension_segments(segment_parts.append, _ZERO_HASH,
+        self._emit_extension_segments(stream_parts.append, _ZERO_HASH,
                                       chained=False, hasher=hash_bytes)
-        block_stream += b"".join(segment_parts)
+        block_stream = b"".join(stream_parts)
 
         ciphertext_and_tag = aead_encrypt(cfg.enc_algo, cek, nonce, aad, block_stream)
 

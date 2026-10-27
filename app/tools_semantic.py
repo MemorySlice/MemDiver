@@ -666,6 +666,20 @@ def _present_in(opened: Any, view: str, needle: bytes) -> bool:
     return bool(search_needles({"d": opened}, {"d": needle}, view=view, max_hits=1)["d"].anchors)
 
 
+def _present_many(opened: Any, view: str, needles: Sequence[bytes]) -> set:
+    """Which *needles* occur in *opened* -- one pass over the dump, the same
+    answer as :func:`_present_in` per needle (its fallback for sources the
+    shared helper has no window strategy for)."""
+    from memdiver.core.dump_search import present_needles
+    from memdiver.engine.anchor_consensus import _require_searchable
+
+    if not needles:
+        return set()
+    _require_searchable(opened, "d", view)
+    return present_needles(opened, needles, view,
+                           lambda needle: _present_in(opened, view, needle))
+
+
 def _shared_expected(sessions: Sequence[Any], opened: Any, labels: Sequence[str],
                      not_in_memory: Optional[List[str]] = None) -> set:
     """Triples of the shared-key-log sessions whose asserted SECRETS are in this capture.
@@ -679,17 +693,28 @@ def _shared_expected(sessions: Sequence[Any], opened: Any, labels: Sequence[str]
     from memdiver.engine.keylog_anchors import MIN_NEEDLE_BYTES
 
     view = _anchor_view_for(opened)
+    secrets = [session.secrets[lb] for session in sessions for lb in labels
+               if lb in session.secrets and len(session.secrets[lb]) >= MIN_NEEDLE_BYTES]
+    # ONE presence pass: the client_randoms ride along with the secrets
+    # (presence is per needle, so the union answers both questions).
+    randoms = ([s.client_random for s in sessions
+                if len(s.client_random) >= MIN_NEEDLE_BYTES]
+               if not_in_memory is not None else [])
+    found = _present_many(opened, view, secrets + randoms)
     out = set()
+    absent_sessions = []
     for session in sessions:
         present = {lb for lb in labels if lb in session.secrets
                    and len(session.secrets[lb]) >= MIN_NEEDLE_BYTES
-                   and _present_in(opened, view, session.secrets[lb])}
+                   and session.secrets[lb] in found}
         if present:
             out |= {(lb, session.client_random.hex(), session.secrets[lb].hex())
                     for lb in present}
-        elif not_in_memory is not None and len(session.client_random) >= MIN_NEEDLE_BYTES \
-                and _present_in(opened, view, session.client_random):
-            not_in_memory.append(session.client_random.hex())
+        elif not_in_memory is not None and len(session.client_random) >= MIN_NEEDLE_BYTES:
+            absent_sessions.append(session)
+    if not_in_memory is not None:
+        not_in_memory.extend(s.client_random.hex() for s in absent_sessions
+                             if s.client_random in found)
     return out
 
 
@@ -708,7 +733,7 @@ def _expected_triples(capture: Mapping[str, Any], labels: Sequence[str],
         return _parse_keylog_expected(read_keylog_file(keylog), labels)
     try:
         return {(str(e["label"]), str(e["owner_hex"]).lower(), str(e["value_hex"]).lower())
-                for e in expected if str(e["label"]) in labels}
+                for e in expected or () if str(e["label"]) in labels}
     except (KeyError, TypeError) as exc:
         raise _invalid(f"expected items need label/owner_hex/value_hex: {exc!r}",
                        "semantic.held_out") from exc
@@ -764,14 +789,14 @@ def _score_one(stack: ExitStack, source: str, capture: Mapping[str, Any],
 
     dump_path = str(capture["dump_path"])
     opened = _open_one(stack, dump_path, None)
+    if opened.va_span_start() is None:  # before any presence scan of a refused capture
+        raise CapabilityError(
+            _no_va_view_message(dump_path, opened),
+            category=ErrorCategory.PRECONDITION, code="semantic.no_va_view")
     absent: List[str] = []
     expected = _expected_triples(capture, labels, shared, opened, absent)
     if not_in_memory is not None:
         not_in_memory[str(Path(dump_path).expanduser().resolve(strict=False))] = absent
-    if opened.va_span_start() is None:
-        raise CapabilityError(
-            _no_va_view_message(dump_path, opened),
-            category=ErrorCategory.PRECONDITION, code="semantic.no_va_view")
     run = run_plugin_on_capture(
         source, opened, str(Path(dump_path).expanduser().resolve(strict=False)),
         min_run=min_run)
@@ -856,7 +881,8 @@ def artifact_model_validate_result(
         _refuse_learned(str(capture.get("dump_path", "")), model.validation.learned_on)
     _require_volatility3()
     source, plugin_sha = _plugin_source(model, plugin_path)
-    started, results, scanned, not_in_memory = time.monotonic(), [], {}, {}
+    started, results, scanned = time.monotonic(), [], {}
+    not_in_memory: Dict[str, List[str]] = {}
     window_hits: Dict[str, List[Dict[str, Any]]] = {}
     owned = _owned_labels(model)
     shared, keylog_summary = _shared_keylog(keylog, use_labels)

@@ -21,6 +21,7 @@ New producers should prefer :meth:`read_location`, which returns a
 
 from __future__ import annotations
 
+from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Sequence, Tuple
 
@@ -187,8 +188,15 @@ class Vol3LayerSource:
                         pid=desc.pid, view=self._path.name)
 
     # -- search -------------------------------------------------------------
-    def find_all(self, needle: bytes, view: str = "vas") -> List[int]:
-        return list(self._iter_matches(needle, view))
+    def find_all(self, needle: bytes, view: str = "vas", limit: int = 0) -> List[int]:
+        """Every offset of ``needle`` in ``view``; at most ``limit`` when ``limit > 0``.
+
+        ``limit`` is the same collection cap :class:`MslDumpSource` honours, so
+        :func:`~memdiver.engine.anchor_consensus.search_needles` can ask for
+        ``max_hits + 1`` without materialising every hit of a short needle.
+        """
+        matches = self._iter_matches(needle, view)
+        return list(islice(matches, limit) if limit > 0 else matches)
 
     def find_first(self, needle: bytes, view: str = "vas") -> Optional[int]:
         return next(self._iter_matches(needle, view), None)
@@ -217,6 +225,17 @@ class Vol3LayerSource:
         _, adapter = self._require_open()
         listing = getattr(adapter, "vmas", None)
         return list(listing()) if callable(listing) else []
+
+    def va_to_vas_offset(self, va: int) -> Optional[int]:
+        """Offset in the ``"vas"`` stream of the captured byte at ``va``, else ``None``.
+
+        Part of the VA-source API shared with ``.msl`` / gcore / regioned
+        sources: ``heap.memory.VaMemory`` keys VA support on it, and without it
+        an image view fell into flat mode and read the IMAGE FILE at
+        ``offset = va``.
+        """
+        index, _ = self._require_open()
+        return index.vas_of_va(va)
 
     def va_span_start(self) -> Optional[int]:
         return self._index.span_start if self._index is not None else None

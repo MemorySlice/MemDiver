@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from memdiver.core.dump_source import find_all_in
 from memdiver.core.variance import (
     ByteClass, VarianceThresholds, classify_variance, find_contiguous_runs,
 )
@@ -217,7 +218,7 @@ def search_needles(sources: Dict[str, Any], needles: Dict[str, bytes], *,
     for path, needle in needles.items():
         source = sources[path]
         _require_searchable(source, path, view)
-        hits = sorted(source.find_all(needle, view=view, limit=max_hits + 1))
+        hits = sorted(find_all_in(source, needle, view, limit=max_hits + 1))
         truncated = len(hits) > max_hits
         hits = hits[:max_hits]
         out[path] = NeedleSearch(

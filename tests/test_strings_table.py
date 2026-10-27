@@ -368,9 +368,9 @@ def test_rest_keeps_a_kernel_va_string_exact_on_the_wire(tmp_path, client):
 
 @pytest.fixture
 def small_windows(monkeypatch):
-    from memdiver.app import tools_keyfinders as tk
-    monkeypatch.setattr(tk, "WINDOW_BYTES", 1024)
-    monkeypatch.setattr(tk, "WINDOW_OVERLAP", 128)
+    from memdiver.app import scan_plan
+    monkeypatch.setattr(scan_plan, "WINDOW_BYTES", 1024)
+    monkeypatch.setattr(scan_plan, "WINDOW_OVERLAP", 128)
 
 
 def _raw(tmp_path, buf) -> str:

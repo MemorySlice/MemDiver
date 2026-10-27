@@ -126,11 +126,56 @@ def admit(path: str | Path, roots: list[Path]) -> Path:
     return resolved
 
 
+def is_bare_case_name(name: "str | Path") -> bool:
+    """True when *name* is a bare case NAME (filed under the cases root), not a path.
+
+    The ONE rule every surface shares (REST routers, the MCP guard,
+    ``analysis.case.case_path``): non-blank, no ``/`` or ``\\`` separator (either
+    platform's), and not starting with ``.`` (``.``, ``..``, hidden) or ``~``.
+    """
+    text = str(name)
+    return (bool(text.strip()) and "/" not in text and "\\" not in text
+            and not text.startswith((".", "~")))
+
+
 def is_path_shaped(key: str, value: str) -> bool:
     """True when *value* under *key* must be sandbox-checked."""
     if key not in NAME_OR_PATH_KEYS:
         return True
-    return "/" in value or "\\" in value or value.startswith((".", "~"))
+    return bool(value.strip()) and not is_bare_case_name(value)
+
+
+def write_denial_detail(field: str, candidate: str | Path, roots: Iterable[Path],
+                        example_name: str = "output", where: str = "") -> str:
+    """Actionable text for a refused WRITE path: the path, the allowed write
+    locations (resolved) and a concrete example under the first of them."""
+    resolved = [Path(r).resolve() for r in roots]
+    listed = ", ".join(str(r) for r in resolved) or "(none configured)"
+    example = f"{resolved[0] / example_name}" if resolved else example_name
+    return (
+        f"{field} {str(candidate)!r} escapes the locations the server may write to. "
+        f"Allowed write locations{f' ({where})' if where else ''}: {listed}. Example of an accepted path: {example}"
+    )
+
+
+def contain_write_target(value: str | Path, roots: Iterable[Path], *,
+                         field: str = "output path", example_name: str = "out/result",
+                         where: str = "") -> str:
+    """Return *value* resolved, or raise a 403 ``CapabilityError`` outside *roots*.
+
+    The ONE write-target containment check (REST routers and the MCP guard).
+    ``~`` is expanded and symlinks / ``..`` are resolved before the comparison;
+    an empty *roots* admits nothing. *field*, *example_name* and *where* only
+    shape the denial text (:func:`write_denial_detail`).
+    """
+    admitted = [Path(r).resolve() for r in roots]
+    resolved = Path(value).expanduser().resolve(strict=False)
+    if not within(resolved, admitted):
+        raise CapabilityError(
+            write_denial_detail(field, value, admitted, example_name, where),
+            category=ErrorCategory.PRECONDITION, status=403,
+            code="path.outside_sandbox")
+    return str(resolved)
 
 
 def _mapping_keys(value: Any, depth: int) -> Iterator[str]:

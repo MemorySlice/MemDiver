@@ -31,11 +31,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from memdiver.analysis.plugin_store import (
+    FILE_MODE,
     HISTORY_DIR,
     archive_previous,
+    json_dicts_in,
+    put_versioned_json,
+    read_json_dict,
     safe_directory,
     safe_file,
-    sha256_text,
     store_error,
     validate_name,
 )
@@ -51,7 +54,6 @@ OVERALL_VERDICTS_SUBPATH = "fixtures/detectors/verdicts/overall"
 ARTIFACT_KINDS = ("yara", "keyfinder")
 MAX_INLINE_SAMPLE_BYTES = 1024 * 1024
 MAX_CAPTURE_SAMPLE_BYTES = 16 * 1024 * 1024
-_FILE_MODE = 0o600
 _MATCH_KEYS = ("offset", "length", "label", "key_hex")
 
 
@@ -144,37 +146,21 @@ class DetectorFixtureStore:
 
     def put(self, fixture: Dict[str, Any]) -> Dict[str, Any]:
         """Store a validated fixture (see :func:`validated_fixture`); returns it with metadata."""
-        directory = self._dir(create=True)
-        path = safe_file(directory, f"{fixture['name']}.json")
-        previous = self._load(path)
-        body = {**fixture, "created": (previous or {}).get("created") or utc_now(),
-                "updated": utc_now(), "version": int((previous or {}).get("version", 0)) + 1}
-        if path.is_file():
-            archive_previous(path, directory / HISTORY_DIR, fixture["name"], ".json",
-                             path.read_text(encoding="utf-8"))
-        text = json.dumps(body, indent=2, sort_keys=True) + "\n"
-        atomic_write_text(path, text, mode=_FILE_MODE)
-        return {**body, "sha256": sha256_text(text), "path": str(path)}
+        path = safe_file(self._dir(create=True), f"{fixture['name']}.json")
+        return put_versioned_json(path, fixture["name"], fixture)
 
     def get(self, name: str) -> Dict[str, Any]:
         validate_name(name, "detector_fixture")
         path = safe_file(self._dir(create=False), f"{name}.json")
-        body = self._load(path)
+        body = read_json_dict(path)
         if body is None:
             raise store_error(f"no stored detector fixture {name!r}",
                               "detector_fixture.not_found", ErrorCategory.NOT_FOUND)
         return {**body, "path": str(path)}
 
     def list(self) -> List[Dict[str, Any]]:
-        directory = self._dir(create=False)
-        if not directory.is_dir():
-            return []
-        out: List[Dict[str, Any]] = []
-        for path in sorted(directory.glob("*.json")):
-            body = self._load(path) if not path.is_symlink() else None
-            if body is not None:
-                out.append({**body, "path": str(path)})
-        return out
+        return [{**body, "path": str(path)}
+                for path, body in json_dicts_in(self._dir(create=False))]
 
     def remove(self, name: str) -> Dict[str, Any]:
         """Retire a fixture: its definition is archived under ``history/`` first."""
@@ -192,7 +178,7 @@ class DetectorFixtureStore:
         directory = self._verdict_dir(create=True)
         body = {**verdict, "fixture": name, "created": utc_now()}
         atomic_write_text(safe_file(directory, f"{name}.json"),
-                          json.dumps(body, indent=2, sort_keys=True) + "\n", mode=_FILE_MODE)
+                          json.dumps(body, indent=2, sort_keys=True) + "\n", mode=FILE_MODE)
 
     def put_overall_verdict(self, key: str, verdict: Dict[str, Any]) -> None:
         """Overwrite the newest whole-detector verdict (separate namespace from fixtures)."""
@@ -200,32 +186,13 @@ class DetectorFixtureStore:
         directory = safe_directory(self._case_dir, OVERALL_VERDICTS_SUBPATH, create=True)
         body = {**verdict, "detector": key, "created": utc_now()}
         atomic_write_text(safe_file(directory, f"{key}.json"),
-                          json.dumps(body, indent=2, sort_keys=True) + "\n", mode=_FILE_MODE)
+                          json.dumps(body, indent=2, sort_keys=True) + "\n", mode=FILE_MODE)
 
     def overall_verdicts(self) -> Dict[str, Dict[str, Any]]:
         """Newest whole-detector verdict per key."""
         directory = safe_directory(self._case_dir, OVERALL_VERDICTS_SUBPATH, create=False)
-        if not directory.is_dir():
-            return {}
-        return {p.stem: b for p in sorted(directory.glob("*.json"))
-                if not p.is_symlink() and (b := self._load(p)) is not None}
+        return {path.stem: body for path, body in json_dicts_in(directory)}
 
     def verdicts(self) -> Dict[str, Dict[str, Any]]:
         """Newest verdict per fixture name."""
-        directory = self._verdict_dir(create=False)
-        if not directory.is_dir():
-            return {}
-        out: Dict[str, Dict[str, Any]] = {}
-        for path in sorted(directory.glob("*.json")):
-            body = self._load(path) if not path.is_symlink() else None
-            if body is not None:
-                out[path.stem] = body
-        return out
-
-    @staticmethod
-    def _load(path: Path) -> "Dict[str, Any] | None":
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        return data if isinstance(data, dict) else None
+        return {path.stem: body for path, body in json_dicts_in(self._verdict_dir(create=False))}

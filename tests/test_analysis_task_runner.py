@@ -19,6 +19,7 @@ Two layers:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import time
@@ -176,13 +177,13 @@ def test_resolve_artifact_dir_falls_back_to_cwd(tmp_path, monkeypatch):
 # ------------------------------------------------------------------
 
 
-def test_write_result_artifact_stat_oserror_falls_back_to_zero_size(
+def test_write_result_artifact_spec_does_not_depend_on_stat(
     tmp_path, monkeypatch
 ):
-    """If ``stat()`` on the freshly-written file raises, size falls back to 0.
+    """``size`` and ``sha256`` come from the bytes just written, not a re-stat.
 
-    The sha256 is still computed via ``read_bytes()`` independently of
-    ``stat()``, so only the ``size`` field is affected.
+    (Formerly a ``stat()`` failure fell back to ``size=0``; the spec is now
+    computed from the in-memory bytes, so a failing ``stat()`` is irrelevant.)
     """
     original_stat = Path.stat
 
@@ -194,8 +195,10 @@ def test_write_result_artifact_stat_oserror_falls_back_to_zero_size(
     monkeypatch.setattr(Path, "stat", flaky_stat)
 
     artifacts = _write_result_artifact({"ok": True}, tmp_path)
-    assert artifacts[0]["size"] == 0
-    assert len(artifacts[0]["sha256"]) == 64
+    monkeypatch.undo()
+    written = next(tmp_path.rglob("result.json")).read_bytes()
+    assert artifacts[0]["size"] == len(written)
+    assert artifacts[0]["sha256"] == hashlib.sha256(written).hexdigest()
 
 
 # ------------------------------------------------------------------

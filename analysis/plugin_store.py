@@ -25,7 +25,7 @@ import json
 import re
 import stat
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 from memdiver.analysis.record import utc_now
 from memdiver.core.artifact_util import atomic_write_text
@@ -36,7 +36,7 @@ HISTORY_DIR = "history"
 MAX_SOURCE_BYTES = 256 * 1024
 NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 META_SUFFIX = ".meta.json"
-_FILE_MODE = 0o600
+FILE_MODE = 0o600
 _INSECURE_DIR_BITS = stat.S_IWGRP | stat.S_IWOTH
 
 
@@ -105,7 +105,43 @@ def archive_previous(path: Path, history: Path, stem: str, suffix: str, text: st
     history.mkdir(parents=True, exist_ok=True)
     keep = history / f"{stem}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:12]}{suffix}"
     if not keep.exists():
-        atomic_write_text(keep, text, mode=_FILE_MODE)
+        atomic_write_text(keep, text, mode=FILE_MODE)
+
+
+def read_json_dict(path: Path) -> "Dict[str, Any] | None":
+    """The JSON object stored at ``path``; ``None`` when absent, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def json_dicts_in(directory: Path) -> Iterator[Tuple[Path, Dict[str, Any]]]:
+    """``(path, object)`` per readable, non-symlink ``*.json`` in ``directory``, by name."""
+    if not directory.is_dir():
+        return
+    for path in sorted(directory.glob("*.json")):
+        body = read_json_dict(path) if not path.is_symlink() else None
+        if body is not None:
+            yield path, body
+
+
+def put_versioned_json(path: Path, name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Write ``body`` to ``path`` stamped with created/updated/version; archive the old one.
+
+    The replaced definition is kept under the sibling ``history/`` directory first.
+    Returns the stamped body plus ``sha256`` (of the written text) and ``path``.
+    """
+    previous = read_json_dict(path)
+    stamped = {**body, "created": (previous or {}).get("created") or utc_now(),
+               "updated": utc_now(), "version": int((previous or {}).get("version", 0)) + 1}
+    if path.is_file():
+        archive_previous(path, path.parent / HISTORY_DIR, name, ".json",
+                         path.read_text(encoding="utf-8"))
+    text = json.dumps(stamped, indent=2, sort_keys=True) + "\n"
+    atomic_write_text(path, text, mode=FILE_MODE)
+    return {**stamped, "sha256": sha256_text(text), "path": str(path)}
 
 
 class PluginStore:
@@ -132,15 +168,15 @@ class PluginStore:
             raise store_error(f"source is {size} bytes; the cap is {MAX_SOURCE_BYTES}",
                          "plugin.too_large")
         path, meta_path, history = self._paths(name, create=True)
-        previous = self._read_meta(meta_path)
+        previous = read_json_dict(meta_path)
         if path.is_file():
             archive_previous(path, history, name, ".py", path.read_text(encoding="utf-8"))
         now = utc_now()
         meta = {"name": name, "sha256": sha256_text(source), "size": size,
                 "created": (previous or {}).get("created", now), "updated": now,
                 "version": int((previous or {}).get("version", 0)) + 1}
-        atomic_write_text(path, source, mode=_FILE_MODE)
-        atomic_write_text(meta_path, json.dumps(meta, indent=2) + "\n", mode=_FILE_MODE)
+        atomic_write_text(path, source, mode=FILE_MODE)
+        atomic_write_text(meta_path, json.dumps(meta, indent=2) + "\n", mode=FILE_MODE)
         return {**meta, "path": str(path)}
 
     def get(self, name: str) -> Dict[str, Any]:
@@ -152,7 +188,7 @@ class PluginStore:
                          ErrorCategory.NOT_FOUND)
         source = path.read_text(encoding="utf-8")
         actual = sha256_text(source)
-        recorded = self._read_meta(meta_path) or {}
+        recorded = read_json_dict(meta_path) or {}
         meta = {"name": name, "created": recorded.get("created"),
                 "updated": recorded.get("updated"), "version": recorded.get("version"),
                 "sha256": actual, "size": len(source.encode("utf-8")), "path": str(path),
@@ -173,11 +209,3 @@ class PluginStore:
             meta.pop("source", None)
             out.append(meta)
         return out
-
-    @staticmethod
-    def _read_meta(path: Path) -> "Dict[str, Any] | None":
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        return data if isinstance(data, dict) else None

@@ -39,8 +39,11 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from memdiver.analysis.record import utc_now
+from memdiver.core.artifact_util import atomic_write_text
 from memdiver.core.constants import memdiver_home
 from memdiver.core.location import AddressSpace
+from memdiver.core.path_sandbox import is_bare_case_name
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 #: Format version of the manifest, sidecars and Parquet metadata.
@@ -66,10 +69,32 @@ def cases_root() -> Path:
 
 
 def case_path(dir_or_name: "str | Path") -> Path:
-    """Where a case lives: a bare name means ``cases_root()/<name>``, else the path."""
+    """Where a case lives: a bare name means ``cases_root()/<name>``, else the path.
+
+    The bare-name rule is :func:`is_bare_case_name` (shared with the REST routers
+    and the MCP guard). A blank value is neither and is refused, and so is a
+    backslash name that is no path on this platform (:func:`_is_ambiguous_backslash_name`).
+    """
     text = str(dir_or_name)
-    bare = os.sep not in text and "/" not in text and not text.startswith((".", "~"))
-    return cases_root() / text if bare else Path(text).expanduser()
+    if not text.strip():
+        raise _invalid("a case name or case directory is required")
+    if _is_ambiguous_backslash_name(text):
+        raise _invalid(
+            f"backslashes are not allowed in case names ({text!r}); use a plain "
+            "name, or a forward-slash path for a case directory")
+    return cases_root() / text if is_bare_case_name(text) else Path(text).expanduser()
+
+
+def _is_ambiguous_backslash_name(text: str) -> bool:
+    """True for ``lab\\run1`` on POSIX: not a bare name, yet no real path either.
+
+    ``\\`` is refused in bare names (cross-platform parity with REST) but is no
+    separator here, so treating it as a path would file the case relative to the
+    server's cwd. On Windows ``\\`` is ``os.sep`` and such a value is a real path.
+    """
+    separators = [sep for sep in (os.sep, os.altsep) if sep]
+    return ("\\" in text and not any(sep in text for sep in separators)
+            and not text.startswith(("~", ".")))
 
 
 def resolve_case_dir(dir_or_name: "str | Path") -> Path:
@@ -77,10 +102,14 @@ def resolve_case_dir(dir_or_name: "str | Path") -> Path:
 
     A bare name is tried relative to the current directory first (an existing
     ``<cwd>/<name>/case.json`` wins), then under ``cases_root()``; a path is used
-    as given. Lets a caller (the sandbox guard) judge the REAL target.
+    as given. Lets a caller (the sandbox guard) judge the REAL target; an
+    ambiguous backslash name is judged as the cwd-relative path it would hit
+    (:func:`case_path` itself refuses to create it).
     """
     root = Path(dir_or_name).expanduser()
-    return root if (root / MANIFEST).is_file() else case_path(dir_or_name)
+    if (root / MANIFEST).is_file() or _is_ambiguous_backslash_name(str(dir_or_name)):
+        return root
+    return case_path(dir_or_name)
 
 
 def __getattr__(name: str) -> Any:  # pragma: no cover - trivial
@@ -91,10 +120,6 @@ def __getattr__(name: str) -> Any:  # pragma: no cover - trivial
 
 def _invalid(message: str, code: str = "case.invalid") -> CapabilityError:
     return CapabilityError(message, category=ErrorCategory.INVALID_INPUT, code=code)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def new_run_id() -> str:
@@ -174,14 +199,13 @@ class QueryResult:
                 "truncated": bool(self.truncated or cut)}
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+def _is_table_name(name: str) -> bool:
+    """A snake slug that is safe to splice into SQL as a bare identifier."""
+    return bool(_TABLE_NAME.fullmatch(name or "")) and name not in _RESERVED_NAMES
 
 
 def _check_name(name: str) -> None:
-    if not _TABLE_NAME.match(name or "") or name in _RESERVED_NAMES:
+    if not _is_table_name(name):
         raise _invalid(f"invalid table name {name!r}: use a snake slug "
                        "(e.g. 'vol3__linux_pslist'); 'annotations' is reserved")
 
@@ -279,6 +303,22 @@ def _quote(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def _without_trailing_semicolons(statement: str) -> str:
+    """``statement`` cut before its trailing ``;`` tokens (and anything after them).
+
+    DuckDB's tokenizer skips comments and string contents, so only real ``;``
+    terminators are cut; a comment after the last one goes with it. Token
+    positions are UTF-8 byte offsets, hence the bytes round-trip.
+    """
+    encoded = statement.encode("utf-8")
+    end = len(encoded)
+    for position, token_type in reversed(duckdb.tokenize(statement)):
+        if token_type != duckdb.token_type.operator or encoded[position:position + 1] != b";":
+            break
+        end = position
+    return encoded[:end].decode("utf-8").strip()
+
+
 class Case:
     """A case directory holding Parquet tables and the analysis record."""
 
@@ -296,7 +336,7 @@ class Case:
         manifest = root / MANIFEST
         if not manifest.exists():
             body = {"v": CASE_VERSION, "name": root.name, "created": utc_now()}
-            _atomic_write_text(manifest, json.dumps(body, indent=2) + "\n")
+            atomic_write_text(manifest, json.dumps(body, indent=2) + "\n")
         return cls(root)
 
     @classmethod
@@ -361,7 +401,7 @@ class Case:
         os.replace(tmp, path)
         sidecar = {**info, "row_count": table.num_rows,
                    "columns": table.column_names, "locations": locs}
-        _atomic_write_text(path.with_name(f"{stem}.meta.json"),
+        atomic_write_text(path.with_name(f"{stem}.meta.json"),
                            json.dumps(sidecar, indent=2) + "\n")
         extra = info.get("meta") or {}
         return TableRef(name, run_id, str(path), table.num_rows, locs,
@@ -369,15 +409,23 @@ class Case:
 
     # -- listing ---------------------------------------------------------
     def tables(self) -> List[str]:
-        """Names of tables that have at least one registered run."""
+        """Names of tables that have at least one registered run.
+
+        A directory whose name is not a valid table name is skipped: the name is
+        spliced into ``CREATE VIEW`` SQL by :meth:`_connect`, so it must never
+        come from the filesystem unvalidated.
+        """
         root = self.dir / "tables"
         if not root.is_dir():
             return []
         return sorted(p.name for p in root.iterdir()
-                      if p.is_dir() and any(p.glob("*/*.parquet")))
+                      if _is_table_name(p.name) and p.is_dir()
+                      and any(p.glob("*/*.parquet")))
 
     def runs(self, name: str) -> List[TableRef]:
         """Runs of ``name`` (oldest first), read from the sidecars."""
+        if not _is_table_name(name):  # never let a caller's name walk out of tables/
+            return []
         refs: List[TableRef] = []
         for side in sorted((self.dir / "tables" / name).glob("*/*.meta.json")):
             data = json.loads(side.read_text(encoding="utf-8"))
@@ -424,11 +472,13 @@ class Case:
     def _connect(self, *, harden: bool) -> "duckdb.DuckDBPyConnection":
         conn = duckdb.connect()
         for name in self.tables():
-            conn.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet("
+            # B608: tables() yields only _is_table_name() slugs; the glob is _quote()d.
+            conn.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet("  # nosec B608
                          f"{_quote(_glob(self.dir, name))}, union_by_name=true)")
         if any((self.dir / "annotations").glob("*.jsonl")):
             pattern = _quote(str(self.dir / "annotations" / "*.jsonl"))
-            conn.execute("CREATE VIEW annotations AS SELECT * FROM read_json_auto("
+            # B608: fixed view name; the only interpolation is the _quote()d glob.
+            conn.execute("CREATE VIEW annotations AS SELECT * FROM read_json_auto("  # nosec B608
                          f"{pattern}, format='newline_delimited', union_by_name=true)")
         if harden:
             self._harden(conn)
@@ -442,15 +492,21 @@ class Case:
 
     @staticmethod
     def _guard(sql: str) -> str:
-        """Allow exactly one SELECT statement; return it without a trailing ';'."""
+        """Allow exactly one SELECT statement; return it without trailing ';'s.
+
+        The returned text is the statement exactly as DuckDB parsed it, so the
+        guarded SQL and the executed SQL are the same. A statement DuckDB rewrote
+        while parsing (``PRAGMA x`` -> ``SELECT * FROM pragma_x()``) is refused.
+        """
         try:
             stmts = duckdb.extract_statements(sql)
         except duckdb.Error as exc:
             raise _invalid(f"SQL does not parse: {exc}", "case.bad_sql") from exc
-        if len(stmts) != 1 or stmts[0].type != duckdb.StatementType.SELECT:
+        if (len(stmts) != 1 or stmts[0].type != duckdb.StatementType.SELECT
+                or stmts[0].query != sql):
             raise _invalid("only a single SELECT statement is allowed",
                            "case.read_only")
-        return sql.strip().rstrip(";").strip()
+        return _without_trailing_semicolons(stmts[0].query)
 
     def query(self, sql: str, *, limit: int = 10_000, timeout_s: float = 30.0,
               params: Optional[Sequence[Any]] = None) -> QueryResult:
@@ -465,8 +521,12 @@ class Case:
         start = time.monotonic()
         timer.start()
         try:
+            # B608: running the caller's SQL is the point of query(); _guard() admits
+            # exactly one SELECT, the connection is hardened (case dir only, config
+            # locked), values bind as ? params and the LIMIT is an int(). The newline
+            # before ')' keeps a trailing ``--`` comment in ``inner`` from eating it.
             arrow = conn.execute(
-                f"SELECT * FROM ({inner}) AS q LIMIT {int(limit) + 1}",
+                f"SELECT * FROM ({inner}\n) AS q LIMIT {int(limit) + 1}",  # nosec B608
                 list(params or ()),
             ).to_arrow_table()
         except duckdb.InterruptException as exc:

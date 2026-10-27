@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 _STRING_REF_PREFIX = "$#@!"
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_STRING_ID_TAIL_RE = re.compile(r"[A-Za-z0-9_]*\*?")
 
 
 @dataclass
@@ -136,7 +137,7 @@ class _Lexer:
                 self._quoted("/", "regex")
             elif ch == "{" and section == "strings" and prev is not None and prev.text == "=":
                 self._hex()
-            elif ch in _STRING_REF_PREFIX and (m := re.compile(r"[A-Za-z0-9_]*\*?").match(s, self.i + 1)):
+            elif ch in _STRING_REF_PREFIX and (m := _STRING_ID_TAIL_RE.match(s, self.i + 1)):
                 self._advance(1 + m.end() - m.start())
                 self._emit("strid", start, line, col)
             elif m := _IDENT_RE.match(s, self.i):
@@ -175,10 +176,9 @@ def _parse_rules(tokens: List[Token]) -> List[RuleSpan]:
                 current.end_line = tokens[k - 1].line
             current = RuleSpan(tokens[k + 1].text, tokens[k + 1], tok.line, tok.line)
             rules.append(current)
-            depth, section = 0, ""
+            depth, section = 1, ""
             while k < len(tokens) and tokens[k].text != "{":
                 k += 1
-            depth = 1
         elif current is not None:
             current.end_line = tok.line
             if tok.kind == "punct" and tok.text == "{":

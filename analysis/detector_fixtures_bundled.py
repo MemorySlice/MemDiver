@@ -25,7 +25,8 @@ _KEY256 = bytes((7 * i + 3) % 256 for i in range(32))
 
 
 def _noise(seed: int) -> bytearray:
-    return bytearray(random.Random(seed).randbytes(SAMPLE_SIZE))
+    # B311: seeded, reproducible fixture noise; no secret or key material comes from it.
+    return bytearray(random.Random(seed).randbytes(SAMPLE_SIZE))  # nosec B311
 
 
 def _swapped32(blob: bytes) -> bytes:

@@ -10,10 +10,11 @@ through, so pinning its output here locks the observable MCP JSON contract:
 * hard error (raised ``CapabilityError`` subclass) -> ``{"error": <msg>}``,
   merging ``.details`` (the byte-for-byte legacy out-of-range shape).
 
-Also covers ``mcp_error_funnel`` — the Phase 3 backstop decorator applied to
-the non-inspect MCP tools in ``server.py``, which translates a propagating
-``CapabilityError`` into ``json.dumps(err.to_dict())`` while leaving the
-success path (the wrapped function's own return value) untouched.
+Also covers ``mcp_error_funnel`` — the standalone backstop decorator that
+translates a propagating ``CapabilityError`` into ``json.dumps(err.to_dict())``
+while leaving the success path untouched — and ``present_mcp_tool``, the
+registration-layer wrapper ``server.py`` now applies to EVERY tool (encode +
+present once; legacy ``to_error_body()`` only for the inspect family).
 """
 
 import json
@@ -38,7 +39,10 @@ from memdiver.core.service_result import (  # noqa: E402
 )
 from memdiver.mcp_server.presenters import (  # noqa: E402
     _KEY_PARAMS_HINT,
+    LEGACY_ERROR_BODY_TOOLS,
     mcp_error_funnel,
+    mcp_error_payload,
+    present_mcp_tool,
     present_inspect_mcp,
     present_inspect_mcp_call,
 )
@@ -192,3 +196,74 @@ def test_error_funnel_preserves_wrapped_metadata_for_mcpserver():
     assert wrapped.__doc__ == "Docstring MCPServer reads for the tool description."
     assert wrapped.__wrapped__ is tool_body
     assert wrapped("a.msl", offset=8) == json.dumps({"dump_path": "a.msl", "offset": 8})
+
+
+# ---------------------------------------------------------------------------
+# present_mcp_tool — the registration-layer wrapper (encode + present once).
+# ---------------------------------------------------------------------------
+
+
+def _detailed_error():
+    return OffsetOutOfRangeError(
+        "offset out of range", details={"offset": 9, "file_size": 4})
+
+
+def test_present_tool_encodes_a_service_result_through_the_mcp_presenter():
+    key = KeyStatus(TagStatus.NOT_ENCRYPTED, decrypted=True)
+    result = _result({"n": 1}, key, Resolution.OK)
+
+    assert present_mcp_tool(lambda: result)() == json.dumps({"n": 1})
+
+
+def test_present_tool_encodes_a_dict_and_passes_a_json_string_through():
+    assert present_mcp_tool(lambda: {"ok": True})() == json.dumps({"ok": True})
+    assert present_mcp_tool(lambda: '{"raw": 1}')() == '{"raw": 1}'
+
+
+def test_present_tool_renders_the_structured_error_body_by_default():
+    def tool_body():
+        raise _detailed_error()
+
+    body = json.loads(present_mcp_tool(tool_body)())
+
+    assert body == mcp_error_payload(_detailed_error())
+    assert {"error", "code", "category", "details"} <= body.keys()
+    assert body["details"] == {"offset": 9, "file_size": 4}
+
+
+def test_present_tool_keeps_the_legacy_body_for_inspect_tools():
+    def tool_body():
+        raise _detailed_error()
+
+    body = json.loads(present_mcp_tool(tool_body, legacy_error_body=True)())
+
+    assert body == {"error": "offset out of range", "offset": 9, "file_size": 4}
+
+
+def test_present_tool_handles_coroutine_tools():
+    import asyncio
+
+    async def tool_body():
+        raise CapabilityError("nope", category=ErrorCategory.NOT_FOUND, code="x.y")
+
+    wrapped = present_mcp_tool(tool_body)
+
+    assert json.loads(asyncio.run(wrapped())) == {
+        "error": "nope", "code": "x.y", "category": "NOT_FOUND"}
+
+
+def test_present_tool_preserves_wrapped_metadata_for_mcpserver():
+    def tool_body(dump_path: str) -> str:
+        """Tool description."""
+        return dump_path
+
+    wrapped = present_mcp_tool(tool_body)
+
+    assert wrapped.__name__ == "tool_body" and wrapped.__wrapped__ is tool_body
+    assert wrapped.__doc__ == "Tool description."
+
+
+def test_legacy_error_body_tools_are_the_original_inspect_family():
+    assert {"read_hex", "get_entropy", "analyze_region", "identify_structure"} \
+        <= LEGACY_ERROR_BODY_TOOLS
+    assert not {"heap_detect", "case_query", "vol3_run"} & LEGACY_ERROR_BODY_TOOLS

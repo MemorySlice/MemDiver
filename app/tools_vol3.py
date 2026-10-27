@@ -322,15 +322,16 @@ def vol3_annotate_result(case_dir: str, table: str, run_id: str, column: str, *,
                        f"choose one of: {', '.join(ref.locations) or 'none'}", "vol3.bad_column")
     data = pq.read_table(ref.path).to_pylist()
     plugin, record = _plugin_of(ref.path), AnalysisRecord(case.dir)
-    ids: List[str] = []
+    pending: List[Any] = []
     skipped: List[int] = []
     for index in _selected_rows(data, rows):
         location = _row_location(data[index], column, ref.locations[column])
         if location is None:
             skipped.append(index)
             continue
-        entry = _entry_for(data[index], column, location, plugin, label_column, author, run_id)
-        ids.append(record.append(entry).id)
+        pending.append(_entry_for(data[index], column, location, plugin, label_column,
+                                  author, run_id))
+    ids = [entry.id for entry in record.append_many(pending)]   # one read, one write; all-or-nothing
     return ServiceResult.ok({"created": len(ids), "entry_ids": ids[:_ID_REPORT_CAP],
                              "skipped": skipped[:_ID_REPORT_CAP],
                              "skipped_count": len(skipped), "run_id": run_id})

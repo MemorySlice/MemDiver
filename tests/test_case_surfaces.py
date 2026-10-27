@@ -269,7 +269,9 @@ def test_mcp_tools_match_producers(tools, case_dir, tmp_path, monkeypatch):
 
 def test_mcp_query_is_read_only_and_errors_are_structured(tools, case_dir):
     out = _mcp(tools, "case_query", case_dir=case_dir, sql="DROP TABLE vmas")
-    assert out == {"error": "only a single SELECT statement is allowed"}
+    # Non-inspect tools render the structured MCP error body (to_dict shape).
+    assert out == {"error": "only a single SELECT statement is allowed",
+                   "code": "case.read_only", "category": "INVALID_INPUT"}
 
 
 def test_mcp_schema_resource_registered_and_returns_schema(server, case_dir):

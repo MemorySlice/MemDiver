@@ -1,4 +1,4 @@
-import { ApiError } from "./client";
+import { ApiError, request } from "./client";
 
 /** Marks a cell whose JSON integer would not survive `JSON.parse` as a Number. */
 const UNSAFE_INT = /^-?\d{16,}$/;
@@ -11,6 +11,9 @@ const UNSAFE_INT = /^-?\d{16,}$/;
  * bits were invented. Strings are skipped so only real number tokens convert.
  */
 export function parseJsonLossless(text: string): unknown {
+  // Fast path: without a 16-digit run no token can match UNSAFE_INT, so the
+  // rewrite below would hand JSON.parse the text unchanged.
+  if (!/\d{16}/.test(text)) return JSON.parse(text);
   let out = "";
   let i = 0;
   while (i < text.length) {
@@ -89,29 +92,32 @@ export function placeRow(
 }
 
 /** Like `request`, but decode the answer with {@link parseJsonLossless}. */
-export async function requestLossless<T>(url: string, init?: RequestInit): Promise<T> {
-  const { headers, ...rest } = init ?? {};
-  const res = await fetch(url, { ...rest, headers: { "Content-Type": "application/json", ...headers } });
-  const text = await res.text();
-  if (!res.ok) throw new ApiError(res.status, text);
-  if (text === "") return undefined as T;
-  try {
-    return parseJsonLossless(text) as T;
-  } catch {
-    throw new ApiError(res.status, `Malformed JSON response: ${text.slice(0, 200)}`);
-  }
+export function requestLossless<T>(url: string, init?: RequestInit): Promise<T> {
+  return request<T>(url, init, { parse: parseJsonLossless });
 }
 
-/** POST JSON and decode the answer with {@link parseJsonLossless}. */
-export async function postLossless<T>(url: string, body: object, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
+/**
+ * The stored payload of a finished task (`GET /api/tasks/{id}/result` -> `.payload`),
+ * decoded losslessly; `null` when the server stored none. The task WebSocket's copy
+ * went through `JSON.parse` and has rounded kernel addresses.
+ */
+export async function getTaskPayload<T>(taskId: string): Promise<T | null> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  const body = parseJsonLossless(await res.text()) as { payload?: T | null } | null;
+  return body?.payload ?? null;
+}
+
+/**
+ * POST JSON and decode the answer with {@link parseJsonLossless}. Every caller
+ * expects a result (an inline answer or a job ticket), so an empty body is an
+ * `ApiError` (`common:emptyResponse`) rather than `undefined`, and a malformed
+ * one an `ApiError("Malformed JSON response: ...")`, like every other endpoint.
+ */
+export function postLossless<T>(url: string, body: object, signal?: AbortSignal): Promise<T> {
+  return request<T>(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     ...(signal ? { signal } : {}),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new ApiError(res.status, text);
-  return parseJsonLossless(text) as T;
+  }, { parse: parseJsonLossless, requireBody: true });
 }
-

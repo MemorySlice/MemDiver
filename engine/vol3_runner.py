@@ -539,7 +539,7 @@ def _configure(image_ctx: Any, cls: Any, base: str, args: Dict[str, Any]) -> Non
         config[f"{path}.{name}"] = value
 
 
-def _convert_cell(value: Any, kind: str) -> Any:
+def _convert_cell(value: Any) -> Any:
     from volatility3.framework.renderers import format_hints
     if isinstance(value, format_hints.MultiTypeData):
         if value.converted_int:
@@ -587,7 +587,7 @@ class _Collector:
                 cells.append(None)
                 absent[spec.name] = type(value).__name__
                 continue
-            cell = _convert_cell(value, spec.type)
+            cell = _convert_cell(value)
             if spec.space == AddressSpace.KERNEL_VA.value and isinstance(cell, int):
                 cell = self.canonical(cell)
             cells.append(cell)

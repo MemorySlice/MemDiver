@@ -17,16 +17,18 @@ two runs that merely sit near each other never form a word between them.
 
 The target is the half-open interval ``[target_lo, target_hi)``. This module
 sits in ``engine/`` and must not import ``app/``; the run-table normalization
-below is the minimal copy of the idea in ``app.tools_consensus._vas_runs``.
+is shared with ``app.tools_consensus`` through ``core.vas_runs``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import gcd
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
+
+from memdiver.core.vas_runs import vas_runs
 
 SLAB_BYTES = 16 * 1024 * 1024
 _DTYPES = {4: "<u4", 8: "<u8"}
@@ -62,26 +64,10 @@ def _captured_runs(source: Any) -> List[Tuple[int, int, int]]:
         raise ValueError(
             "pointer scan needs a VA-bearing dump (.msl / core); a raw dump has no virtual addresses"
         )
-    tabulate = getattr(source, "captured_runs", None)
-    if callable(tabulate):
-        runs = [tuple(r) for r in tabulate()]
-    elif hasattr(source, "iter_ranges"):
-        runs = list(_runs_from_ranges(source))
-    else:
+    if not (callable(getattr(source, "captured_runs", None))
+            or hasattr(source, "iter_ranges")):
         raise ValueError("this dump source exposes no virtual-address run table")
-    return sorted(runs)
-
-
-def _runs_from_ranges(source: Any) -> Iterator[Tuple[int, int, int]]:
-    """Normalize ``iter_ranges`` shapes; VAS offset = runs laid end to end."""
-    is_msl = getattr(source, "format_name", "") == "msl"
-    flat = 0
-    for first, second, _third in source.iter_ranges():
-        va = int(first)
-        run = int(second) if is_msl else int(second) - va
-        if run > 0:
-            yield (va, run, flat)
-            flat += run
+    return sorted(tuple(r) for r in vas_runs(source))
 
 
 def _slab_hits(data: bytes, va0: int, step: int, p: Tuple[int, int, int],

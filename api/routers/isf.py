@@ -25,8 +25,9 @@ import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from memdiver.api.routers._common import StrictModel
 from memdiver.api.routers.image import _case_target, _contained, _submit
 from memdiver.app import tools_isf
 from memdiver.app.tools_code_evidence import code_evidence_result
@@ -35,12 +36,7 @@ from memdiver.app.tools_isf import DEFAULT_AUTHOR, DEFAULT_LIMIT
 router = APIRouter()
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class ProbeRequest(_Strict):
+class ProbeRequest(StrictModel):
     image_path: str
     probe: str
     arch: str = "auto"
@@ -51,7 +47,7 @@ class ProbeRequest(_Strict):
     async_: bool = Field(default=False, alias="async")
 
 
-class TryRequest(_Strict):
+class TryRequest(StrictModel):
     image_path: str
     case_dir: Optional[str] = None
     draft: Optional[str] = None
@@ -66,7 +62,7 @@ class TryRequest(_Strict):
     async_: bool = Field(default=False, alias="async")
 
 
-class CodeEvidenceRequest(_Strict):
+class CodeEvidenceRequest(StrictModel):
     image_path: str
     function: str
     arch: Optional[str] = None
@@ -76,7 +72,7 @@ class CodeEvidenceRequest(_Strict):
     async_: bool = Field(default=False, alias="async")
 
 
-class CreateRequest(_Strict):
+class CreateRequest(StrictModel):
     case_dir: str
     capture_id: str
     name: str
@@ -86,7 +82,7 @@ class CreateRequest(_Strict):
     base_metadata: Optional[Dict[str, Any]] = None
 
 
-class _DraftRef(_Strict):
+class _DraftRef(StrictModel):
     case_dir: str
     capture_id: str
 

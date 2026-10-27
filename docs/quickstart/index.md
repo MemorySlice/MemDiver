@@ -83,4 +83,5 @@ cli
 mcp
 experiment
 library
+image
 ```

@@ -31,17 +31,17 @@ VA, so the per-hit check is exact and needs no projection.
 from __future__ import annotations
 
 import ast
-import bisect
 import inspect
 import math
 import sys
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from memdiver.core.location import AddressSpace, Location
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.app import scan_plan
+from memdiver.app.scan_plan import Plan, Regions, Segment
+from memdiver.core.location import Location
 from memdiver.core.service_result import ServiceResult
 
 FINDERS_PACKAGE = "memdiver.algorithms.keyfinders"
@@ -49,18 +49,13 @@ DEFAULT_FINDERS: Tuple[str, ...] = ("aes_schedule",)
 HEAP_POLICIES: Tuple[str, ...] = ("off", "annotate", "mask")
 #: Rows a scan returns before it stops and reports ``truncated``.
 DEFAULT_LIMIT = 10_000
-#: Bytes read and handed to the finders at a time (a bounded working set).
-WINDOW_BYTES = 32 * 1024 * 1024
-#: Bytes two neighbouring windows share, so a hit on the seam is found once.
-WINDOW_OVERLAP = 64 * 1024
 #: Author of the ``key_hit`` analysis-record entries.
 ANNOTATION_AUTHOR = "tool:keyfinders"
 
 ProgressFn = Callable[[float, str], None]
 
-
-def _invalid(message: str, code: str) -> CapabilityError:
-    return CapabilityError(message, category=ErrorCategory.INVALID_INPUT, code=code)
+# The dump scan planner (windows, plan, coverage) lives in :mod:`memdiver.app.scan_plan`;
+# shrink the windows in tests through ``scan_plan.WINDOW_BYTES`` / ``WINDOW_OVERLAP``.
 
 
 # -- finder discovery ----------------------------------------------------------
@@ -141,94 +136,7 @@ def keyfinders_list_result() -> "ServiceResult":
                              "heap_policies": list(HEAP_POLICIES)})
 
 
-# -- scan plan: what to read, in which coordinates -------------------------------
-
-
-class _Segment(NamedTuple):
-    """One VA-contiguous captured stretch: never scanned across its end."""
-
-    addr: int            # address of byte 0 in the scanned view
-    length: int
-    vas: int             # offset of byte 0 in the stream ``read_range`` reads
-    va: Optional[int]    # virtual address of byte 0 (``None`` for a flat file)
-    lead: int = 0        # leading bytes read only to keep the stride grid absolute
-
-    @property
-    def floor(self) -> int:
-        """First address a hit may start at (the requested offset)."""
-        return self.addr + self.lead
-
-    def clip(self, lo: int, hi: Optional[int], align: int = 1) -> Optional["_Segment"]:
-        """The part inside ``[lo, hi)``, its read start moved down to a multiple of ``align``.
-
-        Finders walk a stride grid from the first byte they are given; starting the
-        read at an ``align``-aligned address (never before this run's own start) keeps
-        that grid absolute. The ``lead`` bytes are read but cannot produce hits.
-        """
-        start = max(self.addr, lo)
-        end = self.addr + self.length if hi is None else min(self.addr + self.length, hi)
-        if end <= start:
-            return None
-        read_from = max(self.addr, start - start % align)
-        delta = read_from - self.addr
-        return _Segment(read_from, end - read_from, self.vas + delta,
-                        None if self.va is None else self.va + delta, start - read_from)
-
-
-@dataclass
-class _Plan:
-    source: Any
-    path: Path
-    view: str
-    read_view: str
-    segments: List[_Segment]
-    capture_id: str
-    pid: Optional[int]
-    image_sha256: Optional[str]
-    heap_view: str
-    span_start: Optional[int]
-
-    def location(self, addr: int) -> Location:
-        if self.read_view == "raw":
-            return Location(AddressSpace.FILE_OFFSET, addr, capture_id=self.capture_id)
-        if self.source.format_name == "msl":
-            space = AddressSpace.MSL_VA if self.view == "va" else AddressSpace.MSL_VAS
-            return Location(space, addr, capture_id=self.capture_id)
-        return self.source.location(addr)
-
-
-def _merged(runs: Sequence[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
-    """Captured ``(va, length, vas)`` runs, adjacent-in-both-coordinates joined."""
-    out: List[Tuple[int, int, int]] = []
-    for va, length, vas in sorted(r for r in runs if r[1] > 0):
-        if out and out[-1][0] + out[-1][1] == va and out[-1][2] + out[-1][1] == vas:
-            out[-1] = (out[-1][0], out[-1][1] + length, out[-1][2])
-        else:
-            out.append((va, length, vas))
-    return out
-
-
-def _check_view(source: Any, view: Optional[str]) -> str:
-    packed = hasattr(source, "captured_runs")
-    default = "va" if packed else "raw"
-    chosen = view or default
-    allowed = {"msl": ("va", "vas"), "image_view": ("va",)}.get(source.format_name)
-    if not packed:
-        allowed = ("raw",)
-    if allowed is None:
-        raise _invalid(f"key finders do not support {source.format_name!r} dumps",
-                       "keyfinders.unsupported_format")
-    if chosen not in allowed:
-        raise _invalid(f"view {chosen!r} is not scannable for a {source.format_name!r} "
-                       f"dump; choose one of: {', '.join(allowed)}", "keyfinders.bad_view")
-    return chosen
-
-
-def _clipped(segments: Sequence[_Segment], offset: Optional[int],
-             length: Optional[int], align: int = 1) -> List[_Segment]:
-    lo = offset or 0
-    hi = None if length is None else lo + length
-    return [c for c in (s.clip(lo, hi, align) for s in segments) if c is not None]
+# -- scan plan: the stride alignment the finders need (the plan is in scan_plan) --
 
 
 #: ``params`` keys that set a finder's stride, with the default (``None``: stride 1).
@@ -249,94 +157,6 @@ def _stride_alignment(names: Sequence[str], params: Dict[str, Any]) -> int:
     return align if align <= _MAX_ALIGN else 1
 
 
-def _segments_of(source: Any, view: str) -> List[_Segment]:
-    if not hasattr(source, "captured_runs"):
-        return [_Segment(0, int(source.size), 0, None)] if source.size else []
-    merged = _merged(source.captured_runs())
-    key = (lambda r: r[2]) if view == "vas" else (lambda r: r[0])
-    return [_Segment(key(r), r[1], r[2], r[0]) for r in sorted(merged, key=key)]
-
-
-def _heap_view_of(source: Any, view: str) -> Tuple[str, Optional[int]]:
-    """The view heap code maps offsets through, and its span start (va view only)."""
-    from memdiver.core.dump_source import supported_views
-
-    if not hasattr(source, "captured_runs"):
-        return "raw", None
-    span = source.va_span_start() if "va" in supported_views(source) else None
-    return ("va", span) if view == "va" and span is not None else ("vas", None)
-
-
-def _build_plan(source: Any, path: Path, view: Optional[str], offset: Optional[int],
-                length: Optional[int], align: int = 1) -> _Plan:
-    from memdiver.analysis.capture_id import capture_id_for
-
-    chosen = _check_view(source, view)
-    heap_view, span = _heap_view_of(source, chosen)
-    descriptor = getattr(source, "descriptor", None)
-    pid = descriptor.pid if descriptor is not None else source.metadata().get("pid")
-    return _Plan(
-        source=source, path=path, view=chosen,
-        read_view="raw" if not hasattr(source, "captured_runs") else "vas",
-        segments=_clipped(_segments_of(source, chosen), offset, length, align),
-        capture_id=capture_id_for(path), pid=pid,
-        image_sha256=getattr(descriptor, "image_sha256", None),
-        heap_view=heap_view, span_start=span)
-
-
-# -- regions ------------------------------------------------------------------
-
-
-class _Regions:
-    """VMA / region lookup by virtual address (empty for flat files)."""
-
-    def __init__(self, rows: List[Dict[str, Any]]) -> None:
-        self._rows = sorted(rows, key=lambda r: r["start"])
-        self._starts = [r["start"] for r in self._rows]
-
-    def at(self, va: Optional[int]) -> Optional[Dict[str, Any]]:
-        if va is None or not self._rows:
-            return None
-        i = bisect.bisect_right(self._starts, va) - 1
-        return self._rows[i] if i >= 0 and va < self._rows[i]["end"] else None
-
-
-def _perms(protection: Any) -> Optional[str]:
-    """``rwx``-style text of an MSL protection bit-set (r=1, w=2, x=4); text passes through."""
-    if protection is None or isinstance(protection, str):
-        return protection
-    return "".join(c if protection & bit else "-" for c, bit in (("r", 1), ("w", 2), ("x", 4)))
-
-
-def _msl_regions(source: Any, path: Path) -> List[Dict[str, Any]]:
-    """The VAS map's regions; the captured-region headers when the dump has no VAS map."""
-    from memdiver.app.session import ToolSession
-    from memdiver.app.tools_inspect import vas_regions_result
-
-    entries = vas_regions_result(ToolSession(), str(path)).payload["vas_entries"]
-    if entries:
-        return [{"start": e["base_addr"], "end": e["base_addr"] + e["region_size"],
-                 "perms": _perms(e.get("protection")), "path": e.get("mapped_path") or None,
-                 "type": e.get("region_type")} for e in entries]
-    return [{"start": r.base_addr, "end": r.base_addr + r.region_size,
-             "perms": _perms(r.protection), "path": None, "type": r.region_type}
-            for r in source.get_reader().collect_regions()]
-
-
-def _vma_regions(source: Any) -> List[Dict[str, Any]]:
-    return [{"start": v.start, "end": v.end, "perms": _perms(v.protection),
-             "path": v.name or None, "type": "heap" if v.is_heap else None}
-            for v in source.vmas()]
-
-
-def _regions_of(plan: _Plan) -> _Regions:
-    if plan.source.format_name == "msl":
-        return _Regions(_msl_regions(plan.source, plan.path))
-    if hasattr(plan.source, "vmas"):
-        return _Regions(_vma_regions(plan.source))
-    return _Regions([])
-
-
 # -- hits ---------------------------------------------------------------------
 
 
@@ -355,7 +175,7 @@ def _translated(metadata: Dict[str, Any], delta: int) -> Dict[str, Any]:
     return out
 
 
-def _candidate(finder: str, match: Any, row: Dict[str, Any], seg: _Segment,
+def _candidate(finder: str, match: Any, row: Dict[str, Any], seg: Segment,
                window: int) -> Dict[str, Any]:
     """A ``candidates.json`` region (offset into the flat reference stream)."""
     key_offset = match.metadata.get("key_offset")
@@ -369,7 +189,7 @@ def _candidate(finder: str, match: Any, row: Dict[str, Any], seg: _Segment,
             "addr": row["addr"], "space": row["space"]}
 
 
-def _hit_of(plan: _Plan, finder: str, match: Any, seg: _Segment, window: int) -> _Hit:
+def _hit_of(plan: Plan, finder: str, match: Any, seg: Segment, window: int) -> _Hit:
     rel = window + match.offset
     addr = seg.addr + rel
     location = plan.location(addr)
@@ -385,14 +205,14 @@ def _hit_of(plan: _Plan, finder: str, match: Any, seg: _Segment, window: int) ->
 # -- heap enrichment ------------------------------------------------------------
 
 
-def _heap_offset(plan: _Plan, row: Dict[str, Any], last_byte: bool) -> int:
+def _heap_offset(plan: Plan, row: Dict[str, Any], last_byte: bool) -> int:
     shift = row["length"] - 1 if last_byte else 0
     if plan.heap_view == "va":
         return row["va"] + shift - plan.span_start
     return row["vas_offset"] + shift
 
 
-def _annotate_heap(plan: _Plan, hits: List[_Hit]) -> None:
+def _annotate_heap(plan: Plan, hits: List[_Hit]) -> None:
     from memdiver.engine.heap_hits import heap_hit_annotations
 
     rows = [h.row for h in hits if h.row["va"] is not None or plan.heap_view != "va"]
@@ -410,7 +230,7 @@ def _in_user_data(row: Dict[str, Any]) -> bool:
     return heap is not None and heap["role"] == "user_data" and not heap["spans_chunks"]
 
 
-def _enrich(plan: _Plan, hits: List[_Hit], regions: _Regions,
+def _enrich(plan: Plan, hits: List[_Hit], regions: Regions,
             policy: str) -> Tuple[List[_Hit], int]:
     """Attach region (+ heap) context; ``mask`` drops hits outside chunk user data."""
     for hit in hits:
@@ -424,7 +244,7 @@ def _enrich(plan: _Plan, hits: List[_Hit], regions: _Regions,
     return kept, len(hits) - len(kept)
 
 
-def _heap_status(plan: _Plan, policy: str) -> str:
+def _heap_status(plan: Plan, policy: str) -> str:
     from memdiver.heap.analyze import analyze_heap
     from memdiver.heap.model import AllocatorKind
 
@@ -451,30 +271,8 @@ class _Scan:
     stopped_early: bool = False
 
 
-def _windows(seg: _Segment) -> List[int]:
-    step = WINDOW_BYTES - WINDOW_OVERLAP
-    return list(range(0, seg.length, step))
-
-
-def _owns(offset: int, window: int, last: bool) -> bool:
-    """Does the read window starting at *window* own a match starting at *offset*?
-
-    Consecutive windows overlap by ``WINDOW_OVERLAP``; the ownership boundary sits
-    in the middle of that overlap, ``guard`` bytes before the first window's end.
-    Every match thus starts with at least ``guard`` bytes of data after it in its
-    owning window (so a key schedule or string that crosses the seam is seen whole,
-    and merge-based finders such as ``entropy_window`` have context) and is reported
-    by exactly one window. A match that outruns even that is clipped at its
-    owner's end, and its tail - which starts at the next window's offset 0, inside
-    the guard - is never reported again.
-    """
-    guard = WINDOW_OVERLAP // 2
-    step = WINDOW_BYTES - WINDOW_OVERLAP
-    return (window == 0 or offset >= guard) and (last or offset < step + guard)
-
-
-def _run_finders(plan: _Plan, finders: Dict[str, Any], names: Sequence[str],
-                 params: Dict[str, Any], seg: _Segment, window: int,
+def _run_finders(plan: Plan, finders: Dict[str, Any], names: Sequence[str],
+                 params: Dict[str, Any], seg: Segment, window: int,
                  data: bytes, last: bool) -> List[_Hit]:
     from memdiver.algorithms.base import AnalysisContext
 
@@ -483,37 +281,33 @@ def _run_finders(plan: _Plan, finders: Dict[str, Any], names: Sequence[str],
     hits: List[_Hit] = []
     for name in names:
         for match in finders[name].run(data, context).matches:
-            if (_owns(match.offset, window, last)
+            if (scan_plan.owns(match.offset, window, last)
                     and seg.addr + window + match.offset >= seg.floor):
                 hits.append(_hit_of(plan, name, match, seg, window))
     return sorted(hits, key=lambda h: (h.row["addr"], h.row["finder"], h.row["label"]))
 
 
-def _scan_segment(plan: _Plan, finders: Dict[str, Any], names: Sequence[str],
-                  params: Dict[str, Any], seg: _Segment, regions: _Regions,
+def _scan_segment(plan: Plan, finders: Dict[str, Any], names: Sequence[str],
+                  params: Dict[str, Any], seg: Segment, regions: Regions,
                   policy: str, limit: int, scan: _Scan,
                   progress: Optional[ProgressFn], total: int) -> None:
-    step = WINDOW_BYTES - WINDOW_OVERLAP
     scan.runs_scanned += 1
     scan.bytes_scanned -= seg.lead      # read to align the stride grid, not scanned
-    for window in _windows(seg):
-        want = min(WINDOW_BYTES, seg.length - window)
-        data = plan.source.read_range(seg.vas + window, want, plan.read_view)
-        scan.short_reads += int(len(data) < want)   # never pad: scan only what came back
-        last = window + want >= seg.length
-        found = _run_finders(plan, finders, names, params, seg, window, data, last)
+    for win in scan_plan.read_windows(plan, seg):
+        scan.short_reads += int(win.short)   # never pad: scan only what came back
+        found = _run_finders(plan, finders, names, params, seg, win.offset, win.data, win.last)
         kept, dropped = _enrich(plan, found, regions, policy)
         scan.hits.extend(kept)
         scan.masked_out += dropped
-        scan.bytes_scanned += len(data) if last else min(step, len(data))
+        scan.bytes_scanned += scan_plan.owned_bytes(len(win.data), win.last)
         if progress is not None:
             progress(min(scan.bytes_scanned / max(total, 1), 0.99), "scanning")
         if len(scan.hits) >= limit:
-            scan.stopped_early = not (last and seg is plan.segments[-1])
+            scan.stopped_early = not (win.last and seg is plan.segments[-1])
             return
 
 
-def _harvest_moduli(plan: _Plan, params: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+def _harvest_moduli(plan: Plan, params: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     """RSA moduli of EVERY captured run in scope, so a prime in one run meets its modulus
     held in another. Provenance keeps the source kind; the offset is dropped (it is only
     meaningful inside the window it was read from)."""
@@ -521,39 +315,37 @@ def _harvest_moduli(plan: _Plan, params: Dict[str, Any]) -> Dict[int, Dict[str, 
 
     if not params.get("rsa_scan_public_keys", True):
         return {}
+    min_bits = params.get("rsa_min_bits", rf.DEFAULT_MIN_BITS)
+    max_bits = params.get("rsa_max_bits", rf.DEFAULT_MAX_BITS)
+    cap = params.get("rsa_max_moduli", rf.DEFAULT_MAX_MODULI)
     found: Dict[int, Dict[str, Any]] = {}
-    for seg in plan.segments:
-        for window in _windows(seg):
-            want = min(WINDOW_BYTES, seg.length - window)
-            data = plan.source.read_range(seg.vas + window, want, plan.read_view)
-            for n, info in rf.collect_moduli(
-                    data, (), True, params.get("rsa_min_bits", rf.DEFAULT_MIN_BITS),
-                    params.get("rsa_max_bits", rf.DEFAULT_MAX_BITS),
-                    params.get("rsa_max_moduli", rf.DEFAULT_MAX_MODULI)).items():
-                found.setdefault(n, {**info, "offset": None})
-    return dict(list(found.items())[:params.get("rsa_max_moduli", rf.DEFAULT_MAX_MODULI)])
+    windows = (win for seg in plan.segments for win in scan_plan.read_windows(plan, seg))
+    for win in windows:
+        for n, info in rf.collect_moduli(win.data, (), True, min_bits, max_bits, cap).items():
+            found.setdefault(n, {**info, "offset": None})
+        if _moduli_full(found, cap):
+            break       # first-seen order: later windows could only append past the cap
+    return dict(list(found.items())[:cap])
 
 
-def _with_harvested_moduli(plan: _Plan, names: Sequence[str],
+def _moduli_full(found: Dict[int, Any], cap: Any) -> bool:
+    """Has the harvest reached a (non-negative int) ``rsa_max_moduli`` cap?"""
+    return isinstance(cap, int) and 0 <= cap <= len(found)
+
+
+def _with_harvested_moduli(plan: Plan, names: Sequence[str],
                            params: Dict[str, Any]) -> Dict[str, Any]:
     """``params`` plus ``rsa_moduli_info`` when ``rsa_factor`` runs over several windows."""
-    windows = sum(len(_windows(s)) for s in plan.segments)
+    windows = sum(len(scan_plan.windows(s)) for s in plan.segments)
     if "rsa_factor" not in names or windows < 2:
         return params
     return {**params, "rsa_moduli_info": _harvest_moduli(plan, params)}
 
 
-def _gap_stats(segments: Sequence[_Segment]) -> Tuple[int, int]:
-    """(gaps, gap bytes) between consecutive scanned segments, in virtual addresses."""
-    ordered = sorted((s for s in segments if s.va is not None), key=lambda s: s.va)
-    gaps = [b.va - (a.va + a.length) for a, b in zip(ordered, ordered[1:])]
-    return len(gaps), sum(gaps)
-
-
-def _scan_plan(plan: _Plan, finders: Dict[str, Any], names: Sequence[str],
+def _scan_plan(plan: Plan, finders: Dict[str, Any], names: Sequence[str],
                params: Dict[str, Any], policy: str, limit: int,
                progress: Optional[ProgressFn]) -> _Scan:
-    scan, regions = _Scan(), _regions_of(plan)
+    scan, regions = _Scan(), scan_plan.regions_of(plan)
     params = _with_harvested_moduli(plan, names, params)
     total = sum(s.length for s in plan.segments)
     for seg in plan.segments:
@@ -562,24 +354,6 @@ def _scan_plan(plan: _Plan, finders: Dict[str, Any], names: Sequence[str],
         if len(scan.hits) >= limit:
             break
     return scan
-
-
-def _coverage(plan: _Plan, scan: _Scan, offset: Optional[int],
-              length: Optional[int]) -> Dict[str, Any]:
-    gaps, gap_bytes = _gap_stats(plan.segments)
-    return {"view": plan.view, "requested_offset": offset or 0,
-            "requested_length": length,
-            "captured_bytes": sum(s.length - s.lead for s in plan.segments),
-            "bytes_scanned": scan.bytes_scanned, "runs_scanned": scan.runs_scanned,
-            "gaps_skipped": gaps, "gap_bytes": gap_bytes,
-            "short_reads": scan.short_reads}
-
-
-def _incomplete_reason(truncated: bool, short_reads: int) -> Optional[str]:
-    """Why a scan is not ``complete``: ``truncated`` (limit), ``short_reads``, or ``None``."""
-    if truncated:
-        return "truncated"
-    return "short_reads" if short_reads else None
 
 
 # -- case integration ----------------------------------------------------------
@@ -600,7 +374,7 @@ def _table_row(row: Dict[str, Any]) -> Dict[str, Any]:
             "metadata_json": json.dumps(row["metadata"], sort_keys=True)}
 
 
-def _entry_of(plan: _Plan, row: Dict[str, Any], run_id: str):
+def _entry_of(plan: Plan, row: Dict[str, Any], run_id: str):
     from memdiver.analysis.record import KEY_HIT, AnalysisEntry, Support
 
     payload = {"finder": row["finder"], "label": row["label"],
@@ -613,7 +387,7 @@ def _entry_of(plan: _Plan, row: Dict[str, Any], run_id: str):
         support=(Support("keyfinder", row["finder"]),))
 
 
-def _file_case(plan: _Plan, rows: List[Dict[str, Any]], case_dir: str,
+def _file_case(plan: Plan, rows: List[Dict[str, Any]], case_dir: str,
                truncated: bool, annotate: bool) -> Dict[str, Any]:
     from memdiver.analysis.exporters import export_key_hits
     from memdiver.analysis.record_store import AnalysisRecord
@@ -627,9 +401,7 @@ def _file_case(plan: _Plan, rows: List[Dict[str, Any]], case_dir: str,
     entries = 0
     if annotate:
         record = AnalysisRecord(case.dir)
-        for row in rows:
-            record.append(_entry_of(plan, row, ref.run_id))
-            entries += 1
+        entries = len(record.append_many([_entry_of(plan, row, ref.run_id) for row in rows]))
     return {"case_dir": str(case.dir), "table": ref.name, "run_id": ref.run_id,
             "rows": ref.row_count, "path": ref.path, "annotations": entries,
             "annotation_kind": "key_hit"}
@@ -652,38 +424,16 @@ def _validated(finders: Sequence[str], heap_policy: str, limit: int,
     known = _finders()
     unknown = [f for f in finders if f not in known]
     if not finders or unknown:
-        raise _invalid(f"unknown key finder(s): {unknown or 'none given'}; "
+        raise scan_plan.invalid(f"unknown key finder(s): {unknown or 'none given'}; "
                        f"choose from: {', '.join(sorted(known))}", "keyfinders.unknown_finder")
     if heap_policy not in HEAP_POLICIES:
-        raise _invalid(f"heap_policy must be one of {', '.join(HEAP_POLICIES)}",
+        raise scan_plan.invalid(f"heap_policy must be one of {', '.join(HEAP_POLICIES)}",
                        "keyfinders.bad_heap_policy")
     if limit < 1:
-        raise _invalid("limit must be >= 1", "invalid_limit")
+        raise scan_plan.invalid("limit must be >= 1", "invalid_limit")
     if (offset is not None and offset < 0) or (length is not None and length < 1):
-        raise _invalid("offset must be >= 0 and length >= 1", "keyfinders.bad_range")
+        raise scan_plan.invalid("offset must be >= 0 and length >= 1", "keyfinders.bad_range")
     return known
-
-
-def _dump_file(dump_path: str) -> Path:
-    if not dump_path or not str(dump_path).strip():
-        raise _invalid("dump_path is required", "dump_path_required")
-    path = Path(dump_path).expanduser()
-    if not path.is_file():
-        raise CapabilityError(f"dump not found: {path}",
-                              category=ErrorCategory.NOT_FOUND, code="dump_not_found")
-    return path
-
-
-def _scan_size(dump_path: str, view: Optional[str] = None, offset: Optional[int] = None,
-               length: Optional[int] = None) -> int:
-    """Captured bytes a scan would read (cheap: run tables only); used to pick sync/job."""
-    from memdiver.core.dump_source import open_dump
-
-    path = _dump_file(dump_path)
-    with open_dump(path) as source:
-        chosen = _check_view(source, view)
-        return sum(s.length - s.lead
-                   for s in _clipped(_segments_of(source, chosen), offset, length))
 
 
 def keyfinders_scan_result(
@@ -709,9 +459,9 @@ def keyfinders_scan_result(
 
     names = tuple(finders)
     known = _validated(names, heap_policy, limit, offset, length)
-    path = _dump_file(dump_path)
+    path = scan_plan.dump_file(dump_path)
     with open_dump(path) as source:
-        plan = _build_plan(source, path, view, offset, length,
+        plan = scan_plan.build_plan(source, path, view, offset, length,
                            _stride_alignment(names, params or {}))
         scan = _scan_plan(plan, known, names, dict(params or {}), heap_policy,
                           limit, progress)
@@ -727,8 +477,8 @@ def keyfinders_scan_result(
         "rows": [h.row for h in hits], "row_count": len(hits), "limit": limit,
         "truncated": truncated,
         "complete": not (truncated or scan.short_reads),
-        "incomplete_reason": _incomplete_reason(truncated, scan.short_reads),
-        "coverage": _coverage(plan, scan, offset, length),
+        "incomplete_reason": scan_plan.incomplete_reason(truncated, scan.short_reads),
+        "coverage": scan_plan.coverage(plan, scan, offset, length),
         "candidates": [h.candidate for h in hits],
     }
     if candidates_out:

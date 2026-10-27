@@ -16,19 +16,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from memdiver.api.routers._common import StrictModel
 from memdiver.api.routers.image import _case_target
 from memdiver.app import tools_detector_fixtures as fixtures
 
 router = APIRouter()
 
 
-class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class RunRequest(_Strict):
+class RunRequest(StrictModel):
     artifact_kind: str
     artifact: str
     fixtures: Optional[List[Dict[str, Any]]] = None
@@ -36,7 +33,7 @@ class RunRequest(_Strict):
     case_dir: Optional[str] = None
 
 
-class AddRequest(_Strict):
+class AddRequest(StrictModel):
     case_dir: str
     artifact_kind: str
     artifact: str

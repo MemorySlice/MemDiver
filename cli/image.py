@@ -11,14 +11,7 @@ import json
 import sys
 from typing import Callable, Dict, Optional
 
-from ._shared import _write_output
-
-
-def _common_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
+from ._shared import emit, output_parent_parser
 
 
 def add_image_parser(sub) -> None:
@@ -26,19 +19,19 @@ def add_image_parser(sub) -> None:
     group = sub.add_parser(
         "image", help="Memory images: probe, profile, .mdview views, processes, extract")
     actions = group.add_subparsers(dest="image_action")
-    probe = actions.add_parser("probe", parents=[_common_parser()],
+    probe = actions.add_parser("probe", parents=[output_parent_parser()],
                                help="Size, layer chain and profile status of an image")
     probe.add_argument("image", metavar="IMAGE", help="Memory image file")
     probe.add_argument("--banners", action="store_true",
                        help="Also scan the image for Linux banners (may read it all)")
     probe.add_argument("--isf", help="ISF file to report as the explicit profile")
-    prof = actions.add_parser("profile", parents=[_common_parser()],
+    prof = actions.add_parser("profile", parents=[output_parent_parser()],
                               help="Resolve the kernel profile (may run pakunoda, ~15 s)")
     prof.add_argument("image", metavar="IMAGE")
     prof.add_argument("--isf", help="Use this ISF file")
     prof.add_argument("--no-pakunoda", action="store_true",
                       help="Do not extract an ISF with pakunoda")
-    op = actions.add_parser("open", parents=[_common_parser()],
+    op = actions.add_parser("open", parents=[output_parent_parser()],
                             help="Write a .mdview descriptor for one view of an image")
     op.add_argument("image", metavar="IMAGE")
     op.add_argument("--view", required=True, choices=("physical", "kernel", "process"))
@@ -56,24 +49,19 @@ def add_image_parser(sub) -> None:
     op.add_argument("--va-bits", type=int, help="Virtual-address width (with --pgd)")
     op.add_argument("--draft", help="Use this ISF draft of --case as the profile")
     op.add_argument("--draft-version", help="Draft version (default: current)")
-    procs = actions.add_parser("processes", parents=[_common_parser()],
+    procs = actions.add_parser("processes", parents=[output_parent_parser()],
                                help="List the tasks of a kernel or process .mdview")
     procs.add_argument("view", metavar="VIEW", help=".mdview descriptor")
     procs.add_argument("--limit", type=int, default=100_000, help="Row cap")
-    ext = actions.add_parser("extract", parents=[_common_parser()],
+    ext = actions.add_parser("extract", parents=[output_parent_parser()],
                              help="Extract a process .mdview into an .msl file")
     ext.add_argument("view", metavar="VIEW", help="process .mdview descriptor")
     ext.add_argument("--out", required=True, dest="out_path", help="Output .msl path")
 
 
-def _emit(args: argparse.Namespace, payload: dict) -> int:
-    _write_output(payload, args.output)
-    return 0
-
-
 def _cmd_image_probe(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_probe_result
-    return _emit(args, image_probe_result(args.image, args.banners, args.isf).payload)
+    return emit(args, image_probe_result(args.image, args.banners, args.isf).payload)
 
 
 def _print_stage(stage: str, elapsed: float) -> None:
@@ -83,7 +71,7 @@ def _print_stage(stage: str, elapsed: float) -> None:
 
 def _cmd_image_profile(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_profile_result
-    return _emit(args, image_profile_result(
+    return emit(args, image_profile_result(
         args.image, args.isf, not args.no_pakunoda, progress=_print_stage).payload)
 
 
@@ -98,7 +86,7 @@ def _paging_arg(args: argparse.Namespace) -> Optional[dict]:
 
 def _cmd_image_open(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_open_view_result
-    return _emit(args, image_open_view_result(
+    return emit(args, image_open_view_result(
         args.image, args.view, args.pid, args.isf, args.case_dir, args.out_path,
         no_profile=args.no_profile, paging=_paging_arg(args), draft=args.draft,
         draft_version=args.draft_version).payload)
@@ -106,12 +94,12 @@ def _cmd_image_open(args: argparse.Namespace) -> int:
 
 def _cmd_image_processes(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_processes_result
-    return _emit(args, image_processes_result(args.view, args.limit).payload)
+    return emit(args, image_processes_result(args.view, args.limit).payload)
 
 
 def _cmd_image_extract(args: argparse.Namespace) -> int:
     from memdiver.app.tools_image import image_extract_process_result
-    return _emit(args, image_extract_process_result(args.view, args.out_path).payload)
+    return emit(args, image_extract_process_result(args.view, args.out_path).payload)
 
 
 _IMAGE_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {

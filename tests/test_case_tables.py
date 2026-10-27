@@ -6,11 +6,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from memdiver.analysis.case import Case, snake_case_columns
+from memdiver.analysis.case import Case, _check_name, snake_case_columns
 from memdiver.analysis.record import AnalysisEntry
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
 KVA = 0xFFFFFFFF82000A20
+#: A tables/ directory name that, spliced into CREATE VIEW, runs extra statements.
+EVIL_TABLE_DIR = "t AS SELECT 1; CREATE TABLE pwn AS SELECT 42 AS x; CREATE VIEW u"
 VOL3_HEADER = ["OFFSET (V)", "PID", "TID", "PPID", "COMM", "UID", "GID", "EUID",
                "EGID", "CREATION TIME", "File output"]
 
@@ -93,6 +95,33 @@ def test_bad_table_name_and_space(case):
                             locations={"x": "nonsense"})
 
 
+def test_check_name_uses_full_match():
+    _check_name("vol3__linux_pslist")
+    for bad in ("ok\n", "annotations", "", "Bad", "a" * 97):
+        with pytest.raises(CapabilityError):
+            _check_name(bad)
+
+
+def test_invalid_table_dir_is_skipped_not_spliced_into_sql(case):
+    case.register_table("ok", _procs([1]), capture_id="c", producer="x")
+    run_dir = case.dir / "tables" / EVIL_TABLE_DIR / "r1"
+    run_dir.mkdir(parents=True)
+    pq.write_table(_procs([9]), run_dir / "evil.parquet")
+    assert case.tables() == ["ok"]
+    assert case.query("SELECT 1 AS x").table.to_pylist() == [{"x": 1}]
+    catalog = case.query("SELECT table_name FROM information_schema.tables ORDER BY 1")
+    assert [r["table_name"] for r in catalog.table.to_pylist()] == ["ok"]
+    with pytest.raises(CapabilityError):
+        case.query("SELECT x FROM pwn")
+
+
+def test_runs_rejects_names_that_leave_the_tables_dir(case):
+    case.register_table("ok", _procs([1]), capture_id="c", producer="x")
+    assert len(case.runs("ok")) == 1
+    assert case.runs("../tables/ok") == []
+    assert case.runs("..") == []
+
+
 def test_kernel_va_roundtrips(case):
     t = pa.table({"Offset (V)": pa.array([KVA], pa.uint64()),
                   "addr": pa.array([KVA], pa.uint64())})
@@ -160,6 +189,36 @@ def test_statement_guard(case, sql):
     with pytest.raises(CapabilityError) as e:
         case.query(sql)
     assert e.value.category is ErrorCategory.INVALID_INPUT
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 1; -- x\nSELECT 2", "SELECT 1; /* x */ DROP VIEW t",
+    "SELECT 1 /* unterminated", "SELECT 1; -- x\nDROP VIEW t",
+])
+def test_statement_guard_comments_cannot_hide_a_second_statement(case, sql):
+    case.register_table("t", _procs([1]), capture_id="c", producer="x")
+    with pytest.raises(CapabilityError) as e:
+        case.query(sql)
+    assert e.value.category is ErrorCategory.INVALID_INPUT
+    assert case.query("SELECT count(*) AS n FROM t").table.to_pylist() == [{"n": 1}]
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 1 AS x -- note",
+    "SELECT 1 AS x; -- note",
+    "SELECT 1 AS x;",
+    "SELECT 1 AS x ; ;",
+    "/* block */ SELECT 1 AS x /* trailing */",
+    "/* block */ SELECT 1 AS x; /* after */",
+    "SELECT 1 AS x -- one\n-- two\n;  -- three",
+])
+def test_trailing_semicolons_and_comments_are_accepted(case, sql):
+    assert case.query(sql).table.to_pylist() == [{"x": 1}]
+
+
+def test_semicolons_inside_literals_are_kept(case):
+    rows = case.query("SELECT 'a;--' AS \"ü;\"; -- é").table.to_pylist()
+    assert rows == [{"ü;": "a;--"}]
 
 
 def test_file_escape_blocked_but_views_work(case, tmp_path):

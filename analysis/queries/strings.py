@@ -168,7 +168,7 @@ def _column(kind: str, pattern: str) -> str:
     rules = [_SQL_RULE[m].format(_literal(p)) for m, p in IOC_FILTERS.get(kind, ())]
     if not rules:
         return f"{extract} AS {kind}"
-    return f"list_filter({extract}, x -> {' AND '.join(rules)}) AS {kind}"
+    return f"list_filter({extract}, lambda x: {' AND '.join(rules)}) AS {kind}"
 
 
 def _sql() -> str:
@@ -176,7 +176,7 @@ def _sql() -> str:
     any_hit = " + ".join(f"len({k})" for k in IOC_PATTERNS)
     return (f"SELECT DISTINCT * FROM (\n"
             f"SELECT capture_id, addr, space, encoding, region_path, value,\n       {columns}\n"
-            f"FROM {TABLE}\n) WHERE {any_hit} > 0\nORDER BY capture_id, addr, encoding")
+            f"FROM {TABLE}\n) WHERE {any_hit} > 0\nORDER BY capture_id, addr, encoding")  # nosec B608 - constant table, fixed IOC columns, quoted literals
 
 
 STRINGS_IOCS = SavedQuery(

@@ -1,15 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import type { ImageProbe } from "@/api/image";
-
-const formatBytes = (n: number): string => {
-  if (n < 1024) return `${n} B`;
-  const units = ["KiB", "MiB", "GiB", "TiB"];
-  let value = n / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
-  return `${value.toFixed(1)} ${units[i]}`;
-};
+import { formatBytes } from "@/utils/format-bytes";
 
 function Row({ label, value, testId }: { label: string; value: string; testId: string }) {
   return (

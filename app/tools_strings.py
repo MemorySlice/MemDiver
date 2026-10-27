@@ -2,7 +2,7 @@
 
 The ``strings.table`` capability. It reuses :func:`memdiver.core.strings.extract_strings`
 (ASCII / UTF-8) and its UTF-16LE sibling per captured run, with the same scan plan
-(:mod:`memdiver.app.tools_keyfinders`) the key finders use:
+(:mod:`memdiver.app.scan_plan`) the key finders use:
 
 * **P2, every address carries its coordinate system.** A row's ``addr`` is in the
   scanned ``view`` and names its ``space`` plus a full ``location`` dict.
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from memdiver.app import tools_keyfinders as _scan
+from memdiver.app import scan_plan
 from memdiver.core.service_errors import CapabilityError
 from memdiver.core.service_result import ServiceResult
 
@@ -46,25 +46,15 @@ ProgressFn = Callable[[float, str], None]
 
 
 def _invalid(message: str, code: str) -> CapabilityError:
-    return _scan._invalid(message, code)
+    return scan_plan.invalid(message, code)
 
 
 # -- validation ------------------------------------------------------------------
 
 
 def _check_view(source: Any, view: Optional[str]) -> str:
-    packed = hasattr(source, "captured_runs")
-    chosen = view or ("va" if packed else "raw")
-    allowed = {"msl": ("va", "vas"), "image_view": ("va",)}.get(source.format_name)
-    if not packed:
-        allowed = ("raw",)
-    if allowed is None:
-        raise _invalid(f"strings do not support {source.format_name!r} dumps",
-                       "strings.unsupported_format")
-    if chosen not in allowed:
-        raise _invalid(f"view {chosen!r} is not available for a {source.format_name!r} "
-                       f"dump; choose one of: {', '.join(allowed)}", "strings.bad_view")
-    return chosen
+    return scan_plan.check_view(source, view, producer="strings", code_prefix="strings",
+                                usable="available")
 
 
 def _validated(encodings: Sequence[str], min_len: int, limit: int,
@@ -106,10 +96,25 @@ def _matches(data: bytes, encodings: Sequence[str], min_len: int) -> list:
     return sorted(found, key=lambda m: (m.offset, m.encoding))
 
 
-def _row_of(plan: Any, seg: Any, window: int, match: Any, regions: Any) -> Dict[str, Any]:
-    from memdiver.analysis.queries.strings import (ioc_ambiguity, ioc_kinds,
-                                                    oid_like_values)
+def _ioc_fields(stored: str) -> Dict[str, Any]:
+    """A row's IOC columns, every pattern run ONCE over *stored*.
 
+    Same answers as ``ioc_kinds`` / ``ioc_ambiguity`` / ``oid_like_values`` of
+    :mod:`memdiver.analysis.queries.strings`, which would each re-run the ``ipv4``
+    pattern; here the ``ipv4`` hits of one :func:`ioc_matches` pass feed all three.
+    """
+    from memdiver.analysis.queries.strings import OID_LIKE, ioc_matches, oid_prefix_of
+
+    matches = ioc_matches(stored)
+    ipv4 = matches.get("ipv4", [])
+    like = [(hit, prefix) for hit, prefix in ((h, oid_prefix_of(h)) for h in ipv4) if prefix]
+    ambiguous = bool(ipv4) and len(like) == len(ipv4)
+    return {"iocs": list(matches), "ambiguity": OID_LIKE if ambiguous else None,
+            "oid_prefix": like[0][1] if ambiguous else None,
+            "oid_like_values": [{"value": v, "oid_prefix": p} for v, p in like]}
+
+
+def _row_of(plan: Any, seg: Any, window: int, match: Any, regions: Any) -> Dict[str, Any]:
     rel = window + match.offset
     addr = seg.addr + rel
     va = None if seg.va is None else seg.va + rel
@@ -117,14 +122,11 @@ def _row_of(plan: Any, seg: Any, window: int, match: Any, regions: Any) -> Dict[
     chars = len(match.value)
     wide = match.encoding == "utf16le"
     stored = match.value[:MAX_VALUE_CHARS]
-    ambiguity, oid_prefix = ioc_ambiguity(stored) or (None, None)
     return {"addr": addr, "space": location.space.value, "location": location.to_dict(),
             "encoding": match.encoding, "length": chars,
             "byte_length": 2 * chars if wide else match.length,
             "value": stored, "value_truncated": len(match.value) > MAX_VALUE_CHARS,
-            "iocs": ioc_kinds(stored), "ambiguity": ambiguity, "oid_prefix": oid_prefix,
-            "oid_like_values": [{"value": v, "oid_prefix": p}
-                                for v, p in oid_like_values(stored)],
+            **_ioc_fields(stored),
             "va": va, "vas_offset": seg.vas + rel,
             "region": regions.at(va)}
 
@@ -134,7 +136,7 @@ def _window_rows(plan: Any, seg: Any, window: int, data: bytes, last: bool,
                  scan: _Scan) -> List[Dict[str, Any]]:
     rows = []
     for match in _matches(data, encodings, min_len):
-        if not _scan._owns(match.offset, window, last):
+        if not scan_plan.owns(match.offset, window, last):
             continue    # reported once, by the window that owns its start
         end = match.offset + match.length * (2 if match.encoding == "utf16le" else 1)
         scan.clipped += int(not last and end >= len(data))
@@ -146,20 +148,16 @@ def _scan_segment(plan: Any, seg: Any, encodings: Sequence[str], min_len: int,
                   regions: Any, limit: int, scan: _Scan,
                   progress: Optional[ProgressFn], total: int) -> bool:
     """Scan one captured run; ``False`` once the row limit stopped the scan."""
-    step = _scan.WINDOW_BYTES - _scan.WINDOW_OVERLAP
     scan.runs_scanned += 1
-    for window in _scan._windows(seg):
-        want = min(_scan.WINDOW_BYTES, seg.length - window)
-        data = plan.source.read_range(seg.vas + window, want, plan.read_view)
-        scan.short_reads += int(len(data) < want)   # never pad: scan what came back
-        last = window + want >= seg.length
-        scan.rows.extend(_window_rows(plan, seg, window, data, last, encodings,
+    for win in scan_plan.read_windows(plan, seg):
+        scan.short_reads += int(win.short)   # never pad: scan what came back
+        scan.rows.extend(_window_rows(plan, seg, win.offset, win.data, win.last, encodings,
                                       min_len, regions, scan))
-        scan.bytes_scanned += len(data) if last else min(step, len(data))
+        scan.bytes_scanned += scan_plan.owned_bytes(len(win.data), win.last)
         if progress is not None:
             progress(min(scan.bytes_scanned / max(total, 1), 0.99), "extracting strings")
         if len(scan.rows) >= limit:
-            more = not (last and seg is plan.segments[-1])
+            more = not (win.last and seg is plan.segments[-1])
             scan.truncated = len(scan.rows) > limit or more
             return False
     return True
@@ -167,7 +165,7 @@ def _scan_segment(plan: Any, seg: Any, encodings: Sequence[str], min_len: int,
 
 def _scan_plan(plan: Any, encodings: Sequence[str], min_len: int, limit: int,
                progress: Optional[ProgressFn]) -> _Scan:
-    scan, regions = _Scan(), _scan._regions_of(plan)
+    scan, regions = _Scan(), scan_plan.regions_of(plan)
     total = sum(s.length for s in plan.segments)
     for seg in plan.segments:
         if not _scan_segment(plan, seg, encodings, min_len, regions, limit, scan,
@@ -177,13 +175,10 @@ def _scan_plan(plan: Any, encodings: Sequence[str], min_len: int, limit: int,
 
 
 def _coverage(plan: Any, scan: _Scan, region: Optional[Tuple[int, int]]) -> Dict[str, Any]:
-    gaps, gap_bytes = _scan._gap_stats(plan.segments)
-    return {"view": plan.view, "requested_offset": region[0] if region else 0,
-            "requested_length": region[1] if region else None,
-            "captured_bytes": sum(s.length for s in plan.segments),
-            "bytes_scanned": scan.bytes_scanned, "runs_scanned": scan.runs_scanned,
-            "gaps_skipped": gaps, "gap_bytes": gap_bytes,
-            "short_reads": scan.short_reads, "clipped_strings": scan.clipped}
+    # The plan is built with align 1, so no segment has ``lead`` bytes and the shared
+    # ``captured_bytes`` (``length - lead``) is this run's plain captured length.
+    offset, length = region if region else (None, None)
+    return {**scan_plan.coverage(plan, scan, offset, length), "clipped_strings": scan.clipped}
 
 
 # -- case integration ------------------------------------------------------------
@@ -217,9 +212,8 @@ def _file_case(plan: Any, rows: List[Dict[str, Any]], case_dir: str,
 
 def _build_plan(view: Optional[str], region: Optional[Tuple[int, int]],
                 source: Any, path: Path) -> Any:
-    chosen = _check_view(source, view)
     offset, length = region if region else (None, None)
-    return _scan._build_plan(source, path, chosen, offset, length)
+    return scan_plan.build_plan(source, path, view, offset, length, check=_check_view)
 
 
 #: A region given only an offset reads to the end of the dump.
@@ -234,16 +228,10 @@ def _region_of(offset: Optional[int], length: Optional[int]) -> Optional[Tuple[i
 
 
 def _scan_size(dump_path: str, view: Optional[str] = None,
-                      region: Optional[Tuple[int, int]] = None) -> int:
+               region: Optional[Tuple[int, int]] = None) -> int:
     """Captured bytes a scan would read (run tables only); used to pick sync/job."""
-    from memdiver.core.dump_source import open_dump
-
-    path = _scan._dump_file(dump_path)
-    with open_dump(path) as source:
-        chosen = _check_view(source, view)
-        offset, length = region if region else (None, None)
-        return sum(s.length for s in _scan._clipped(
-            _scan._segments_of(source, chosen), offset, length))
+    offset, length = region if region else (None, None)
+    return scan_plan.scan_size(dump_path, view, offset, length, check=_check_view)
 
 
 def strings_table_result(
@@ -267,7 +255,7 @@ def strings_table_result(
     from memdiver.core.dump_source import open_dump
 
     names = _validated(encodings, min_len, limit, region)
-    path = _scan._dump_file(dump_path)
+    path = scan_plan.dump_file(dump_path)
     with open_dump(path) as source:
         plan = _build_plan(view, region, source, path)
         scan = _scan_plan(plan, names, min_len, limit, progress)
@@ -281,7 +269,7 @@ def strings_table_result(
         "oid_like_count": sum(r["ambiguity"] == "oid_like" for r in rows),
         "truncated": truncated,
         "complete": not (truncated or scan.short_reads),
-        "incomplete_reason": _scan._incomplete_reason(truncated, scan.short_reads),
+        "incomplete_reason": scan_plan.incomplete_reason(truncated, scan.short_reads),
         "coverage": _coverage(plan, scan, region),
     }
     if case_dir:

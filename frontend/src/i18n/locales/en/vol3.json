@@ -31,6 +31,7 @@
     "cancelled": "Cancelled",
     "running": "Running plugin...",
     "progress": "({{pct}}%)",
+    "noPayload": "The job finished without a result payload.",
     "needView": "Open a memory image view (.mdview) in the workspace to run plugins."
   },
   "result": {

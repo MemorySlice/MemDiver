@@ -105,8 +105,6 @@ def create_server():
     # advertised must be the producer's numbers.
     from memdiver.app.tools_heap import (
         DEFAULT_CHUNK_PAGE_SIZE as HEAP_DEFAULT_CHUNK_PAGE_SIZE,
-    )
-    from memdiver.app.tools_heap import (
         DEFAULT_ROLES_LENGTH as HEAP_DEFAULT_ROLES_LENGTH,
     )
     from memdiver.heap.analyze import DEFAULT_MAX_CHUNKS as HEAP_DEFAULT_MAX_CHUNKS
@@ -114,7 +112,7 @@ def create_server():
     from memdiver.app import tools_semantic
 
     from . import tools, tools_inspect, tools_pipeline, tools_xref
-    from .presenters import mcp_error_funnel, present_inspect_mcp_call
+    from .presenters import LEGACY_ERROR_BODY_TOOLS, present_mcp_tool
 
     mcp = MCPServer(
         "memdiver",
@@ -135,8 +133,14 @@ def create_server():
     _register_tool = mcp.add_tool
 
     def _add_guarded_tool(fn, *a, **k):
-        # Order: path guard first (innermost), then the opt-in result budget on its result.
-        return _register_tool(budget_tool(guard_tool(fn, _session), _result_budget), *a, **k)
+        # Order (innermost first): present (JSON-encode the body's ServiceResult /
+        # dict and render a raised CapabilityError ONCE, here), then the path
+        # guard, then the opt-in result budget on its result. Tool bodies just
+        # ``return`` their result or raise; none encodes or catches errors itself.
+        name = k.get("name") or fn.__name__
+        presented = present_mcp_tool(fn, legacy_error_body=name in LEGACY_ERROR_BODY_TOOLS)
+        return _register_tool(
+            budget_tool(guard_tool(presented, _session), _result_budget), *a, **k)
 
     mcp.add_tool = _add_guarded_tool
 
@@ -145,7 +149,6 @@ def create_server():
         return _session.region_filter if region_filter is None else region_filter
 
     @mcp.tool()
-    @mcp_error_funnel
     def scan_dataset(
         dataset_root: str,
         keylog_filename: str = "keylog.csv",
@@ -155,19 +158,16 @@ def create_server():
         return json.dumps(tools.scan_dataset(_session, dataset_root, keylog_filename, protocols))
 
     @mcp.tool()
-    @mcp_error_funnel
     def list_phases(library_dir: str) -> str:
         """List available lifecycle phases for a library directory."""
         return json.dumps(tools.list_phases(_session, library_dir))
 
     @mcp.tool()
-    @mcp_error_funnel
     def list_protocols() -> str:
         """List all registered protocol descriptors with versions and secret types."""
         return json.dumps(tools.list_protocols(_session))
 
     @mcp.tool()
-    @mcp_error_funnel
     def set_region_filter(region_filter: Optional[str] = None) -> str:
         """Set the session's analysis-time region view filter.
 
@@ -181,13 +181,11 @@ def create_server():
         return json.dumps(tools.set_region_filter(_session, region_filter))
 
     @mcp.tool()
-    @mcp_error_funnel
     def get_region_filter() -> str:
         """Return the session's region view filter (``null`` = every region)."""
         return json.dumps(tools.get_region_filter(_session))
 
     @mcp.tool()
-    @mcp_error_funnel
     def analyze_library(
         library_dirs: List[str],
         phase: str,
@@ -230,14 +228,13 @@ def create_server():
         the region VIEW filter, so ``offset`` is a filtered-view offset;
         omitted, the session's filter applies and ``"all"`` disables it.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.read_hex_result(
+        return tools_inspect.read_hex_result(
             _session, dump_path, offset, length, view,
             key_file, passphrase, kem_key_file,
             region_filter=_session_region_filter(region_filter),
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def get_entropy(
         dump_path: str, offset: int = 0, length: int = 0,
         window: int = 32, step: int = 16, threshold: Optional[float] = None,
@@ -253,14 +250,13 @@ def create_server():
         ``resolution``: "full" (every window, exact regions + min/max envelope),
         "sampled" (bounded step), "auto" (full for inputs up to 8 MiB).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.entropy_result(
+        return tools_inspect.entropy_result(
             _session, dump_path, offset, length, window, step, threshold,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
             view=view, buckets=buckets, resolution=resolution,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def analyze_region(
         dump_path: str, offset: int, window: int = 64, view: str = "raw",
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -272,13 +268,12 @@ def create_server():
         follow-up to a byte-search or entropy hit. Only the ``window``-sized
         neighbourhood is read, so it is cheap on multi-GB dumps.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.analyze_region_result(
+        return tools_inspect.analyze_region_result(
             _session, dump_path, offset, window, view,
             key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def extract_strings(
         dump_path: str, offset: int = 0, length: int = 0,
         min_length: int = 4, encoding: str = "ascii", max_results: int = 500,
@@ -287,10 +282,10 @@ def create_server():
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Extract printable strings from a dump file."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.strings_result(
+        return tools_inspect.strings_result(
             _session, dump_path, offset, length, min_length, encoding, max_results,
             cursor, chunk_size, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_session_info(
@@ -298,9 +293,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """Extract session metadata from an MSL file (process, modules, VAS)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.session_info_result(
+        return tools_inspect.session_info_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def vas_regions(
@@ -312,10 +307,10 @@ def create_server():
         Emits the full five-field entries (base_addr/region_size/region_type/
         protection/mapped_path) the VasChart frontend consumes.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.vas_regions_result(
+        return tools_inspect.vas_regions_result(
             _session, msl_path, key_file=key_file, passphrase=passphrase,
             kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_processes(
@@ -323,9 +318,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List processes captured in an MSL file (pid/ppid/uid/exe/cmdline)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.processes_result(
+        return tools_inspect.processes_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_modules(
@@ -333,9 +328,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List loaded modules in an MSL file (path/base_addr/size/version)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.modules_result(
+        return tools_inspect.modules_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_handles(
@@ -343,9 +338,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List open handles/fds in an MSL file (pid/fd/type/path)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.handles_result(
+        return tools_inspect.handles_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     # -- heap.* : allocator-aware heap analysis -----------------------------
     # Shared vocabulary for the six heap tools (repeated in each docstring
@@ -355,7 +350,6 @@ def create_server():
     # generic (heuristic fallback when nothing else fits).
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_detect(
         dump_path: str, allocator: str = "auto", base_va: Optional[int] = None,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
@@ -372,13 +366,12 @@ def create_server():
         ``base_va`` sets the VA of a flat raw dump without a ``.maps`` sidecar.
         Works on ``.msl`` (pass key material if encrypted) and raw dumps.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_detect_result(
+        return tools_heap.heap_detect_result(
             _session, dump_path, allocator, base_va=base_va,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_summary(
         dump_path: str, allocator: str = "auto", base_va: Optional[int] = None,
         max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS, regions: Optional[List[str]] = None,
@@ -397,14 +390,13 @@ def create_server():
         allocator whose parse is incomplete or guessed. ``regions`` limits
         parsing to the named mappings; ``max_chunks`` caps the walk.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_summary_result(
+        return tools_heap.heap_summary_result(
             _session, dump_path, allocator, base_va=base_va,
             max_chunks=max_chunks, regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_chunks(
         dump_path: str, allocator: str = "auto", state: Optional[str] = None,
         min_size: Optional[int] = None, max_size: Optional[int] = None,
@@ -428,16 +420,15 @@ def create_server():
         ``page`` is 0-based; ``page_size`` max 2000. Allocators as for
         ``heap_summary`` (``auto`` detects).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_chunks_result(
+        return tools_heap.heap_chunks_result(
             _session, dump_path, allocator, state=state, min_size=min_size,
             max_size=max_size, va_start=va_start, va_end=va_end, offset=offset,
             length=length, view=view, page=page, page_size=page_size,
             base_va=base_va, max_chunks=max_chunks, regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_chunk_at(
         dump_path: str, allocator: str = "auto", va: Optional[int] = None,
         offset: Optional[int] = None, view: str = "vas",
@@ -456,14 +447,13 @@ def create_server():
         neighbour chunks (nearest below/above when ``found`` is false).
         Allocators as for ``heap_summary`` (``auto`` detects).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_chunk_at_result(
+        return tools_heap.heap_chunk_at_result(
             _session, dump_path, allocator, va=va, offset=offset, view=view,
             base_va=base_va, max_chunks=max_chunks, regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_free_lists(
         dump_path: str, allocator: str = "auto", kind: Optional[str] = None,
         base_va: Optional[int] = None, max_chunks: int = HEAP_DEFAULT_MAX_CHUNKS,
@@ -480,14 +470,13 @@ def create_server():
         (``unresolved_vas``). Allocators as for ``heap_summary`` (``auto``
         detects); lists exist only where the allocator keeps them.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_free_lists_result(
+        return tools_heap.heap_free_lists_result(
             _session, dump_path, allocator, kind=kind, base_va=base_va,
             max_chunks=max_chunks, regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def heap_roles(
         dump_path: str, allocator: str = "auto", view: str = "vas",
         offset: int = 0, length: int = HEAP_DEFAULT_ROLES_LENGTH,
@@ -508,12 +497,12 @@ def create_server():
         window) and the allocator's ``partial``/``heuristic`` flags.
         Allocators as for ``heap_summary`` (``auto`` detects).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_heap.heap_roles_result(
+        return tools_heap.heap_roles_result(
             _session, dump_path, allocator, view=view, offset=offset,
             length=length, base_va=base_va, max_chunks=max_chunks,
             regions=regions,
             key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
-        )))
+        )
 
     # -- annotations.* : the versioned analysis record of a capture ----------
     # ``case_dir`` is required until the Case abstraction (default
@@ -532,9 +521,8 @@ def create_server():
         (human/agent/tool:<name>), locations, length, label, payload, support
         and a ``superseded`` flag. ``case_dir`` is required.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_annotations.annotations_list_result(
-                case_dir, capture_id, kind, include_superseded)))
+        return tools_annotations.annotations_list_result(
+            case_dir, capture_id, kind, include_superseded)
 
     @mcp.tool()
     def annotations_add(
@@ -552,10 +540,9 @@ def create_server():
         items. ``author`` is human, agent or tool:<name>. Returns the stored
         entry including its id.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_annotations.annotations_add_result(
-                case_dir, capture_id, kind, author, locations, label, payload,
-                support, length)))
+        return tools_annotations.annotations_add_result(
+            case_dir, capture_id, kind, author, locations, label, payload,
+            support, length)
 
     @mcp.tool()
     def annotations_supersede(
@@ -571,10 +558,9 @@ def create_server():
         """
         changes = {"kind": kind, "locations": locations, "label": label,
                    "payload": payload, "support": support, "length": length}
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_annotations.annotations_supersede_result(
-                case_dir, capture_id, entry_id, author,
-                **{k: v for k, v in changes.items() if v is not None})))
+        return tools_annotations.annotations_supersede_result(
+            case_dir, capture_id, entry_id, author,
+            **{k: v for k, v in changes.items() if v is not None})
 
     @mcp.tool()
     def annotations_retract(
@@ -582,29 +568,25 @@ def create_server():
         reason: str = "",
     ) -> str:
         """Withdraw an entry (a retraction is appended; nothing is deleted)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_annotations.annotations_retract_result(
-                case_dir, capture_id, entry_id, author, reason)))
+        return tools_annotations.annotations_retract_result(
+            case_dir, capture_id, entry_id, author, reason)
 
     # -- case.* : the case data lake (Parquet tables + read-only SQL) ---------
     @mcp.tool()
     def case_init(case: str) -> str:
         """Create (or re-open) a case. A bare name means ~/.memdiver/cases/<name>."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_init_result(case)))
+        return tools_case.case_init_result(case)
 
     @mcp.tool()
     def case_status(case_dir: str) -> str:
         """Manifest, tables (runs, row counts) and annotation captures of a case."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_status_result(case_dir)))
+        return tools_case.case_status_result(case_dir)
 
     @mcp.tool()
     def case_manifest(case_dir: str) -> str:
         """Inventory of a case: views, images (exists/size), .msl captures, annotations, ISF drafts/exports, plugins, tables."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_manifest_result(
-                case_dir, read_roots=_sandbox_roots(getattr(_session, "dataset_root", None)))))
+        return tools_case.case_manifest_result(
+            case_dir, read_roots=_sandbox_roots(getattr(_session, "dataset_root", None)))
 
     @mcp.tool()
     def case_schema(case_dir: str) -> str:
@@ -613,8 +595,7 @@ def create_server():
         Every table carries capture_id, image_sha256, pid, space, addr, size,
         run_id; analysis-record entries are queryable as ``annotations``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_schema_result(case_dir)))
+        return tools_case.case_schema_result(case_dir)
 
     @mcp.tool()
     def case_query(
@@ -628,8 +609,7 @@ def create_server():
         SQL. Rows are capped at ``limit``; ``truncated`` says whether more
         existed. Call ``case_schema`` first for table and column names.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_query_result(case_dir, sql, limit, params)))
+        return tools_case.case_query_result(case_dir, sql, limit, params)
 
     @mcp.tool()
     def context_at(
@@ -645,9 +625,8 @@ def create_server():
         result also reports how much of ``[value, value+length)`` the capture
         holds, when the dump supports it.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.context_at_result(
-                case_dir, location, length, dump_path, tables)))
+        return tools_case.context_at_result(
+            case_dir, location, length, dump_path, tables)
 
     @mcp.tool()
     def case_export(case_dir: str, dump_path: str, what: Optional[List[str]] = None,
@@ -661,15 +640,13 @@ def create_server():
         Runs inline and blocks on a large image. Returns the registered tables
         (``table``, ``run_id``, ``rows``, ``path``) and a ``skipped`` list.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_case.case_export_result(
-                case_dir, dump_path, tuple(what or ("auto",)), run_id)))
+        return tools_case.case_export_result(
+            case_dir, dump_path, tuple(what or ("auto",)), run_id)
 
     @mcp.tool()
     def keyfinders_list() -> str:
         """List the key finders (structure-based key recognisers) and the ``params`` each reads."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_keyfinders.keyfinders_list_result()))
+        return tools_keyfinders.keyfinders_list_result()
 
     @mcp.tool()
     def keyfinders_scan(
@@ -693,11 +670,10 @@ def create_server():
         ``heap_chunks``/``msl_regions`` by ``case_query``) and ``key_hit`` annotations.
         Runs inline and blocks on a large capture.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_keyfinders.keyfinders_scan_result(
-                dump_path, tuple(finders or tools_keyfinders.DEFAULT_FINDERS), view,
-                offset, length, heap_policy, params, case_dir, limit, candidates_out,
-                annotate)))
+        return tools_keyfinders.keyfinders_scan_result(
+            dump_path, tuple(finders or tools_keyfinders.DEFAULT_FINDERS), view,
+            offset, length, heap_policy, params, case_dir, limit, candidates_out,
+            annotate)
 
     @mcp.tool()
     def yara_check(rule_source: Optional[str] = None, rule_name: Optional[str] = None,
@@ -710,8 +686,7 @@ def create_server():
         ``errors: [{line, message}]`` (1-based line). ``warnings`` flags a wildcard hex
         string wider than the installed libyara will verify (it matches nothing).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara.yara_check_result(rule_source, rule_name, case_dir)))
+        return tools_yara.yara_check_result(rule_source, rule_name, case_dir)
 
     @mcp.tool()
     def yara_scan_dump(
@@ -732,10 +707,9 @@ def create_server():
         for the line). For a many-dump census use ``scan_yara_rule``. Give ``rule_source`` or
         a stored ``rule_name`` (+ ``case_dir``), not both.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara.yara_scan_dump_result(
-                dump_path, rule_source, view, offset, length, limit, timeout_s,
-                rule_name, case_dir)))
+        return tools_yara.yara_scan_dump_result(
+            dump_path, rule_source, view, offset, length, limit, timeout_s,
+            rule_name, case_dir)
 
     @mcp.tool()
     def yara_rule_list(case_dir: Optional[str] = None) -> str:
@@ -746,8 +720,7 @@ def create_server():
         case rule that hides a library one of the same name. An unreadable rule is a row with
         ``error``; a missing ``case_dir`` leaves the library rows and sets ``case_error``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara_rules.yara_rule_list_result(case_dir)))
+        return tools_yara_rules.yara_rule_list_result(case_dir)
 
     @mcp.tool()
     def yara_rule_get(name: str, case_dir: Optional[str] = None,
@@ -757,8 +730,7 @@ def create_server():
         ``scope``: ``library`` | ``case`` (exactly that scope) | ``auto`` (default: the case,
         when ``case_dir`` is given, wins over the library).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara_rules.yara_rule_get_result(name, case_dir, scope)))
+        return tools_yara_rules.yara_rule_get_result(name, case_dir, scope)
 
     @mcp.tool()
     def yara_rule_put(name: str, rule_source: str, scope: Optional[str] = None,
@@ -771,8 +743,7 @@ def create_server():
         (``stored.compiles: false``, ``check.errors`` with lines). The previous version is kept
         in the scope's history. Scan or check it later by ``rule_name``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara_rules.yara_rule_put_result(name, rule_source, scope, case_dir)))
+        return tools_yara_rules.yara_rule_put_result(name, rule_source, scope, case_dir)
 
     @mcp.tool()
     def yara_rule_delete(name: str, scope: Optional[str] = None,
@@ -782,8 +753,7 @@ def create_server():
         An omitted ``scope`` is ``case`` when ``case_dir`` is given, else ``library``. The last
         source is archived to history.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_yara_rules.yara_rule_delete_result(name, scope, case_dir)))
+        return tools_yara_rules.yara_rule_delete_result(name, scope, case_dir)
 
     # -- ISF workbench: pakunoda probes, versioned ISF drafts in a case, the try-loop.
     @mcp.tool()
@@ -799,9 +769,8 @@ def create_server():
         ``draft`` feed kallsyms/vmcoreinfo/btf/layout_legs findings into that draft. Runs
         inline: kallsyms on a multi-GB image can take over a minute.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_probe_result(
-                image_path, probe, arch=arch, params=params, case_dir=case_dir, draft=draft)))
+        return tools_isf.isf_probe_result(
+            image_path, probe, arch=arch, params=params, case_dir=case_dir, draft=draft)
 
     @mcp.tool()
     def code_evidence(image_path: str, function: str, arch: Optional[str] = None,
@@ -814,26 +783,23 @@ def create_server():
         ``isf`` joins ``current`` accesses against that ISF's task_struct members;
         ``base`` keeps one symbolic base (e.g. ``current``). Runs inline (~35 s session setup).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_code_evidence.code_evidence_result(
-                image_path=image_path, function=function, arch=arch, max_bytes=max_bytes,
-                base=base, params={"isf": isf} if isf else None)))
+        return tools_code_evidence.code_evidence_result(
+            image_path=image_path, function=function, arch=arch, max_bytes=max_bytes,
+            base=base, params={"isf": isf} if isf else None)
 
     @mcp.tool()
     def isf_draft_create(case_dir: str, capture_id: str, name: str, arch: str,
                          banner: Optional[str] = None,
                          base_metadata: Optional[Dict[str, Any]] = None) -> str:
         """Create an empty ISF draft ``name`` for a capture (the image sha256) in a case."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_create_result(
-                case_dir, capture_id, name, arch, author="agent", banner=banner,
-                base_metadata=base_metadata)))
+        return tools_isf.isf_draft_create_result(
+            case_dir, capture_id, name, arch, author="agent", banner=banner,
+            base_metadata=base_metadata)
 
     @mcp.tool()
     def isf_draft_list(case_dir: str, capture_id: str) -> str:
         """List the ISF drafts of a capture."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_list_result(case_dir, capture_id)))
+        return tools_isf.isf_draft_list_result(case_dir, capture_id)
 
     @mcp.tool()
     def isf_draft_get(case_dir: str, capture_id: str, name: str,
@@ -845,11 +811,10 @@ def create_server():
         an empty list selects the whole section). ``search`` filters names by case-insensitive
         substring; ``offset``/``limit`` page each section (``total``/``truncated`` reported).
         ``version`` reads an older state; ``include_origins`` adds item and field provenance."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_get_result(
-                case_dir, capture_id, name, only=only, version=version,
-                include_origins=include_origins, limit=limit, search=search,
-                offset=offset)))
+        return tools_isf.isf_draft_get_result(
+            case_dir, capture_id, name, only=only, version=version,
+            include_origins=include_origins, limit=limit, search=search,
+            offset=offset)
 
     @mcp.tool()
     def isf_draft_set(case_dir: str, capture_id: str, name: str, op: str,
@@ -860,10 +825,9 @@ def create_server():
         ``args`` are the op's arguments (e.g. struct: ``{"struct": "task_struct", "size": 9792}``);
         a missing one is INVALID_INPUT naming it. Appends an entry with its provenance.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_set_result(
-                case_dir, capture_id, name, op, args, source=source, tier=tier,
-                evidence=evidence or (), author="agent", witnesses=witnesses)))
+        return tools_isf.isf_draft_set_result(
+            case_dir, capture_id, name, op, args, source=source, tier=tier,
+            evidence=evidence or (), author="agent", witnesses=witnesses)
 
     @mcp.tool()
     def isf_draft_import(case_dir: str, capture_id: str, name: str, isf_path: str,
@@ -871,26 +835,23 @@ def create_server():
                          source: str = "isf_import", tier: str = "imported",
                          evidence: Optional[List[str]] = None) -> str:
         """Import (a subset, ``only``) of an ISF JSON file into the draft; records its sha256."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_import_result(
-                case_dir, capture_id, name, isf_path, only=only, source=source, tier=tier,
-                evidence=evidence or (), author="agent")))
+        return tools_isf.isf_draft_import_result(
+            case_dir, capture_id, name, isf_path, only=only, source=source, tier=tier,
+            evidence=evidence or (), author="agent")
 
     @mcp.tool()
     def isf_draft_retract(case_dir: str, capture_id: str, name: str, entry_id: str,
                           reason: str = "") -> str:
         """Retract one draft entry by id; the history keeps it and the retraction."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_retract_result(
-                case_dir, capture_id, name, entry_id, author="agent", reason=reason)))
+        return tools_isf.isf_draft_retract_result(
+            case_dir, capture_id, name, entry_id, author="agent", reason=reason)
 
     @mcp.tool()
     def isf_draft_versions(case_dir: str, capture_id: str, name: str,
                            limit: int = tools_isf.DEFAULT_LIMIT) -> str:
         """The version history of a draft."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_versions_result(
-                case_dir, capture_id, name, limit=limit)))
+        return tools_isf.isf_draft_versions_result(
+            case_dir, capture_id, name, limit=limit)
 
     @mcp.tool()
     def isf_draft_diff(case_dir: str, capture_id: str, name: str,
@@ -900,27 +861,24 @@ def create_server():
                        limit: int = tools_isf.DEFAULT_LIMIT) -> str:
         """Diff the draft against an older version OR an ISF file (exactly one); the direction
         is ``against -> draft`` (``added`` = only in the draft)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_diff_result(
-                case_dir, capture_id, name, against_version=against_version,
-                against_isf=against_isf, only=only, limit=limit)))
+        return tools_isf.isf_draft_diff_result(
+            case_dir, capture_id, name, against_version=against_version,
+            against_isf=against_isf, only=only, limit=limit)
 
     @mcp.tool()
     def isf_draft_validate(case_dir: str, capture_id: str, name: str,
                            check_schema: bool = False,
                            limit: int = tools_isf.DEFAULT_LIMIT) -> str:
         """Validate the draft as an ISF document and report per-Volatility-plugin readiness."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_validate_result(
-                case_dir, capture_id, name, check_schema=check_schema, limit=limit)))
+        return tools_isf.isf_draft_validate_result(
+            case_dir, capture_id, name, check_schema=check_schema, limit=limit)
 
     @mcp.tool()
     def isf_draft_export(case_dir: str, capture_id: str, name: str,
                          version: Optional[str] = None, out_path: Optional[str] = None) -> str:
         """Write the draft (at ``version``) as an ISF file; returns path, size and sha256."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_draft_export_result(
-                case_dir, capture_id, name, version=version, out_path=out_path)))
+        return tools_isf.isf_draft_export_result(
+            case_dir, capture_id, name, version=version, out_path=out_path)
 
     @mcp.tool()
     def isf_try(image_path: str, case_dir: Optional[str] = None, draft: Optional[str] = None,
@@ -931,12 +889,11 @@ def create_server():
         """Try a draft (``case_dir`` + ``draft`` [+ ``version``]) OR an ISF file on the image with
         a Volatility plugin; returns the verdict, comparison and implicated entries. A draft
         try is appended to the case's analysis record as an ``isf_try`` entry."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_isf.isf_try_result(
-                image_path, case_dir=case_dir, draft=draft, version=version,
-                isf_path=isf_path, plugin=plugin, ground_truth=ground_truth,
-                timeout_s=timeout_s, min_recall=min_recall, min_precision=min_precision,
-                author="agent")))
+        return tools_isf.isf_try_result(
+            image_path, case_dir=case_dir, draft=draft, version=version,
+            isf_path=isf_path, plugin=plugin, ground_truth=ground_truth,
+            timeout_s=timeout_s, min_recall=min_recall, min_precision=min_precision,
+            author="agent")
 
     @mcp.tool()
     def disasm(dump_path: str, address: int, length: int, arch: str = "auto",
@@ -951,10 +908,9 @@ def create_server():
         ``mnemonic``, ``op_str``; ``stops`` lists undecodable bytes, ``coverage`` the capture
         gaps (never decoded across). With ``case_dir`` the rows become the ``disasm`` table.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_disasm.disasm_result(
-                dump_path, address, length, arch=arch, view=view, mode=mode,
-                max_insns=max_insns, case_dir=case_dir)))
+        return tools_disasm.disasm_result(
+            dump_path, address, length, arch=arch, view=view, mode=mode,
+            max_insns=max_insns, case_dir=case_dir)
 
     @mcp.tool()
     def detector_fixtures_run(
@@ -971,9 +927,8 @@ def create_server():
         "key_hex"?}]} | {"no_match": true}, "artifact"?: rule name, "params"?}``. ``case_dir`` adds
         the stored fixtures and stores the verdicts (``last_verdict``).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_detector_fixtures.detector_fixtures_run_result(
-                artifact_kind, artifact, fixtures, params, case_dir)))
+        return tools_detector_fixtures.detector_fixtures_run_result(
+            artifact_kind, artifact, fixtures, params, case_dir)
 
     @mcp.tool()
     def detector_fixtures_add(
@@ -986,9 +941,8 @@ def create_server():
         captured range). ``expect``: ``{"matches": [{"offset": N, ...}]}`` (sample-relative) or
         ``{"no_match": true}`` for a decoy. An overwrite keeps the old version in ``history/``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_detector_fixtures.detector_fixtures_add_result(
-                case_dir, name, artifact_kind, artifact, sample, expect, params)))
+        return tools_detector_fixtures.detector_fixtures_add_result(
+            case_dir, name, artifact_kind, artifact, sample, expect, params)
 
     @mcp.tool()
     def detector_fixtures_list(
@@ -996,15 +950,13 @@ def create_server():
         artifact: Optional[str] = None,
     ) -> str:
         """List bundled and (with ``case_dir``) stored detector fixtures with their ``last_verdict``."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_detector_fixtures.detector_fixtures_list_result(
-                case_dir, artifact_kind, artifact)))
+        return tools_detector_fixtures.detector_fixtures_list_result(
+            case_dir, artifact_kind, artifact)
 
     @mcp.tool()
     def detector_fixtures_remove(case_dir: str, name: str) -> str:
         """Retire a stored detector fixture (its definition is archived under ``history/``)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_detector_fixtures.detector_fixtures_remove_result(case_dir, name)))
+        return tools_detector_fixtures.detector_fixtures_remove_result(case_dir, name)
 
     @mcp.tool()
     def strings_table(
@@ -1026,10 +978,9 @@ def create_server():
         returns IOC columns. Runs inline and blocks on a large capture.
         """
         region = tools_strings._region_of(offset, length)
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_strings.strings_table_result(
-                dump_path, view, region, min_len,
-                tuple(encodings or tools_strings.DEFAULT_ENCODINGS), limit, case_dir)))
+        return tools_strings.strings_table_result(
+            dump_path, view, region, min_len,
+            tuple(encodings or tools_strings.DEFAULT_ENCODINGS), limit, case_dir)
 
     # -- image.* : memory-image views. The MCP server has no TaskManager (it is
     # a stdio process), so the slow steps run inline and the call blocks: the
@@ -1045,8 +996,7 @@ def create_server():
         ``banners=true`` also scans the raw image for Linux banners (may read
         all of it).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_image.image_probe_result(image_path, banners, isf)))
+        return tools_image.image_probe_result(image_path, banners, isf)
 
     @mcp.tool()
     def image_profile(image_path: str, isf: Optional[str] = None,
@@ -1056,8 +1006,7 @@ def create_server():
         Slow on a first run (pakunoda ~15 s, maps the whole image); the result
         is cached so ``image_open_view`` finds it.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_image.image_profile_result(image_path, isf, allow_pakunoda)))
+        return tools_image.image_profile_result(image_path, isf, allow_pakunoda)
 
     @mcp.tool()
     def image_open_view(image_path: str, view: str, pid: Optional[int] = None,
@@ -1075,10 +1024,9 @@ def create_server():
         ``{pgd_phys, arch, va_bits, ...}``; without ``pgd_phys`` a verified root is found).
         Default location: ``<case_dir>/views/``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_image.image_open_view_result(
-                image_path, view, pid, isf, case_dir, out_path, no_profile=no_profile,
-                paging=paging, draft=draft, draft_version=draft_version)))
+        return tools_image.image_open_view_result(
+            image_path, view, pid, isf, case_dir, out_path, no_profile=no_profile,
+            paging=paging, draft=draft, draft_version=draft_version)
 
     @mcp.tool()
     def image_processes(view_path: str) -> str:
@@ -1086,14 +1034,12 @@ def create_server():
 
         Zero tasks is reported as an error (wrong profile or paging depth).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_image.image_processes_result(view_path)))
+        return tools_image.image_processes_result(view_path)
 
     @mcp.tool()
     def image_extract_process(view_path: str, out_path: str) -> str:
         """Extract the process of a process ``.mdview`` into an ``.msl`` file."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_image.image_extract_process_result(view_path, out_path)))
+        return tools_image.image_extract_process_result(view_path, out_path)
 
     # -- vol3.* : Volatility 3 plugins over a .mdview. Runs inline and blocks
     # (no TaskManager in this stdio process). A ``source`` plugin runs
@@ -1101,8 +1047,7 @@ def create_server():
     @mcp.tool()
     def vol3_plugins(os_family: str = "linux") -> str:
         """List the bundled Volatility 3 plugins of an OS family (name, description, version)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3.vol3_plugins_result(os_family)))
+        return tools_vol3.vol3_plugins_result(os_family)
 
     @mcp.tool()
     def vol3_describe(plugin: str = "", source: Optional[str] = None,
@@ -1114,9 +1059,8 @@ def create_server():
         text of a user plugin, which is EXECUTED unsandboxed in this process;
         ``source_name`` (with ``case_dir``) names one stored by ``vol3_source_put``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3.vol3_describe_result(
-                plugin, source, source_name=source_name, case_dir=case_dir)))
+        return tools_vol3.vol3_describe_result(
+            plugin, source, source_name=source_name, case_dir=case_dir)
 
     @mcp.tool()
     def vol3_run(
@@ -1137,11 +1081,10 @@ def create_server():
         ``source`` is a user plugin (EXECUTED unsandboxed in-process);
         ``source_name`` runs one stored in ``case_dir`` (``vol3_source_put``).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3.vol3_run_result(
-                view_path, plugin, args, case_dir=case_dir, limit=limit,
-                timeout_s=timeout_s, max_rows=max_rows, column_map=column_map,
-                source=source, out_dir=out_dir, source_name=source_name)))
+        return tools_vol3.vol3_run_result(
+            view_path, plugin, args, case_dir=case_dir, limit=limit,
+            timeout_s=timeout_s, max_rows=max_rows, column_map=column_map,
+            source=source, out_dir=out_dir, source_name=source_name)
 
     @mcp.tool()
     def vol3_query(
@@ -1154,8 +1097,7 @@ def create_server():
         and the plugin tables each needs). A saved query whose tables are missing
         fails naming the plugin to run.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3.vol3_query_result(case_dir, sql, saved, params, limit)))
+        return tools_vol3.vol3_query_result(case_dir, sql, saved, params, limit)
 
     @mcp.tool()
     def vol3_annotate(
@@ -1168,19 +1110,17 @@ def create_server():
         ``column`` must be a location column of ``table`` (see ``case_schema``);
         ``rows`` are row indexes (default: all). Rows with no address are skipped.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3.vol3_annotate_result(
-                case_dir, table, run_id, column, rows=rows,
-                label_column=label_column, author=author)))
+        return tools_vol3.vol3_annotate_result(
+            case_dir, table, run_id, column, rows=rows,
+            label_column=label_column, author=author)
 
     @mcp.tool()
     def vol3_scaffold(name: str, os_family: str = "linux", description: str = "",
                       per_process: bool = True) -> str:
         """Source text of a new Volatility 3 plugin (kernel module, optional ``pid`` filter)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_dev.vol3_scaffold_result(
-                name, os_family=os_family, description=description,
-                per_process=per_process)))
+        return tools_vol3_dev.vol3_scaffold_result(
+            name, os_family=os_family, description=description,
+            per_process=per_process)
 
     @mcp.tool()
     def vol3_check(source: Optional[str] = None, view_path: Optional[str] = None,
@@ -1192,9 +1132,8 @@ def create_server():
         (error type, line). With ``view_path`` also lists the requirements the
         view leaves unsatisfied.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_dev.vol3_check_result(
-                source, view_path, source_name=source_name, case_dir=case_dir)))
+        return tools_vol3_dev.vol3_check_result(
+            source, view_path, source_name=source_name, case_dir=case_dir)
 
     @mcp.tool()
     def vol3_import(
@@ -1207,10 +1146,9 @@ def create_server():
         ``table`` must start with ``vol3__``. ``locations`` maps address columns
         to spaces; omitted, they are guessed (``locations_guessed``).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_dev.vol3_import_parquet_result(
-                case_dir, path, table=table, capture_id=capture_id,
-                image_sha256=image_sha256, locations=locations, format=format)))
+        return tools_vol3_dev.vol3_import_parquet_result(
+            case_dir, path, table=table, capture_id=capture_id,
+            image_sha256=image_sha256, locations=locations, format=format)
 
     @mcp.tool()
     def vol3_write_config(view_path: str, out_path: str,
@@ -1223,22 +1161,19 @@ def create_server():
         ``source`` (plugin text) or ``source_name`` (stored in ``case_dir``) writes it for a
         user plugin instead — UNSANDBOXED, sha256 logged — so stock ``vol -c`` can run it.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_dev.vol3_write_config_result(
-                view_path, out_path, plugin, source=source, source_name=source_name,
-                case_dir=case_dir)))
+        return tools_vol3_dev.vol3_write_config_result(
+            view_path, out_path, plugin, source=source, source_name=source_name,
+            case_dir=case_dir)
 
     @mcp.tool()
     def vol3_source_list(case_dir: str) -> str:
         """List the user plugin sources stored in a case (name, sha256, size, updated, version)."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_sources.vol3_source_list_result(case_dir)))
+        return tools_vol3_sources.vol3_source_list_result(case_dir)
 
     @mcp.tool()
     def vol3_source_get(case_dir: str, name: str) -> str:
         """One stored plugin source with its metadata; ``modified_externally`` flags a hand edit."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_sources.vol3_source_get_result(case_dir, name)))
+        return tools_vol3_sources.vol3_source_get_result(case_dir, name)
 
     @mcp.tool()
     def vol3_source_put(case_dir: str, name: str, source: str,
@@ -1249,9 +1184,8 @@ def create_server():
         reply carries the ``vol3_check`` outcome; a plugin that fails to load is
         still saved. Run it later with ``vol3_run(source_name=name, case_dir=...)``.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_sources.vol3_source_put_result(
-                case_dir, name, source, view_path)))
+        return tools_vol3_sources.vol3_source_put_result(
+            case_dir, name, source, view_path)
 
     @mcp.tool()
     def vol3_fixture_put(
@@ -1265,16 +1199,14 @@ def create_server():
         ``{"row_where": {"COMM": "sshd", "PID": 22176}, "count_at_least": 1}``,
         ``{"column_all": {"column": "PID", "op": ">=", "value": 0}}`` (also ``column_any``).
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_fixtures.vol3_fixture_put_result(
-                case_dir, name, view_path=view_path, expect=expect, plugin=plugin,
-                source_name=source_name, args=args)))
+        return tools_vol3_fixtures.vol3_fixture_put_result(
+            case_dir, name, view_path=view_path, expect=expect, plugin=plugin,
+            source_name=source_name, args=args)
 
     @mcp.tool()
     def vol3_fixture_list(case_dir: str) -> str:
         """List the plugin fixtures stored in a case."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_fixtures.vol3_fixture_list_result(case_dir)))
+        return tools_vol3_fixtures.vol3_fixture_list_result(case_dir)
 
     @mcp.tool()
     def vol3_fixture_run(
@@ -1288,10 +1220,9 @@ def create_server():
         unreadable). The verdict is filed as a ``fixture_verdict`` annotation of the
         view's capture; ``register_run`` also files the plugin table and links it.
         """
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_vol3_fixtures.vol3_fixture_run_result(
-                case_dir, name, view_path=view_path, limit=limit, timeout_s=timeout_s,
-                register_run=register_run)))
+        return tools_vol3_fixtures.vol3_fixture_run_result(
+            case_dir, name, view_path=view_path, limit=limit, timeout_s=timeout_s,
+            register_run=register_run)
 
     # The case_schema resource moved to mcp_server/resources.py (T6.1): resources
     # bypass guard_tool, so it now runs behind the read sandbox with its siblings.
@@ -1308,9 +1239,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List network connections in an MSL file (pid/family/protocol/addrs)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.connections_result(
+        return tools_inspect.connections_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_module_index(
@@ -1318,9 +1249,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List MODULE_LIST_INDEX entries in an MSL file (uuid/base/size/path)."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.module_index_result(
+        return tools_inspect.module_index_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_import_provenance(
@@ -1333,9 +1264,9 @@ def create_server():
         region categories, excluded region/byte totals and, for a materialized
         copy, materialized=true plus the original EoC hash. Empty for non-.msl.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.import_provenance_result(
+        return tools_inspect.import_provenance_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_blocks(
@@ -1343,38 +1274,34 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """List all blocks in an MSL file grouped by category."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.blocks_result(
+        return tools_inspect.blocks_result(
             _session, msl_path, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
-    @mcp_error_funnel
     def detect_format(
         dump_path: str, offset: int = 0,
         key_file: Optional[str] = None, passphrase: Optional[str] = None,
         kem_key_file: Optional[str] = None,
     ) -> str:
         """Detect the binary format at an offset in a dump's raw container."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.detect_format_result(
+        return tools_inspect.detect_format_result(
             _session, dump_path, offset, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def get_cross_references(msl_path: str) -> str:
         """Resolve cross-references for an MSL file in its directory."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_xref.get_cross_references_result(_session, msl_path)))
+        return tools_xref.get_cross_references_result(_session, msl_path)
 
     @mcp.tool()
     def identify_structure(
         dump_path: str, offset: int = 0, protocol: str = "",
     ) -> str:
         """Identify data structure at offset in a dump file."""
-        return json.dumps(present_inspect_mcp_call(
-            lambda: tools_xref.identify_structure_result(_session, dump_path, offset, protocol)))
+        return tools_xref.identify_structure_result(_session, dump_path, offset, protocol)
 
     @mcp.tool()
-    @mcp_error_funnel
     def import_raw_dump(
         raw_path: str, output_path: str, pid: int = 0,
         region_types: Optional[str] = None,
@@ -1426,7 +1353,6 @@ def create_server():
             decrypt_output=decrypt_output, maps_path=maps_path))
 
     @mcp.tool()
-    @mcp_error_funnel
     def preview_import(
         path: str, region_types: Optional[str] = None,
         exclude_region_types: Optional[str] = None,
@@ -1468,7 +1394,6 @@ def create_server():
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    @mcp_error_funnel
     def analyze_candidates(
         dump_paths: List[str],
         classes: Optional[List[str]] = None,
@@ -1559,7 +1484,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def search_reduce(
         variance_path: str, reference_path: str, num_dumps: int,
         output_dir: str,
@@ -1626,7 +1550,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def brute_force(
         candidates_path: str, reference_path: str,
         output_dir: str, oracle_path: Optional[str] = None,
@@ -1711,7 +1634,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def n_sweep(
         source_paths: List[str], output_dir: str,
         n_values: List[int],
@@ -1789,7 +1711,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def emit_plugin(
         hits_path: str, reference_path: str, name: str, output_dir: str,
         description: Optional[str] = None, hit_index: int = 0,
@@ -1838,11 +1759,11 @@ def create_server():
         the region VIEW filter, so ``offset`` is a filtered-view offset;
         omitted, the session's filter applies and ``"all"`` disables it.
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.read_hex_raw_result(
+        return tools_inspect.read_hex_raw_result(
             _session, dump_path, offset, length, view,
             key_file, passphrase, kem_key_file,
             region_filter=_session_region_filter(region_filter),
-        )))
+        )
 
     @mcp.tool()
     def resolve_va(
@@ -1850,9 +1771,9 @@ def create_server():
         passphrase: Optional[str] = None, kem_key_file: Optional[str] = None,
     ) -> str:
         """Translate a virtual address to file and VAS offsets for an MSL dump."""
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.resolve_va_result(
+        return tools_inspect.resolve_va_result(
             _session, dump_path, va, key_file, passphrase, kem_key_file,
-        )))
+        )
 
     @mcp.tool()
     def search_bytes(
@@ -1873,10 +1794,10 @@ def create_server():
         ``view`` selects the MSL byte source: ``raw``, ``vas``, or ``va``
         (the sparse full VA span, captured bytes only).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.search_bytes_result(
+        return tools_inspect.search_bytes_result(
             _session, dump_path, pattern_hex, view, max_results, cursor,
             key_file, passphrase, kem_key_file, pattern_format,
-        )))
+        )
 
     @mcp.tool()
     def get_page_states(
@@ -1889,16 +1810,15 @@ def create_server():
         ``view`` is ``"va"`` (default) or ``"vas"`` (only the VA -> packed-offset
         map; what a kernel ``.mdview`` offers for navigation).
         """
-        return json.dumps(present_inspect_mcp_call(lambda: tools_inspect.page_states_result(
+        return tools_inspect.page_states_result(
             _session, msl_path, key_file, passphrase, kem_key_file, view=view,
-        )))
+        )
 
     # ------------------------------------------------------------------
     # Pipeline origination + export breadth tools
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    @mcp_error_funnel
     def consensus(
         dump_paths: List[str], output_dir: str, normalize: bool = False,
         region_filter: Optional[str] = None,
@@ -1946,7 +1866,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def aligned_window(
         dump_paths: List[str],
         anchor_path: Optional[str] = None,
@@ -2007,7 +1926,6 @@ def create_server():
         ).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def consensus_regions(
         dump_paths: List[str],
         classes: Optional[List[str]] = None,
@@ -2088,7 +2006,6 @@ def create_server():
         ).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def anchor_consensus(
         anchors: Optional[List[Dict[str, Any]]] = None,
         needles: Optional[Dict[str, str]] = None,
@@ -2139,7 +2056,6 @@ def create_server():
         ).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def xref_pointers(
         dump_path: str, target_va: int, span_before: int = 0,
         span_after: int = 1, word_size: int = 8, alignment: int = 8,
@@ -2161,7 +2077,6 @@ def create_server():
             exclude_target=exclude_target).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def propose_layout(
         needles: Optional[Dict[str, str]] = None,
         anchors: Optional[List[Dict[str, Any]]] = None,
@@ -2217,7 +2132,6 @@ def create_server():
             related_labels=related_labels, detail=detail).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def artifact_model_build(
         name: str,
         out_path: str,
@@ -2274,7 +2188,6 @@ def create_server():
             detail=detail).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def artifact_model_export(
         model_path: str,
         out_path: str,
@@ -2292,7 +2205,6 @@ def create_server():
             plugin_name=plugin_name).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def artifact_model_validate(
         model_path: str,
         held_out: List[Dict[str, Any]],
@@ -2324,7 +2236,6 @@ def create_server():
             keylog=keylog).payload)
 
     @mcp.tool()
-    @mcp_error_funnel
     def auto_floor(
         variance_path: str, reference_path: str, oracle_path: str,
         output_dir: str, num_dumps: int,
@@ -2375,7 +2286,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def export_pattern(
         dump_paths: List[str], output_dir: Optional[str] = None,
         fmt: str = "volatility3", name: str = "memdiver_pattern",
@@ -2399,7 +2309,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def manual_export_pattern(
         dump_paths: List[str], offset: int, length: int,
         output_dir: Optional[str] = None,
@@ -2425,7 +2334,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def export_keylog(
         secrets: List[dict], output_path: Optional[str] = None,
     ) -> str:
@@ -2441,7 +2349,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def locate_key(
         dump_paths: List[str],
         key_hex: str = "",
@@ -2523,7 +2430,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def locate_field_across_pairs(
         pairs: Optional[List[dict]] = None,
         dump_paths: Optional[List[str]] = None,
@@ -2600,7 +2506,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def scan_yara_rule(
         dump_paths: List[str],
         rule_source: Optional[str] = None,
@@ -2707,7 +2612,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def verify_vol3_plugin(
         dump_paths: List[str],
         plugin_source: Optional[str] = None,
@@ -2838,7 +2742,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def score_detector_matches(
         matches: Optional[List[Dict[str, Any]]] = None,
         truths: Optional[List[Dict[str, Any]]] = None,
@@ -2917,7 +2820,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def export_key_pattern(
         dump_paths: List[str],
         key_hex: str = "",
@@ -2983,7 +2885,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def inspect_pcap(
         pcap_path: str,
         pcap_max_records: Optional[int] = None,
@@ -3041,7 +2942,6 @@ def create_server():
     # ------------------------------------------------------------------
 
     @mcp.tool()
-    @mcp_error_funnel
     def verify(
         dump_path: str, offset: int, ciphertext_hex: str, length: int = 32,
         cipher: str = "AES-256-CBC", iv_hex: Optional[str] = None,
@@ -3068,7 +2968,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def experiment(
         target: str, output_dir: str, num_runs: int = 10,
         tools: Optional[List[str]] = None, export_format: str = "volatility3",
@@ -3106,7 +3005,6 @@ def create_server():
         ))
 
     @mcp.tool()
-    @mcp_error_funnel
     def capture_dump(
         target: str, output: str, tool: str = "memslicer",
         device: str = "local", max_region_size: Optional[int] = None,

@@ -1,9 +1,7 @@
+import { wireIntToBigInt } from "@/api/lossless-json";
+
 /** The exact integer of a cell, or `null` (absent, non-numeric, or already rounded). */
-export function cellToBigInt(cell: unknown): bigint | null {
-  if (typeof cell === "number") return Number.isSafeInteger(cell) ? BigInt(cell) : null;
-  if (typeof cell === "string" && /^-?\d+$/.test(cell)) return BigInt(cell);
-  return null;
-}
+export const cellToBigInt = wireIntToBigInt;
 
 /** `0x...` text of an address cell; `approximate` when the value was already rounded. */
 export function formatAddress(cell: unknown): { text: string; approximate: boolean } | null {

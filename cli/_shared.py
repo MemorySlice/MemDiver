@@ -182,6 +182,26 @@ def _decrypt_parent_parser() -> argparse.ArgumentParser:
     return p
 
 
+def output_parent_parser() -> argparse.ArgumentParser:
+    """Shared parent parser for the JSON-payload commands' ``-o/-v`` flags.
+
+    Attach via ``parents=[output_parent_parser()]``; pairs with :func:`emit`.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
+    p.add_argument("-v", "--verbose", action="store_true")
+    return p
+
+
+def _auto_int(text: str) -> int:
+    """Parse a hex (``0x…``) or decimal integer argument.
+
+    Keeps the ``_auto_int`` name: argparse quotes the type function's
+    ``__name__`` in its "invalid _auto_int value" usage error.
+    """
+    return int(text, 0)
+
+
 def _key_material_from_args(args: argparse.Namespace) -> dict:
     """Build the open_dump() key-material kwargs from decryption CLI flags.
 
@@ -364,6 +384,12 @@ def _write_output(
         logger.info("Output written to %s", output_path)
     else:
         print(text)
+
+
+def emit(args: argparse.Namespace, payload: dict) -> int:
+    """Write *payload* as JSON to ``args.output`` (or stdout); exit code 0."""
+    _write_output(payload, args.output)
+    return 0
 
 
 def _format_jsonl(data: dict) -> str:

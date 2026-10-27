@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from memdiver.core.location import AddressSpace, Location
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import CapabilityError, ErrorCategory, require_file
 from memdiver.core.service_result import ServiceResult
 
 ARCHES: Tuple[str, ...] = ("x86_64", "x86", "aarch64", "arm", "mips", "mipsel")
@@ -274,12 +274,7 @@ def disasm_result(dump_path: str, address: int, length: int, *, arch: str = "aut
     from memdiver.core.dump_source import open_dump
 
     _validated(address, length, max_insns, mode)
-    path = Path(dump_path).expanduser() if dump_path and str(dump_path).strip() else None
-    if path is None:
-        raise _invalid("dump_path is required", "dump_path_required")
-    if not path.is_file():
-        raise CapabilityError(f"dump not found: {path}", category=ErrorCategory.NOT_FOUND,
-                              code="dump_not_found")
+    path = require_file(dump_path, param="dump_path", label="dump", code="dump_not_found")
     cs = _capstone()
     with open_dump(path) as source:
         name, arm_mode = resolve_arch(source, arch, mode)

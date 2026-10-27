@@ -13,13 +13,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
-from ._shared import _write_output
+from ._shared import _write_output, output_parent_parser
 
 
 def _common_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
+    p = argparse.ArgumentParser(add_help=False, parents=[output_parent_parser()])
     p.add_argument("rule", nargs="?", help="YARA rule FILE (.yar); omit with --rule-name")
     p.add_argument("--rule-name", help="Use a STORED rule (library, or case with --case)")
     p.add_argument("--case", dest="case_dir", help="Case directory/name for --rule-name lookup")

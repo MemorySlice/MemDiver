@@ -15,7 +15,6 @@ KASLR shifts come from vol3's ``find_aslr``, and the paging depth is chosen by
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import threading
@@ -24,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Hashable, Optional
 
+# Aliased (not called directly) so tests can monkeypatch ``context._hash_file``.
+from memdiver.core.artifact_util import sha256_streamed as _hash_file
 from memdiver.core.constants import memdiver_home
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -55,14 +56,6 @@ def file_sha256(path: Path, index_dir: Optional[Path] = None) -> str:
         index[key] = _hash_file(path)
         index_file.write_text(json.dumps(index, indent=1), encoding="utf-8")
     return index[key]
-
-
-def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(16 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _load_json(path: Path) -> Dict[str, str]:

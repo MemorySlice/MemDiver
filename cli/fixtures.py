@@ -12,17 +12,11 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
-from ._shared import _write_output
+from ._shared import _write_output, output_parent_parser
 from .vol3 import _json_object
 
-_VERDICT_EXIT = {"pass": 0, "fail": 1, "indeterminate": 2}
-
-
-def _common_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
+# B105: "pass" is a fixture verdict name, not a credential.
+_VERDICT_EXIT = {"pass": 0, "fail": 1, "indeterminate": 2}  # nosec B105
 
 
 def _kind_args(p: argparse.ArgumentParser) -> None:
@@ -35,13 +29,13 @@ def add_fixtures_parser(sub) -> None:
         "fixtures", help="Detector fixtures: positive controls and decoys for YARA rules "
                          "and key finders")
     actions = group.add_subparsers(dest="fixtures_action")
-    run = actions.add_parser("run", parents=[_common_parser()],
+    run = actions.add_parser("run", parents=[output_parent_parser()],
                              help="Run a detector's fixtures (exit 0 pass, 1 fail, 2 indeterminate)")
     _kind_args(run)
     run.add_argument("artifact", help="Key-finder name, or with --kind yara the rule FILE")
     run.add_argument("--case", dest="case_dir", help="Also run (and file verdicts for) stored fixtures")
     run.add_argument("--params", type=_json_object, help="JSON finder params overriding each fixture's")
-    add = actions.add_parser("add", parents=[_common_parser()], help="Store a fixture in a case")
+    add = actions.add_parser("add", parents=[output_parent_parser()], help="Store a fixture in a case")
     add.add_argument("name")
     _kind_args(add)
     add.add_argument("--case", required=True, dest="case_dir")
@@ -57,12 +51,12 @@ def add_fixtures_parser(sub) -> None:
     add.add_argument("--expect", type=_json_object, required=True,
                      help='{"matches": [{"offset": N, ...}]} or {"no_match": true}')
     add.add_argument("--params", type=_json_object)
-    lst = actions.add_parser("list", parents=[_common_parser()],
+    lst = actions.add_parser("list", parents=[output_parent_parser()],
                              help="Bundled and stored fixtures with their last verdict")
     lst.add_argument("--case", dest="case_dir")
     lst.add_argument("--kind", choices=("yara", "keyfinder"), dest="artifact_kind")
     lst.add_argument("--artifact", help="Narrow to one finder / rule name")
-    rem = actions.add_parser("remove", parents=[_common_parser()],
+    rem = actions.add_parser("remove", parents=[output_parent_parser()],
                              help="Retire a stored fixture (archived under history/)")
     rem.add_argument("name")
     rem.add_argument("--case", required=True, dest="case_dir")

@@ -37,7 +37,7 @@ HIDDEN_PROCESSES = SavedQuery(
 FROM {PSSCAN} s
 WHERE NOT EXISTS (SELECT 1 FROM {PSLIST} l
                   WHERE l.capture_id = s.capture_id AND l.pid = s.pid)
-ORDER BY s.capture_id, s.pid""",
+ORDER BY s.capture_id, s.pid""",  # nosec B608 - constant table names
     _needs(PSSCAN, PSLIST))
 
 PROCESSES_WITH_SOCKETS = SavedQuery(
@@ -48,7 +48,7 @@ PROCESSES_WITH_SOCKETS = SavedQuery(
        k.destination_port, k.state
 FROM {PSLIST} l
 JOIN {SOCKSTAT} k ON k.capture_id = l.capture_id AND k.pid = l.pid
-ORDER BY l.capture_id, l.pid, k.fd""",
+ORDER BY l.capture_id, l.pid, k.fd""",  # nosec B608 - constant table names
     _needs(PSLIST, SOCKSTAT))
 
 RWX_MAPPINGS = SavedQuery(
@@ -60,7 +60,7 @@ FROM {PROC}
 WHERE flags LIKE '%r%w%x%'
    OR (flags LIKE '%x%' AND (file_path IS NULL OR file_path = ''
                              OR file_path = 'Anonymous Mapping'))
-ORDER BY capture_id, pid, start""",
+ORDER BY capture_id, pid, start""",  # nosec B608 - constant table names
     _needs(PROC))
 
 MODULES_PER_PROCESS = SavedQuery(
@@ -71,7 +71,7 @@ FROM {PROC}
 WHERE file_path IS NOT NULL AND file_path <> '' AND file_path NOT LIKE '[%'
   AND file_path <> 'Anonymous Mapping'
 GROUP BY capture_id, pid, process, file_path
-ORDER BY capture_id, pid, file_path""",
+ORDER BY capture_id, pid, file_path""",  # nosec B608 - constant table names
     _needs(PROC))
 
 PROCESS_DIFF = SavedQuery(
@@ -82,7 +82,7 @@ PROCESS_DIFF = SavedQuery(
 FROM {PSLIST}
 GROUP BY comm
 HAVING count(DISTINCT image_sha256) < (SELECT count(DISTINCT image_sha256) FROM {PSLIST})
-ORDER BY comm""",
+ORDER BY comm""",  # nosec B608 - constant table names
     _needs(PSLIST))
 
 QUERIES = (HIDDEN_PROCESSES, PROCESSES_WITH_SOCKETS, RWX_MAPPINGS,

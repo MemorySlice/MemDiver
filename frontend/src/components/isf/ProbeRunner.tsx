@@ -5,6 +5,7 @@ import {
   FEEDABLE_PROBES, PROBES, getIsfJobPayload, startIsfProbeJob,
   type DraftRef, type ProbeResult, type ProbeRow, type WireLocation,
 } from "@/api/isf";
+import { hasKey } from "@/api/guards";
 import { wireIntToBigInt } from "@/api/lossless-json";
 import { JobStatus } from "@/components/image/JobStatus";
 import { isMdview } from "@/components/image/open-view-in-workspace";
@@ -18,8 +19,7 @@ import { buttonClass, inputClass } from "./ui";
 const ARCHES = ["auto", "x86_64", "aarch64", "arm", "x86"] as const;
 const LOCATION_KEYS = ["location", "va_location"];
 
-const isLocation = (v: unknown): v is WireLocation =>
-  typeof v === "object" && v !== null && "space" in v && "value" in v;
+const isLocation = (v: unknown): v is WireLocation => hasKey(v, "space") && hasKey(v, "value");
 const brief = (v: unknown): string => {
   const text = typeof v === "string" ? v : JSON.stringify(v) ?? "";
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;

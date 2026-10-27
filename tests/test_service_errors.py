@@ -151,3 +151,46 @@ def test_unknown_format():
     assert err.category is ErrorCategory.UNSUPPORTED
     assert err.format == "bmp"
     assert str(err) == "Unknown format: bmp"
+
+
+# -- require_file ------------------------------------------------------------------
+
+from memdiver.core.service_errors import require_file  # noqa: E402
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_require_file_missing_value_is_invalid_input(raw):
+    with pytest.raises(CapabilityError) as info:
+        require_file(raw, param="dump_path", label="dump", code="dump_not_found")
+    err = info.value
+    assert type(err) is CapabilityError
+    assert err.category is ErrorCategory.INVALID_INPUT and err.status == 400
+    assert err.code == "dump_path_required"
+    assert str(err) == "dump_path is required"
+
+
+def test_require_file_absent_path_is_not_found(tmp_path):
+    missing = tmp_path / "nope.bin"
+    with pytest.raises(CapabilityError) as info:
+        require_file(str(missing), param="image_path", label="memory image",
+                     code="image_not_found")
+    err = info.value
+    assert err.category is ErrorCategory.NOT_FOUND and err.status == 404
+    assert err.code == "image_not_found"
+    assert str(err) == f"memory image not found: {missing}"
+
+
+def test_require_file_directory_is_not_found(tmp_path):
+    with pytest.raises(CapabilityError) as info:
+        require_file(str(tmp_path), param="view_path", label="view descriptor",
+                     code="view_not_found")
+    assert info.value.code == "view_not_found"
+
+
+def test_require_file_returns_expanded_or_resolved_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "f.bin").write_bytes(b"x")
+    expanded = require_file("~/f.bin", param="p", label="l", code="c")
+    assert expanded == tmp_path / "f.bin"
+    resolved = require_file("~/f.bin", param="p", label="l", code="c", resolve=True)
+    assert resolved == (tmp_path / "f.bin").resolve()

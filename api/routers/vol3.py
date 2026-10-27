@@ -36,9 +36,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.routers._common import StrictModel, submit_job
 from memdiver.api.routers.image import _case_target, _contained
 from memdiver.app import (
     tools_case,
@@ -56,19 +57,14 @@ SYNC_MAX_TIMEOUT_S = 30.0
 SYNC_MAX_LIMIT = 10_000
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class DescribeRequest(_Strict):
+class DescribeRequest(StrictModel):
     plugin: str = ""
     source: Optional[str] = None
     source_name: Optional[str] = None
     case_dir: Optional[str] = None
 
 
-class RunRequest(_Strict):
+class RunRequest(StrictModel):
     view_path: str
     plugin: str = ""
     args: Dict[str, Any] = Field(default_factory=dict)
@@ -83,7 +79,7 @@ class RunRequest(_Strict):
     async_: bool = Field(default=False, alias="async")
 
 
-class QueryRequest(_Strict):
+class QueryRequest(StrictModel):
     case_dir: str
     sql: Optional[str] = None
     saved: Optional[str] = None
@@ -91,7 +87,7 @@ class QueryRequest(_Strict):
     limit: int = tools_case.DEFAULT_QUERY_LIMIT
 
 
-class AnnotateRequest(_Strict):
+class AnnotateRequest(StrictModel):
     case_dir: str
     table: str
     run_id: str
@@ -101,27 +97,27 @@ class AnnotateRequest(_Strict):
     author: str = "tool:vol3"
 
 
-class ScaffoldRequest(_Strict):
+class ScaffoldRequest(StrictModel):
     name: str
     os_family: str = "linux"
     description: str = ""
     per_process: bool = True
 
 
-class CheckRequest(_Strict):
+class CheckRequest(StrictModel):
     source: Optional[str] = None
     source_name: Optional[str] = None
     case_dir: Optional[str] = None
     view_path: Optional[str] = None
 
 
-class SourcePutRequest(_Strict):
+class SourcePutRequest(StrictModel):
     case_dir: str
     source: str
     view_path: Optional[str] = None
 
 
-class FixturePutRequest(_Strict):
+class FixturePutRequest(StrictModel):
     case_dir: str
     view_path: str
     expect: List[Dict[str, Any]]
@@ -130,7 +126,7 @@ class FixturePutRequest(_Strict):
     args: Dict[str, Any] = Field(default_factory=dict)
 
 
-class FixtureRunRequest(_Strict):
+class FixtureRunRequest(StrictModel):
     case_dir: str
     view_path: Optional[str] = None
     limit: int = tools_vol3_fixtures.DEFAULT_FIXTURE_ROWS
@@ -138,7 +134,7 @@ class FixtureRunRequest(_Strict):
     register_run: bool = False
 
 
-class ImportRequest(_Strict):
+class ImportRequest(StrictModel):
     case_dir: str
     path: str
     table: str
@@ -148,7 +144,7 @@ class ImportRequest(_Strict):
     format: str = "auto"
 
 
-class WriteConfigRequest(_Strict):
+class WriteConfigRequest(StrictModel):
     view_path: str
     out_path: str
     plugin: str = "linux.pslist.PsList"
@@ -170,14 +166,6 @@ def _is_long_run(req: RunRequest) -> bool:
             or req.limit > SYNC_MAX_LIMIT)
 
 
-def _submit_run(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    manager = task_manager_or_503()
-    record = manager.submit(
-        kind="vol3", params={"args": kwargs, "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["vol3"])
-    return {"task_id": record.task_id, "status": record.status.value}
-
-
 @router.get("/plugins")
 def list_plugins(os_family: str = "linux"):
     """The bundled plugins of one OS family."""
@@ -196,7 +184,7 @@ def run_plugin(req: RunRequest):
     """Run a plugin inline, or as a job for a long budget / ``async: true``."""
     kwargs = _run_kwargs(req)
     if _is_long_run(req):
-        return _submit_run(kwargs)
+        return submit_job(task_manager_or_503(), "vol3", _RUNNER, {"args": kwargs})
     return tools_vol3.vol3_run_result(**kwargs).payload
 
 
@@ -245,7 +233,7 @@ def write_config(req: WriteConfigRequest):
     return tools_vol3_dev.vol3_write_config_result(
         req.view_path, _contained(req.out_path) or req.out_path, req.plugin,
         source=req.source, source_name=req.source_name,
-        case_dir=_case_target(req.case_dir) if req.case_dir else None).payload
+        case_dir=_case_target(req.case_dir)).payload
 
 
 def _case(case_dir: str) -> str:

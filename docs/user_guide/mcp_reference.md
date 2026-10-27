@@ -10,6 +10,16 @@ MemDiver exposes **120 tools** (plus 8 prompts and 4 resources, below) to MCP-sp
 The downstream stages `search_reduce`, `brute_force`, `auto_floor` and `emit_plugin` also take `region_filter`. Left out, they reuse the filter the upstream stage recorded in its artifact (`consensus.json` / `candidates.json` / `hits.json`), so offsets stay consistent across the chain. Pass a value only to override that filter, or `"all"` to clear it. `aligned_window` / `consensus_regions` always use the filter a built consensus recorded. An unknown category name is rejected as invalid input.
 ```
 
+```{admonition} Error body
+:class: note
+
+A tool that fails returns a JSON error object rather than an MCP protocol error. Every tool uses the same structured shape, and so does a read-sandbox denial ([](sandbox.md)):
+
+    {"error": "<message>", "code": "<machine code or null>", "category": "<NOT_FOUND | INVALID_INPUT | PRECONDITION | ...>"}
+
+An error that carries context adds it under `details`. The exception is the original inspect tools (`read_hex`, `read_hex_raw`, `get_entropy`, `analyze_region`, `extract_strings`, `detect_format`, `get_session_info`, `vas_regions`, `get_processes`, `get_modules`, `get_handles`, `get_connections`, `get_module_index`, `get_import_provenance`, `get_blocks`, `resolve_va`, `search_bytes`, `get_page_states`, `get_cross_references`, `identify_structure`). For compatibility, they keep their older body: `{"error": "<message>"}`, with any details (such as `offset` and `file_size`) merged in at the top level. A locked encrypted dump is not an error: it returns `{"error": "<hint>", "tag_status": "<status>"}`. Any of these bodies can be detected by its `"error"` key.
+```
+
 ```{admonition} Memory budget (`force_memory`)
 :class: note
 

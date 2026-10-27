@@ -8,6 +8,7 @@ import {
   type OpenViewArgs, type ProcessRow, type ProfileResult,
 } from "@/api/image";
 import { useActiveDump } from "@/hooks/useActiveDump";
+import { useDebounced } from "@/hooks/useDebounced";
 import { invalidateImageViewFacts, useImageViewFacts } from "@/hooks/useImageViewFacts";
 import { useImageStore } from "@/stores/image-store";
 import { useSelectionStore } from "@/stores/selection-store";
@@ -20,6 +21,9 @@ import { ProcessTable } from "./ProcessTable";
 import { isMdview, openViewInWorkspace } from "./open-view-in-workspace";
 import { processListGate } from "./process-list-gate";
 import { useImageJob } from "./useImageJob";
+
+/** The image path is typed key by key: only a path that has rested is probed. */
+const PROBE_DEBOUNCE_MS = 300;
 
 type Intent = { kind: "open" } | { kind: "kernel" } | { kind: "extract"; pid: number };
 
@@ -47,27 +51,36 @@ export function ImagePanel() {
   const [rows, setRows] = useState<ProcessRow[]>([]);
   const [isfDraft, setIsfDraft] = useState(isfPath);
   const intent = useRef<Intent>({ kind: "open" });
+  const latestProbe = useRef(0);
 
   const runProbe = useCallback(async (banners: boolean) => {
     if (!imagePath.trim()) return;
+    // Only the newest probe may write: a slow answer for an older path is dropped.
+    const ticket = ++latestProbe.current;
+    const live = () => ticket === latestProbe.current;
     setProbing(true);
     setError(null);
     try {
       const next = await probeImage(imagePath.trim(), banners, isfPath || undefined);
+      if (!live()) return;
       // A re-probe without the (slow) banner scan, e.g. after "Use ISF", must not
       // wipe banners already scanned for the same image.
       const prev = useImageStore.getState().probes[imagePath.trim()];
       useImageStore.getState().setProbe(imagePath.trim(), !banners && prev?.banners && prev.image === next.image
         ? { ...next, banners: prev.banners } : next);
     } catch (err) {
+      if (!live()) return;
       useImageStore.getState().setProbe(imagePath.trim(), null);
       setError(readableFailure(err));
     } finally {
-      setProbing(false);
+      if (live()) setProbing(false);
     }
   }, [imagePath, isfPath]);
 
-  useEffect(() => { void runProbe(false); }, [runProbe]);
+  // Auto-probe once the typed path has rested; an ISF change re-probes at once.
+  const restedPath = useDebounced(imagePath.trim(), PROBE_DEBOUNCE_MS);
+  const pathRested = restedPath === imagePath.trim();
+  useEffect(() => { if (pathRested) void runProbe(false); }, [pathRested, runProbe]);
 
   const profileJob = useImageJob<ProfileResult>(() => { void runProbe(false); });
   const extractJob = useImageJob<ExtractResult>();

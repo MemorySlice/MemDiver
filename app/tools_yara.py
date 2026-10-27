@@ -5,8 +5,8 @@ The ``yara.*`` capabilities. They are the editor-shaped sibling of
 which is a corpus census over N dumps and has no notion of a window, a capture
 gap or a virtual address. This module reuses its compiler
 (:func:`memdiver.engine.yara_scan.compile_rules`, so the rule cache, the size
-guard and the refusal of precompiled ``.yarc`` all apply) and the key finders'
-scan plan (:mod:`memdiver.app.tools_keyfinders`), so both honour the same
+guard and the refusal of precompiled ``.yarc`` all apply) and the shared
+scan plan (:mod:`memdiver.app.scan_plan`), so both honour the same
 rules:
 
 * **Coverage is part of the answer; absent bytes are never zeros.** Only
@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from memdiver.app import tools_keyfinders as _tk
+from memdiver.app import scan_plan
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.core.service_result import ServiceResult
 
@@ -154,24 +154,39 @@ def _row(plan: Any, regions: Any, seg: Any, window: int, rule: str, tags: Any,
             "va": va, "vas_offset": seg.vas + rel, "region": regions.at(va)}
 
 
-def _scan_window(plan: Any, rules: Any, regions: Any, seg: Any, window: int, last: bool,
+def _owns(offset: int, last: bool) -> bool:
+    """Does a window own a YARA match starting at its *offset*? (YARA's own seam rule.)
+
+    Every window but the run's last owns the starts in ``[0, step)``; the next window
+    begins at ``step`` and owns those after. This is deliberately not
+    :func:`scan_plan.owns`: a YARA string matches only if the window holds it WHOLE
+    (libyara never reports a clipped match), and this rule leaves every owned start
+    at least ``WINDOW_OVERLAP`` bytes of data, so any string up to that width is
+    reported exactly once. ``scan_plan.owns`` moves the boundary to mid-overlap,
+    which leaves only ``WINDOW_OVERLAP // 2`` bytes: a string wider than that, starting
+    just past the next window's offset 0, would be clipped in the owner and disowned
+    by the window that sees it whole, i.e. lost. There are no ``lead`` bytes to skip
+    (the plan is built with align 1).
+    """
+    return last or offset < scan_plan.WINDOW_BYTES - scan_plan.WINDOW_OVERLAP
+
+
+def _scan_window(plan: Any, rules: Any, regions: Any, seg: Any, win: Any,
                  timeout_s: int, tally: _Tally, limit: int) -> None:
+    """Match one read window (a :class:`scan_plan.Window`) and add the rows it owns."""
     import yara
 
-    step = _tk.WINDOW_BYTES - _tk.WINDOW_OVERLAP
-    want = min(_tk.WINDOW_BYTES, seg.length - window)
-    data = plan.source.read_range(seg.vas + window, want, plan.read_view)
-    tally.short_reads += int(len(data) < want)      # never pad: scan only what came back
-    owned = len(data) if last else min(step, len(data))
+    tally.short_reads += int(win.short)      # never pad: scan only what came back
+    owned = scan_plan.owned_bytes(len(win.data), win.last)
     try:
-        found = rules.match(data=bytes(data), timeout=timeout_s)
+        found = rules.match(data=bytes(win.data), timeout=timeout_s)
     except yara.TimeoutError:
         tally.timed_out = True
-        tally.errors.append(f"window at {seg.addr + window:#x} timed out after {timeout_s}s; "
-                            f"its {owned} bytes are unscanned")
+        tally.errors.append(f"window at {seg.addr + win.offset:#x} timed out after "
+                            f"{timeout_s}s; its {owned} bytes are unscanned")
         return
     except yara.Error as exc:
-        tally.errors.append(f"window at {seg.addr + window:#x} failed: {exc}")
+        tally.errors.append(f"window at {seg.addr + win.offset:#x} failed: {exc}")
         return
     tally.bytes_scanned += owned
     fresh = []
@@ -179,14 +194,26 @@ def _scan_window(plan: Any, rules: Any, regions: Any, seg: Any, window: int, las
         tally.matched_rules.add(match.rule)
         for string in match.strings:
             for instance in string.instances:
-                if last or instance.offset < step:
+                if _owns(instance.offset, win.last):
                     fresh.append((instance.offset, match.rule, string.identifier, match.tags,
                                   instance))
     for _, rule, string_id, tags, instance in sorted(fresh, key=lambda f: f[:3]):
         if len(tally.rows) >= limit:
             tally.truncated = True
             return
-        tally.rows.append(_row(plan, regions, seg, window, rule, tags, string_id, instance))
+        tally.rows.append(_row(plan, regions, seg, win.offset, rule, tags, string_id, instance))
+
+
+def _cancel_poll(cancel: Optional[Callable[[], bool]]) -> Optional[Callable[[], None]]:
+    """A ``read_windows`` hook that raises ``code="cancelled"`` once ``cancel()`` says so."""
+    if cancel is None:
+        return None
+
+    def poll() -> None:
+        if cancel():
+            raise CapabilityError("yara scan cancelled", category=ErrorCategory.PRECONDITION,
+                                  code="cancelled")
+    return poll
 
 
 def _scan_plan(plan: Any, rules: Any, timeout_s: int, limit: int,
@@ -195,19 +222,17 @@ def _scan_plan(plan: Any, rules: Any, timeout_s: int, limit: int,
     """Scan every captured run window by window.
 
     ``progress(fraction, text)`` fires after each window (bytes scanned over the captured
-    bytes in scope, held below 1.0). ``cancel()`` is polled before each window; a cancelled
-    scan raises ``CapabilityError(code="cancelled")`` so it can never be read as complete.
+    bytes in scope, held below 1.0). ``cancel()`` is polled before each window is read; a
+    cancelled scan raises ``CapabilityError(code="cancelled")`` so it can never be read as
+    complete.
     """
-    tally, regions = _Tally(), _tk._regions_of(plan)
+    tally, regions = _Tally(), scan_plan.regions_of(plan)
     total = sum(s.length for s in plan.segments)
+    poll = _cancel_poll(cancel)
     for seg in plan.segments:
         tally.runs_scanned += 1
-        for window in _tk._windows(seg):
-            if cancel is not None and cancel():
-                raise CapabilityError("yara scan cancelled", category=ErrorCategory.PRECONDITION,
-                                      code="cancelled")
-            last = window + min(_tk.WINDOW_BYTES, seg.length - window) >= seg.length
-            _scan_window(plan, rules, regions, seg, window, last, timeout_s, tally, limit)
+        for win in scan_plan.read_windows(plan, seg, before_read=poll):
+            _scan_window(plan, rules, regions, seg, win, timeout_s, tally, limit)
             if progress is not None:
                 progress(min(tally.bytes_scanned / max(total, 1), 0.99), "scanning")
             if tally.truncated:
@@ -223,6 +248,11 @@ def _incomplete_reason(tally: _Tally) -> Optional[str]:
     if tally.errors:
         return "errors"
     return "short_reads" if tally.short_reads else None
+
+
+def _check_view(source: Any, view: Optional[str]) -> str:
+    """:func:`scan_plan.check_view` worded for YARA (``yara.bad_view`` / ``yara.unsupported_format``)."""
+    return scan_plan.check_view(source, view, producer="YARA scans", code_prefix="yara")
 
 
 def yara_scan_dump_result(
@@ -254,19 +284,17 @@ def yara_scan_dump_result(
     from memdiver.engine.yara_scan import rule_names
 
     if limit < 1 or timeout_s < 1:
-        raise _tk._invalid("limit and timeout_s must be >= 1", "yara.bad_limit")
+        raise scan_plan.invalid("limit and timeout_s must be >= 1", "yara.bad_limit")
     if (offset is not None and offset < 0) or (length is not None and length < 1):
-        raise _tk._invalid("offset must be >= 0 and length >= 1", "yara.bad_range")
+        raise scan_plan.invalid("offset must be >= 0 and length >= 1", "yara.bad_range")
     rule_source, origin = resolve_rule_source(rule_source, rule_name, case_dir)
     rules = _compile(rule_source)
-    path = _tk._dump_file(dump_path)
+    path = scan_plan.dump_file(dump_path)
     with open_dump(path) as source:
         raise_if_locked(source)
-        plan = _tk._build_plan(source, path, view, offset, length)
+        plan = scan_plan.build_plan(source, path, view, offset, length, check=_check_view)
         tally = _scan_plan(plan, rules, timeout_s, limit, progress, cancel)
-    coverage = _tk._coverage(plan, _tk._Scan(bytes_scanned=tally.bytes_scanned,
-                                             runs_scanned=tally.runs_scanned,
-                                             short_reads=tally.short_reads), offset, length)
+    coverage = scan_plan.coverage(plan, tally, offset, length)
     return ServiceResult.ok({
         "dump_path": str(path), "format": source.format_name, "view": plan.view,
         "space": plan.location(0).space.value, "capture_id": plan.capture_id,

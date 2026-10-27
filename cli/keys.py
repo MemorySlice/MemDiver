@@ -11,15 +11,8 @@ import argparse
 import sys
 from typing import Callable, Dict, Optional
 
-from ._shared import _write_output
+from ._shared import _write_output, output_parent_parser
 from .vol3 import _json_object
-
-
-def _common_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-o", "--output", help="Write the JSON payload to this file")
-    p.add_argument("-v", "--verbose", action="store_true")
-    return p
 
 
 def add_keys_parser(sub) -> None:
@@ -29,10 +22,10 @@ def add_keys_parser(sub) -> None:
     group = sub.add_parser(
         "keys", help="Key finders: recognise key material by structure in a dump")
     actions = group.add_subparsers(dest="keys_action")
-    actions.add_parser("list", parents=[_common_parser()],
+    actions.add_parser("list", parents=[output_parent_parser()],
                        help="The key finders and the params each reads")
     scan = actions.add_parser(
-        "scan", parents=[_common_parser()],
+        "scan", parents=[output_parent_parser()],
         help="Scan the captured bytes of a dump (.msl / .mdview / raw) with key finders")
     scan.add_argument("dump", help="Dump file")
     scan.add_argument("--finder", action="append", dest="finders", metavar="NAME",

@@ -18,5 +18,6 @@
   "settings": "Settings",
   "back": "Back",
   "next": "Next",
-  "none": "None"
+  "none": "None",
+  "emptyResponse": "The server sent an empty response where a result was expected."
 }

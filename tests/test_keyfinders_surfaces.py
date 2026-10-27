@@ -17,7 +17,7 @@ import pytest
 from memdiver.algorithms.keyfinders.aes_tables import expand_key
 from memdiver.analysis.case import Case
 from memdiver.analysis.record_store import AnalysisRecord
-from memdiver.app import tools_case, tools_keyfinders as tk
+from memdiver.app import scan_plan, tools_case, tools_keyfinders as tk
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.msl.enums import ArchType, OSType, PageState
 from memdiver.msl.types import MslVasEntry
@@ -516,8 +516,8 @@ def test_rest_keeps_a_kernel_va_hit_exact_on_the_wire(tmp_path, client):
 @pytest.fixture
 def small_windows(monkeypatch):
     """4 KiB windows with a 512 B overlap: seams become testable on tiny dumps."""
-    monkeypatch.setattr(tk, "WINDOW_BYTES", 4096)
-    monkeypatch.setattr(tk, "WINDOW_OVERLAP", 512)
+    monkeypatch.setattr(scan_plan, "WINDOW_BYTES", 4096)
+    monkeypatch.setattr(scan_plan, "WINDOW_OVERLAP", 512)
 
 
 def test_stride_grid_is_absolute_not_relative_to_the_offset(tmp_path):
@@ -556,7 +556,7 @@ def test_a_seam_crossing_entropy_region_is_reported_once_and_whole(tmp_path, sma
     dump.write_bytes(bytes(buf))
     kw = dict(dump_path=str(dump), finders=("entropy_window",), params={"window_sizes": [32]})
     small = [(r["addr"], r["length"]) for r in _rows(**kw)["rows"]]
-    tk.WINDOW_BYTES = 1 << 20
+    scan_plan.WINDOW_BYTES = 1 << 20     # restored by small_windows' monkeypatch
     whole = [(r["addr"], r["length"]) for r in _rows(**kw)["rows"]]
     assert small == whole and len(small) >= 1
 

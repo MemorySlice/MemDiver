@@ -24,29 +24,25 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.routers._common import StrictModel, submit_job
 from memdiver.api.routers.annotations import contained_case_dir
 from memdiver.app import tools_image
+from memdiver.core.path_sandbox import is_bare_case_name
 
 router = APIRouter()
 
 _RUNNER = "memdiver.app.pipeline.image_task_runner.run_image_job"
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class ProfileRequest(_Strict):
+class ProfileRequest(StrictModel):
     image_path: str
     isf: Optional[str] = None
     allow_pakunoda: bool = True
 
 
-class OpenViewRequest(_Strict):
+class OpenViewRequest(StrictModel):
     image_path: str
     view: str
     pid: Optional[int] = None
@@ -59,7 +55,7 @@ class OpenViewRequest(_Strict):
     draft_version: Optional[str] = None
 
 
-class ExtractRequest(_Strict):
+class ExtractRequest(StrictModel):
     view_path: str
     out_path: str
 
@@ -70,20 +66,18 @@ def _contained(path: Optional[str]) -> Optional[str]:
 
 
 def _case_target(case_dir: Optional[str]) -> Optional[str]:
-    """Like the case router: a bare name stays a name (filed under the cases root)."""
-    if case_dir and "/" not in case_dir and "\\" not in case_dir \
-            and not case_dir.startswith((".", "~")):
-        return case_dir
+    """Like the case router: a bare name stays a name (filed under the cases root).
+
+    Blank stays blank (the producer decides whether a case is required); any
+    other non-bare value is a write target contained like ``out_path``.
+    """
+    if not case_dir or not case_dir.strip() or is_bare_case_name(case_dir):
+        return case_dir or None
     return _contained(case_dir)
 
 
 def _submit(job: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    manager = task_manager_or_503()
-    record = manager.submit(
-        kind="image", params={"job": job, "args": args,
-                              "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["image"])
-    return {"task_id": record.task_id, "status": record.status.value}
+    return submit_job(task_manager_or_503(), "image", _RUNNER, {"job": job, "args": args})
 
 
 @router.get("/probe")

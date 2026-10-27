@@ -263,5 +263,6 @@ def adapter_for_view(image_ctx: ImageContext, descriptor: ViewDescriptor) -> Any
                               category=ErrorCategory.UNSUPPORTED)
     if descriptor.view is ViewKind.KERNEL:
         return KernelAdapter(image_ctx)
-    assert descriptor.pid is not None  # enforced by ViewDescriptor
+    # ViewDescriptor.__post_init__ requires a pid for process views.
+    assert descriptor.pid is not None  # nosec B101
     return ProcessAdapter(image_ctx, descriptor.pid)

@@ -11,7 +11,8 @@
  */
 
 import { request } from "./client";
-import { parseJsonLossless, postLossless, type WireInt } from "./lossless-json";
+import { getTaskPayload, postLossless, type WireInt } from "./lossless-json";
+import { hasKey } from "./guards";
 
 export type StringsView = "va" | "vas" | "raw";
 export type StringsEncoding = "ascii" | "utf-8" | "utf16le";
@@ -64,8 +65,7 @@ export interface StringsTableRequest {
   limit?: number;
 }
 
-export const isJobTicket = (r: StringsTable | StringsJobTicket): r is StringsJobTicket =>
-  "task_id" in r;
+export const isJobTicket = (r: unknown): r is StringsJobTicket => hasKey(r, "task_id");
 
 export const getStringsTable = (
   body: StringsTableRequest,
@@ -77,12 +77,7 @@ export const getStringsTable = (
 export const STRINGS_SYNC_MAX_BYTES = 64 * 1024 * 1024;
 
 /** A finished job's `strings_result` payload, or `null`. */
-export async function getStringsJobPayload(taskId: string): Promise<StringsTable | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
-  if (!res.ok) throw new Error(await res.text());
-  const body = parseJsonLossless(await res.text()) as { payload?: StringsTable | null } | null;
-  return body?.payload ?? null;
-}
+export const getStringsJobPayload = (taskId: string) => getTaskPayload<StringsTable>(taskId);
 
 export const cancelStringsJob = (taskId: string) =>
   request<{ task_id: string; cancelled: boolean }>(

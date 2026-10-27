@@ -20,7 +20,7 @@ from memdiver.app.tools_heap import (DEFAULT_CHUNK_PAGE_SIZE,
                                      MAX_CHUNK_PAGE_SIZE, MAX_ROLES_LENGTH)
 from memdiver.heap.model import ChunkState
 
-from ._shared import ALLOCATOR_CHOICES, _decrypt_parent_parser
+from ._shared import ALLOCATOR_CHOICES, _auto_int, _decrypt_parent_parser
 from .inspect import (_emit_inspect, _inspect_key_kwargs, _new_tool_session,
                       _present_inspect_cli_call)
 
@@ -28,11 +28,6 @@ from .inspect import (_emit_inspect, _inspect_key_kwargs, _new_tool_session,
 HEAP_ALLOCATOR_CHOICES = ALLOCATOR_CHOICES
 HEAP_VIEW_CHOICES = HEAP_VIEWS
 _STATE_CHOICES = tuple(state.value for state in ChunkState)
-
-
-def _auto_int(text: str) -> int:
-    """Parse a hex (``0x…``) or decimal integer argument."""
-    return int(text, 0)
 
 
 # ---------------------------------------------------------------------------

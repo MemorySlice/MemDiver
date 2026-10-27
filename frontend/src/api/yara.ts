@@ -13,8 +13,9 @@
  * arrives as a decimal string ({@link WireInt}).
  */
 
-import { ApiError, request } from "./client";
-import { parseJsonLossless, postLossless, type WireInt } from "./lossless-json";
+import { request } from "./client";
+import { getTaskPayload, postLossless, type WireInt } from "./lossless-json";
+import { hasKey } from "./guards";
 
 export interface YaraError {
   /** 1-based line libyara names, or `null`. */
@@ -163,19 +164,13 @@ export const checkYaraRule = (rule_source: string) =>
     body: JSON.stringify({ rule_source }),
   });
 
-export const isYaraTicket = (r: YaraScanResult | YaraJobTicket): r is YaraJobTicket =>
-  "task_id" in r;
+export const isYaraTicket = (r: unknown): r is YaraJobTicket => hasKey(r, "task_id");
 
 export const scanYara = (body: YaraScanRequest) =>
   postLossless<YaraScanResult | YaraJobTicket>("/api/yara/scan", body);
 
 /** A finished job's `yara_result` payload (exact addresses), or `null`. */
-export async function getYaraJobPayload(taskId: string): Promise<YaraScanResult | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  const body = parseJsonLossless(await res.text()) as { payload?: YaraScanResult | null } | null;
-  return body?.payload ?? null;
-}
+export const getYaraJobPayload = (taskId: string) => getTaskPayload<YaraScanResult>(taskId);
 
 export const cancelYaraJob = (taskId: string) =>
   request<{ task_id: string; cancelled: boolean }>(

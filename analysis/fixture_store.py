@@ -10,26 +10,22 @@ previous definition under ``fixtures/vol3/history/``; nothing is deleted.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from memdiver.analysis.fixture_predicates import validate_predicate
 from memdiver.analysis.plugin_store import (
-    HISTORY_DIR,
-    store_error,
-    archive_previous,
+    json_dicts_in,
+    put_versioned_json,
+    read_json_dict,
     safe_directory,
     safe_file,
-    sha256_text,
+    store_error,
     validate_name,
 )
-from memdiver.analysis.record import utc_now
-from memdiver.core.artifact_util import atomic_write_text
 from memdiver.core.service_errors import ErrorCategory
 
 FIXTURES_SUBPATH = "fixtures/vol3"
-_FILE_MODE = 0o600
 
 
 def _validated_expect(expect: Any) -> List[Dict[str, Any]]:
@@ -71,45 +67,21 @@ class FixtureStore:
         if args is not None and not isinstance(args, dict):
             raise store_error("args must be an object", "fixture.bad_args")
         directory = self._dir(create=True)
-        path = safe_file(directory, f"{name}.json")
-        previous = self._load(path)
         body = {"name": name, "plugin": plugin or "", "source_name": source_name,
                 "view_path": str(view_path), "args": dict(args or {}),
-                "expect": _validated_expect(expect),
-                "created": (previous or {}).get("created") or utc_now(),
-                "updated": utc_now(), "version": int((previous or {}).get("version", 0)) + 1}
-        if path.is_file():
-            archive_previous(path, directory / HISTORY_DIR, name, ".json",
-                             path.read_text(encoding="utf-8"))
-        text = json.dumps(body, indent=2, sort_keys=True) + "\n"
-        atomic_write_text(path, text, mode=_FILE_MODE)
-        return {**body, "sha256": sha256_text(text), "path": str(path)}
+                "expect": _validated_expect(expect)}
+        return put_versioned_json(safe_file(directory, f"{name}.json"), name, body)
 
     def get(self, name: str) -> Dict[str, Any]:
         validate_name(name, "fixture")
         directory = self._dir(create=False)
         path = safe_file(directory, f"{name}.json")
-        body = self._load(path)
+        body = read_json_dict(path)
         if body is None:
             raise store_error(f"no stored fixture {name!r}", "fixture.not_found",
                          ErrorCategory.NOT_FOUND)
         return {**body, "path": str(path)}
 
     def list(self) -> List[Dict[str, Any]]:
-        directory = self._dir(create=False)
-        if not directory.is_dir():
-            return []
-        out: List[Dict[str, Any]] = []
-        for path in sorted(directory.glob("*.json")):
-            body = self._load(path) if not path.is_symlink() else None
-            if body is not None:
-                out.append({**body, "path": str(path)})
-        return out
-
-    @staticmethod
-    def _load(path: Path) -> "Dict[str, Any] | None":
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        return data if isinstance(data, dict) else None
+        return [{**body, "path": str(path)}
+                for path, body in json_dicts_in(self._dir(create=False))]

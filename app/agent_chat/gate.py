@@ -12,6 +12,7 @@ handler does). It is not thread-safe.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any, Callable, Dict, Mapping, Optional, Set
 
@@ -22,6 +23,8 @@ from .contracts import (
     Decision,
     Emit,
 )
+
+logger = logging.getLogger(__name__)
 
 _NOT_MEMDIVER = "only MemDiver tools are available in this chat"
 #: Access-map value for a WRITE tool whose approval may only be granted per call
@@ -43,6 +46,8 @@ class ApprovalGate:
         self._pending: Dict[str, "asyncio.Future[Decision]"] = {}
         self._pending_tool: Dict[str, str] = {}
         self._chat_approved: Set[str] = set()
+        #: Strong refs to fire-and-forget event sends (the loop only keeps weak ones).
+        self._pending_events: Set["asyncio.Task[None]"] = set()
         self._closed = False
 
     async def decide(self, tool_name: str, tool_input: Mapping[str, Any]) -> Decision:
@@ -124,10 +129,12 @@ class ApprovalGate:
         async def _send() -> None:
             try:
                 await self._emit(event)
-            except Exception:  # noqa: BLE001 - a failed notification must not crash
-                pass
+            except Exception as exc:  # noqa: BLE001 - a failed notification must not crash
+                logger.debug("chat event %s not delivered: %s", event.type, exc)
 
-        asyncio.get_running_loop().create_task(_send())
+        task = asyncio.get_running_loop().create_task(_send())
+        self._pending_events.add(task)
+        task.add_done_callback(self._pending_events.discard)
 
     async def close(self) -> None:
         """Deny every pending approval; later write calls are denied too."""

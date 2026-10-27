@@ -35,14 +35,11 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
-
-from memdiver.core.artifact_util import sha256_streamed
+from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir, write_json_artifact
 
 logger = logging.getLogger("memdiver.app.pipeline.analysis_task_runner")
 
@@ -63,24 +60,8 @@ def _write_result_artifact(
     Returns the ``artifacts`` list (single entry) in the dict shape
     ``TaskManager._on_success`` expects.
     """
-    relpath = "analysis/result.json"
-    out_path = artifact_dir / relpath
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, indent=2))
-    try:
-        size = out_path.stat().st_size
-    except OSError:
-        size = 0
-    sha = sha256_streamed(out_path)
-    return [
-        {
-            "name": "analysis_result",
-            "relpath": relpath,
-            "media_type": "application/json",
-            "size": size,
-            "sha256": sha,
-        }
-    ]
+    return [write_json_artifact(result, artifact_dir, name="analysis_result",
+                                relpath="analysis/result.json")]
 
 
 def _result_summary(result: Dict[str, Any]) -> Dict[str, Any]:

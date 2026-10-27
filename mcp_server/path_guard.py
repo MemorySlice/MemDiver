@@ -8,7 +8,9 @@ shared key logic (``core/path_sandbox.py``) before the tool body runs, and a
 denial is returned as the same structured JSON error the error funnel emits.
 Policy OFF -> the wrapped tool behaves exactly as before.
 
-Imports no web framework and not the ``mcp`` SDK.
+Imports no web framework, not the ``mcp`` SDK and nothing from the REST
+package: roots come from ``core/sandbox_roots.py``, containment from
+``core/path_sandbox.py`` (the same helpers the REST routers use).
 """
 
 from __future__ import annotations
@@ -19,12 +21,11 @@ import json
 from typing import Any, Callable, Optional
 
 from memdiver.core import path_sandbox
+from memdiver.core.sandbox_roots import sandbox_roots, write_roots
 from memdiver.core.service_errors import CapabilityError
 
 
 def _roots(loaded_dataset_root: Any = None):
-    from memdiver.api.read_roots import sandbox_roots
-
     return sandbox_roots(loaded_dataset_root)
 
 
@@ -66,8 +67,6 @@ def _resolved_case_dir(case_dir: str):
 
 def _check_read_case_dir(arguments: dict, tool_name: str, roots) -> None:
     """Read-only case tool: a BARE name's resolved dir must lie in a read/write root."""
-    from memdiver.api.read_roots import write_roots
-
     case_dir = arguments.get("case_dir")
     if tool_name not in CASE_READ_ONLY_TOOLS or not isinstance(case_dir, str) \
             or not case_dir.strip() or path_sandbox.is_path_shaped("case_dir", case_dir):
@@ -77,21 +76,11 @@ def _check_read_case_dir(arguments: dict, tool_name: str, roots) -> None:
 
 def _check_write_roots(arguments: dict, tool_name: str = "") -> None:
     """Raise a 403 ``CapabilityError`` for a write path outside the write roots."""
-    from pathlib import Path
-
-    from memdiver.api.path_safety import write_denial_detail
-    from memdiver.api.read_roots import write_roots
-    from memdiver.core.service_errors import ErrorCategory
-
     roots = write_roots()
     for value in _write_targets(arguments, tool_name):
-        resolved = Path(value).expanduser().resolve(strict=False)
-        if not path_sandbox.within(resolved, roots):
-            raise CapabilityError(
-                write_denial_detail("output path", value, roots, "out/result",
-                                    "MemDiver home + upload dir"),
-                category=ErrorCategory.PRECONDITION, status=403,
-                code="path.outside_sandbox")
+        path_sandbox.contain_write_target(
+            value, roots, field="output path", example_name="out/result",
+            where="MemDiver home + upload dir")
 
 
 def denial_for(fn: Callable, args: tuple, kwargs: dict,

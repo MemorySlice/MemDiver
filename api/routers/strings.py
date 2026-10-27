@@ -16,25 +16,19 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.routers._common import SYNC_MAX_BYTES, StrictModel, submit_job
 from memdiver.api.routers.image import _case_target
 from memdiver.app import tools_strings
 
 router = APIRouter()
 
 _RUNNER = "memdiver.app.pipeline.strings_task_runner.run_strings_job"
-#: A scan reading at most this many captured bytes is answered inline.
-SYNC_MAX_BYTES = 64 * 1024 * 1024
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class TableRequest(_Strict):
+class TableRequest(StrictModel):
     dump_path: str
     view: Optional[str] = None
     offset: Optional[int] = None
@@ -61,19 +55,10 @@ def _is_long_scan(req: TableRequest) -> bool:
         req.dump_path, req.view, _region(req)) > SYNC_MAX_BYTES
 
 
-def _submit(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    manager = task_manager_or_503()
-    record = manager.submit(
-        kind="strings",
-        params={"args": kwargs, "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["strings"])
-    return {"task_id": record.task_id, "status": record.status.value}
-
-
 @router.post("/table")
 def strings_table(req: TableRequest):
     """Extract inline, or as a job for a large capture / ``async: true``."""
     kwargs = _table_kwargs(req)
     if _is_long_scan(req):
-        return _submit(kwargs)
+        return submit_job(task_manager_or_503(), "strings", _RUNNER, {"args": kwargs})
     return tools_strings.strings_table_result(**kwargs).payload

@@ -7,9 +7,9 @@
  *   DELETE /api/tasks/{id}       — cancel a job
  */
 
-import { ApiError } from "./client";
-import { parseJsonLossless, postLossless, type WireInt } from "./lossless-json";
-import { request } from "./client";
+import { getTaskPayload, postLossless, type WireInt } from "./lossless-json";
+import { hasKey } from "./guards";
+import { compact, request } from "./client";
 
 export type HeapPolicy = "off" | "annotate" | "mask";
 
@@ -99,28 +99,16 @@ export interface KeyFindersScanRequest {
   async?: boolean;
 }
 
-export const isKeyFindersTicket = (
-  r: KeyFindersResult | KeyFindersJobTicket,
-): r is KeyFindersJobTicket => "task_id" in r;
+export const isKeyFindersTicket = (r: unknown): r is KeyFindersJobTicket => hasKey(r, "task_id");
 
 export const listKeyFinders = () => request<KeyFinderList>("/api/keyfinders");
 
-const dropEmpty = <T extends object>(body: T): Partial<T> =>
-  Object.fromEntries(
-    Object.entries(body).filter(([, v]) => v !== undefined && v !== ""),
-  ) as Partial<T>;
-
 export const scanKeyFinders = (body: KeyFindersScanRequest) =>
   // Lossless: a kernel-VA `addr` exceeds 2^53 and arrives as a decimal string.
-  postLossless<KeyFindersResult | KeyFindersJobTicket>("/api/keyfinders/scan", dropEmpty(body));
+  postLossless<KeyFindersResult | KeyFindersJobTicket>("/api/keyfinders/scan", compact(body));
 
 /** A finished job's `keyfinders_result` payload, or `null`. */
-export async function getKeyFindersJobPayload(taskId: string): Promise<KeyFindersResult | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  const body = parseJsonLossless(await res.text()) as { payload?: KeyFindersResult | null } | null;
-  return body?.payload ?? null;
-}
+export const getKeyFindersJobPayload = (taskId: string) => getTaskPayload<KeyFindersResult>(taskId);
 
 export const cancelKeyFindersJob = (taskId: string) =>
   request<{ task_id: string; cancelled: boolean }>(

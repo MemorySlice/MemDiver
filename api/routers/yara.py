@@ -24,31 +24,25 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.routers._common import SYNC_MAX_BYTES, StrictModel, submit_job
 from memdiver.api.routers.image import _case_target
-from memdiver.app import tools_keyfinders, tools_yara, tools_yara_rules
+from memdiver.app import scan_plan, tools_yara, tools_yara_rules
 
 router = APIRouter()
 
 _RUNNER = "memdiver.app.pipeline.yara_task_runner.run_yara_job"
-#: A scan reading at most this many captured bytes is answered inline.
-SYNC_MAX_BYTES = 64 * 1024 * 1024
 
 
-class _Strict(BaseModel):
-    # A misspelled field must be a 422, never a silent default with a 200.
-    model_config = ConfigDict(extra="forbid")
-
-
-class CheckRequest(_Strict):
+class CheckRequest(StrictModel):
     rule_source: Optional[str] = None
     rule_name: Optional[str] = None
     case_dir: Optional[str] = None
 
 
-class ScanRequest(_Strict):
+class ScanRequest(StrictModel):
     dump_path: str
     rule_source: Optional[str] = None
     rule_name: Optional[str] = None
@@ -76,17 +70,9 @@ def _scan_kwargs(req: ScanRequest) -> Dict[str, Any]:
 
 
 def _is_long_scan(req: ScanRequest) -> bool:
-    return req.async_ or tools_keyfinders._scan_size(
-        req.dump_path, req.view, req.offset, req.length) > SYNC_MAX_BYTES
-
-
-def _submit_scan(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    manager = task_manager_or_503()
-    record = manager.submit(
-        kind="yara",
-        params={"args": kwargs, "task_root": str(manager.artifact_store.root)},
-        runner_dotted=_RUNNER, stage_names=["yara"])
-    return {"task_id": record.task_id, "status": record.status.value}
+    return req.async_ or scan_plan.scan_size(
+        req.dump_path, req.view, req.offset, req.length,
+        check=tools_yara._check_view) > SYNC_MAX_BYTES
 
 
 @router.post("/scan")
@@ -94,11 +80,11 @@ def scan_dump(req: ScanRequest):
     """Scan inline, or as a job for a large capture / ``async: true``."""
     kwargs = _scan_kwargs(req)
     if _is_long_scan(req):
-        return _submit_scan(kwargs)
+        return submit_job(task_manager_or_503(), "yara", _RUNNER, {"args": kwargs})
     return tools_yara.yara_scan_dump_result(**kwargs).payload
 
 
-class RulePutRequest(_Strict):
+class RulePutRequest(StrictModel):
     rule_source: str
     scope: Optional[str] = None
     case_dir: Optional[str] = None

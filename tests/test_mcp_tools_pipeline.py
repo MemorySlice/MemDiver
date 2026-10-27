@@ -373,9 +373,10 @@ def test_emit_plugin_writes_valid_python(tmp_path):
 
 # ----------------------------------------------------------------------
 # error funnel: stages raise a structured CapabilityError, not an
-# ``{"error": ...}`` magic dict (Phase 5a). The MCP tool bodies are
-# wrapped by ``mcp_error_funnel``, which renders the raised error as the
-# structured ``{"error", "code", "category"}`` JSON payload.
+# ``{"error": ...}`` magic dict (Phase 5a). Every registered MCP tool is
+# wrapped by ``present_mcp_tool``, which renders the raised error as the
+# structured ``{"error", "code", "category"}`` JSON payload (the same
+# ``mcp_error_payload`` that ``mcp_error_funnel`` emits).
 # ----------------------------------------------------------------------
 
 

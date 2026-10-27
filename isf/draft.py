@@ -57,7 +57,9 @@ import dataclasses
 import hashlib
 import json
 import os
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -65,6 +67,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from memdiver.analysis.record import (
     _SLUG, ISF_DRAFT, RETRACTION, AnalysisEntry, Support, retraction_of)
 from memdiver.analysis.record_store import AnalysisRecord
+from memdiver.core.artifact_util import atomic_write_text
 from memdiver.core.location import AddressSpace, Location
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 
@@ -105,6 +108,7 @@ _MAX_ADDRESS = 2 ** 64
 #: ISF section -> key tag used in :data:`Key` tuples.
 _SECTION_TAG: Dict[str, str] = {
     "base_types": "base_type", "user_types": "type", "enums": "enum", "symbols": "symbol"}
+_TAG_SECTION: Dict[str, str] = {tag: section for section, tag in _SECTION_TAG.items()}
 _TAGS = frozenset(_SECTION_TAG.values()) | {"field"}
 _UNSIZED_EVIDENCE = "size_unknown"
 _UNTYPED_EVIDENCE = "type_unknown"
@@ -239,6 +243,85 @@ def _retracted_ids(entries: Sequence[AnalysisEntry], name: str, cutoff: int) -> 
             if _is_draft_retraction(e, name) and e.supersedes}
 
 
+#: Parsed import blobs, newest last: ``(path, size, mtime_ns, ctime_ns, inode, sha)`` ->
+#: sections. A blob is content-addressed and never rewritten, so a key whose stat
+#: identity is unchanged needs no re-read, re-hash or re-parse; any rewrite or removal
+#: changes the stat identity and is re-verified (tamper / missing errors unchanged).
+#: Cached dicts are SHARED and READ-ONLY: :meth:`_Replay._op_import` copies the
+#: levels replay mutates (a struct body and its ``fields`` dict); leaf dicts (a
+#: symbol, a field, an enum, a base type) are only ever replaced, never mutated in
+#: place, by replay and by every caller of ``materialize`` / ``to_isf_dict``.
+#: The cache is bounded twice: at most ``_BLOB_CACHE_MAX`` entries and at most
+#: ``_BLOB_CACHE_MAX_BYTES`` of blob *file* bytes (the on-disk JSON size is the weight,
+#: a rough proxy for the parsed dicts' footprint). Least-recently-used entries are
+#: evicted first; a blob larger than the whole byte budget is never cached.
+_BLOB_CACHE_MAX = 8
+_BLOB_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_blob_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Dict[str, Any]]]" = OrderedDict()
+_blob_cache_lock = threading.Lock()
+
+
+def _blob_cache_key(path: Path, sha: str) -> Optional[Tuple[Any, ...]]:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return (str(path), st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, sha)
+
+
+def _read_verified_blob(path: Path, sha: str) -> Dict[str, Dict[str, Any]]:
+    if not path.is_file():
+        raise CapabilityError(
+            f"ISF draft blob {sha} is missing ({path})",
+            category=ErrorCategory.NOT_FOUND, code="isf_blob_missing")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise CapabilityError(
+            f"ISF draft blob {path} does not match its sha256 {sha} (altered or corrupt)",
+            category=ErrorCategory.INTERNAL, code="isf_blob_tampered")
+    parsed: Dict[str, Dict[str, Any]] = json.loads(data.decode("utf-8"))
+    return parsed
+
+
+def _load_blob_cached(path: Path, sha: str) -> Dict[str, Dict[str, Any]]:
+    """The parsed blob (shared, read-only); re-read only when the file's stat changed."""
+    key = _blob_cache_key(path, sha)
+    with _blob_cache_lock:
+        if key is not None and key in _blob_cache:
+            _blob_cache.move_to_end(key)
+            return _blob_cache[key]
+    parsed = _read_verified_blob(path, sha)
+    if key is not None and key == _blob_cache_key(path, sha):
+        _remember_blob(key, parsed)
+    return parsed
+
+
+def _blob_cache_weight(key: Tuple[Any, ...]) -> int:
+    """The cache weight of an entry: its blob file size (``key[1]``)."""
+    return int(key[1])
+
+
+def _remember_blob(key: Tuple[Any, ...], parsed: Dict[str, Dict[str, Any]]) -> None:
+    """Cache ``parsed`` under ``key``, evicting LRU entries past either bound."""
+    if _blob_cache_weight(key) > _BLOB_CACHE_MAX_BYTES:
+        return
+    with _blob_cache_lock:
+        _blob_cache[key] = parsed
+        _blob_cache.move_to_end(key)
+        total = sum(_blob_cache_weight(k) for k in _blob_cache)
+        while len(_blob_cache) > _BLOB_CACHE_MAX or total > _BLOB_CACHE_MAX_BYTES:
+            evicted, _ = _blob_cache.popitem(last=False)
+            total -= _blob_cache_weight(evicted)
+
+
+def _struct_copy(struct: Mapping[str, Any]) -> Dict[str, Any]:
+    """A struct body replay may mutate: own dict and own ``fields`` dict, shared leaves."""
+    copied = dict(struct)
+    if isinstance(copied.get("fields"), dict):
+        copied["fields"] = dict(copied["fields"])
+    return copied
+
+
 class _Replay:
     """Applies operations to an :class:`IsfDraft`, tracking per-key origins."""
 
@@ -308,18 +391,14 @@ class _Replay:
     def _op_remove(self, payload: Mapping[str, Any], origin: EntryOrigin) -> None:
         key = tuple(payload["key"])
         tag, name = key[0], key[1]
-        if tag == "symbol":
-            self.draft.symbols.pop(name, None)
-        elif tag == "base_type":
-            self.draft.base_types.pop(name, None)
-        elif tag == "enum":
-            self.draft.enums.pop(name, None)
-        elif tag == "type":
+        if tag == "type":
             self._drop_struct(name)
         elif tag == "field":
             struct = self.draft.user_types.get(name)
             if struct is not None:
                 struct.get("fields", {}).pop(key[2], None)
+        elif tag in _TAG_SECTION:
+            getattr(self.draft, _TAG_SECTION[tag]).pop(name, None)
         self.draft.origins.pop(key, None)
 
     def _drop_struct(self, name: str) -> None:
@@ -336,6 +415,7 @@ class _Replay:
                 if section == "user_types":
                     self._drop_struct(key_name)
                     self._import_struct_origins(key_name, value, origin)
+                    value = _struct_copy(value)     # the cached blob stays untouched
                 target[key_name] = value
                 self.draft.origins[(tag, key_name)] = origin
 
@@ -346,17 +426,7 @@ class _Replay:
 
     def _load_blob(self, payload: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
         sha = payload["blob_sha256"]
-        path = self.blob_dir / f"{sha}.json"
-        if not path.is_file():
-            raise CapabilityError(
-                f"ISF draft blob {sha} is missing ({path})",
-                category=ErrorCategory.NOT_FOUND, code="isf_blob_missing")
-        data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != sha:
-            raise CapabilityError(
-                f"ISF draft blob {path} does not match its sha256 {sha} (altered or corrupt)",
-                category=ErrorCategory.INTERNAL, code="isf_blob_tampered")
-        return json.loads(data.decode("utf-8"))
+        return _load_blob_cached(self.blob_dir / f"{sha}.json", sha)
 
 
 def _origin_dict(origin: Optional[EntryOrigin]) -> Optional[Dict[str, Any]]:
@@ -632,6 +702,23 @@ def _without_fields(user_types: Mapping[str, Dict[str, Any]],
     return out
 
 
+def _struct_body(struct: str, size: int, kind: str) -> Dict[str, Any]:
+    _check_nonempty("struct name", struct)
+    _check_int("size", size)
+    if kind not in ("struct", "union"):
+        raise _invalid(f"kind must be 'struct' or 'union', got {kind!r}")
+    return {"name": struct, "kind": kind, "size": size}
+
+
+def _field_body(struct: str, field_name: str, offset: int,
+                type_descriptor: Mapping[str, Any]) -> Dict[str, Any]:
+    _check_nonempty("struct name", struct)
+    _check_nonempty("field name", field_name)
+    _check_int("offset", offset)
+    return {"struct": struct, "field": field_name, "offset": offset,
+            "type": _check_type(type_descriptor)}
+
+
 class IsfDraftStore:
     """Drafts of one case directory, persisted through :class:`AnalysisRecord`.
 
@@ -669,13 +756,22 @@ class IsfDraftStore:
     def _append(self, capture_id: str, name: str, op: str, provenance: Provenance,
                 body: Mapping[str, Any], *, label: str, entries: Optional[Sequence[AnalysisEntry]] = None,
                 locations: Tuple[Location, ...] = ()) -> AnalysisEntry:
+        writers = self._last_writers(entries, name) if entries is not None else None
+        return self._record.append(self._build(capture_id, name, op, provenance, body,
+                                               label=label, writers=writers, locations=locations))
+
+    @staticmethod
+    def _build(capture_id: str, name: str, op: str, provenance: Provenance,
+               body: Mapping[str, Any], *, label: str, writers: Optional[Mapping[Key, str]] = None,
+               locations: Tuple[Location, ...] = ()) -> AnalysisEntry:
+        """The entry ``_append`` files; ``writers`` (key -> last single-key writer) sets supersedes."""
         _check_provenance(provenance)
         payload: Dict[str, Any] = {"draft": name, "op": op, **body,
                                    "provenance": provenance.to_dict()}
         supersedes = None
         key = _single_key(payload) if op not in (OP_CREATE, OP_IMPORT) else None
-        if key is not None and entries is not None:
-            supersedes = self._last_writers(entries, name).get(key)
+        if key is not None and writers is not None:
+            supersedes = writers.get(key)
         try:
             entry = AnalysisEntry(
                 capture_id=capture_id, kind=ISF_DRAFT, author=provenance.author,
@@ -684,7 +780,7 @@ class IsfDraftStore:
                 supersedes=supersedes)
         except (ValueError, TypeError) as exc:
             raise _invalid(str(exc)) from exc
-        return self._record.append(entry)
+        return entry
 
     # -- lifecycle -----------------------------------------------------------
     def create(self, capture_id: str, name: str, *, arch: str, author: str = "human",
@@ -788,23 +884,15 @@ class IsfDraftStore:
     def set_struct(self, capture_id: str, name: str, struct: str, size: int,
                    provenance: Provenance, *, kind: str = "struct") -> AnalysisEntry:
         entries = self._require_draft(capture_id, name)
-        _check_nonempty("struct name", struct)
-        _check_int("size", size)
-        if kind not in ("struct", "union"):
-            raise _invalid(f"kind must be 'struct' or 'union', got {kind!r}")
         return self._append(capture_id, name, OP_SET_STRUCT, provenance,
-                            {"name": struct, "kind": kind, "size": size},
+                            _struct_body(struct, size, kind),
                             label=f"sizeof({struct})", entries=entries)
 
     def set_field(self, capture_id: str, name: str, struct: str, field_name: str, offset: int,
                   type_descriptor: Mapping[str, Any], provenance: Provenance) -> AnalysisEntry:
         """Also creates the struct (size 0, flagged ``size_unknown`` in its origin) if absent."""
         entries = self._require_draft(capture_id, name)
-        _check_nonempty("struct name", struct)
-        _check_nonempty("field name", field_name)
-        _check_int("offset", offset)
-        body = {"struct": struct, "field": field_name, "offset": offset,
-                "type": _check_type(type_descriptor)}
+        body = _field_body(struct, field_name, offset, type_descriptor)
         return self._append(capture_id, name, OP_SET_FIELD, provenance, body,
                             label=f"{struct}.{field_name}", entries=entries)
 
@@ -901,31 +989,47 @@ class IsfDraftStore:
         the origin); exact size claim → ``set_struct`` size; ``bound`` tier →
         ``size_bound``. Provenance = ``(claim.source, claim.tier.value,
         claim.evidence, author, claim.witnesses)``.
-        """
-        self._require_draft(capture_id, name)
-        hints = type_hints or {}
-        known = self.materialize(capture_id, name).user_types
-        return [self._import_claim(capture_id, name, claim, hints, known, author)
-                for claim in claims]
 
-    def _import_claim(self, capture_id: str, name: str, claim: Any,
-                      hints: Mapping[Tuple[str, str], Mapping[str, Any]],
-                      known: Mapping[str, Mapping[str, Any]], author: str) -> AnalysisEntry:
+        One read of the record and ONE batched append (all-or-nothing: an invalid
+        claim files none of them); a later claim on the same key supersedes the
+        earlier one of the batch, exactly as one ``set_field``/``set_struct`` call
+        per claim would.
+        """
+        entries = self._require_draft(capture_id, name)
+        hints = type_hints or {}
+        known = self._replay(capture_id, name, entries, None).user_types
+        writers = self._last_writers(entries, name)
+        built: List[AnalysisEntry] = []
+        for claim in claims:
+            entry = self._claim_entry(capture_id, name, claim, hints, known, author, writers)
+            key = _single_key(entry.payload)
+            if key is not None:
+                writers[key] = entry.id
+            built.append(entry)
+        return self._record.append_many(built)
+
+    def _claim_entry(self, capture_id: str, name: str, claim: Any,
+                     hints: Mapping[Tuple[str, str], Mapping[str, Any]],
+                     known: Mapping[str, Mapping[str, Any]], author: str,
+                     writers: Mapping[Key, str]) -> AnalysisEntry:
         provenance = Provenance(claim.source, claim.tier.value, tuple(claim.evidence),
                                 author, claim.witnesses)
         if claim.member is not None:
             hint = hints.get((claim.struct, claim.member))
             if hint is None:
                 provenance = _with_evidence(provenance, _UNTYPED_EVIDENCE)
-            return self.set_field(capture_id, name, claim.struct, claim.member, claim.offset,
-                                  hint if hint is not None else dict(_VOID_TYPE), provenance)
+            body = _field_body(claim.struct, claim.member, claim.offset,
+                               hint if hint is not None else dict(_VOID_TYPE))
+            return self._build(capture_id, name, OP_SET_FIELD, provenance, body,
+                               label=f"{claim.struct}.{claim.member}", writers=writers)
         if claim.tier.value == "bound":
-            entries = self._require_draft(capture_id, name)
-            return self._append(capture_id, name, OP_SIZE_BOUND, provenance,
-                                {"struct": claim.struct, "bound": _check_int("bound", claim.width)},
-                                label=f"sizeof({claim.struct}) <= {claim.width}", entries=entries)
+            return self._build(capture_id, name, OP_SIZE_BOUND, provenance,
+                               {"struct": claim.struct, "bound": _check_int("bound", claim.width)},
+                               label=f"sizeof({claim.struct}) <= {claim.width}", writers=writers)
         kind = known.get(claim.struct, {}).get("kind", "struct")
-        return self.set_struct(capture_id, name, claim.struct, claim.width, provenance, kind=kind)
+        return self._build(capture_id, name, OP_SET_STRUCT, provenance,
+                           _struct_body(claim.struct, claim.width, kind),
+                           label=f"sizeof({claim.struct})", writers=writers)
 
     # -- blobs ---------------------------------------------------------------
     def blob_path(self, sha256: str) -> Path:
@@ -1003,16 +1107,16 @@ class IsfDraftStore:
 
     @staticmethod
     def _write_atomic(target: Path, data: str, *, exclusive: bool) -> None:
+        if not exclusive:
+            atomic_write_text(target, data)
+            return
         tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             tmp.write_text(data, encoding="utf-8")
-            if exclusive:
-                try:
-                    os.link(tmp, target)  # fails if the target appeared meanwhile
-                except FileExistsError as exc:
-                    raise _invalid(f"export target already exists: {target}",
-                                   "isf_export_exists") from exc
-            else:
-                os.replace(tmp, target)
+            try:
+                os.link(tmp, target)  # fails if the target appeared meanwhile
+            except FileExistsError as exc:
+                raise _invalid(f"export target already exists: {target}",
+                               "isf_export_exists") from exc
         finally:
             tmp.unlink(missing_ok=True)

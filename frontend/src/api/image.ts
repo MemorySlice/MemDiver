@@ -12,7 +12,7 @@
  * terminal `done` event's `extra`.
  */
 
-import { request } from "./client";
+import { compact, postJson, request } from "./client";
 
 export type ImageViewKind = "physical" | "kernel" | "process";
 
@@ -105,16 +105,6 @@ export interface PagingOverride {
   page_size?: number;
 }
 
-const post = (url: string, body: object) =>
-  request<ImageJobTicket>(url, { method: "POST", body: JSON.stringify(body) });
-
-/** Drop empty-string optionals so the backend sees `null`, not `""`. */
-function compact<T extends object>(body: T): Partial<T> {
-  return Object.fromEntries(
-    Object.entries(body).filter(([, v]) => v !== undefined && v !== ""),
-  ) as Partial<T>;
-}
-
 export const probeImage = (imagePath: string, banners = false, isf?: string) => {
   const qs = new URLSearchParams({ image_path: imagePath });
   if (banners) qs.set("banners", "true");
@@ -123,7 +113,7 @@ export const probeImage = (imagePath: string, banners = false, isf?: string) => 
 };
 
 export const startProfileJob = (imagePath: string, isf?: string, allowPakunoda = true) =>
-  post("/api/image/profile", compact({
+  postJson<ImageJobTicket>("/api/image/profile", compact({
     image_path: imagePath, isf, allow_pakunoda: allowPakunoda,
   }));
 
@@ -133,7 +123,7 @@ export const cancelImageJob = (taskId: string) =>
     `/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
 
 export const startOpenViewJob = (args: OpenViewArgs) =>
-  post("/api/image/open-view", compact(args));
+  postJson<ImageJobTicket>("/api/image/open-view", compact(args));
 
 export const listImageProcesses = (viewPath: string, limit?: number) => {
   const qs = new URLSearchParams({ view_path: viewPath });
@@ -142,4 +132,4 @@ export const listImageProcesses = (viewPath: string, limit?: number) => {
 };
 
 export const startExtractProcessJob = (viewPath: string, outPath: string) =>
-  post("/api/image/extract-process", { view_path: viewPath, out_path: outPath });
+  postJson<ImageJobTicket>("/api/image/extract-process", { view_path: viewPath, out_path: outPath });

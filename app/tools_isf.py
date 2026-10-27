@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from memdiver.core.image.context import file_sha256, require_pakunoda
 from memdiver.core.location import AddressSpace, Location
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import CapabilityError, ErrorCategory, require_file
 from memdiver.core.service_result import ServiceResult
 from memdiver.isf.draft import SECTIONS, IsfDraft, IsfDraftStore, Provenance
 
@@ -69,13 +69,8 @@ def _invalid(message: str, code: str) -> CapabilityError:
 
 
 def _image_file(image_path: str) -> Path:
-    if not image_path or not str(image_path).strip():
-        raise _invalid("image_path is required", "image_path_required")
-    path = Path(image_path).expanduser()
-    if not path.is_file():
-        raise CapabilityError(f"memory image not found: {path}",
-                              category=ErrorCategory.NOT_FOUND, code="image_not_found")
-    return path.resolve()
+    return require_file(image_path, param="image_path", label="memory image",
+                        code="image_not_found", resolve=True)
 
 
 def _capture(capture_id: str) -> str:
@@ -955,18 +950,24 @@ def isf_draft_set_result(case_dir: str, capture_id: str, name: str, op: str,
 
 
 def _read_isf_file(path: str) -> Dict[str, Any]:
+    return _load_isf_file(path)[0]
+
+
+def _load_isf_file(path: str) -> Tuple[Dict[str, Any], bytes]:
+    """The parsed ISF document at *path* and its raw bytes (read once)."""
     import json
     target = Path(path).expanduser()
     if not target.is_file():
         raise CapabilityError(f"ISF file not found: {target}",
                               category=ErrorCategory.NOT_FOUND, code="isf_not_found")
     try:
-        data = json.loads(target.read_text(encoding="utf-8"))
+        raw = target.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise _invalid(f"not a readable ISF JSON file: {target} ({exc})", "isf_unreadable") from exc
     if not isinstance(data, dict):
         raise _invalid(f"not an ISF document: {target}", "isf_unreadable")
-    return data
+    return data, raw
 
 
 def isf_draft_import_result(case_dir: str, capture_id: str, name: str, isf_path: str, *,
@@ -974,8 +975,8 @@ def isf_draft_import_result(case_dir: str, capture_id: str, name: str, isf_path:
                             source: str = "isf_import", tier: str = "imported",
                             evidence: Sequence[str] = (), author: str = "human"
                             ) -> ServiceResult:
-    isf = _read_isf_file(isf_path)
-    sha = hashlib.sha256(Path(isf_path).expanduser().read_bytes()).hexdigest()
+    isf, raw = _load_isf_file(isf_path)
+    sha = hashlib.sha256(raw).hexdigest()
     prov = Provenance(source, tier, (f"file sha256 {sha}", *evidence), author)
     entry = _store(case_dir, create=True).import_isf(_capture(capture_id), name, isf, prov, only=only)
     return ServiceResult.ok({"draft": name, "isf_path": str(Path(isf_path).expanduser()),

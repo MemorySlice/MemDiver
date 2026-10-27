@@ -2,10 +2,12 @@
 
 This module deliberately imports only the stdlib and ``memdiver.core``
 service types — never the optional ``mcp`` SDK — so it can be imported and
-unit-tested without the ``mcp`` SDK's MCPServer installed. ``mcp_server/server.py`` imports the
-two functions here to render the status-carrying ``ServiceResult`` producers
-in :mod:`memdiver.mcp_server.tools_inspect` back to the exact JSON shapes the
-MCP tools have always emitted.
+unit-tested without the ``mcp`` SDK's MCPServer installed. ``mcp_server/server.py``
+wraps every registered tool in :func:`present_mcp_tool`, so JSON encoding and
+error presentation happen once, at registration: a ``CapabilityError`` renders
+as :func:`mcp_error_payload` (the path-guard denial shape), except for the
+original inspect tools (:data:`LEGACY_ERROR_BODY_TOOLS`), whose pinned legacy
+``to_error_body()`` shape is kept.
 
 The MCP surface differs from other transports in one respect: an agent needs
 the lock signal inlined, so a locked/undecrypted dump is rendered as the same
@@ -19,9 +21,26 @@ CLI dash-flags. That surface-specific guidance originates here, not in core.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
+from typing import Any, Callable
 
 from memdiver.core.service_errors import CapabilityError
+from memdiver.core.service_result import ServiceResult
+
+#: The ORIGINAL inspect-family tools (``tools_inspect`` / ``tools_xref``
+#: producers). Their hard-error body is the legacy flat
+#: ``CapabilityError.to_error_body()`` (message + details merged at top level),
+#: pinned by tests and the ``memdiver://`` resources; every OTHER tool renders
+#: the structured :func:`mcp_error_payload` shape a path-guard denial also uses.
+LEGACY_ERROR_BODY_TOOLS = frozenset({
+    "read_hex", "read_hex_raw", "get_entropy", "analyze_region",
+    "extract_strings", "detect_format", "get_session_info", "vas_regions",
+    "get_processes", "get_modules", "get_handles", "get_connections",
+    "get_module_index", "get_import_provenance", "get_blocks", "resolve_va",
+    "search_bytes", "get_page_states", "get_cross_references",
+    "identify_structure",
+})
 
 # MCP-surface remedy for a locked encrypted dump. Agents call the inspect tools
 # with these PARAMETER names, so the guidance names the parameters rather than
@@ -48,7 +67,7 @@ def mcp_error_funnel(fn):
         try:
             return fn(*a, **k)
         except CapabilityError as e:
-            return json.dumps(_funnel_payload(e), default=str)
+            return json.dumps(mcp_error_payload(e), default=str)
 
     return wrapper
 
@@ -59,8 +78,12 @@ def mcp_error_funnel(fn):
 _HOISTED_DETAIL_KEYS = ("estimate_bytes", "budget_bytes")
 
 
-def _funnel_payload(err: CapabilityError) -> dict:
-    """``err.to_dict()`` plus its ``details`` (only when it carries any)."""
+def mcp_error_payload(err: CapabilityError) -> dict:
+    """The MCP error body: ``err.to_dict()`` plus ``details`` when it has any.
+
+    ``{"error", "code", "category"}`` — the same keys a path-guard denial
+    returns — so ``"error"`` stays the agent-chat error sniff key.
+    """
     payload = err.to_dict()
     if err.details:
         payload["details"] = dict(err.details)
@@ -97,3 +120,46 @@ def present_inspect_mcp_call(produce) -> dict:
         return present_inspect_mcp(produce())
     except CapabilityError as e:
         return e.to_error_body()
+
+
+def _render_tool_result(result: Any) -> str:
+    """JSON-encode a tool body's return: ``str`` passes through (already JSON),
+    a ``ServiceResult`` goes through :func:`present_inspect_mcp`, a dict as-is."""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, ServiceResult):
+        result = present_inspect_mcp(result)
+    return json.dumps(result)
+
+
+def present_mcp_tool(fn: Callable, *, legacy_error_body: bool = False) -> Callable:
+    """Registration-layer wrapper: encode + present every tool result ONCE.
+
+    The tool body returns a ``ServiceResult``, a dict or a JSON string, or
+    raises :class:`CapabilityError`. The error renders as
+    :func:`mcp_error_payload` — or, for a :data:`LEGACY_ERROR_BODY_TOOLS`
+    member (``legacy_error_body=True``), as the pinned legacy
+    ``to_error_body()``.
+    """
+    error_body = CapabilityError.to_error_body if legacy_error_body else mcp_error_payload
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*a, **k):
+            try:
+                result = await fn(*a, **k)
+            except CapabilityError as e:
+                return json.dumps(error_body(e), default=str)
+            return _render_tool_result(result)
+
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        try:
+            result = fn(*a, **k)
+        except CapabilityError as e:
+            return json.dumps(error_body(e), default=str)
+        return _render_tool_result(result)
+
+    return wrapper

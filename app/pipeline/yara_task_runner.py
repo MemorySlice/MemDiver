@@ -15,29 +15,12 @@ surfaces as a reported task failure.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
-from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+from memdiver.app.pipeline.artifact_paths import task_result_artifact
+from memdiver.app.pipeline.progress_emitter import progress_emitter
 
 STAGE = "yara"
-
-
-def _progress_emitter(ctx):
-    def emit(fraction: float, description: str) -> None:
-        ctx.emit("progress", stage=STAGE, pct=max(0.0, min(float(fraction), 0.99)),
-                 msg=description or "YARA scan")
-    return emit
-
-
-def _write_artifact(payload: Dict[str, Any], params: Dict[str, Any], ctx) -> Dict[str, Any]:
-    from memdiver.core.artifact_util import sha256_streamed
-    relpath = "yara/result.json"
-    out = resolve_artifact_dir(params, ctx, fallback_subdir="./yara_output") / relpath
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2))
-    return {"name": "yara_result", "relpath": relpath, "media_type": "application/json",
-            "size": out.stat().st_size, "sha256": sha256_streamed(out)}
 
 
 def run_yara_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
@@ -49,13 +32,14 @@ def run_yara_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     ctx.emit("stage_start", stage=STAGE, pct=0.0, msg="YARA scan")
     try:
         payload = dict(yara_scan_dump_result(
-            progress=_progress_emitter(ctx), cancel=ctx.is_cancelled, **args).payload)
+            progress=progress_emitter(ctx, STAGE, "YARA scan"),
+            cancel=ctx.is_cancelled, **args).payload)
     except CapabilityError as exc:
         ctx.emit("error", error="cancelled" if exc.code == "cancelled" else exc.message)
         if exc.code == "cancelled":
             raise RuntimeError("yara scan cancelled") from exc
         raise ValueError(exc.message) from exc
-    artifact = _write_artifact(payload, params, ctx)
+    artifact = task_result_artifact(payload, params, ctx, "yara")
     ctx.emit("stage_end", stage=STAGE, pct=1.0, msg="YARA scan done",
              extra={"row_count": payload["row_count"], "complete": payload["complete"],
                     "truncated": payload["truncated"]})

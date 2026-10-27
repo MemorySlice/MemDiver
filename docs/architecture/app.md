@@ -83,7 +83,11 @@ Modules:
   (the API's empty-means-locked contract) and hard errors become HTTP status codes
   at the single exception handler.
 - **MCP** — `present_inspect_mcp` inlines the lock diagnostic augmented with the MCP
-  parameter names.
+  parameter names. JSON encoding and error presentation happen once, at tool
+  registration (`present_mcp_tool`): a tool body returns its `ServiceResult` /
+  dict or raises, and a `CapabilityError` renders as `{"error", "code",
+  "category"}` (+ `details`), the same body as a sandbox denial. The original
+  inspect tools (`LEGACY_ERROR_BODY_TOOLS`) keep the flat `to_error_body()` shape.
 
 Because all four presenters consume the *same* producer output, the neutral
 surface-agnostic hint text lives in the producer's status block, while each

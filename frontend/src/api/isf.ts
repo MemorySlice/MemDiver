@@ -13,9 +13,8 @@
  * strings for the same reason.
  */
 
-import { ApiError } from "./client";
 import type { ImageJobTicket } from "./image";
-import { parseJsonLossless, requestLossless as request, type WireInt } from "./lossless-json";
+import { getTaskPayload, postLossless as post, requestLossless as request, type WireInt } from "./lossless-json";
 
 export type IsfSection = "symbols" | "user_types" | "base_types" | "enums";
 export const ISF_SECTIONS: readonly IsfSection[] = ["symbols", "user_types", "base_types", "enums"];
@@ -198,8 +197,6 @@ export const FEEDABLE_PROBES: readonly string[] = ["kallsyms", "vmcoreinfo", "bt
 export interface DraftRef { caseDir: string; captureId: string }
 
 const refBody = (ref: DraftRef) => ({ case_dir: ref.caseDir, capture_id: ref.captureId });
-const post = <T,>(url: string, body: object) =>
-  request<T>(url, { method: "POST", body: JSON.stringify(body) });
 const draftUrl = (name: string, tail = "") => `/api/isf/drafts/${encodeURIComponent(name)}${tail}`;
 const query = (ref: DraftRef, extra: Record<string, string | number | boolean | undefined> = {}) => {
   const qs = new URLSearchParams({ case_dir: ref.caseDir, capture_id: ref.captureId });
@@ -297,9 +294,4 @@ export const startIsfProbeJob = (a: ProbeArgs) =>
  * The stored payload of a finished isf job, decoded losslessly (a kernel VA past 2^53 stays an
  * exact decimal string). `null` when the task has no payload.
  */
-export async function getIsfJobPayload<T>(taskId: string): Promise<T | null> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/result`);
-  if (!res.ok) throw new ApiError(res.status, await res.text());
-  const body = parseJsonLossless(await res.text()) as { payload?: T | null } | null;
-  return body?.payload ?? null;
-}
+export const getIsfJobPayload = <T>(taskId: string) => getTaskPayload<T>(taskId);

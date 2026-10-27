@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from memdiver.core.location import Location
-from memdiver.core.service_errors import CapabilityError, ErrorCategory
+from memdiver.core.service_errors import CapabilityError, ErrorCategory, require_file
 from memdiver.core.service_result import ServiceResult
 
 if TYPE_CHECKING:  # DuckDB/Arrow load lazily: ``import memdiver`` reaches this module
@@ -203,12 +203,7 @@ def case_export_result(case_dir: str, dump_path: str,
     from memdiver.core.dump_source import open_dump
 
     case = _open(case_dir)
-    if not dump_path or not str(dump_path).strip():
-        raise _invalid("dump_path is required", "dump_path_required")
-    path = Path(dump_path).expanduser()
-    if not path.is_file():
-        raise CapabilityError(f"dump not found: {path}",
-                              category=ErrorCategory.NOT_FOUND, code="dump_not_found")
+    path = require_file(dump_path, param="dump_path", label="dump", code="dump_not_found")
     exports: List[Dict[str, Any]] = []
     skipped: List[Dict[str, str]] = []
     # open_dump returns the source UNOPENED: enter it, or the exporters raise.

@@ -14,29 +14,12 @@ problem surfaces as a reported task failure.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
-from memdiver.app.pipeline.artifact_paths import resolve_artifact_dir
+from memdiver.app.pipeline.artifact_paths import task_result_artifact
+from memdiver.app.pipeline.progress_emitter import progress_emitter
 
 STAGE = "strings"
-
-
-def _progress_emitter(ctx):
-    def emit(fraction: float, description: str) -> None:
-        ctx.emit("progress", stage=STAGE, pct=max(0.0, min(float(fraction), 0.99)),
-                 msg=description or "strings table")
-    return emit
-
-
-def _write_artifact(payload: Dict[str, Any], params: Dict[str, Any], ctx) -> Dict[str, Any]:
-    from memdiver.core.artifact_util import sha256_streamed
-    relpath = "strings/result.json"
-    out = resolve_artifact_dir(params, ctx, fallback_subdir="./strings_output") / relpath
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2))
-    return {"name": "strings_result", "relpath": relpath, "media_type": "application/json",
-            "size": out.stat().st_size, "sha256": sha256_streamed(out)}
 
 
 def run_strings_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
@@ -48,11 +31,12 @@ def run_strings_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     ctx.emit("stage_start", stage=STAGE, pct=0.0,
              msg=f"strings table {','.join(args.get('encodings', ()))}")
     try:
-        payload = dict(strings_table_result(progress=_progress_emitter(ctx), **args).payload)
+        payload = dict(strings_table_result(
+            progress=progress_emitter(ctx, STAGE, "strings table"), **args).payload)
     except CapabilityError as exc:
         ctx.emit("error", error=exc.message)
         raise ValueError(exc.message) from exc
-    artifact = _write_artifact(payload, params, ctx)
+    artifact = task_result_artifact(payload, params, ctx, "strings")
     ctx.emit("stage_end", stage=STAGE, pct=1.0, msg="strings table done",
              extra={"row_count": payload["row_count"], "truncated": payload["truncated"]})
     return {"artifacts": [artifact], "summary": payload}

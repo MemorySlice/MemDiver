@@ -3,20 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** The case directory is typed key by key: only a value that has rested is listed. */
 export const CASE_LIST_DEBOUNCE_MS = 400;
 
-function useDebounced<T>(value: T, ms: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(value), ms);
-    return () => clearTimeout(timer);
-  }, [value, ms]);
-  return settled;
-}
-
 import { readableFailure } from "@/api/client";
 import {
   deleteYaraRule, getYaraRule, listYaraRules, putYaraRule,
   type RuleScope, type YaraRule, type YaraRuleMeta, type YaraRulePutResult,
 } from "@/api/yara";
+import { useDebounced } from "@/hooks/useDebounced";
 import { importLocalRules, type ImportReport } from "./import-local-rules";
 
 export { readRules, STORAGE_KEY } from "./import-local-rules";

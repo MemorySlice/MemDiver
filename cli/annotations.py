@@ -13,7 +13,7 @@ import json
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
-from ._shared import _write_output
+from ._shared import _auto_int, emit
 
 
 def _json_arg(text: str) -> Any:
@@ -28,10 +28,6 @@ def _support_arg(text: str) -> Dict[str, str]:
     if not sep or not kind or not ref:
         raise argparse.ArgumentTypeError("support must be KIND:REF")
     return {"kind": kind, "ref": ref}
-
-
-def _auto_int(text: str) -> int:
-    return int(text, 0)
 
 
 def _case_parent_parser() -> argparse.ArgumentParser:
@@ -82,20 +78,15 @@ def add_annotations_parser(sub) -> None:
     ret.add_argument("--reason", default="", help="Why it is withdrawn")
 
 
-def _emit(args: argparse.Namespace, payload: dict) -> int:
-    _write_output(payload, args.output)
-    return 0
-
-
 def _cmd_annotations_list(args: argparse.Namespace) -> int:
     from memdiver.app.tools_annotations import annotations_list_result
-    return _emit(args, annotations_list_result(
+    return emit(args, annotations_list_result(
         args.case, args.capture, args.kind, args.include_superseded).payload)
 
 
 def _cmd_annotations_add(args: argparse.Namespace) -> int:
     from memdiver.app.tools_annotations import annotations_add_result
-    return _emit(args, annotations_add_result(
+    return emit(args, annotations_add_result(
         args.case, args.capture, args.kind, args.author, args.locations,
         args.label or "", args.payload, args.support, args.length).payload)
 
@@ -104,14 +95,14 @@ def _cmd_annotations_supersede(args: argparse.Namespace) -> int:
     from memdiver.app.tools_annotations import annotations_supersede_result
     changes = {"kind": args.kind, "locations": args.locations, "length": args.length,
                "label": args.label, "payload": args.payload, "support": args.support}
-    return _emit(args, annotations_supersede_result(
+    return emit(args, annotations_supersede_result(
         args.case, args.capture, args.entry, args.author,
         **{k: v for k, v in changes.items() if v is not None}).payload)
 
 
 def _cmd_annotations_retract(args: argparse.Namespace) -> int:
     from memdiver.app.tools_annotations import annotations_retract_result
-    return _emit(args, annotations_retract_result(
+    return emit(args, annotations_retract_result(
         args.case, args.capture, args.entry, args.author, args.reason).payload)
 
 
