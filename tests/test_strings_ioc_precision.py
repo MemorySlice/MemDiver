@@ -67,3 +67,46 @@ def test_sql_and_python_agree_on_every_sample():
         py = ioc_matches(text)
         db = {k: v for k, v in rows.get(text, {}).items() if v}
         assert db == py, text
+
+
+@pytest.mark.parametrize("text,prefix", [
+    ("1.3.6.1", "1.3.6.1"), ("oid 1.3.101.110", "1.3.101"), ("1.3.101.112", "1.3.101"),
+    ("2.5.4.10", "2.5.4"), ("2.5.29.15", "2.5.29"), ("1.3.132.0", "1.3.132"),
+])
+def test_oid_shaped_ipv4_is_kept_but_flagged(text, prefix):
+    from memdiver.analysis.queries.strings import ioc_ambiguity
+    assert "ipv4" in ioc_matches(text)                      # never dropped
+    assert ioc_ambiguity(text) == ("oid_like", prefix)
+
+
+@pytest.mark.parametrize("text", ["192.168.1.10", "8.8.8.8", "10.0.0.1", "1.50.1.1", "3.5.4.10"])
+def test_real_ipv4_is_not_flagged(text):
+    from memdiver.analysis.queries.strings import ioc_ambiguity
+    assert "ipv4" in ioc_matches(text)
+    assert ioc_ambiguity(text) is None
+
+
+def test_mixed_row_is_not_ambiguous_but_lists_oid_like_values():
+    from memdiver.analysis.queries.strings import ioc_ambiguity, oid_like_values
+    text = "peer 8.8.8.8 oid 1.3.6.1"
+    assert ioc_ambiguity(text) is None
+    assert oid_like_values(text) == [("1.3.6.1", "1.3.6.1")]
+    assert ioc_ambiguity("oid 1.3.6.1 and 2.5.4.10") == ("oid_like", "1.3.6.1")
+
+
+def test_unmatchable_840_prefixes_are_not_registered():
+    from memdiver.analysis.queries.strings import OID_PREFIXES, ioc_ambiguity
+    assert "1.2.840" not in OID_PREFIXES and "2.16.840" not in OID_PREFIXES
+    assert ioc_ambiguity("1.2.840.113549") is None
+
+
+def test_row_of_carries_oid_like_values():
+    from types import SimpleNamespace as NS
+    from memdiver.app.tools_strings import _row_of
+    plan = NS(location=lambda a: NS(space=NS(value="raw"), to_dict=lambda: {}))
+    seg = NS(addr=0, va=None, vas=0)
+    regions = NS(at=lambda va: None)
+    match = NS(offset=0, value="peer 8.8.8.8 oid 1.3.6.1", encoding="ascii", length=24)
+    row = _row_of(plan, seg, 0, match, regions)
+    assert row["ambiguity"] is None and row["oid_prefix"] is None
+    assert row["oid_like_values"] == [{"value": "1.3.6.1", "oid_prefix": "1.3.6.1"}]

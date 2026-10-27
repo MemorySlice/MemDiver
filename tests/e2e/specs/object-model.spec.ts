@@ -112,8 +112,13 @@ test.describe("Object model tab (real openssl TLS 1.3 corpus) @requires-dataset"
     await shot(page, "03-anchor");
 
     // 4. Propose layout.
+    const proposeRequest = page.waitForRequest((r) => r.url().includes("/api/semantic/propose-layout"));
     await panel.getByRole("button", { name: "Propose layout" }).click();
+    // The panel shows per-field evidence, so the client must ask for the full payload
+    // (the server default is "summary").
+    expect(JSON.parse((await proposeRequest).postData() ?? "{}").detail).toBe("full");
     await expect(page.getByTestId("layout-results")).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByTestId("field-row").first().locator("td").last()).not.toBeEmpty();
     await expect(page.getByTestId("bounds")).toContainText("-0x6fc");
     await expect(page.getByTestId("bounds")).toContainText("5392"); // 0x1510
     const rows = page.getByTestId("field-row");
@@ -174,7 +179,8 @@ test.describe("Object model tab (real openssl TLS 1.3 corpus) @requires-dataset"
     }
     await val.getByRole("button", { name: "Validate", exact: true }).click();
     await expect(page.getByTestId("validate-result")).toBeVisible({ timeout: 180_000 });
-    await expect(page.getByTestId("verdict-badge")).toHaveAttribute("data-verdict", "pass");
+    // First badge = the overall verdict (per-capture rows carry their own badges).
+    await expect(page.getByTestId("verdict-badge").first()).toHaveAttribute("data-verdict", "pass");
     const totals = (await page.getByTestId("validate-totals").locator("td").allInnerTexts()).join("|");
     console.log("VALIDATE totals:", totals);
     expect(totals).toMatch(/\|8\|8\|0\|0\|8\/8\|/);

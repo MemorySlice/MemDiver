@@ -28,7 +28,7 @@ from __future__ import annotations
 #: ``pip install "memdiver[<extra>]"`` form instead of degrading to the
 #: base-reinstall wording -- so a new opt-in extra must be added here, and must
 #: NOT be added to :data:`NO_OP_EXTRAS`.
-OPTIONAL_EXTRAS = frozenset({"marimo", "vol", "image", "disasm", "dev", "docs"})
+OPTIONAL_EXTRAS = frozenset({"marimo", "vol", "image", "disasm", "agent", "dev", "docs"})
 
 #: Extra names kept only so already-published commands ("pip install
 #: memdiver[api]") keep RESOLVING; their contents moved into the base install,

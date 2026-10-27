@@ -36,6 +36,7 @@ It combines known-key search, entropy scanning, change-point detection, structur
 - **Interactive workspace** — React-based dockable UI for hands-on exploration
 - **Research sandbox** — Optional Marimo environment for reproducible notebooks and custom analysis
 - **AI-assisted analysis** — MCP server integration for use with Claude and other assistants
+- **Agent chat panel** — optional in-UI chat with Claude over the MCP tools; read tools auto-run, writes need approval (`pip install "memdiver[agent]"`, see [docs](docs/user_guide/agent_chat.md))
 - **Headless use** — the same engine via non-interactive CLI subcommands (no separate mode or flag) for CI/CD, batch processing, and forensic pipelines
 - **Python library** — `import memdiver` to open dumps, convert to `.msl`, parse containers, and run analysis programmatically (see [library quickstart](docs/quickstart/library.md))
 - **Analysis engine** — Known-key search, entropy scanning, change-point detection, structural parsing, and cross-run differential analysis
@@ -217,7 +218,7 @@ All 35 subcommands exposed by [`cli/`](cli/):
 
 | Detection &amp; analysis | Consensus (Welford) | Pipeline (Phase-25) | Known secret &amp; detectors | Format conversion | Runtime shells |
 |---|---|---|---|---|---|
-| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` · `heap` · `annotations` · `case` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `mcp` · `experiment` · `capture` |
+| `analyze` · `scan` · `batch` · `verify` · `inspect` · `inspect-pcap` · `heap` · `annotations` · `case` | `consensus` · `consensus-begin` · `consensus-add` · `consensus-finalize` · `consensus-window` · `consensus-regions` | `search-reduce` · `analyze-candidates` · `brute-force` · `n-sweep` · `auto-floor` · `emit-plugin` | `locate-key` · `locate-field-pairs` · `export-key-pattern` · `scan-yara` · `verify-plugin` · `score-detector` | `export` · `export-keylog` · `gen-kem-key` · `import` · `import-dir` | `web` · `ui` · `notebook` · `mcp` · `experiment` · `capture` |
 
 Newer subcommands at a glance:
 

@@ -48,7 +48,7 @@ _JOIN = {  # function -> (checked, exact, unresolved)
     "__arm64_sys_getuid": (3, 3, 0), "__arm64_sys_getppid": (1, 1, 0),
     "__task_pid_nr_ns": (2, 2, 0),
 }
-_DO_EXIT = {"fedora-40": (32, 32, 0), "ubuntu-24.04": (33, 33, 0), "sonic": (81, 75, 6)}
+_DO_EXIT = {"fedora-40": (32, 32, 0), "ubuntu-24.04": (33, 33, 0), "sonic": (81, 75, 0)}  # +6 container_of
 
 
 # debian-12 measured: function -> (access count, expected isf_join)
@@ -151,3 +151,20 @@ def test_arm64_debian12_verified_init_task_delta_places_reads(function):
                for a in payload["accesses"] if a.get("isf_member")}
     assert set(members) == _debian_keys(function, members)
     assert all(m["exact"] for m in members.values())
+
+
+_SONIC_CONTAINER_OF = {"signal", "exit_state", "ptrace", "exit_signal"}
+
+
+@needs_corpus
+def test_arm64_sonic_do_exit_container_of(arm_image):
+    """sonic do_exit: the six children.next-relative accesses resolve via container_of."""
+    if arm_image[0] != "sonic":
+        pytest.skip("sonic-only assertion")
+    payload = _run(arm_image, "do_exit")
+    join = payload["isf_join"]
+    assert (join["checked"], join["exact"], join["container_of"], join["unresolved"]) == (81, 75, 6, 0)
+    rows = [a for a in payload["accesses"] if a.get("resolution") == "container_of"]
+    assert len(rows) == 6
+    assert {a["isf_member"]["member"] for a in rows} == _SONIC_CONTAINER_OF
+    assert all(a["isf_member"]["struct"] == "task_struct" and a["inferred_via"] for a in rows)

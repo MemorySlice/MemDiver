@@ -61,6 +61,8 @@ from .import_preview import (_module_for, _msl_modules,
                              msl_classification_context, msl_region_infos)
 from .integrity import verify_extension_segments
 from .page_map import count_captured_pages
+from .source_format import (effective_source_format, origin_note_field,
+                            strip_origin_fields, wire_source_format)
 from .region_select import (DROPPED_KEY_HINTS_KEY, MATERIALIZED_KEY,
                             ORIG_EOC_HASH_KEY, REGION_NAMES_NOTE, RegionInfo,
                             join_provenance_note)
@@ -358,8 +360,17 @@ class _Materializer:
         prov = self._provenance
         # Keep the original source_format: stored-region classification
         # depends on it (RAW_DUMP regions stay UNCLASSIFIED).
-        source_format = prov.source_format if prov else SourceFormat.MSL
-        args = dict(source_format=source_format, tool_name="memdiver",
+        # Legacy MemDiver 0x04/0x05 are re-written as 0xFFFF + origin note
+        # (spec Table 40); a foreign 0x04/0x05 keeps its code AND its writer.
+        effective = (effective_source_format(
+            prov.source_format, prov.tool_name, prov.note)
+            if prov else SourceFormat.MSL)
+        foreign = effective in (SourceFormat.MACOS_CORE, SourceFormat.PROCDUMP)
+        source_format = (prov.source_format if prov and (
+            foreign or effective is None) else wire_source_format(
+                effective or SourceFormat.OTHER))
+        tool_name = prov.tool_name if prov and foreign else "memdiver"
+        args = dict(source_format=source_format, tool_name=tool_name,
                     orig_file_size=self._src_path.stat().st_size,
                     note=self._provenance_note(), source_path=self._src_path)
         if self._header.flags & HeaderFlag.IMPORTED:
@@ -370,10 +381,38 @@ class _Materializer:
             self._writer.add_raw_block(BlockType.IMPORT_PROVENANCE,
                                        build_import_provenance_payload(**args))
 
+    def _origin_noted(self) -> str:
+        """Source note carrying the source's EFFECTIVE origin.
+
+        MSL / REGIONED_RAW: the origin field goes FIRST (the first one wins in
+        ``note_origin_format``, so a stale one in the old note is overridden).
+        OTHER (e.g. a physical-image process extraction): any stale origin
+        field is stripped so the copy keeps reading back as OTHER.
+        """
+        prov = self._provenance
+        note = prov.note if prov else ""
+        if prov is None:
+            return note
+        effective = effective_source_format(
+            prov.source_format, prov.tool_name, note)
+        if effective in (SourceFormat.MSL, SourceFormat.REGIONED_RAW):
+            return join_provenance_note(origin_note_field(effective), note)
+        if effective == SourceFormat.OTHER:
+            return strip_origin_fields(note)
+        return note
+
+    def _writes_msl_origin(self) -> bool:
+        """False only when the source's effective origin is OTHER."""
+        prov = self._provenance
+        return prov is None or effective_source_format(
+            prov.source_format, prov.tool_name, prov.note) != SourceFormat.OTHER
+
     def _provenance_note(self) -> str:
         """``<orig note>; source_format=msl;...; <selection note>`` (last)."""
-        parts = ["source_format=msl", f"{MATERIALIZED_KEY}=1",
+        parts = [f"{MATERIALIZED_KEY}=1",
                  f"{DROPPED_KEY_HINTS_KEY}={self.stats.dropped_key_hints}"]
+        if self._writes_msl_origin():
+            parts.insert(0, "source_format=msl")
         if self._names_trusted:
             parts.append(REGION_NAMES_NOTE)
         if self._eoc is not None and any(self._eoc.file_hash):
@@ -381,8 +420,7 @@ class _Materializer:
         folded = len(self._foldable_sealed_segments())
         if folded:
             parts.append(f"{SEALED_FOLDED_KEY}={folded}")
-        base = join_provenance_note(self._provenance.note if self._provenance
-                                    else "", ";".join(parts))
+        base = join_provenance_note(self._origin_noted(), ";".join(parts))
         return join_provenance_note(base, self._selection_note)
 
     def _add_end_and_extensions(self) -> None:

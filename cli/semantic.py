@@ -32,7 +32,8 @@ def _learn_kwargs(args: argparse.Namespace) -> dict:
         related=_json_file(args.related_file), pointer_quorum=args.pointer_quorum,
         heap=not args.no_heap, mixed_ok=getattr(args, "mixed_ok", False),
         case_dir=args.case_dir, keylog=keylog_spec_from_args(args),
-        anchor_label=args.anchor_label, related_labels=args.related_labels)
+        anchor_label=args.anchor_label, related_labels=args.related_labels,
+        detail=getattr(args, "detail", "summary"))
 
 
 def _run(producer, args: argparse.Namespace, **extra) -> int:

@@ -92,7 +92,11 @@ export interface ProposeLayoutRequest extends AnchorInputs {
   pointer_quorum?: number;
   heap?: boolean;
   case_dir?: string;
+  /** Server default is "summary"; the web client requests "full" (see `proposeLayout`). */
+  detail?: PayloadDetail;
 }
+
+export type PayloadDetail = "summary" | "full";
 
 export type ConsensusClassName =
   | "invariant" | "structural" | "pointer" | "key_candidate" | "undetermined";
@@ -145,8 +149,10 @@ export interface ProposedField {
   length: number;
   kind: string;
   name: string;
-  evidence: string[];
-  alternatives: unknown[];
+  /** Present with `detail: "full"`; a summary carries `alternatives_count` instead. */
+  evidence?: string[];
+  alternatives?: unknown[];
+  alternatives_count?: number;
 }
 
 export interface ProposedLayoutResult extends AnchorCommon, KeylogOutputs {
@@ -166,7 +172,7 @@ export const getAnchorConsensus = (body: AnchorConsensusRequest) =>
   post<AnchorConsensusResult>("/api/analysis/consensus/anchor", body);
 
 export const proposeLayout = (body: ProposeLayoutRequest) =>
-  post<ProposedLayoutResult>("/api/semantic/propose-layout", body);
+  post<ProposedLayoutResult>("/api/semantic/propose-layout", { detail: "full", ...body });
 
 export interface FieldMeaningSpec {
   field: string;
@@ -197,12 +203,17 @@ export interface BuildModelRequest extends ProposeLayoutRequest {
 }
 
 export interface BuildModelResult {
-  model: Record<string, unknown>;
+  /** Dropped by a summary build (see `omitted`); present with `detail: "full"`. */
+  model?: Record<string, unknown>;
   path: string;
   sha256: string;
   problems: string[];
-  proposal: ProposedLayoutResult;
+  proposal?: ProposedLayoutResult;
   record_entries?: string[];
+  model_summary?: Record<string, unknown>;
+  detail?: PayloadDetail;
+  omitted?: string[];
+  omitted_hint?: string;
 }
 
 export interface ExportModelRequest {
@@ -270,7 +281,7 @@ export interface ValidateModelResult {
 }
 
 export const buildArtifactModel = (body: BuildModelRequest) =>
-  post<BuildModelResult>("/api/semantic/model-build", body);
+  post<BuildModelResult>("/api/semantic/model-build", { detail: "full", ...body });
 
 export const exportArtifactModel = (body: ExportModelRequest) =>
   post<ExportModelResult>("/api/semantic/model-export", body);

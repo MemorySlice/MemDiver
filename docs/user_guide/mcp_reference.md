@@ -236,6 +236,10 @@ Tools added with the memory-image / case workbench. Image, `vol3_*`, case, YARA,
 | `artifact_model_export` | Export an artifact model (JSON) as a Volatility3 plugin. |
 | `artifact_model_validate` | Validate a model's plugin on held-out captures against ground truth. |
 
+## Result budget (opt-in)
+
+Set `MEMDIVER_MCP_RESULT_BUDGET=<bytes>` (minimum 1024; unset or `0` = off) so no tool result exceeds that many UTF-8 bytes. Off, results are byte-identical to before. A larger result is shrunk deterministically: scalar keys are kept, each list keeps its first K items with `<key>__truncated: {"kept", "total"}`, nested dicts recurse one level, and if that is not enough the largest values become `{"omitted_bytes": n}`. A truncated result always carries a top-level `_result_budget` (`budget`, `original_bytes`, `returned_bytes`, `hint`); the hint names the tool's own `limit`/`offset` when it has them. Non-JSON text is cut with a marker line. Structured errors pass through unchanged, and the budget applies after the read sandbox ([](sandbox.md)).
+
 ## Prompts (playbooks)
 
 The server registers 8 MCP prompts. Each renders a numbered procedure naming the exact tools and parameters, what to check in each result, and the traps hit on real data. All arguments are optional; given values are substituted into the steps.

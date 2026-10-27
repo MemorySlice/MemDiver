@@ -50,6 +50,10 @@ class ProposeLayoutRequest(KeylogAnchorFields, MixedCohortFields):
     heap: bool = True
     case_dir: Optional[str] = None
     author: str = tools_semantic.DEFAULT_AUTHOR
+    # "summary" | "full" (validated by the producer). Same default on every
+    # surface; the web client asks for "full" explicitly because its panel shows
+    # each field's evidence/alternatives.
+    detail: str = "summary"
 
 
 class ModelBuildRequest(ProposeLayoutRequest):
@@ -109,7 +113,7 @@ def _learn_kwargs(req: ProposeLayoutRequest) -> Dict[str, Any]:
         pointer_quorum=req.pointer_quorum, heap=req.heap, mixed_ok=req.mixed_ok,
         case_dir=_case_target(req.case_dir), author=req.author,
         keylog=req.keylog, anchor_label=req.anchor_label,
-        related_labels=req.related_labels)
+        related_labels=req.related_labels, detail=req.detail)
 
 
 @router.post("/propose-layout")

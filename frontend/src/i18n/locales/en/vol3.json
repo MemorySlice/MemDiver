@@ -27,7 +27,8 @@
     "casePlaceholder": "/path/to/case",
     "button": "Run plugin",
     "cancel": "Cancel",
-    "cancelled": "Run cancelled.",
+    "cancelling": "Cancelling…",
+    "cancelled": "Cancelled",
     "running": "Running plugin...",
     "progress": "({{pct}}%)",
     "needView": "Open a memory image view (.mdview) in the workspace to run plugins."

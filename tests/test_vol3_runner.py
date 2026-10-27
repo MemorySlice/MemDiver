@@ -625,9 +625,135 @@ def test_timeout_inside_a_vol3_layer_scan_is_reported_not_swallowed(phys_ctx):
     assert res.truncated is True and res.stop_reason == "timeout"
 
 
+def _slow_scanner_plugin() -> Any:
+    """A scanner that never calls the progress callback, over many chunks."""
+    from volatility3.framework.layers.scanners import BytesScanner
+
+    def gen(self: Any) -> Any:
+        layer = self.context.layers[self.config["primary"]]
+        sections = [(i * 32, 16) for i in range(100)]      # 100 separate chunk reads
+        for offset in layer.scan(self.context, BytesScanner(b"\x00"), sections=sections):
+            yield 0, (format_hints.Hex(offset),)
+
+    return _make_plugin("SlowScanner", [("Offset (P)", format_hints.Hex)], gen)
+
+
+def test_silent_scanner_is_stopped_by_the_read_deadline(phys_ctx):
+    layer = phys_ctx.context.layers[LAYER]
+    real_read = layer.read
+
+    def slow_read(offset: int, length: int, pad: bool = False) -> bytes:
+        time.sleep(0.3)
+        return real_read(offset, length, pad)
+
+    layer.read = slow_read
+    started = time.monotonic()
+    res = vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), timeout_s=0.2)
+    elapsed = time.monotonic() - started
+    assert res.truncated is True and res.stop_reason == "timeout"
+    assert elapsed < 2.0
+    assert layer.read is slow_read                      # restored to what it was
+    assert phys_ctx.lock.acquire(blocking=False)        # lock released
+    phys_ctx.lock.release()
+
+
+def test_read_guard_restores_unpatched_layer_and_second_run_works(phys_ctx):
+    layer = phys_ctx.context.layers[LAYER]
+    assert "read" not in vars(layer)
+    vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), timeout_s=-1.0)
+    assert "read" not in vars(layer)
+    res = vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), limit=3, timeout_s=30.0)
+    assert res.stop_reason == "row_limit" and len(res.rows) == 3
+
+
 def test_failed_construction_leaves_no_config_behind(phys_ctx):
     cls = _make_plugin("NeedsKernel", [("PID", int)], lambda self: iter(()),
                        extra_reqs=[requirements.ModuleRequirement(name="kernel")])
     with pytest.raises(CapabilityError):
         vr.run_plugin(phys_ctx, _info(cls))
+    assert not [k for k in phys_ctx.context.config if k.startswith("memdiver_runs.")]
+
+
+# -- cooperative cancel ---------------------------------------------------------------
+
+def test_cancel_mid_scan_returns_promptly_and_restores_everything(phys_ctx):
+    layer = phys_ctx.context.layers[LAYER]
+    real_read = layer.read
+    started = time.monotonic()
+
+    def slow_read(offset: int, length: int, pad: bool = False) -> bytes:
+        time.sleep(0.05)
+        return real_read(offset, length, pad)
+
+    layer.read = slow_read
+    flip_at = started + 0.3
+    res = vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), timeout_s=60.0,
+                        cancel=lambda: time.monotonic() > flip_at)
+    elapsed = time.monotonic() - started
+    assert res.truncated is True and res.stop_reason == "cancelled"
+    assert elapsed < 0.3 + 0.25 + 0.5
+    assert layer.read is slow_read
+    assert phys_ctx.lock.acquire(blocking=False)
+    phys_ctx.lock.release()
+
+
+def test_cancel_between_rows_via_collector(phys_ctx):
+    def gen(self: Any) -> Any:
+        for i in range(1000):
+            time.sleep(0.002)
+            yield 0, (i,)
+
+    info = _info(_make_plugin("Rows", [("N", int)], gen))
+    flag = {"on": False}
+    threading.Timer(0.1, lambda: flag.update(on=True)).start()
+    res = vr.run_plugin(phys_ctx, info, timeout_s=60.0, cancel=lambda: flag["on"])
+    assert res.stop_reason == "cancelled" and 0 < res.row_count < 1000
+
+
+def test_cancel_poll_is_throttled_across_many_reads(phys_ctx):
+    calls = {"n": 0}
+
+    def cancel() -> bool:
+        calls["n"] += 1
+        return False
+
+    layer = phys_ctx.context.layers[LAYER]
+    real_read = layer.read
+
+    def slow_read(offset: int, length: int, pad: bool = False) -> bytes:
+        time.sleep(0.01)
+        return real_read(offset, length, pad)
+
+    layer.read = slow_read
+    started = time.monotonic()
+    res = vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), limit=10_000,
+                        timeout_s=60.0, cancel=cancel)
+    elapsed = time.monotonic() - started
+    assert res.stop_reason is None
+    # >= 100 reads happened, yet the cancel proxy was asked at most once per interval
+    assert calls["n"] <= int(elapsed / vr.CANCEL_POLL_INTERVAL_S) + 2
+    assert calls["n"] < 20
+
+
+def test_cancel_poll_latches_once_true():
+    answers = iter([True, False])
+    poll = vr._CancelPoll(lambda: next(answers), interval=0.0)
+    assert poll() is True and poll() is True
+
+
+def test_keyboard_interrupt_restores_reads_and_releases_lock(phys_ctx):
+    layer = phys_ctx.context.layers[LAYER]
+    assert "read" not in vars(layer)
+    real_read = layer.read
+
+    def interrupting_read(offset: int, length: int, pad: bool = False) -> bytes:
+        raise KeyboardInterrupt
+
+    layer.read = interrupting_read
+    with pytest.raises(KeyboardInterrupt):
+        vr.run_plugin(phys_ctx, _info(_slow_scanner_plugin()), timeout_s=60.0)
+    assert layer.read is interrupting_read
+    layer.read = real_read
+    assert phys_ctx.lock.acquire(blocking=False)
+    phys_ctx.lock.release()
     assert not [k for k in phys_ctx.context.config if k.startswith("memdiver_runs.")]

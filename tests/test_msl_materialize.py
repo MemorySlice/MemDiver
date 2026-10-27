@@ -332,7 +332,8 @@ def test_generated_fixture_preserves_blocks_and_remaps_hints(tmp_path):
     assert bases == {0x00400000, 0x7FFF00000000, 0x7FFFFFFDE000}
 
     prov = _provenance(out)
-    assert prov.source_format == SourceFormat.MSL
+    assert prov.source_format == SourceFormat.OTHER  # origin in the note
+    assert "source_format=msl" in prov.note
     assert "orig_eoc_hash" not in prov.note  # source EoC hash was zero
     assert "dropped_key_hints=1" in prov.note
 

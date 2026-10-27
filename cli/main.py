@@ -81,6 +81,7 @@ from .dataset import (
     _cmd_batch,
     _cmd_import,
     _cmd_mcp,
+    _cmd_notebook,
     _cmd_scan,
     _cmd_ui,
     _cmd_web,
@@ -158,6 +159,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memdiver", description="MemDiver — Memory dump analysis platform")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("ui", help='Launch interactive Marimo UI (needs: pip install "memdiver[marimo]")').add_argument("extra_args", nargs="*", default=[])
+    nb = sub.add_parser("notebook", help="Open the case-explorer notebook on a case (needs the marimo extra)")
+    nb.add_argument("case", help="Case directory or bare case name")
+    nb.add_argument("--edit", action="store_true", help="Open for editing instead of as an app")
+    nb.add_argument("--port", type=int, default=None, help="Port for the marimo server")
+    nb.add_argument("--headless", action="store_true", help="Do not open a browser")
     az = sub.add_parser("analyze", help="Analyze library directories")
     az.add_argument("library_dirs", nargs="+", help="Library directory paths")
     az.add_argument("--phase", required=True, help="Lifecycle phase")
@@ -371,6 +377,8 @@ def _build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-heap", action="store_true",
                         help="Skip allocator-chunk object bounds")
         sp.add_argument("--case-dir", help="File one structure_proposal entry per capture")
+        sp.add_argument("--detail", choices=("summary", "full"), default="summary",
+                        help="summary (default) omits bulky keys; full is the complete payload")
         sp.add_argument("-o", "--output", help="Output JSON file")
         sp.add_argument("-v", "--verbose", action="store_true")
         add_mixed_ok_argument(sp)
@@ -1397,6 +1405,8 @@ def main():
         sys.exit(_cmd_web(args))
     if args.command == "ui":
         sys.exit(_cmd_ui(args))
+    if args.command == "notebook":
+        sys.exit(_cmd_notebook(args))
     _setup_logging(getattr(args, "verbose", False))
     handlers = {
         "analyze": _cmd_analyze, "scan": _cmd_scan, "batch": _cmd_batch,

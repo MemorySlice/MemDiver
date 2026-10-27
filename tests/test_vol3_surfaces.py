@@ -246,6 +246,9 @@ class _Ctx:
     def emit(self, kind, **fields):
         self.events.append((kind, fields))
 
+    def is_cancelled(self):
+        return False
+
 
 def test_job_runner_forwards_progress_and_writes_the_artifact(monkeypatch, tmp_path):
     from memdiver.app.pipeline.vol3_task_runner import run_vol3_job
@@ -265,6 +268,21 @@ def test_job_runner_forwards_progress_and_writes_the_artifact(monkeypatch, tmp_p
     kinds = [k for k, _ in ctx.events]
     assert kinds == ["stage_start", "progress", "stage_end"]
     assert ctx.events[1][1]["pct"] == 0.5 and ctx.events[1][1]["msg"] == "scanning"
+
+
+def test_job_runner_passes_the_task_cancel_probe(monkeypatch, tmp_path):
+    from memdiver.app.pipeline.vol3_task_runner import run_vol3_job
+    seen = {}
+
+    def run(*, progress=None, cancel=None, **kwargs):
+        seen["cancel"] = cancel
+        return ServiceResult.ok({"stop_reason": "cancelled"})
+    monkeypatch.setattr(tools_vol3, "vol3_run_result", run)
+    ctx = _Ctx()
+    ctx.is_cancelled = lambda: True  # instance attr, like a real probe
+    run_vol3_job({"task_root": str(tmp_path / "tasks"),
+                  "args": {"view_path": "v", "plugin": "linux.psscan"}}, ctx)
+    assert seen["cancel"] is ctx.is_cancelled
 
 
 def test_job_runner_turns_capability_errors_into_value_errors(tmp_path):

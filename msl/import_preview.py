@@ -448,11 +448,22 @@ def msl_source_format(reader) -> Optional[int]:
     for hdr, payload in reader.iter_blocks_of_type(
             BlockType.IMPORT_PROVENANCE):
         try:
-            return decode_import_provenance(
-                hdr, payload, reader._byte_order).source_format
+            return _effective_code(decode_import_provenance(
+                hdr, payload, reader._byte_order))
         except (ValueError, IndexError, OverflowError):
             return None  # best-effort metadata only
     return None
+
+
+def _effective_code(provenance) -> Optional[int]:
+    """Effective (legacy-aware) ``source_format`` code of a provenance block."""
+    from .source_format import effective_source_format
+
+    if provenance is None:
+        return None
+    effective = effective_source_format(
+        provenance.source_format, provenance.tool_name, provenance.note)
+    return None if effective is None else int(effective)
 
 
 def msl_classification_context(reader) -> Tuple[
@@ -509,7 +520,7 @@ def msl_classification_context(reader) -> Tuple[
             parse_provenance_note(provenance.note).region_names
     else:
         trusted = not imported and bool(entries)
-    source_format = provenance.source_format if provenance else None
+    source_format = _effective_code(provenance)
     names = MappingNameIndex.from_vas_entries(entries) if trusted else None
     return source_format, names, bool(trusted and not imported)
 

@@ -33,6 +33,7 @@ from .import_threads import (add_thread_contexts, elf_thread_contexts,
 from .region_select import (REGION_NAMES_NOTE, RegionInfo, RegionSelection,
                             join_provenance_note, selection_provenance_note)
 from .types import MslVasEntry
+from .source_format import origin_note_field, wire_source_format
 from .writer import ModuleEntrySpec, MslWriter
 
 logger = logging.getLogger("memdiver.msl.importer")
@@ -1401,12 +1402,13 @@ def _write_regioned(bin_path: Path, output_path: Path, layout, pid: int,
             secrets, plan,
             lambda i: _regioned_source(mapped, layout.entries[i]))
         writer.add_import_provenance(
-            source_format=SourceFormat.REGIONED_RAW,
+            source_format=wire_source_format(SourceFormat.REGIONED_RAW),
             tool_name="memdiver",
             orig_file_size=mapped.size,
-            note=_provenance_note(_named_base_note(
+            note=_provenance_note(join_provenance_note(_named_base_note(
                 f"Imported from {bin_path.name} with memory map "
-                f"{layout.maps_path.name}"), plan),
+                f"{layout.maps_path.name}"),
+                origin_note_field(SourceFormat.REGIONED_RAW)), plan),
             source_path=bin_path,
         )
         writer.add_end_of_capture()

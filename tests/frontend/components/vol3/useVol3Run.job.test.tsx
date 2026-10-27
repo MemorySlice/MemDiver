@@ -61,3 +61,27 @@ describe("useVol3Run job results", () => {
     await waitFor(() => expect(empty.result.current.state.status).toBe("error"));
   });
 });
+
+describe("useVol3Run cancel", () => {
+  it("shows cancelling until the task reports a terminal state, then cancelled", async () => {
+    api.cancelVol3Job.mockResolvedValue(undefined);
+    const hook = await startJob();
+    await act(async () => { await hook.result.current.cancel(); });
+    expect(hook.result.current.state.status).toBe("cancelling");
+    expect(hook.result.current.state.taskId).toBe("t1");
+    act(() => ws.cbs.onProgress(50, "late progress"));
+    expect(hook.result.current.state.status).toBe("cancelling");
+    expect(hook.result.current.state.msg).toBeNull();
+    act(() => ws.cbs.onError("cancelled"));
+    expect(hook.result.current.state.status).toBe("cancelled");
+  });
+
+  it("stays cancelling when the cancel request fails, and a late done still ends it", async () => {
+    api.cancelVol3Job.mockRejectedValue(new Error("gone"));
+    const hook = await startJob();
+    await act(async () => { await hook.result.current.cancel(); });
+    expect(hook.result.current.state.status).toBe("cancelling");
+    act(() => ws.cbs.onDone({}));
+    expect(hook.result.current.state.status).toBe("cancelled");
+  });
+});

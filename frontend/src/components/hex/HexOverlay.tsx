@@ -148,8 +148,12 @@ export function HexOverlay({ pathA, pathB }: OverlayProps) {
         <span style={{ color: "var(--md-text-secondary)" }}>
           A: <strong>{nameFromPath(pathA)}</strong> | B: <strong>{nameFromPath(pathB)}</strong>
         </span>
-        <span style={{ color: "var(--md-text-muted)" }}>
-          {t("overlay.page", { current: currentPage + 1, total: totalPages })}
+        <span
+          data-testid="overlay-file-offset-label"
+          title={t("overlay.fileOffsetHint")}
+          style={{ color: "var(--md-text-muted)" }}
+        >
+          {t("overlay.fileOffsetLabel")} · {t("overlay.page", { current: currentPage + 1, total: totalPages })}
         </span>
       </div>
       <div style={{ flex: 1, overflow: "auto", opacity: loading ? 0.5 : 1 }}>

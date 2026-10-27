@@ -156,7 +156,12 @@ describe("Vol3Panel", () => {
     fireEvent.click(screen.getByTestId("vol3-run"));
     fireEvent.click(await screen.findByTestId("vol3-cancel"));
     await waitFor(() => expect(api.cancelVol3Job).toHaveBeenCalledWith("job2"));
-    expect(await screen.findByTestId("vol3-cancelled")).toBeInTheDocument();
+    expect(await screen.findByTestId("vol3-cancelling")).toHaveTextContent("Cancelling…");
+    expect(screen.queryByTestId("vol3-cancelled")).toBeNull();
+    expect(screen.getByTestId("vol3-run")).toBeDisabled();
+    act(() => task("job2").onError("cancelled"));
+    expect(await screen.findByTestId("vol3-cancelled")).toHaveTextContent("Cancelled");
+    expect(screen.queryByTestId("vol3-cancelling")).toBeNull();
   });
 
   it("jumps to the row's address when its space matches the view", async () => {

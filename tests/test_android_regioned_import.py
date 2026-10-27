@@ -14,6 +14,7 @@ from memdiver.core.models import CryptoSecret
 from memdiver.core.region_view_filter import stored_region_infos
 from memdiver.msl import importer as importer_mod
 from memdiver.msl.enums import OSType, RegionType, SourceFormat, VasNameSource
+from memdiver.msl.source_format import effective_source_format
 from memdiver.msl.import_preview import (msl_classification_context,
                                          preview_import, runtime_note)
 from memdiver.msl.import_regioned import plan_regioned_raw
@@ -148,7 +149,11 @@ def test_regioned_import_writes_named_vas_map(android_bin, tmp_path):
     with MslReader(out) as reader:
         assert reader.file_header.os_type == OSType.ANDROID
         (prov,) = reader.collect_import_provenance()
-        assert prov.source_format == SourceFormat.REGIONED_RAW
+        assert prov.source_format == SourceFormat.OTHER  # 0xFFFF + note origin
+        assert "source_format=regioned_raw" in prov.note
+        assert effective_source_format(
+            prov.source_format, prov.tool_name,
+            prov.note) == SourceFormat.REGIONED_RAW
         assert parse_provenance_note(prov.note).region_names
         assert len(reader.collect_regions()) == 60
 

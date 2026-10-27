@@ -52,6 +52,7 @@ import {
   useOverlayDetailStore,
 } from "@/stores/overlay-detail-store";
 import { HexOverlay } from "@/components/hex/HexOverlay";
+import { pairOverlayKind } from "./pair-overlay-routing";
 import { HexComparison } from "@/components/hex/HexComparison";
 import { IMAGE_VIEW_FORMAT, useHexStore } from "@/stores/hex-store";
 import { NeighborhoodOverlayPanel } from "@/components/hex/NeighborhoodOverlayPanel";
@@ -85,6 +86,7 @@ import { KeyFindersPanel } from "@/components/keyfinders/KeyFindersPanel";
 import { YaraPanel } from "@/components/yara/YaraPanel";
 import { IsfBuilder } from "@/components/isf/IsfBuilder";
 import { ObjectModelPanel } from "@/components/semantic/ObjectModelPanel";
+import { AgentChatPanel } from "@/components/agent/AgentChatPanel";
 import { useKeyFinderStore } from "@/stores/keyfinder-store";
 import { isMdview } from "@/components/image/open-view-in-workspace";
 import { useImageStore } from "@/stores/image-store";
@@ -158,10 +160,10 @@ function Toolbar({ onNewSession }: { onNewSession: () => void }) {
   );
 }
 
-type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara" | "isf" | "object";
+type SideTab = "bookmarks" | "dumps" | "format" | "structures" | "sessions" | "import" | "heap" | "image" | "vol3" | "keyfinders" | "yara" | "isf" | "object" | "agent";
 export type BottomTab = "analysis" | "results" | "strings" | "entropy" | "consensus" | "live-consensus" | "architect" | "experiment" | "convergence" | "variance" | "vas" | "verify-key" | "pipeline" | "heap";
 
-const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import"];
+const BASE_SIDE_TABS: readonly SideTab[] = ["bookmarks", "dumps", "format", "structures", "sessions", "import", "agent"];
 /** Heap mode adds its overview tab; no other mode offers it. */
 const HEAP_SIDE_TABS: readonly SideTab[] = [...BASE_SIDE_TABS, "heap"];
 
@@ -312,6 +314,7 @@ function Sidebar() {
         {sideTab === "yara" && <YaraPanel />}
         {sideTab === "isf" && <IsfBuilder />}
         {sideTab === "object" && <ObjectModelPanel />}
+        {sideTab === "agent" && <AgentChatPanel />}
       </div>
     </div>
   );
@@ -523,6 +526,50 @@ function MainAreaDumpBar() {
   );
 }
 
+/**
+ * The aligned overlay restricted to a comparison pair: selects exactly the two
+ * dumps (anchor = the first) and mounts the store-driven `HexOverlayPane`, so
+ * the gutter stays the server-provided VA rather than a container offset.
+ */
+export function PairAlignedOverlay({ ids }: { ids: [string, string] }) {
+  const setSelectedDumps = useDumpStore((s) => s.setSelectedDumps);
+  const setActiveDump = useDumpStore((s) => s.setActiveDump);
+  const setMainView = useDumpStore((s) => s.setMainView);
+  const [first, second] = ids;
+  // The pane is store-driven and takes no props, so it must not mount until the
+  // pair selection is in the store (else it paints once with the old one).
+  const pairApplied = useDumpStore(
+    (s) =>
+      s.mainView === "overlay" &&
+      s.selectedDumpIds.length === 2 &&
+      s.selectedDumpIds[0] === first &&
+      s.selectedDumpIds[1] === second,
+  );
+  useEffect(() => {
+    const before = useDumpStore.getState();
+    const previous = {
+      selected: before.selectedDumpIds,
+      active: before.activeDumpId,
+      mainView: before.mainView,
+    };
+    setSelectedDumps([first, second]);
+    setActiveDump(first);
+    // `useMslPaneCoordinate` only takes an .msl anchor off the "raw" view while
+    // `mainView` is an N-dump layout; the aligned window REFUSES raw for .msl.
+    setMainView("overlay");
+    return () => {
+      // Leaving the pair overlay must not strand the user on a shrunk N-dump
+      // selection (mainView is persisted). Selection first: I-invariants
+      // degrade mainView below two selected dumps.
+      setSelectedDumps(previous.selected);
+      if (previous.active) setActiveDump(previous.active);
+      setMainView(previous.mainView);
+    };
+  }, [first, second, setSelectedDumps, setActiveDump, setMainView]);
+  if (!pairApplied) return null;
+  return <HexOverlayPane />;
+}
+
 function MainContent() {
   const { t } = useTranslation("layout");
   const inputMode = useAppStore((s) => s.inputMode);
@@ -560,6 +607,11 @@ function MainContent() {
       const pathA = dumps.find((d) => d.id === comparisonDumpIds[0])?.path;
       const pathB = dumps.find((d) => d.id === comparisonDumpIds[1])?.path;
       if (pathA && pathB) {
+        const dumpA = dumps.find((d) => d.id === comparisonDumpIds[0])!;
+        const dumpB = dumps.find((d) => d.id === comparisonDumpIds[1])!;
+        if (viewMode === "overlay" && pairOverlayKind(dumpA, dumpB) === "aligned") {
+          return <PairAlignedOverlay ids={comparisonDumpIds} />;
+        }
         return viewMode === "overlay"
           ? <HexOverlay pathA={pathA} pathB={pathB} />
           : <HexComparison pathA={pathA} pathB={pathB} />;

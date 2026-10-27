@@ -42,6 +42,16 @@ describe("semantic client", () => {
     expect(bodyOf(fn).heap).toBe(false);
   });
 
+  it("requests detail full on propose-layout and model-build (the panel shows evidence)", async () => {
+    const fn = mockFetch({});
+    await proposeLayout({ needles: { "/a": "aa" } });
+    expect(bodyOf(fn).detail).toBe("full");
+    await buildArtifactModel({ needles: { "/a": "aa" }, name: "m", out_path: "/m.json" });
+    expect(bodyOf(fn).detail).toBe("full");
+    await proposeLayout({ needles: { "/a": "aa" }, detail: "summary" });
+    expect(bodyOf(fn).detail).toBe("summary");
+  });
+
   it("surfaces a CapabilityError envelope as a readable message", async () => {
     mockFetch({ error: "pass exactly one of 'anchors' or 'needles'" }, 400);
     const err = await getAnchorConsensus({}).catch((e: unknown) => e);

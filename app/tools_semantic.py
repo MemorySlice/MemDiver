@@ -223,6 +223,65 @@ def _proposal_payload(learned: _Learned, name: str) -> Dict[str, Any]:
     }
 
 
+DETAIL_LEVELS = ("summary", "full")
+_OMITTED_HINT = ('summary payload: the keys in "omitted" were dropped; '
+                 'pass detail="full" for the complete result')
+_FIELD_SCALARS = ("name", "kind", "delta", "length")
+
+
+def _checked_detail(detail: Any) -> str:
+    if detail not in DETAIL_LEVELS:
+        raise _invalid(f"detail must be one of {list(DETAIL_LEVELS)}, got {detail!r}",
+                       "semantic.detail")
+    return detail
+
+
+def _summary_marks(omitted: List[str]) -> Dict[str, Any]:
+    return {"detail": "summary", "omitted": omitted, "omitted_hint": _OMITTED_HINT}
+
+
+def _summarize_proposal(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The proposal minus its bulk: ``structure``, ``alternatives`` (kept as a
+    count) and each field's ``evidence`` / ``alternatives`` (kept as a count)."""
+    out = {k: v for k, v in payload.items()
+           if k not in ("structure", "alternatives", "fields")}
+    out["alternatives_count"] = len(payload.get("alternatives") or {})
+    out["fields"] = [
+        {**{k: f[k] for k in _FIELD_SCALARS if k in f},
+         "alternatives_count": len(f.get("alternatives") or ())}
+        for f in payload.get("fields", ())]
+    omitted = ["structure", "alternatives", "fields[].evidence", "fields[].alternatives"]
+    return {**out, **_summary_marks(omitted)}
+
+
+def _model_summary(model_dict: Dict[str, Any], proposal_dict: Dict[str, Any]) -> Dict[str, Any]:
+    locator = model_dict.get("locator") or {}
+    pattern = locator.get("pattern") or {}
+
+    def window(p: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: p.get(k) for k in ("key_offset", "key_length", "length", "static_ratio")}
+
+    return {
+        "name": model_dict.get("name"),
+        "field_count": len(proposal_dict.get("fields", ())),
+        "total_size": (model_dict.get("layout") or {}).get("total_size"),
+        "proposal_total_size": proposal_dict.get("total_size"),
+        "base_delta": proposal_dict.get("base_delta"),
+        "locator": {"kind": locator.get("kind"), "primary": window(pattern),
+                    "alternatives": [window(a) for a in locator.get("alternatives") or ()]},
+        "warnings": list(model_dict.get("warnings") or ()),
+    }
+
+
+def _summarize_build(payload: Dict[str, Any], proposal_dict: Dict[str, Any],
+                     keylog_part: Dict[str, Any]) -> Dict[str, Any]:
+    """Build result minus ``model`` / ``proposal`` (the model is already at ``path``)."""
+    out = {k: v for k, v in payload.items() if k not in ("model", "proposal")}
+    out["model_summary"] = _model_summary(payload["model"], proposal_dict)
+    out.update(keylog_part)
+    return {**out, **_summary_marks(["model", "proposal"])}
+
+
 def _anchor_location(anchor: Any, capture: str):
     from memdiver.core.location import AddressSpace, Location
 
@@ -288,8 +347,14 @@ def propose_layout_result(
     keylog: Optional[Mapping[str, Any]] = None,
     anchor_label: Optional[str] = None,
     related_labels: Optional[Sequence[str]] = None,
+    detail: str = "summary",
 ) -> ServiceResult:
     """Field-boundary hypotheses around a verified anchor, learned from N captures.
+
+    ``detail="summary"`` (default) drops ``structure``, the top-level
+    ``alternatives`` and each field's ``evidence``/``alternatives`` (counts
+    are kept) and says so in ``omitted``; ``detail="full"`` is the complete
+    payload.
 
     Exactly one of ``needles`` (``{dump_path: hex}``), ``anchors``
     (``[{dump_path, va|offset}]``) or ``keylog`` (``{path} | {text} |
@@ -304,6 +369,7 @@ def propose_layout_result(
     chunk. With ``case_dir`` one ``structure_proposal`` entry per capture is
     appended (ids under ``record_entries``).
     """
+    detail = _checked_detail(detail)
     with ExitStack() as stack:
         learned = _learn(
             stack, dump_paths=dump_paths, needles=needles, anchors=anchors,
@@ -314,6 +380,8 @@ def propose_layout_result(
     payload = _proposal_payload(learned, "proposed_layout")
     if case_dir:
         payload["record_entries"] = _record_entries(case_dir, learned, payload, author)
+    if detail == "summary":
+        payload = _summarize_proposal(payload)
     return _result(payload, learned)
 
 
@@ -433,8 +501,13 @@ def artifact_model_build_result(
     keylog: Optional[Mapping[str, Any]] = None,
     anchor_label: Optional[str] = None,
     related_labels: Optional[Sequence[str]] = None,
+    detail: str = "summary",
 ) -> ServiceResult:
     """Learn a layout (as :func:`propose_layout_result`) and build the artifact model.
+
+    ``detail="summary"`` (default) returns ``path``/``sha256``/``problems`` plus
+    a ``model_summary`` and omits ``model`` and ``proposal`` (the model is in the
+    file at ``path``); ``detail="full"`` returns both.
 
     Keylog-driven (``keylog``) with ``meanings`` omitted, meanings and labels
     default to the ``suggested_meanings`` that were actually found as fields
@@ -450,6 +523,7 @@ def artifact_model_build_result(
     """
     from memdiver.engine.artifact_builder import build_structure_model
 
+    detail = _checked_detail(detail)
     if not name or not str(name).strip():
         raise _invalid("name is required", "semantic.name")
     target = _checked_model_target(out_path)
@@ -484,6 +558,9 @@ def artifact_model_build_result(
     }
     if case_dir:
         payload["record_entries"] = _record_entries(case_dir, learned, proposal_dict, author)
+    if detail == "summary":
+        keylog_part = {} if learned.keylog is None else learned.keylog.payload()
+        payload = _summarize_build(payload, proposal_dict, keylog_part)
     return _result(payload, learned)
 
 

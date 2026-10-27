@@ -89,11 +89,13 @@ user_guide/web_ui_tour
 user_guide/cli_reference
 user_guide/auto_floor
 user_guide/mcp_reference
+user_guide/agent_chat
 user_guide/keylog_export
 user_guide/locate_key
 user_guide/heap
 user_guide/vol3
 user_guide/isf_workbench
+user_guide/notebook
 user_guide/keyfinders
 user_guide/object_model
 user_guide/sandbox

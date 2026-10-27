@@ -129,10 +129,14 @@ def create_server():
     from .path_guard import _roots as _sandbox_roots
     from .path_guard import guard_tool
 
+    from .result_budget import budget_from_env, budget_tool
+
+    _result_budget = budget_from_env()  # MEMDIVER_MCP_RESULT_BUDGET; 0 = off
     _register_tool = mcp.add_tool
 
     def _add_guarded_tool(fn, *a, **k):
-        return _register_tool(guard_tool(fn, _session), *a, **k)
+        # Order: path guard first (innermost), then the opt-in result budget on its result.
+        return _register_tool(budget_tool(guard_tool(fn, _session), _result_budget), *a, **k)
 
     mcp.add_tool = _add_guarded_tool
 
@@ -2174,8 +2178,17 @@ def create_server():
         keylog: Optional[Dict[str, Any]] = None,
         anchor_label: Optional[str] = None,
         related_labels: Optional[List[str]] = None,
+        detail: str = "summary",
     ) -> str:
         """Propose field boundaries around a verified anchor, learned from N dumps.
+
+        ``detail`` is ``"summary"`` (default) or ``"full"``. The summary keeps
+        ``instances``, ``unanchored``, ``warnings``, ``class_counts``,
+        ``base_delta``/``total_size``, ``bounds_evidence``, keylog outputs and
+        per-field ``name``/``kind``/``delta``/``length`` (+ ``alternatives_count``);
+        it OMITS ``structure``, the top-level ``alternatives`` and each field's
+        ``evidence``/``alternatives`` and lists them in ``omitted``. Pass
+        ``detail="full"`` to get everything.
 
         Key-log mode (instead of typing per-dump hex): pass ``dump_paths`` and
         ``keylog`` = ``{"path": shared NSS key log}`` | ``{"text": content}`` |
@@ -2201,7 +2214,7 @@ def create_server():
             related=related, pointer_quorum=pointer_quorum, heap=heap,
             mixed_ok=mixed_ok, case_dir=case_dir, dump_paths=dump_paths,
             keylog=keylog, anchor_label=anchor_label,
-            related_labels=related_labels).payload)
+            related_labels=related_labels, detail=detail).payload)
 
     @mcp.tool()
     @mcp_error_funnel
@@ -2227,8 +2240,14 @@ def create_server():
         keylog: Optional[Dict[str, Any]] = None,
         anchor_label: Optional[str] = None,
         related_labels: Optional[List[str]] = None,
+        detail: str = "summary",
     ) -> str:
         """Learn a layout (see ``propose_layout``) and build the artifact model.
+
+        ``detail="summary"`` (default) returns ``path``, ``sha256``, ``problems``
+        and a ``model_summary`` and OMITS ``model`` and ``proposal`` (listed in
+        ``omitted``; the model is in the file at ``path``). ``detail="full"``
+        returns both.
 
         Keylog-driven with ``meanings`` / ``relationships`` omitted, they
         default from the key log: the anchor and each related secret labelled
@@ -2251,7 +2270,8 @@ def create_server():
             meanings=meanings or [], relationships=relationships or [],
             applicability=applicability, prefilter_length=prefilter_length,
             out_path=out_path, dump_paths=dump_paths, keylog=keylog,
-            anchor_label=anchor_label, related_labels=related_labels).payload)
+            anchor_label=anchor_label, related_labels=related_labels,
+            detail=detail).payload)
 
     @mcp.tool()
     @mcp_error_funnel

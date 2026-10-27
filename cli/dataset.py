@@ -284,3 +284,23 @@ def _cmd_import(args: argparse.Namespace) -> int:
         summary.update(result.selection_summary())
     print(json.dumps(summary, indent=2))
     return 0
+
+
+def _cmd_notebook(args: argparse.Namespace) -> int:
+    """Open the case-explorer marimo notebook on a case (analyst companion)."""
+    import importlib.util
+    from memdiver.analysis.case import resolve_case_dir
+    case_dir = resolve_case_dir(args.case)
+    if not (case_dir / "case.json").is_file():
+        print(f"Error: not a case directory (no case.json): {case_dir}", file=sys.stderr)
+        return 1
+    if importlib.util.find_spec("marimo") is None:
+        _print_missing_package("Marimo", extra="marimo")
+        return 1
+    template = str(Path(__file__).parent.parent / "ui" / "notebooks" / "case_explorer.py")
+    cmd = [sys.executable, "-m", "marimo", "edit" if args.edit else "run", template]
+    if args.port:
+        cmd += ["--port", str(args.port)]
+    if args.headless:
+        cmd.append("--headless")
+    return subprocess.call(cmd + ["--", "--case", str(case_dir)])

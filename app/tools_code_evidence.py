@@ -27,6 +27,19 @@ from memdiver.engine.code_evidence import (CodeEvidence, CodeTarget, FieldAccess
 DEFAULT_MAX_BYTES = 4096
 _DEREF = re.compile(r"^deref\(current\+0x([0-9a-f]+)\)$")
 
+# Intrusive-list links the kernel walks with container_of(). Key: (owner struct, list_head
+# member); value: (struct embedding the link, link member). A pointer read out of the list
+# head (``next``/``prev``) points at the link INSIDE the target, so the decoder reports the
+# access relative to that link (``base_delta`` = -offsetof(target, link)).
+# Static, deliberately tiny: only links verified by hand; extend only with evidence.
+KNOWN_LIST_LINKS: Mapping[Tuple[str, str], Tuple[str, str]] = {
+    ("task_struct", "children"): ("task_struct", "sibling"),
+    ("task_struct", "sibling"): ("task_struct", "sibling"),
+    ("task_struct", "tasks"): ("task_struct", "tasks"),
+}
+_LIST_LINK_SOURCE = "static list table"
+_LIST_HEAD_POINTER_OFFSETS = (0, 8)  # list_head.next / .prev
+
 
 def _err(message: str, code: str, category: ErrorCategory = ErrorCategory.INVALID_INPUT
          ) -> CapabilityError:
@@ -221,11 +234,65 @@ def _isf_member_for(access: FieldAccess, types: Mapping[str, Any],
     return None
 
 
+def _list_link_target(access: FieldAccess, types: Mapping[str, Any],
+                      current_struct: str = "task_struct"):
+    """(target struct, link member, via) when ``access`` hangs off a known list pointer."""
+    m = _DEREF.match(access.base)
+    parent_offset = int(m.group(1), 16) if m else 0
+    hit = _containing_field(types, current_struct, parent_offset) if m else None
+    if hit is None or parent_offset - hit[1]["offset"] not in _LIST_HEAD_POINTER_OFFSETS:
+        return None
+    owner_member = hit[0]  # top-level member, i.e. the whole list_head
+    link = KNOWN_LIST_LINKS.get((current_struct, owner_member))
+    if link is None:
+        return None
+    via = (f"{current_struct}.{owner_member} -> {link[0]}.{link[1]} ({_LIST_LINK_SOURCE})")
+    return link[0], link[1], via
+
+
+def _container_of_member(access: FieldAccess, types: Mapping[str, Any]):
+    """(member, via) for an access relative to a list link, else None. Never guesses.
+
+    Requires the decoder delta to equal -offsetof(target, link) in THIS image's ISF; the
+    member is then looked up at ``offset - base_delta`` (the displacement from the link
+    shifted back to the start of the containing struct).
+    """
+    found = _list_link_target(access, types)
+    if found is None:
+        return None
+    target, link, via = found
+    link_field = ((types.get(target) or {}).get("fields") or {}).get(link) or {}
+    link_offset = link_field.get("offset")
+    if link_offset is None or access.base_delta != -link_offset:
+        return None
+    member = _member_at(types, target, access.offset - access.base_delta)
+    return (member, via) if member else None
+
+
+def _join_access(access: FieldAccess, types: Mapping[str, Any]):
+    """(member, resolution, inferred_via): exact/contained joins first, then container_of.
+
+    ``resolution`` is the JOIN provenance. ``isf_member["exact"]`` only means "the offset is
+    at a member start"; in a ``container_of`` row it says nothing about how the row was
+    joined. ``container_of`` is never counted as exact.
+    """
+    member = _isf_member_for(access, types)
+    if member:
+        return member, ("exact" if member["exact"] else "contained"), None
+    inferred = _container_of_member(access, types)
+    if inferred:
+        return inferred[0], "container_of", inferred[1]
+    return None, None, None
+
+
 def _access_row(access: FieldAccess, capture: str, types: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     row = access.to_dict()
     row["location"] = Location(AddressSpace.KERNEL_VA, access.insn_va, capture_id=capture).to_dict()
     if types is not None:
-        member = _isf_member_for(access, types)
+        member, resolution, via = _join_access(access, types)
+        row["resolution"] = resolution
+        if via:
+            row["inferred_via"] = via
         row["isf_member"] = member
         row["isf_member_offset"] = member["isf_member_offset"] if member else None
         row["inner_offset"] = member["inner_offset"] if member else None
@@ -234,11 +301,12 @@ def _access_row(access: FieldAccess, capture: str, types: Optional[Mapping[str, 
 
 def _isf_summary(evidence: CodeEvidence, types: Mapping[str, Any]) -> Dict[str, Any]:
     keyed = [a for a in evidence.accesses if a.base == "current" or _DEREF.match(a.base)]
-    members = [_isf_member_for(a, types) for a in keyed]
-    exact = sum(1 for m in members if m and m["exact"])
-    contained = sum(1 for m in members if m and not m["exact"])
-    return {"checked": len(keyed), "matched": exact + contained, "exact": exact,
-            "contained": contained, "unresolved": len(members) - exact - contained}
+    kinds = [_join_access(a, types)[1] for a in keyed]
+    exact, contained = kinds.count("exact"), kinds.count("contained")
+    container_of = kinds.count("container_of")
+    return {"checked": len(keyed), "matched": exact + contained,
+            "exact": exact, "contained": contained, "container_of": container_of,
+            "unresolved": kinds.count(None)}
 
 
 def code_evidence_result(session: Any = None, *, image_path: str, function: str,

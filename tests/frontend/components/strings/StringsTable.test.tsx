@@ -84,6 +84,37 @@ describe("StringsTable", () => {
     expect(api.getStringsTable.mock.calls[0][0]).toMatchObject({ dump_path: "/d.msl", view: "va" });
   });
 
+  it("marks OID-like ipv4 hits: normal badge for a mixed row, muted for an all-OID row, untouched otherwise", async () => {
+    const mixed = { ...row(1, "1.3.6.1.5 and 10.0.0.1", ["ipv4"]),
+      oid_prefix: "1.3.6.1", ambiguity: null,
+      oid_like_values: [{ value: "1.3.6.1.5", oid_prefix: "1.3.6.1" }] };
+    const allOid = { ...row(2, "2.5.29.15", ["ipv4"]),
+      oid_prefix: "2.5.29", ambiguity: "oid_like" as const,
+      oid_like_values: [{ value: "2.5.29.15", oid_prefix: "2.5.29" }] };
+    const plain = row(3, "10.0.0.2", ["ipv4"]);
+    api.getStringsTable.mockResolvedValue(table([mixed, allOid, plain], { oid_like_count: 2 }));
+    render(<StringsTable dumpPath="/d.msl" />);
+    await screen.findAllByTestId("strings-table-row");
+    const badges = screen.getAllByTestId("ioc-badge");
+    expect(badges.map((b) => b.getAttribute("data-ambiguous"))).toEqual([null, "true", null]);
+    const markers = screen.getAllByTestId("oid-marker");
+    expect(markers).toHaveLength(2);
+    expect(markers[0]).toHaveTextContent("OID?");
+    expect(markers[0]).toHaveAttribute("aria-label", expect.stringContaining("1.3.6.1 \u2014 internet"));
+    expect(markers[0]).toHaveAttribute("title", expect.stringContaining("1.3.6.1.5"));
+    expect(markers[1]).toHaveAttribute("aria-label", expect.stringContaining("X.509 extensions"));
+    expect(screen.getByTestId("oid-like-count")).toHaveTextContent("2 rows OID-like");
+  });
+
+  it("shows no OID marker or count when the backend reports none", async () => {
+    api.getStringsTable.mockResolvedValue(table([row(1, "10.0.0.1", ["ipv4"])]));
+    render(<StringsTable dumpPath="/d.msl" />);
+    await screen.findAllByTestId("strings-table-row");
+    expect(screen.queryByTestId("oid-marker")).toBeNull();
+    expect(screen.queryByTestId("oid-like-count")).toBeNull();
+    expect(screen.getByTestId("ioc-badge")).not.toHaveAttribute("data-ambiguous");
+  });
+
   it("highlights search matches and filters the rest out", async () => {
     api.getStringsTable.mockResolvedValue(table([row(1, "alpha beta"), row(2, "gamma")]));
     render(<StringsTable dumpPath="/d.msl" />);

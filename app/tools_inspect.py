@@ -910,13 +910,12 @@ def module_index_result(
         return _finalize_inspect({"module_index": entries}, reader, view=None)
 
 
-def _source_format_name(value: int) -> str:
-    from memdiver.msl.enums import SourceFormat
+def _source_format_name(value: int, tool_name: str = "", note: str = "") -> str:
+    """Effective (legacy-aware, see msl/source_format.py) format name."""
+    from memdiver.msl.source_format import effective_source_format
 
-    try:
-        return SourceFormat(value).name
-    except ValueError:
-        return "UNKNOWN"
+    effective = effective_source_format(value, tool_name, note)
+    return "UNKNOWN" if effective is None else effective.name
 
 
 def _provenance_record(prov) -> dict:
@@ -925,7 +924,8 @@ def _provenance_record(prov) -> dict:
 
     return {
         "source_format": prov.source_format,
-        "source_format_name": _source_format_name(prov.source_format),
+        "source_format_name": _source_format_name(
+            prov.source_format, prov.tool_name, prov.note),
         "tool_name": prov.tool_name,
         "import_time_ns": prov.import_time_ns,
         "orig_file_size": prov.orig_file_size,

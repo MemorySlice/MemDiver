@@ -22,7 +22,8 @@
     "keyfinders": "key finders",
     "yara": "yara",
     "isf": "isf",
-    "object": "object model"
+    "object": "object model",
+    "agent": "agent"
   },
   "bottomTabs": {
     "variance": "variance",

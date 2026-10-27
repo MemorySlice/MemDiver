@@ -64,7 +64,7 @@ def _session():
 def _propose(corpus, **kw):
     from memdiver.app.tools_semantic import propose_layout_result
     args = dict(needles=corpus["needles"], delta_start=-0x100, length=0x300,
-                related=corpus["related"], heap=False)
+                related=corpus["related"], heap=False, detail="full")
     args.update(kw)
     return propose_layout_result(_session(), **args)
 

@@ -206,6 +206,24 @@ def enforce_bind_guardrail(host: str, settings: Settings) -> None:
     )
 
 
+def agent_chat_refusal(settings: Settings) -> str | None:
+    """Why the in-UI agent chat must refuse to run, or ``None`` when it may.
+
+    The chat drives a model that can call tools which write files and run
+    caller-supplied code (after the analyst's approval) on this host, so it is
+    held to a stricter rule than the data routes: a non-loopback bind needs an
+    API token. ``MEMDIVER_ALLOW_INSECURE=1`` does NOT lift this.
+    """
+    if (settings.host or "").strip().strip("[]").lower() in _LOOPBACK_HOSTS:
+        return None
+    if settings.api_token:
+        return None
+    return (
+        f"the agent chat is disabled: the server is bound to {settings.host} "
+        "without MEMDIVER_API_TOKEN. Set a token, or bind a loopback host."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Request-origin hardening (always on)
 # ---------------------------------------------------------------------------

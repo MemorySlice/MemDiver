@@ -119,6 +119,14 @@ async def _lifespan(app: FastAPI):
 
     logger.info("MemDiver API shutting down")
     try:
+        # Chats first: closing one denies its pending approvals and stops its
+        # agent/MCP children. Bounded inside close_all_chats so it cannot hang.
+        from memdiver.api.services.agent_chat import close_all_chats
+
+        await close_all_chats()
+    except Exception:  # pragma: no cover
+        logger.exception("agent chat shutdown raised")
+    try:
         # ``aclose`` rather than ``shutdown``: the async twin awaits the
         # cooperative-cancel window and the drain task ON this loop, so an
         # in-flight run still publishes a real terminal event, and it releases
@@ -223,6 +231,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     from memdiver.api.routers import (
+        agent_chat,
         algorithms,
         analysis,
         annotations,
@@ -379,6 +388,14 @@ def create_app() -> FastAPI:
     from memdiver.api.ws.progress import router as ws_router
 
     app.include_router(ws_router)
+
+    # In-UI agent chat (a client of the MCP server, not a capability). The HTTP
+    # router refuses (403) on a non-loopback bind without a token and carries the
+    # read-path policy for ``case_dir`` / ``dump_paths``; the WebSocket router
+    # applies the same refusal and ``?token=`` auth itself. Both sit under the
+    # protected /api and /ws prefixes and the Host/Origin middlewares above.
+    app.include_router(agent_chat.router, dependencies=_read_path_policy)
+    app.include_router(agent_chat.ws_router)
 
     # Mount Marimo notebook at /notebook (before static files catch-all)
     _notebook_available = False

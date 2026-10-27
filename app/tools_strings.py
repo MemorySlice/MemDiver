@@ -107,7 +107,8 @@ def _matches(data: bytes, encodings: Sequence[str], min_len: int) -> list:
 
 
 def _row_of(plan: Any, seg: Any, window: int, match: Any, regions: Any) -> Dict[str, Any]:
-    from memdiver.analysis.queries.strings import ioc_kinds
+    from memdiver.analysis.queries.strings import (ioc_ambiguity, ioc_kinds,
+                                                    oid_like_values)
 
     rel = window + match.offset
     addr = seg.addr + rel
@@ -116,11 +117,15 @@ def _row_of(plan: Any, seg: Any, window: int, match: Any, regions: Any) -> Dict[
     chars = len(match.value)
     wide = match.encoding == "utf16le"
     stored = match.value[:MAX_VALUE_CHARS]
+    ambiguity, oid_prefix = ioc_ambiguity(stored) or (None, None)
     return {"addr": addr, "space": location.space.value, "location": location.to_dict(),
             "encoding": match.encoding, "length": chars,
             "byte_length": 2 * chars if wide else match.length,
             "value": stored, "value_truncated": len(match.value) > MAX_VALUE_CHARS,
-            "iocs": ioc_kinds(stored), "va": va, "vas_offset": seg.vas + rel,
+            "iocs": ioc_kinds(stored), "ambiguity": ambiguity, "oid_prefix": oid_prefix,
+            "oid_like_values": [{"value": v, "oid_prefix": p}
+                                for v, p in oid_like_values(stored)],
+            "va": va, "vas_offset": seg.vas + rel,
             "region": regions.at(va)}
 
 
@@ -273,6 +278,7 @@ def strings_table_result(
         "space": plan.location(0).space.value, "capture_id": plan.capture_id,
         "min_len": min_len, "encodings": list(names),
         "rows": rows, "row_count": len(rows), "limit": limit,
+        "oid_like_count": sum(r["ambiguity"] == "oid_like" for r in rows),
         "truncated": truncated,
         "complete": not (truncated or scan.short_reads),
         "incomplete_reason": _scan._incomplete_reason(truncated, scan.short_reads),

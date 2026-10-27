@@ -18,7 +18,8 @@ occur). The SQL applies the same rules with ``list_filter``. Rejected on purpose
 * ``ipv4``: not exactly four dot-separated octets 0-255 without leading zeros, so
   dotted OIDs / versions with 3, 5+ parts (``1.2.840.113549``, ``3.0.13.1.2``) and
   tokens glued to letters or ``-``/``_`` (``v1.2.3.4``) never match. Four-part
-  versions such as ``1.3.6.1`` stay indistinguishable from addresses.
+  versions such as ``1.3.6.1`` stay indistinguishable from addresses, so they are KEPT
+  and merely hinted (:func:`ioc_ambiguity`, ``ambiguity: "oid_like"`` on strings rows).
 * ``base64``: tokens shorter than 24, not standard-alphabet or badly padded /
   ``len % 4 == 1``, pure hex (that is ``hex_run``), missing any of upper / lower /
   digit-or-``+/`` (identifiers, relative paths) alphabet constants and tokens starting with ``/`` (paths).
@@ -31,7 +32,7 @@ occur). The SQL applies the same rules with ``list_filter``. Rejected on purpose
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from memdiver.analysis.queries import SavedQuery
 
@@ -100,6 +101,56 @@ def ioc_matches(value: str) -> Dict[str, List[str]]:
     """``kind -> matched substrings`` for the kinds that match (Python-side twin of the SQL)."""
     found = {kind: _found(kind, value) for kind in _COMPILED}
     return {kind: hits for kind, hits in found.items() if hits}
+
+
+#: Well-known OID arcs found in key / certificate material (``prefix -> meaning``).
+OID_PREFIXES: Dict[str, str] = {
+    # "1.2.840" and "2.16.840" are real OID arcs but are deliberately absent:
+    # 840 is not a valid IPv4 octet, so no ipv4 hit can ever carry them.
+    "1.3.6.1": "internet",
+    "1.3.101": "Ed25519 / X25519 / 448",
+    "1.3.132": "SECG curves",
+    "2.5.4": "X.520 attributes",
+    "2.5.29": "X.509 extensions",
+}
+
+OID_LIKE = "oid_like"
+
+
+def oid_prefix_of(candidate: str) -> Optional[str]:
+    """The :data:`OID_PREFIXES` entry ``candidate`` is (or is under), when it is OID-shaped.
+
+    OID-shaped = first arc 0-2 and, for arcs 0/1, second arc below 40 (ITU-T X.660). A hint
+    only: a real address such as ``1.3.6.1`` stays an ``ipv4`` hit.
+    """
+    arcs = candidate.split(".")
+    if not all(a.isdigit() for a in arcs) or int(arcs[0]) > 2:
+        return None
+    if int(arcs[0]) < 2 and int(arcs[1]) >= 40:
+        return None
+    return next((p for p in OID_PREFIXES
+                 if candidate == p or candidate.startswith(p + ".")), None)
+
+
+def oid_like_values(value: str) -> List[Tuple[str, str]]:
+    """``(hit, oid_prefix)`` for every OID-shaped ``ipv4`` hit in ``value``."""
+    shaped = ((hit, oid_prefix_of(hit)) for hit in _found("ipv4", value))
+    return [(hit, prefix) for hit, prefix in shaped if prefix]
+
+
+def ioc_ambiguity(value: str) -> Optional[Tuple[str, str]]:
+    """``(ambiguity, oid_prefix)`` when EVERY ``ipv4`` hit in ``value`` is OID-shaped, else None.
+
+    ``oid_prefix`` is the prefix of the first OID-like value. A row that also holds a
+    real address (``peer 8.8.8.8 oid 1.3.6.1``) is not ambiguous; its OID-shaped hits are
+    still listed by :func:`oid_like_values`. The saved SQL query ``strings_iocs`` does
+    not carry this flag (it is applied only on the Python row path).
+    """
+    hits = _found("ipv4", value)
+    like = oid_like_values(value)
+    if hits and len(like) == len(hits):
+        return OID_LIKE, like[0][1]
+    return None
 
 
 def _literal(pattern: str) -> str:

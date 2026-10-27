@@ -7,7 +7,7 @@ import {
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 
 export interface Vol3RunState {
-  status: "idle" | "running" | "done" | "error" | "cancelled";
+  status: "idle" | "running" | "cancelling" | "done" | "error" | "cancelled";
   /** Set while a JOB runs (an inline run has neither progress nor cancel). */
   taskId: string | null;
   pct: number | null;
@@ -34,7 +34,8 @@ async function exactPayload(taskId: string | null): Promise<Vol3RunResult | null
  * One plugin run. `run(req)` posts it: an inline answer becomes `result` at once;
  * a job ticket switches to the task WebSocket (progress, then the terminal
  * `done` event; the exact result is then fetched from the task record, the
- * event's `extra` being the rounded fallback). `cancel()` stops a job.
+ * event's `extra` being the rounded fallback). `cancel()` stops a job: the state
+ * is `cancelling` until the task WebSocket reports a terminal event, then `cancelled`.
  */
 export function useVol3Run() {
   const [state, setState] = useState<Vol3RunState>(IDLE);
@@ -44,6 +45,10 @@ export function useVol3Run() {
     onProgress: (pct, msg) => setState((s) => (cancelled.current ? s : { ...s, pct, msg })),
     onDone: (event) => {
       const taskId = state.taskId;
+      if (cancelled.current) {
+        setState((s) => (s.status === "cancelling" ? { ...IDLE, status: "cancelled" } : s));
+        return;
+      }
       // The event's `extra` went through JSON.parse (kernel addresses rounded); the
       // task record's payload is the exact run document. Fall back to `extra`.
       void exactPayload(taskId).then((exact) => {
@@ -54,7 +59,10 @@ export function useVol3Run() {
         }));
       });
     },
-    onError: (error) => setState((s) => (cancelled.current ? s : { ...s, status: "error", error })),
+    onError: (error) => setState((s) => {
+      if (cancelled.current) return s.status === "cancelling" ? { ...IDLE, status: "cancelled" } : s;
+      return { ...s, status: "error", error };
+    }),
   });
 
   const run = useCallback(async (req: Vol3RunRequest) => {
@@ -74,7 +82,7 @@ export function useVol3Run() {
     const taskId = state.taskId;
     if (!taskId) return;
     cancelled.current = true;
-    setState({ ...IDLE, status: "cancelled" });
+    setState((s) => ({ ...s, status: "cancelling", pct: null, msg: null }));
     try {
       await cancelVol3Job(taskId);
     } catch {

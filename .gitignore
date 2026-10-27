@@ -41,6 +41,9 @@ env/
 # would pass every local test and then be missing for everyone else -- the
 # candidates.json failure above, repeated.
 !/tests/fixtures/needle_vectors.json
+# The scripted agent-chat demo (hand-written, read by the e2e spec): ignored, it would
+# pass locally and be a missing file in CI.
+!/tests/e2e/fixtures/agent_chat/*.json
 # Same for the region-name classification vectors, shared byte-identical with
 # memslicer's tests/data/region_name_vectors.json: untracked, five test modules
 # pass locally and are a FileNotFoundError at collection in CI.

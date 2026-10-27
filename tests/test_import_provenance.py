@@ -140,8 +140,8 @@ def test_result_for_materialized_copy(materialized):
     assert rec["selected_categories"] == ["heap", "stack"]
     assert rec["excluded_regions"] == result.excluded_region_count == 1
     assert rec["excluded_bytes"] == result.excluded_bytes
-    assert rec["source_format"] == SourceFormat.MSL
-    assert rec["source_format_name"] == "MSL"
+    assert rec["source_format"] == SourceFormat.OTHER  # 0xFFFF + origin note
+    assert rec["source_format_name"] == "MSL"  # effective classification
     assert rec["tool_name"] == "memdiver"
     assert "materialized=1" in rec["note"]
     assert len(rec["source_hash"]) == 64

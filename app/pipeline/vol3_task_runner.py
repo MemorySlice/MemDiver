@@ -48,7 +48,8 @@ def run_vol3_job(params: Dict[str, Any], ctx) -> Dict[str, Any]:
     args = dict(params.get("args", {}))
     ctx.emit("stage_start", stage=STAGE, pct=0.0, msg=f"vol3 run {args.get('plugin', '')}")
     try:
-        payload = dict(vol3_run_result(progress=_progress_emitter(ctx), **args).payload)
+        payload = dict(vol3_run_result(
+            progress=_progress_emitter(ctx), cancel=ctx.is_cancelled, **args).payload)
     except CapabilityError as exc:
         ctx.emit("error", error=exc.message)
         raise ValueError(exc.message) from exc

@@ -49,11 +49,12 @@ class FieldAccess:
     kind: str
     mnemonic: str = ""
     detail: str = ""
+    base_delta: int = 0  # decoder's signed adjustment folded into ``offset`` (offset = disp + delta)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"insn_va": self.insn_va, "base": self.base, "offset": self.offset,
                 "width": self.width, "kind": self.kind, "mnemonic": self.mnemonic,
-                "detail": self.detail}
+                "detail": self.detail, "base_delta": self.base_delta}
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,8 @@ class PakunodaFieldAccessProvider:
         if getattr(raw, "dest_reg", None):
             parts.append(f"dest_reg={raw.dest_reg}")
         return FieldAccess(insn_va=raw.insn_va, base=base.key, offset=raw.offset,
-                           width=raw.width, kind=_kind_of(raw.kind), detail="; ".join(parts))
+                           width=raw.width, kind=_kind_of(raw.kind), detail="; ".join(parts),
+                           base_delta=int(getattr(base, "delta", 0) or 0))
 
 
 _PROVIDERS: Tuple[CodeEvidenceProvider, ...] = (PakunodaFieldAccessProvider(),)

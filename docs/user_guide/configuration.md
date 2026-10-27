@@ -151,6 +151,9 @@ file does not apply to them.
 | `MEMDIVER_ORACLE_SANDBOX_MEM` | `2147483648` (2 GiB) | `RLIMIT_AS` for that probe subprocess (Unix, best effort). | `engine/oracle.py` |
 | `MEMDIVER_VOL3_BIN` | unset | Explicit `vol` / `vol.py` launcher used to run emitted Volatility 3 plugins. Checked before `vol` and `vol.py` on `PATH`. A `vol_bin` parameter on a request beats it. | `engine/vol3_subproc.py` |
 | `MEMDIVER_VOL3_PYTHON` | unset | Interpreter that runs a `vol.py` script (the checkout's own venv). Unset means MemDiver's own interpreter, with a warning. A `vol_python` parameter beats it. | `engine/vol3_subproc.py` |
+| `MEMDIVER_MCP_RESULT_BUDGET` | unset (off) | Opt-in cap in bytes (min 1024) on each MCP tool result; larger results are truncated with a `_result_budget` marker. See [](mcp_reference.md). | `mcp_server/result_budget.py` |
+| `MEMDIVER_AGENT_BACKEND` | `sdk` | Backend of the in-UI agent chat: `sdk` (real model, needs `memdiver[agent]` and server-side credentials) or `scripted` (no model, demo/test). See [](agent_chat.md). | `api/services/agent_chat.py` |
+| `MEMDIVER_AGENT_SCRIPT` | unset | Script JSON (`{"turns": [[step, ...], ...]}`) played by the `scripted` agent backend; required for it. | `api/services/agent_chat.py` |
 | `MEMDIVER_DATASET_ROOT` | unset | Also read by the Marimo notebook app (`run.py`) to preselect a dataset. | `run.py` |
 | `MEMDIVER_LANG` | `en` | Locale of the Marimo UI strings (`ui/locales/<lang>.json`); anything after a `.` is dropped (`de.UTF-8` → `de`). Unknown locales fall back to `en`. Does not affect the React web UI. | `ui/locales.py` |
 

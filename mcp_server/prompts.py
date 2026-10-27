@@ -278,7 +278,8 @@ Split the runs first, e.g. learn on runs 1-8, validate on runs 9-16.
    Check `suggested_meanings`.
 2. Layout: `propose_layout(dump_paths=[<learning dumps>], keylog={{"path": "{keylog_path}"}}, heap=true)` proposes
    field boundaries around the anchor from variance classes, pointer-likeness and (with `heap`) allocator chunk
-   bounds, with alternatives preserved. Review `fields` and their `evidence`.
+   bounds, with alternatives preserved. The default payload is a summary (`omitted` lists what was dropped); to
+   review each field's `evidence`/`alternatives` or the `structure`, pass `detail="full"`.
 3. Build: `artifact_model_build(name="<model>", out_path=<NEW .json>, dump_paths=[<learning dumps>],
    keylog={{"path": "{keylog_path}"}})`. With `meanings`/`relationships` omitted they default from the key log
    (each secret labelled with its NSS label, `owned_by` client_random). Naming an unproposed field is refused.

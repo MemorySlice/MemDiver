@@ -256,9 +256,9 @@ export function LayoutResults({ result, onGoto }: { result: ProposedLayoutResult
               <td className={cell}>{f.kind}</td>
               <td className={cell}>{f.name}</td>
               <td className={cell}>
-                {f.evidence.join("; ")}
-                {f.alternatives.length > 0 && (
-                  <span className="md-text-muted"> {t("layout.alternatives", { count: f.alternatives.length })}</span>
+                {(f.evidence ?? []).join("; ")}
+                {(f.alternatives?.length ?? f.alternatives_count ?? 0) > 0 && (
+                  <span className="md-text-muted"> {t("layout.alternatives", { count: f.alternatives?.length ?? f.alternatives_count ?? 0 })}</span>
                 )}
               </td>
             </tr>

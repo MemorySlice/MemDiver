@@ -1,0 +1,20 @@
+{
+  "_comment": "Scripted (NO MODEL) demo for the in-UI agent chat against the real case ~/.memdiver/cases/p6_gate_wf1 (alma-9). Paths are absolute to the author's machine; tests build a synthetic equivalent (see tests/e2e/specs/agent-chat.spec.ts).",
+  "turns": [
+    [
+      {"text": "Recon first: I will read the case manifest, sample the pslist table, then look at two raw offsets of the image."},
+      {"tool": "case_manifest", "input": {"case_dir": "/Users/danielbaier/.memdiver/cases/p6_gate_wf1"}},
+      {"tool": "case_query", "input": {"case_dir": "/Users/danielbaier/.memdiver/cases/p6_gate_wf1", "sql": "SELECT pid, ppid, comm FROM vol3__linux_pslist ORDER BY pid", "limit": 5}},
+      {"tool": "anchor_consensus", "input": {"anchors": [
+        {"dump_path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/pakunoda_spielwiese/dumps/alma9_x86_64_5_14_0-611_45_1_el9_7/alma-9_5.14.0-427.el9.lime", "offset": 4096},
+        {"dump_path": "/Users/danielbaier/research/projects/github/issues/2024 fritap issues/2026_success/pakunoda_spielwiese/dumps/alma9_x86_64_5_14_0-611_45_1_el9_7/alma-9_5.14.0-427.el9.lime", "offset": 8192}],
+        "delta_start": 0, "length": 64}},
+      {"tool": "annotations_add", "input": {"case_dir": "/Users/danielbaier/.memdiver/cases/p6_gate_wf1", "capture_id": "0cf076fcd139125bb1a7c9e74da6de4fc1b5b18c47804544db6e2c767ac5616b", "kind": "annotation", "author": "agent", "label": "agent-ui demo: first pages of the image reviewed", "locations": [{"space": "physical", "value": 4096}]}},
+      {"text": "Summary: the case holds 2 pslist runs and 1 psscan run [seen]. The first pages look like ordinary kernel memory, so I suspect nothing is hidden there [inferred]. Whether a rootkit is present I cannot tell from this [unknown]."}
+    ],
+    [
+      {"tool": "annotations_add", "input": {"case_dir": "/Users/danielbaier/.memdiver/cases/p6_gate_wf1", "capture_id": "0cf076fcd139125bb1a7c9e74da6de4fc1b5b18c47804544db6e2c767ac5616b", "kind": "annotation", "author": "agent", "label": "agent-ui demo: second note", "locations": [{"space": "physical", "value": 8192}]}},
+      {"text": "Second note recorded without asking again [seen]."}
+    ]
+  ]
+}

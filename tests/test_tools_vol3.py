@@ -206,3 +206,33 @@ def test_run_result_json_keeps_exact_large_ints(env):
     env["result"] = _pslist_result([[big, 1, "x"]])
     payload = tv.vol3_run_result(env["view"], "linux.pslist").payload
     assert str(big) in json.dumps(payload)
+
+
+def test_cancelled_run_is_not_registered_and_not_a_stopped_early_error(env):
+    env["result"] = _pslist_result([], plugin="linux.pslist.PsList")
+    env["result"].truncated, env["result"].stop_reason = True, "cancelled"
+    payload = tv.vol3_run_result(env["view"], "linux.pslist", case_dir=env["case"]).payload
+    assert payload["stop_reason"] == "cancelled" and payload["table"] is None
+    assert Case.open(env["case"]).tables() == []
+
+
+def test_timed_out_empty_listing_still_raises_stopped_early(env):
+    env["result"] = _pslist_result([])
+    env["result"].truncated, env["result"].stop_reason = True, "timeout"
+    with pytest.raises(CapabilityError) as err:
+        tv.vol3_run_result(env["view"], "linux.pslist", case_dir=env["case"])
+    assert err.value.code == "vol3.run_stopped_early"
+
+
+def test_cancel_callable_reaches_run_plugin(env, monkeypatch):
+    seen = {}
+
+    def fake_run(ctx, info, args, **kw):
+        seen["cancel"] = kw.get("cancel")
+        return env["result"]
+
+    env["result"] = _pslist_result([[KVA, 1, "x"]])
+    monkeypatch.setattr(vr, "run_plugin", fake_run)
+    sentinel = lambda: False  # noqa: E731
+    tv.vol3_run_result(env["view"], "linux.pslist", cancel=sentinel)
+    assert seen["cancel"] is sentinel

@@ -163,7 +163,7 @@ class FakeSession:
 
     def init_task(self):
         return {"va": 1, "phys": 100, "source": "kallsyms", "probe": {"va": 1, "phys": 2340},
-                "disagreement": {"probe_phys": 2340, "derived_phys": 100, "delta": 2240}}
+                "banner_delta": None, "disagreement": None, "verified": True}
 
 
 @pytest.fixture
@@ -186,20 +186,16 @@ def test_kallsyms_probe_sample_truncated_and_draft_gets_all(fake, tmp_path):
     assert payload(T.isf_draft_get_result(case_dir, CAP, "d"))["counts"]["symbols"] == 10
 
 
-def test_init_task_reports_disagreement(fake):
+def test_init_task_row_has_no_banner_disagreement(fake):
     out = payload(T.isf_probe_result(fake, "init_task"))
     row = out["rows"][0]
     assert row["location"]["space"] == "physical" and row["location"]["value"] == 100
-    assert row["disagreement"]["delta"] == 2240
-    assert any("disagrees" in w for w in out["warnings"])
+    assert row["disagreement"] is None and row["banner_delta"] is None
+    assert not any("disagrees" in w for w in out["warnings"])
 
 
-def test_derive_init_task_phys_formula():
-    s = object.__new__(T._Session)
-    s._kallsyms = SimpleNamespace(metadata={"symbols": {
-        "init_task": 0xFFFFFFFF82000000, "linux_banner": 0xFFFFFFFF81000000}})
-    s._banner = SimpleNamespace(offset=0x2000000)
-    assert s._derive_init_task_phys() == 0x2000000 + 0x1000000
+def test_banner_delta_derivation_is_retired():
+    assert not hasattr(T._Session, "_derive_init_task_phys")
 
 
 def test_hint_types_prefer_draft_then_donor(case, tmp_path):
@@ -566,16 +562,15 @@ def test_init_task_uses_pakunoda_verified_result_with_symbols_and_note():
     assert a["probe"] == {"va": 0xFFFFFFFF82000000, "phys": 0x3000000}
     assert calls[0]["runtime_symbols"]["init_task"] == 0xFFFFFFFF82000000
     assert calls[0]["vmcoreinfo"] == "NOTE"
-    # banner delta stays a labelled, unverified witness (0x1000000 + 0x2000000 = 0x3000000)
-    assert a["banner_delta"]["verified"] is False and a["disagreement"] is None
+    # banner delta is retired (2026-10-27): the keys stay, always None
+    assert a["banner_delta"] is None and a["disagreement"] is None
 
 
-def test_init_task_disagreement_against_banner_delta():
+def test_init_task_no_disagreement_when_pakunoda_phys_differs_from_banner_delta():
     s, _ = _anchor_session(_result(verified=True, phys=0x5000000))
     a = s.init_task()
-    assert a["phys"] == 0x5000000 and a["banner_delta"]["phys"] == 0x3000000
-    assert a["disagreement"] == {"probe_phys": 0x5000000, "derived_phys": 0x3000000,
-                                 "delta": 0x2000000}
+    assert a["phys"] == 0x5000000 and a["banner_delta"] is None and a["disagreement"] is None
+    assert not any("banner" in w for w in s.warnings)
 
 
 def test_run_legs_refuses_unverified_base():
@@ -586,14 +581,16 @@ def test_run_legs_refuses_unverified_base():
     assert "ranked" in str(exc.value) and "comm" in str(exc.value) and "0x3000000" in str(exc.value)
 
 
-def test_none_with_banner_delta_is_unverified_and_refused():
+def test_none_find_init_task_yields_no_base_and_clear_message():
     s, _ = _anchor_session(None)
     a = s.init_task()
-    assert (a["phys"], a["source"], a["verified"]) == (0x3000000, "banner_delta", False)
-    assert a["probe"] is None and a["disagreement"] is None
+    assert (a["phys"], a["va"], a["source"], a["verified"]) == (None, None, None, False)
+    assert a["probe"] is None and a["banner_delta"] is None and a["disagreement"] is None
+    assert "found no init_task" in a["message"] and "no base" in a["message"]
     with pytest.raises(CapabilityError) as exc:
         T._run_legs(s)
-    assert exc.value.code == "isf.init_task_unverified"
+    assert exc.value.code == "isf.init_task_required"
+    assert "found no init_task" in str(exc.value)
 
 
 def test_run_legs_without_any_anchor_keeps_required_code():

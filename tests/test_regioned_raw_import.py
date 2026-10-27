@@ -10,6 +10,7 @@ from memdiver.core.proc_maps_parser import parse_maps_text
 from memdiver.core.regioned_layout import (compute_regioned_layout,
                                            find_maps_sidecar)
 from memdiver.msl.enums import PageState, Protection, RegionType, SourceFormat
+from memdiver.msl.source_format import effective_source_format
 from memdiver.msl.import_preview import (LAYOUT_MAPS, LAYOUT_NATIVE,
                                          LAYOUT_NONE, preview_import)
 from memdiver.msl.import_regioned import (plan_regions, protection_from_perm,
@@ -137,7 +138,10 @@ def test_regions_at_real_vas_with_bytes_and_types(tmp_path):
     lib, _ = regions[_layout()[0].start]
     assert lib.protection == Protection.READ | Protection.EXECUTE
     prov = _provenance(out)
-    assert prov.source_format == SourceFormat.REGIONED_RAW
+    assert prov.source_format == SourceFormat.OTHER  # 0xFFFF + note origin
+    assert effective_source_format(
+        prov.source_format, prov.tool_name,
+        prov.note) == SourceFormat.REGIONED_RAW
     with MslReader(out) as reader:
         modules = [e for idx in reader.collect_module_list_index()
                    for e in idx.entries]

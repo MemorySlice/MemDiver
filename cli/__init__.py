@@ -38,6 +38,7 @@ from .dataset import (
     _cmd_batch,
     _cmd_import,
     _cmd_mcp,
+    _cmd_notebook,
     _cmd_scan,
     _cmd_ui,
     _cmd_web,
@@ -138,6 +139,7 @@ __all__ = [
     "_format_jsonl",
     "_print_missing_package",
     # dataset / analysis / servers
+    "_cmd_notebook",
     "_cmd_ui",
     "_cmd_web",
     "_cmd_mcp",

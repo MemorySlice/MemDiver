@@ -187,6 +187,14 @@ EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
 #: :func:`test_exempt_routers_are_not_capability_bearing`.
 EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
     (
+        "agent_chat",
+        "The in-UI agent chat is a CLIENT of the MCP server (it spawns a "
+        "sandboxed `memdiver mcp` child), not a capability: status/settings/"
+        "playbook/chat-lifecycle plumbing and a WebSocket, with no app-layer "
+        "producer. Every analysis the agent runs goes through the MCP tools, "
+        "which ARE registered capabilities.",
+    ),
+    (
         "architect",
         "NO APP-LAYER PRODUCER: /check-static, /generate-pattern and /export "
         "bypass the app layer entirely (they import architect/ StaticChecker / "

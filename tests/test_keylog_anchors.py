@@ -200,7 +200,7 @@ def _build(corpus, out, **kw):
 
     args = dict(dump_paths=corpus["paths"], keylog={"path": corpus["shared"]},
                 delta_start=-0x100, length=0x300, heap=False, name="tls_obj",
-                out_path=str(out))
+                out_path=str(out), detail="full")
     args.update(kw)
     return artifact_model_build_result(_session(), **args)
 
@@ -329,7 +329,8 @@ def test_mcp_tools(corpus, tmp_path):
     assert len(out["instances"]) == N and out["keylog_resolution"]
     built = json.loads(tools["artifact_model_build"].fn(
         name="tls_obj", out_path=str(tmp_path / "mcp.json"), dump_paths=corpus["paths"],
-        keylog={"path": corpus["shared"]}, delta_start=-256, length=768, heap=False))
+        keylog={"path": corpus["shared"]}, delta_start=-256, length=768, heap=False,
+        detail="full"))
     assert built["problems"] == [] and built["model"]["assertions"]
 
 

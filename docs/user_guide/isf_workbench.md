@@ -61,9 +61,9 @@ refusals. Read the refusals.
 **`init_task` is only used when verified.** MemDiver takes it from pakunoda's
 `find_init_task`, which reports `source`, `verified` and `checks`. An
 unverified base is refused (`isf.init_task_unverified`) and the message names
-the source, the checks and the top candidates. It is never guessed. A
-banner-delta derivation is kept only as an unverified fallback, labelled as
-such. This matters: on one fedora-40 image a `swapper`-named task was a
+the source, the checks and the top candidates. It is never guessed. The
+old banner-delta derivation was retired 2026-10-27: when pakunoda finds nothing
+there is no base and the message says so. This matters: on one fedora-40 image a `swapper`-named task was a
 never-booted stale kernel copy, and the old derivation walked it silently. A
 booted `init_task` has a live `tasks` list, and a matching name alone proves
 nothing.

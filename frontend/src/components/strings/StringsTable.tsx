@@ -23,6 +23,36 @@ interface Props {
   dumpPath: string;
 }
 
+const OID_PREFIX_DESCRIPTIONS: Record<string, string> = {
+  "1.3.6.1": "internet",
+  "1.3.101": "Ed25519 / X25519 / 448",
+  "1.3.132": "SECG curves",
+  "2.5.4": "X.520 attributes",
+  "2.5.29": "X.509 extensions",
+};
+
+/** Secondary "OID?" marker: the ipv4 hit may really be an ASN.1 OID. */
+function OidMarker({ values }: { values: { value: string; oid_prefix: string }[] }) {
+  const { t } = useTranslation("misc");
+  const first = values[0];
+  const desc = OID_PREFIX_DESCRIPTIONS[first.oid_prefix];
+  const label = t("strings.table.oidHint", {
+    prefix: desc ? `${first.oid_prefix} \u2014 ${desc}` : first.oid_prefix,
+    values: values.map((v) => v.value).join(", "),
+  });
+  return (
+    <span
+      data-testid="oid-marker"
+      role="img"
+      aria-label={label}
+      title={label}
+      className="px-1 rounded border border-[var(--md-accent-orange)] text-[var(--md-accent-orange)] whitespace-nowrap"
+    >
+      {t("strings.table.oidMarker")}
+    </span>
+  );
+}
+
 /** Strings as a table: address + encoding + value + IOC badges; click a row to go to it. */
 export function StringsTable({ dumpPath }: Props) {
   const { t } = useTranslation("misc");
@@ -198,6 +228,12 @@ export function StringsTable({ dumpPath }: Props) {
           {loading && taskId && progress.pct !== null && ` ${Math.round(progress.pct * 100)}%`}
           {table?.truncated && t("strings.table.truncated", { limit: table.limit })}
         </span>
+        {!!table?.oid_like_count && (
+          <span className="md-text-warning whitespace-nowrap" data-testid="oid-like-count"
+            title={t("strings.table.oidCountTitle")}>
+            {t("strings.table.oidCount", { n: table.oid_like_count })}
+          </span>
+        )}
         {taskId && (
           <button type="button" onClick={cancel} data-testid="strings-table-cancel"
             className="px-2 py-0.5 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)]">
@@ -247,15 +283,24 @@ export function StringsTable({ dumpPath }: Props) {
                     ))}
                   </span>
                   <span className="flex gap-1 overflow-hidden">
-                    {row.iocs.map((kind) => (
-                      <span
-                        key={kind}
-                        data-testid="ioc-badge"
-                        className="px-1 rounded border border-[var(--md-accent-cyan)] text-[var(--md-accent-cyan)] whitespace-nowrap"
-                      >
-                        {t(`strings.table.ioc.${kind}`, { defaultValue: kind })}
-                      </span>
-                    ))}
+                    {row.iocs.map((kind) => {
+                      const muted = kind === "ipv4" && row.ambiguity === "oid_like";
+                      return (
+                        <span
+                          key={kind}
+                          data-testid="ioc-badge"
+                          data-ambiguous={muted ? "true" : undefined}
+                          className={`px-1 rounded border whitespace-nowrap ${muted
+                            ? "border-[var(--md-border)] text-[var(--md-text-muted)] opacity-70"
+                            : "border-[var(--md-accent-cyan)] text-[var(--md-accent-cyan)]"}`}
+                        >
+                          {t(`strings.table.ioc.${kind}`, { defaultValue: kind })}
+                        </span>
+                      );
+                    })}
+                    {row.iocs.includes("ipv4") && !!row.oid_like_values?.length && (
+                      <OidMarker values={row.oid_like_values} />
+                    )}
                   </span>
                 </div>
               );

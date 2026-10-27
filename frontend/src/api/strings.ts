@@ -28,6 +28,11 @@ export interface StringsTableRow {
   value_truncated: boolean;
   /** IOC kinds that match (`urls`, `ipv4`, `unix_paths`, ...). */
   iocs: string[];
+  /** `"oid_like"` only when EVERY ipv4 hit in the row is OID-shaped. */
+  ambiguity?: "oid_like" | null;
+  /** Prefix of the first OID-like value (`1.3.6.1`, `2.5.29`, ...). */
+  oid_prefix?: string | null;
+  oid_like_values?: { value: string; oid_prefix: string }[];
   va: WireInt | null;
   vas_offset: number;
   region: { start: number; end: number; perms: string | null; path: string | null } | null;
@@ -38,6 +43,8 @@ export interface StringsTable {
   space: string;
   rows: StringsTableRow[];
   row_count: number;
+  /** Rows carrying at least one OID-like ipv4 hit. */
+  oid_like_count?: number;
   limit: number;
   truncated: boolean;
   complete: boolean;

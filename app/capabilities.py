@@ -30,6 +30,16 @@ re-export of the ``app`` producer through the public ``memdiver.services``
 facade for the library). ``marimo`` is a known-incomplete surface
 and is deliberately OUT of :data:`IN_SCOPE_SURFACES` for now, so the parity
 ratchet does not hold capabilities to it.
+
+The ``memdiver notebook <case>`` command (``ui/notebooks/case_explorer.py``)
+opens a marimo case explorer for analysts. It is an analyst companion, not a
+parity surface: no capability is registered for it and it does not change
+:data:`IN_SCOPE_SURFACES`.
+The in-UI agent chat (``app/agent_chat``, ``api/routers/agent_chat.py``) is likewise
+not a capability: it is a CLIENT of the MCP server (it drives a sandboxed
+``memdiver mcp`` child), so everything an agent does is already registered here
+through the MCP tools. Its router is an annotated exemption in
+``tests/test_capability_completeness.py``.
 """
 
 from __future__ import annotations

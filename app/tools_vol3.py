@@ -180,6 +180,8 @@ def _precondition(message: str, code: str) -> CapabilityError:
 
 def _check_listing_not_empty(result: Any) -> None:
     if result.row_count == 0 and result.plugin in PROCESS_LISTING_PLUGINS:
+        if result.stop_reason == "cancelled":
+            return
         if result.truncated or result.stop_reason:
             raise _precondition(
                 f"{result.plugin} stopped early with 0 rows "
@@ -215,7 +217,8 @@ def vol3_run_result(view_path: str, plugin: str, args: Optional[Dict[str, Any]] 
                     column_map: Optional[Dict[str, Optional[str]]] = None,
                     source: Optional[str] = None, out_dir: Optional[str] = None,
                     progress: Optional[Callable[[float, str], None]] = None,
-                    source_name: Optional[str] = None) -> "ServiceResult":
+                    source_name: Optional[str] = None,
+                    cancel: Optional[Callable[[], bool]] = None) -> "ServiceResult":
     """Run a plugin over a ``.mdview``; register the table when ``case_dir`` is given.
 
     A user plugin is raw ``source`` text or a ``source_name`` stored in ``case_dir``.
@@ -230,7 +233,8 @@ def vol3_run_result(view_path: str, plugin: str, args: Optional[Dict[str, Any]] 
     result = _runner().run_plugin(
         image_ctx, info, final_args, limit=limit, timeout_s=timeout_s,
         column_overrides=column_map, capture_id=capture_id_for(path),
-        out_dir=Path(out_dir).expanduser() if out_dir else None, progress=progress)
+        out_dir=Path(out_dir).expanduser() if out_dir else None, progress=progress,
+        cancel=cancel)
     _check_listing_not_empty(result)
     payload = result.to_dict(max_rows)
     sizes = _object_sizes(image_ctx, result.plugin)
@@ -239,7 +243,7 @@ def vol3_run_result(view_path: str, plugin: str, args: Optional[Dict[str, Any]] 
     from memdiver.app.image_preview import view_block
     payload.update({"defaults_applied": defaults, "args": final_args,
                     "table": None, "run_id": None, "view": view_block(descriptor, path)})
-    if case_dir:
+    if case_dir and result.stop_reason != "cancelled":
         ref = _register_run(case_dir, result, descriptor, path, final_args, sizes)
         payload.update({"table": ref.to_dict(), "run_id": ref.run_id})
     return ServiceResult.ok(payload)

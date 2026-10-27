@@ -203,6 +203,13 @@ class SourceFormat(IntEnum):
     # Spec Table 40 "Other": a producer the spec registry has no code for
     # (e.g. a process extracted from a full physical memory image).
     OTHER = 0xFFFF
+    # Classification-only members (never written, outside the u16 wire
+    # range): spec v1.1.0 Table 40 0x0004 / 0x0005 from a NON-MemDiver writer.
+    # MSL / REGIONED_RAW above keep the legacy MemDiver meaning of 0x04/0x05,
+    # which collides with the spec; new files write OTHER (0xFFFF) + a note
+    # origin field instead. See msl/source_format.py.
+    MACOS_CORE = 0x10004
+    PROCDUMP = 0x10005
 
 
 class MslKeyType(IntEnum):

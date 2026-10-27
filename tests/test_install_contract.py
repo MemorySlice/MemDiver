@@ -58,6 +58,7 @@ _IMPORT_TO_DISTRIBUTION = {
     "ahocorasick": "pyahocorasick",
     "argon2": "argon2-cffi",
     "blake3": "blake3",
+    "claude_agent_sdk": "claude-agent-sdk",
     "cryptography": "cryptography",
     "dpkt": "dpkt",
     "duckdb": "duckdb",

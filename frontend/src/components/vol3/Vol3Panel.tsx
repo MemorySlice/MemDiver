@@ -210,7 +210,7 @@ export function Vol3Panel() {
             <span>{t("run.async")}</span></label>
           <div className="flex gap-2">
             <button type="button" className={buttonClass} data-testid="vol3-run"
-              disabled={!viewPath || !selected || !description || running} onClick={start}>{t("run.button")}</button>
+              disabled={!viewPath || !selected || !description || running || state.status === "cancelling"} onClick={start}>{t("run.button")}</button>
             {running && state.taskId && <button type="button" className={buttonClass} data-testid="vol3-cancel"
               onClick={() => void cancel()}>{t("run.cancel")}</button>}
           </div>
@@ -221,6 +221,7 @@ export function Vol3Panel() {
         <p role="status" data-testid="vol3-progress">
           {state.msg ?? t("run.running")}{pct !== null && ` ${t("run.progress", { pct })}`}</p>
       )}
+      {state.status === "cancelling" && <p role="status" data-testid="vol3-cancelling">{t("run.cancelling")}</p>}
       {state.status === "cancelled" && <p role="status" data-testid="vol3-cancelled">{t("run.cancelled")}</p>}
       {state.status === "error" && <p role="alert" data-testid="vol3-error" style={{ color: "var(--md-accent-red)" }}>{state.error}</p>}
       {result && (

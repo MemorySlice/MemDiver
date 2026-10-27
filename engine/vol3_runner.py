@@ -27,6 +27,7 @@ hand-built path; this module never changes it, it only reuses its loader.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import io
 import re
@@ -34,7 +35,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
+                    Tuple)
 
 from memdiver.core.location import AddressSpace, Location
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -383,6 +385,86 @@ class _Stop(Exception):
         self.reason = reason
 
 
+class _DeadlineExceeded(BaseException):
+    """Raised from a layer read once the run's wall-clock budget is spent.
+
+    Deliberately a ``BaseException``: vol3's ``DataLayerInterface.scan`` wraps its
+    whole body in ``except Exception`` and silently stops yielding, so an
+    ``Exception`` subclass raised from a read never reaches the runner.
+    """
+
+
+CANCEL_POLL_INTERVAL_S = 0.25
+
+
+class _CancelPoll:
+    """Throttled view of a cancel callable.
+
+    ``cancel`` is typically a multiprocessing-event proxy (a round trip per
+    call), so it is asked at most once per ``interval`` seconds. Once it has
+    answered True the answer is latched.
+    """
+
+    def __init__(self, cancel: Optional[Callable[[], bool]],
+                 interval: float = CANCEL_POLL_INTERVAL_S) -> None:
+        self._cancel, self._interval = cancel, interval
+        self._next_poll = 0.0
+        self._fired = False
+
+    def __call__(self) -> bool:
+        if self._cancel is None:
+            return False
+        if self._fired:
+            return True
+        now = time.monotonic()
+        if now < self._next_poll:
+            return False
+        self._next_poll = now + self._interval
+        self._fired = bool(self._cancel())
+        return self._fired
+
+
+@contextlib.contextmanager
+def _read_deadline_guard(context: Any, deadline: float,
+                         cancelled: Optional[Callable[[], bool]] = None) -> Iterator[None]:
+    """Make every layer read in ``context`` raise ``_DeadlineExceeded`` after ``deadline``
+    (reason ``"timeout"``) or once ``cancelled()`` is true (reason ``"cancelled"``).
+
+    A scanner that seldom reports progress never sees the progress-callback
+    deadline; its reads are the one place it must pass through. Original read
+    methods are restored on exit. The caller holds ``image_ctx.lock``, so the
+    temporary instance-level wrapping is not observed by another run.
+
+    Scope limit: this guard is entered only AFTER the plugin is constructed.
+    Construction (``_construct``, which runs automagic) happens outside the
+    read deadline and is bounded only by the progress-callback deadline.
+    """
+    wrapped: List[Tuple[Any, bool, Any]] = []
+
+    def guarded(original: Callable[..., Any]) -> Callable[..., Any]:
+        def read(*args: Any, **kwargs: Any) -> Any:
+            if time.monotonic() > deadline:
+                raise _DeadlineExceeded("timeout")
+            if cancelled is not None and cancelled():
+                raise _DeadlineExceeded("cancelled")
+            return original(*args, **kwargs)
+        return read
+
+    try:
+        for name in list(context.layers):
+            layer = context.layers[name]
+            had_own = "read" in vars(layer)
+            wrapped.append((layer, had_own, vars(layer).get("read")))
+            layer.read = guarded(layer.read)
+        yield
+    finally:
+        for layer, had_own, own in reversed(wrapped):
+            if had_own:
+                layer.read = own
+            else:
+                vars(layer).pop("read", None)
+
+
 class _OutputFiles:
     """vol3 ``open_method`` factory: write into ``out_dir`` or discard (and say so)."""
 
@@ -478,9 +560,11 @@ class _Collector:
     """TreeGrid visitor: converts cells, canonicalizes kernel VAs, enforces caps."""
 
     def __init__(self, specs: List[ColumnSpec], canonical: Callable[[int], int],
-                 limit: int, deadline: float) -> None:
+                 limit: int, deadline: float,
+                 cancelled: Optional[Callable[[], bool]] = None) -> None:
         self.specs, self.canonical = specs, canonical
         self.limit, self.deadline = limit, deadline
+        self.cancelled = cancelled
         self.rows: List[List[Any]] = []
         self.depths: List[int] = []
         self.absent: List[Dict[str, str]] = []
@@ -488,6 +572,8 @@ class _Collector:
     def check(self) -> None:
         if time.monotonic() > self.deadline:
             raise _Stop("timeout")
+        if self.cancelled is not None and self.cancelled():
+            raise _Stop("cancelled")
 
     def __call__(self, node: Any, accumulator: Any) -> Any:
         from volatility3.framework import interfaces
@@ -515,13 +601,16 @@ def run_plugin(image_ctx: Any, info: PluginInfo, args: Optional[Dict[str, Any]] 
                limit: int = DEFAULT_ROW_LIMIT, timeout_s: float = DEFAULT_TIMEOUT_S,
                column_overrides: Optional[Dict[str, Optional[str]]] = None,
                capture_id: Optional[str] = None, out_dir: Optional[Path] = None,
-               progress: Optional[Callable[[float, str], None]] = None) -> PluginRunResult:
+               progress: Optional[Callable[[float, str], None]] = None,
+               cancel: Optional[Callable[[], bool]] = None) -> PluginRunResult:
     """Run one plugin against ``image_ctx`` under a row cap and a wall-clock budget.
 
     The budget is checked between rows and inside vol3's progress callback
     (scanners report progress), so a long scan stops too; a stopped run is
     returned with ``truncated=True`` and its ``stop_reason`` — never as a
-    silently short success.
+    silently short success. ``cancel`` (polled at most every
+    ``CANCEL_POLL_INTERVAL_S``) stops the run the same way with reason
+    ``"cancelled"``.
     """
     coerced = coerce_arguments(info.cls, args)
     started = time.monotonic()
@@ -531,15 +620,24 @@ def run_plugin(image_ctx: Any, info: PluginInfo, args: Optional[Dict[str, Any]] 
     stops: List[str] = []
     diagnostics: List[str] = []
     files = _OutputFiles(out_dir, diagnostics)
+    cancelled = _CancelPoll(cancel)
     with image_ctx.lock:
         plugin, base = _construct(image_ctx, info, coerced, files, started + timeout_s,
-                                  stops, progress)
+                                  stops, progress, cancelled)
+        specs: List[ColumnSpec] = []
+        collector = _Collector(specs, int, limit, started + timeout_s, cancelled)
         try:
-            grid = plugin.run()
-            specs = column_specs(grid.columns, image_ctx.has_kernel, column_overrides)
-            canonical = image_ctx.canonical_kernel_va if image_ctx.has_kernel else int
-            collector = _Collector(specs, canonical, limit, started + timeout_s)
-            stop = _populate(grid, collector) or (stops[0] if stops else None)
+            with _read_deadline_guard(image_ctx.context, started + timeout_s, cancelled):
+                try:
+                    grid = plugin.run()
+                    specs = column_specs(grid.columns, image_ctx.has_kernel, column_overrides)
+                    canonical = image_ctx.canonical_kernel_va if image_ctx.has_kernel else int
+                    collector = _Collector(specs, canonical, limit, started + timeout_s,
+                                           cancelled)
+                    stop = _populate(grid, collector) or (stops[0] if stops else None)
+                except _DeadlineExceeded as exc:
+                    # raised before the grid existed (a plugin that works eagerly in run())
+                    stop = _deadline_reason(exc)
         finally:
             forget_config(image_ctx, base)
     return PluginRunResult(info.name, specs, collector.rows, collector.depths, collector.absent,
@@ -550,7 +648,8 @@ def run_plugin(image_ctx: Any, info: PluginInfo, args: Optional[Dict[str, Any]] 
 
 def _construct(image_ctx: Any, info: PluginInfo, args: Dict[str, Any], files: _OutputFiles,
                deadline: float, stops: List[str],
-               progress: Optional[Callable[[float, str], None]]) -> Tuple[Any, str]:
+               progress: Optional[Callable[[float, str], None]],
+               cancelled: Optional[Callable[[], bool]] = None) -> Tuple[Any, str]:
     """Configure under a fresh config path and construct; ``stops`` collects stop reasons.
 
     On any failure the config subtree is removed before the error propagates.
@@ -562,6 +661,9 @@ def _construct(image_ctx: Any, info: PluginInfo, args: Dict[str, Any], files: _O
         if time.monotonic() > deadline:
             stops.append("timeout")
             raise _Stop("timeout")
+        if cancelled is not None and cancelled():
+            stops.append("cancelled")
+            raise _Stop("cancelled")
         if progress is not None:
             progress(float(percent), description or "")
 
@@ -584,7 +686,13 @@ def _populate(grid: Any, collector: _Collector) -> Optional[str]:
         grid.populate(collector, None, fail_on_errors=True)
     except _Stop as stop:
         return stop.reason
+    except _DeadlineExceeded as exc:
+        return _deadline_reason(exc)
     return None
+
+
+def _deadline_reason(exc: BaseException) -> str:
+    return "cancelled" if exc.args and exc.args[0] == "cancelled" else "timeout"
 
 
 def forget_config(image_ctx: Any, base: str) -> None:

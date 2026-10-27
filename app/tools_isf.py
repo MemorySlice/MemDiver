@@ -22,9 +22,9 @@ Honesty rules:
   vmcoreinfo note, and is trusted only when it reports ``verified`` (page-table
   walk or exact self-reference agreement). The older banner-delta derivation
   (``init_task`` VA minus the banner's VA->phys delta) can land on a stale,
-  never-booted kernel copy; it is kept only as the labelled, always-unverified
-  ``banner_delta`` fallback and as a disagreement witness. The layout legs
-  REFUSE an unverified base (``isf.init_task_unverified``); ``init_task`` still
+  never-booted kernel copy; it was retired 2026-10-27 and is no longer computed
+  (the ``banner_delta`` / ``disagreement`` payload keys remain, always ``None``).
+  The layout legs REFUSE an unverified base (``isf.init_task_unverified``); ``init_task`` still
   reports it, with a warning.
 """
 
@@ -320,11 +320,11 @@ class _Session:
         Keys: ``va``/``phys``/``source``/``verified``/``checks``/``va_to_pa_delta``
         come from pakunoda's result; ``candidates`` are its alternatives (plain
         dicts, at most :data:`_MAX_CANDIDATES`); ``probe`` is pakunoda's raw
-        ``{va, phys}`` (``None`` when it found nothing); ``banner_delta`` is the
-        old derivation as an UNVERIFIED fallback (or ``None``); ``disagreement``
-        compares pakunoda's phys with ``banner_delta``'s when both exist and differ.
-        When pakunoda finds nothing, ``banner_delta`` supplies va/phys with
-        ``source="banner_delta"`` and ``verified=False``.
+        ``{va, phys}`` (``None`` when it found nothing). ``banner_delta`` and
+        ``disagreement`` are RETIRED 2026-10-27 and always ``None`` (keys kept for
+        payload compatibility): the banner delta picked stale copies on fedora-40
+        aarch64 / alma-9. When pakunoda finds nothing there is NO base (va/phys
+        ``None``) and ``message`` says so.
         """
         if self._init_task_view is None:
             self._init_task_view = self._build_init_task_view()
@@ -332,32 +332,51 @@ class _Session:
 
     def _build_init_task_view(self) -> Dict[str, Any]:
         found = self.init_task_result()
-        derived = self._derive_init_task_phys()
-        fallback = (None if derived is None else {
-            "phys": derived, "va": self.symbols()["init_task"],
-            "source": "banner_delta", "verified": False})
         out: Dict[str, Any] = {
             "va": None, "phys": None, "source": None, "verified": False, "checks": [],
             "va_to_pa_delta": None, "candidates": [], "probe": None,
-            "banner_delta": fallback, "disagreement": None}
-        if found is not None:
-            out.update(
-                va=found.va, phys=found.phys, source=found.source,
-                verified=bool(found.verified), checks=list(found.checks),
-                va_to_pa_delta=found.va_to_pa_delta, probe={"va": found.va, "phys": found.phys},
-                candidates=[_candidate_row(c) for c in found.candidates[:_MAX_CANDIDATES]])
-            if fallback and fallback["phys"] != found.phys:
-                out["disagreement"] = {"probe_phys": found.phys, "derived_phys": fallback["phys"],
-                                       "delta": found.phys - fallback["phys"]}
-        elif fallback:
-            out.update(va=fallback["va"], phys=fallback["phys"], source="banner_delta")
+            "banner_delta": None, "disagreement": None, "message": None}
+        if found is None:
+            out["message"] = ("pakunoda find_init_task found no init_task; there is no base "
+                              "(the banner-delta fallback was retired 2026-10-27)")
+            return out
+        out.update(
+            va=found.va, phys=found.phys, source=found.source,
+            verified=bool(found.verified), checks=list(found.checks),
+            va_to_pa_delta=found.va_to_pa_delta, probe={"va": found.va, "phys": found.phys},
+            candidates=[_candidate_row(c) for c in found.candidates[:_MAX_CANDIDATES]])
         return out
 
-    def _derive_init_task_phys(self) -> Optional[int]:
-        symbols, banner = self.symbols(), self.banner()
-        if banner is None or "init_task" not in symbols or "linux_banner" not in symbols:
-            return None
-        return symbols["init_task"] - (symbols["linux_banner"] - banner.offset)
+    # retired 2026-10-27: picked stale copies on fedora-40 aarch64 / alma-9; pakunoda's
+    # verified find_init_task is the only source. Kept commented per repo convention.
+    # def _build_init_task_view(self) -> Dict[str, Any]:
+    #     found = self.init_task_result()
+    #     derived = self._derive_init_task_phys()
+    #     fallback = (None if derived is None else {
+    #         "phys": derived, "va": self.symbols()["init_task"],
+    #         "source": "banner_delta", "verified": False})
+    #     out: Dict[str, Any] = {
+    #         "va": None, "phys": None, "source": None, "verified": False, "checks": [],
+    #         "va_to_pa_delta": None, "candidates": [], "probe": None,
+    #         "banner_delta": fallback, "disagreement": None}
+    #     if found is not None:
+    #         out.update(
+    #             va=found.va, phys=found.phys, source=found.source,
+    #             verified=bool(found.verified), checks=list(found.checks),
+    #             va_to_pa_delta=found.va_to_pa_delta, probe={"va": found.va, "phys": found.phys},
+    #             candidates=[_candidate_row(c) for c in found.candidates[:_MAX_CANDIDATES]])
+    #         if fallback and fallback["phys"] != found.phys:
+    #             out["disagreement"] = {"probe_phys": found.phys, "derived_phys": fallback["phys"],
+    #                                    "delta": found.phys - fallback["phys"]}
+    #     elif fallback:
+    #         out.update(va=fallback["va"], phys=fallback["phys"], source="banner_delta")
+    #     return out
+    #
+    # def _derive_init_task_phys(self) -> Optional[int]:
+    #     symbols, banner = self.symbols(), self.banner()
+    #     if banner is None or "init_task" not in symbols or "linux_banner" not in symbols:
+    #         return None
+    #     return symbols["init_task"] - (symbols["linux_banner"] - banner.offset)
 
 
 # -- probe row builders -------------------------------------------------------
@@ -452,16 +471,11 @@ def _row_init_task(s: _Session, limit: int) -> Dict[str, Any]:
     row = dict(found, va=_hex(found["va"]),
                probe=None if found["probe"] is None
                else dict(found["probe"], va=_hex(found["probe"]["va"])),
-               candidates=[dict(c, va=_hex(c["va"])) for c in found.get("candidates") or []],
-               banner_delta=None if found.get("banner_delta") is None
-               else dict(found["banner_delta"], va=_hex(found["banner_delta"]["va"])))
+               candidates=[dict(c, va=_hex(c["va"])) for c in found.get("candidates") or []])
     if found["phys"] is not None:
         row["location"] = _loc(AddressSpace.PHYSICAL, found["phys"], s.capture)
         row["va_location"] = _loc(AddressSpace.KERNEL_VA, found["va"], s.capture)
-    if found["disagreement"]:
-        s.warnings.append("find_init_task disagrees with the banner-delta derivation by "
-                          f"{found['disagreement']['delta']} bytes; the banner delta is "
-                          "unverified and is not used")
+    # retired 2026-10-27: the banner-delta disagreement warning (picked stale copies).
     if found["phys"] is not None and not found.get("verified", False):
         s.warnings.append(f"init_task base (source={found['source']}) is UNVERIFIED and will "
                           "not be used by the layout legs")
@@ -533,7 +547,7 @@ def _run_legs(s: _Session) -> Tuple[Any, Dict[str, Any]]:
                               category=ErrorCategory.PRECONDITION, code="isf.kallsyms_required")
     anchor = s.init_task()
     if anchor["phys"] is None:
-        raise CapabilityError("init_task could not be located",
+        raise CapabilityError(anchor.get("message") or "init_task could not be located",
                               category=ErrorCategory.PRECONDITION, code="isf.init_task_required")
     if not anchor.get("verified", False):
         top = "; ".join(f"phys=0x{c['phys']:x} source={c['source']} score={c['score']}"
