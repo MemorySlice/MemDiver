@@ -745,11 +745,14 @@ def _refuse_learned(dump_path: str, learned_on: Sequence[str]) -> None:
     Never by file name: capture tools reuse names across runs (every gocryptfs
     run is ``memslicer.msl``), so a name match would refuse every honest
     held-out capture of such a corpus."""
-    resolved = str(Path(dump_path).expanduser().resolve(strict=False))
-    paths = {str(Path(p).expanduser().resolve(strict=False)) for p in learned_on}
-    if resolved in paths:
-        raise _invalid(f"held-out dump was used for learning: {dump_path}",
+    from memdiver.engine.artifact_validation import capture_identity
+
+    identity = capture_identity(dump_path)
+    if identity in {capture_identity(p) for p in learned_on}:
+        err = _invalid(f"held-out dump was used for learning: {dump_path}",
                        "semantic.held_out_leak")
+        err.details = {**(err.details or {}), "capture_identity": list(identity)}
+        raise err
 
 
 def _plugin_source(model: Any, plugin_path: Optional[str]) -> Tuple[str, str]:

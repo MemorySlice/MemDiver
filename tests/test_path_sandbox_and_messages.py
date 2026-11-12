@@ -65,12 +65,13 @@ def test_implicit_roots_include_cwd_and_tmp(sandbox, monkeypatch):
 
 
 def test_denial_detail_is_actionable(sandbox):
-    from fastapi import HTTPException
+    # The denial is the coded CapabilityError (not an HTTPException) so the REST
+    # body carries ``code``/``category`` as well as ``detail``.
     from memdiver.api import path_policy
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(CapabilityError) as ei:
         path_policy.admit_read_path("/definitely/not/admitted.bin")
-    d = ei.value.detail
-    assert ei.value.status_code == 403
+    d = ei.value.message
+    assert ei.value.status == 403 and ei.value.code == "path.outside_sandbox"
     assert "/definitely/not/admitted.bin" in d and "MEMDIVER_ALLOWED_ROOTS" in d
     assert str(sandbox.resolve()) in d and "favourite" in d
 
@@ -121,12 +122,11 @@ def test_write_denial_lists_roots_and_example(tmp_path):
 
 
 def test_contained_case_dir_403_is_meaningful(tmp_path, monkeypatch):
-    from fastapi import HTTPException
     from memdiver.api.routers.annotations import contained_case_dir
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(CapabilityError) as ei:
         contained_case_dir("/etc/evil")
-    assert ei.value.status_code == 403
-    assert "/etc/evil" in ei.value.detail and "Allowed write locations" in ei.value.detail
+    assert ei.value.status == 403 and ei.value.code == "path.outside_sandbox"
+    assert "/etc/evil" in ei.value.message and "Allowed write locations" in ei.value.message
 
 
 # -- D: no VA view -------------------------------------------------------------------

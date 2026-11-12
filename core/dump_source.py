@@ -494,6 +494,8 @@ class MslDumpSource:
         self._region_filter = None
         # (reader index identity, filtered index) — see _run_index.
         self._filtered_index_cache: "Tuple[Any, CapturedRunIndex] | None" = None
+        # (pre-normalisation index identity, dense index) — see _dense_index.
+        self._dense_index_cache: "Tuple[Any, CapturedRunIndex] | None" = None
         self.set_region_filter(region_filter)
 
     @property
@@ -579,7 +581,7 @@ class MslDumpSource:
             # reader's cached run index, so asking for the size never reads a
             # byte of page data — it used to cost a whole-container copy.
             index = self._run_index()
-            self._size = 0 if index is None else sum(r.length for r in index.runs)
+            self._size = 0 if index is None else sum(r.avail for r in index.runs)
         return self._size
 
     def _run_index(self) -> "Optional[CapturedRunIndex]":
@@ -594,13 +596,47 @@ class MslDumpSource:
             return None
         index = self._reader.captured_run_index()
         if self._region_filter is None:
-            return index
+            return self._dense_index(index)
         cached = self._filtered_index_cache
         if cached is not None and cached[0] is index:
-            return cached[1]
+            return self._dense_index(cached[1])
         filtered = self._filter_run_index(index)
         self._filtered_index_cache = (index, filtered)
-        return filtered
+        return self._dense_index(filtered)
+
+    def _dense_index(self, index: "CapturedRunIndex") -> "CapturedRunIndex":
+        """*index* with ``vas_offset`` counting the bytes each run really holds.
+
+        The reader numbers the flat ``"vas"`` stream by each run's NOMINAL
+        ``length``. :meth:`iter_ranges`, :meth:`read_all` and :meth:`find_all`
+        all produce ``run.avail`` bytes per run, so on a container truncated
+        mid-payload the stream they describe is shorter than the nominal one
+        and every offset after the truncated run disagrees with
+        :meth:`read_range` (a hit at ``h`` did not read back as the needle).
+        Re-numbering by ``avail`` makes the one stream every method describes.
+        A container with no truncated run (``avail == length`` everywhere) gets
+        the SAME index object back, so the common case costs one identity check.
+        """
+        cached = self._dense_index_cache
+        if cached is not None and cached[0] is index:
+            return cached[1]
+        dense = index
+        if any(run.avail != run.length for run in index.runs):
+            offset = 0
+            runs = []
+            for run in index.runs:
+                runs.append(run._replace(vas_offset=offset))
+                offset += run.avail
+            from memdiver.msl.reader import CapturedRunIndex
+            by_va = tuple(sorted(runs, key=lambda run: run.va_start))
+            dense = CapturedRunIndex(
+                runs=tuple(runs),
+                by_va=by_va,
+                va_starts=tuple(run.va_start for run in by_va),
+                vas_starts=tuple(run.vas_offset for run in runs),
+            )
+        self._dense_index_cache = (index, dense)
+        return dense
 
     def _filter_run_index(self, index: "CapturedRunIndex") -> "CapturedRunIndex":
         """Keep only included regions' runs, re-numbering ``vas_offset``.
@@ -650,8 +686,8 @@ class MslDumpSource:
         if index is None:
             return ()
         return tuple(
-            (run.va_start, run.length, run.vas_offset)
-            for run in index.runs if run.length > 0
+            (run.va_start, run.avail, run.vas_offset)
+            for run in index.runs if run.avail > 0
         )
 
     def va_span_start(self) -> Optional[int]:
@@ -724,6 +760,7 @@ class MslDumpSource:
         self._size = -1
         self._va_span_cache = None
         self._filtered_index_cache = None
+        self._dense_index_cache = None
 
     @property
     def tag_status(self):
@@ -1091,7 +1128,7 @@ class MslDumpSource:
         if i < 0:
             return None
         run = index.by_va[i]
-        if va >= run.va_start + run.length:
+        if va >= run.va_start + run.avail:
             return None
         return run.vas_offset + (va - run.va_start)
 

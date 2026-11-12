@@ -23,20 +23,23 @@ import json
 import logging
 import re
 import tempfile
+import threading
 import time
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import (
     Any,
     Callable,
     Dict,
+    Iterator,
     List,
     Mapping,
     NamedTuple,
     Optional,
     Sequence,
     Tuple,
+    cast,
 )
 
 import numpy as np
@@ -82,10 +85,13 @@ from memdiver.engine.yara_scan import (
 # producer, as everywhere else in this file.
 from memdiver.engine.vol3_subproc import (
     DEFAULT_TIMEOUT_SECONDS as _VOL3_DEFAULT_TIMEOUT_SECONDS,
+    NAMED_STDOUT_CAP as _VOL3_NAMED_STDOUT_CAP,
 )
 from memdiver.engine.vol3_verify import (
     DEFAULT_MAX_HITS as _VOL3_DEFAULT_MAX_HITS,
+    PROVEN_PREFIX as _VOL3_PROVEN_PREFIX,
 )
+from memdiver.engine.progress import Cancelled as _SynthCancelled
 
 from .composition import open_dump_source, raise_if_locked
 
@@ -105,7 +111,12 @@ from ._progress import (
     _raise_cancelled,
 )
 from .artifact_cache import cache_reference_bytes, mmapped_variance
-from .key_material import has_key_material, key_material_kwargs
+from .key_material import (
+    KeyedSources,
+    has_key_material,
+    key_material_kwargs,
+    probe_dump_key,
+)
 
 logger = logging.getLogger("memdiver.app.tools_pipeline")
 
@@ -7041,7 +7052,9 @@ def _verify_subprocess(
     The hit list is capped HERE rather than by the launcher, so ``match_count``
     stays the honest total: ``vol`` has no cap to ask for, and truncating the
     count as well as the list would turn a selectivity measurement into a
-    reading of ``max_hits``.
+    reading of ``max_hits``. The one bound is ``run_plugin``'s stdout cap
+    (``vol3_subproc.NAMED_STDOUT_CAP``, 64 MiB of JSON rows): past it the run
+    raises and the dump is reported unreadable instead of with a total.
     """
     from memdiver.engine.vol3_subproc import run_plugin
 
@@ -7793,3 +7806,198 @@ def verify_vol3_plugin(
 
 # _emit/_progress_bridge/_experiment_check_cancelled MOVED to memdiver.app._progress (P3.1)
 # experiment orchestration MOVED to memdiver.app.experiment_orchestration (P3.1)
+
+
+# ---------------------------------------------------------------------------
+# synthesize_vol3_plugin & co. MOVED to memdiver.app.vol3_synth (move-only).
+# Re-exported here LAZILY (PEP 562): vol3_synth imports its shared helpers from
+# this module, so importing it here at import time would be a cycle. Callers may
+# keep ``from memdiver.app.tools_pipeline import synthesize_vol3_plugin``; a test
+# that patches a name the synthesis code itself looks up must patch
+# ``memdiver.app.vol3_synth``, not this facade.
+# ---------------------------------------------------------------------------
+
+from typing import TYPE_CHECKING  # noqa: E402
+
+_VOL3_SYNTH_NAMES = frozenset((
+    "SYNTH_TARGET_MSL",
+    "SYNTH_TARGET_FULL_IMAGE",
+    "SYNTH_VERIFY_TARGETS",
+    "SYNTH_PROVEN",
+    "SYNTH_NOT_PROVEN",
+    "SYNTH_ERROR",
+    "SYNTH_PASSPHRASE_LAYER_CODE",
+    "SYNTH_NOT_PROVEN_CODE",
+    "SYNTH_NOT_VERIFIED_CODE",
+    "SYNTH_STORED_UNPROVEN_CODE",
+    "SYNTH_UNSTORED_CODE",
+    "SYNTH_DEFAULT_CONTEXT",
+    "SYNTH_STORE_DIR",
+    "SYNTH_HISTORY_DIR",
+    "_SYNTH_RUN_LOCK",
+    "vol3_plugin_dir",
+    "_SYNTH_SCAN_REPORT_S",
+    "_SynthSteps",
+    "_SYNTH_EMIT_AT",
+    "_SYNTH_VERIFY_FROM",
+    "_SYNTH_MSL_SHARE_WITH_IMAGE",
+    "_synth_spans",
+    "_synth_dump_label",
+    "_synth_invalid",
+    "_synth_per_dump",
+    "_synth_redacted",
+    "_synth_parse_key",
+    "_synth_error_from_recipe",
+    "_synth_oracle_module",
+    "_synth_hit_range",
+    "_synth_hit_dump",
+    "_synth_key_from_hit",
+    "_synth_guard_dumps",
+    "_synth_probe_dumps",
+    "_synth_display_spec",
+    "_synth_oracle_summary",
+    "_synth_archive",
+    "_synth_store",
+    "_synth_msl_context",
+    "_synth_run_locked",
+    "_synth_vol3_isolation",
+    "_synth_run_in_process",
+    "_synth_proves",
+    "_synth_proven_hits",
+    "_synth_rows_proven",
+    "_synth_verdict",
+    "_synth_error_code",
+    "_synth_verify_msl",
+    "SYNTH_PID_UNHONOURED_MARK",
+    "SYNTH_PID_MISMATCH_MARK",
+    "SYNTH_PID_UNHONOURED_CODE",
+    "SYNTH_PID_MISMATCH_CODE",
+    "SYNTH_IMAGE_ARGS_IGNORED_CODE",
+    "SYNTH_VOL_STDOUT_CAP",
+    "SYNTH_VOL_STDERR_TAIL",
+    "_PID_PROCESS",
+    "_PID_PHYSICAL",
+    "_PID_MSL",
+    "_PID_MSL_MISMATCH",
+    "_synth_paths",
+    "_synth_refuse_semicolon",
+    "_synth_image_run",
+    "_synth_pid_scope",
+    "_synth_scope_honoured",
+    "_synth_pid_honoured",
+    "_synth_merge_pid_scopes",
+    "_synth_verify_full_image",
+    "_synth_image_attempts",
+    "_synth_build_recipe",
+    "_synth_emit",
+    "_synth_emit_and_store",
+    "_synth_diagnostics",
+    "_synth_key_hexes",
+    "_synth_keys_per_dump",
+    "_synth_samples",
+    "_synth_launcher",
+    "_synth_image_evidence",
+    "_synth_pid_diagnostics",
+    "_synth_image_args_diagnostics",
+    "_SynthInputs",
+    "_synth_inputs",
+    "preflight_synthesize_vol3_plugin",
+    "synthesize_vol3_plugin",
+))
+
+if TYPE_CHECKING:
+    from .vol3_synth import (  # noqa: F401 - re-exported
+        SYNTH_TARGET_MSL as SYNTH_TARGET_MSL,
+        SYNTH_TARGET_FULL_IMAGE as SYNTH_TARGET_FULL_IMAGE,
+        SYNTH_VERIFY_TARGETS as SYNTH_VERIFY_TARGETS,
+        SYNTH_PROVEN as SYNTH_PROVEN,
+        SYNTH_NOT_PROVEN as SYNTH_NOT_PROVEN,
+        SYNTH_ERROR as SYNTH_ERROR,
+        SYNTH_PASSPHRASE_LAYER_CODE as SYNTH_PASSPHRASE_LAYER_CODE,
+        SYNTH_NOT_PROVEN_CODE as SYNTH_NOT_PROVEN_CODE,
+        SYNTH_NOT_VERIFIED_CODE as SYNTH_NOT_VERIFIED_CODE,
+        SYNTH_STORED_UNPROVEN_CODE as SYNTH_STORED_UNPROVEN_CODE,
+        SYNTH_UNSTORED_CODE as SYNTH_UNSTORED_CODE,
+        SYNTH_DEFAULT_CONTEXT as SYNTH_DEFAULT_CONTEXT,
+        SYNTH_STORE_DIR as SYNTH_STORE_DIR,
+        SYNTH_HISTORY_DIR as SYNTH_HISTORY_DIR,
+        _SYNTH_RUN_LOCK as _SYNTH_RUN_LOCK,
+        vol3_plugin_dir as vol3_plugin_dir,
+        _SYNTH_SCAN_REPORT_S as _SYNTH_SCAN_REPORT_S,
+        _SynthSteps as _SynthSteps,
+        _SYNTH_EMIT_AT as _SYNTH_EMIT_AT,
+        _SYNTH_VERIFY_FROM as _SYNTH_VERIFY_FROM,
+        _SYNTH_MSL_SHARE_WITH_IMAGE as _SYNTH_MSL_SHARE_WITH_IMAGE,
+        _synth_spans as _synth_spans,
+        _synth_dump_label as _synth_dump_label,
+        _synth_invalid as _synth_invalid,
+        _synth_per_dump as _synth_per_dump,
+        _synth_redacted as _synth_redacted,
+        _synth_parse_key as _synth_parse_key,
+        _synth_error_from_recipe as _synth_error_from_recipe,
+        _synth_oracle_module as _synth_oracle_module,
+        _synth_hit_range as _synth_hit_range,
+        _synth_hit_dump as _synth_hit_dump,
+        _synth_key_from_hit as _synth_key_from_hit,
+        _synth_guard_dumps as _synth_guard_dumps,
+        _synth_probe_dumps as _synth_probe_dumps,
+        _synth_display_spec as _synth_display_spec,
+        _synth_oracle_summary as _synth_oracle_summary,
+        _synth_archive as _synth_archive,
+        _synth_store as _synth_store,
+        _synth_msl_context as _synth_msl_context,
+        _synth_run_locked as _synth_run_locked,
+        _synth_vol3_isolation as _synth_vol3_isolation,
+        _synth_run_in_process as _synth_run_in_process,
+        _synth_proves as _synth_proves,
+        _synth_proven_hits as _synth_proven_hits,
+        _synth_rows_proven as _synth_rows_proven,
+        _synth_verdict as _synth_verdict,
+        _synth_error_code as _synth_error_code,
+        _synth_verify_msl as _synth_verify_msl,
+        SYNTH_PID_UNHONOURED_MARK as SYNTH_PID_UNHONOURED_MARK,
+        SYNTH_PID_MISMATCH_MARK as SYNTH_PID_MISMATCH_MARK,
+        SYNTH_PID_UNHONOURED_CODE as SYNTH_PID_UNHONOURED_CODE,
+        SYNTH_PID_MISMATCH_CODE as SYNTH_PID_MISMATCH_CODE,
+        SYNTH_IMAGE_ARGS_IGNORED_CODE as SYNTH_IMAGE_ARGS_IGNORED_CODE,
+        SYNTH_VOL_STDOUT_CAP as SYNTH_VOL_STDOUT_CAP,
+        SYNTH_VOL_STDERR_TAIL as SYNTH_VOL_STDERR_TAIL,
+        _PID_PROCESS as _PID_PROCESS,
+        _PID_PHYSICAL as _PID_PHYSICAL,
+        _PID_MSL as _PID_MSL,
+        _PID_MSL_MISMATCH as _PID_MSL_MISMATCH,
+        _synth_paths as _synth_paths,
+        _synth_refuse_semicolon as _synth_refuse_semicolon,
+        _synth_image_run as _synth_image_run,
+        _synth_pid_scope as _synth_pid_scope,
+        _synth_scope_honoured as _synth_scope_honoured,
+        _synth_pid_honoured as _synth_pid_honoured,
+        _synth_merge_pid_scopes as _synth_merge_pid_scopes,
+        _synth_verify_full_image as _synth_verify_full_image,
+        _synth_image_attempts as _synth_image_attempts,
+        _synth_build_recipe as _synth_build_recipe,
+        _synth_emit as _synth_emit,
+        _synth_emit_and_store as _synth_emit_and_store,
+        _synth_diagnostics as _synth_diagnostics,
+        _synth_key_hexes as _synth_key_hexes,
+        _synth_keys_per_dump as _synth_keys_per_dump,
+        _synth_samples as _synth_samples,
+        _synth_launcher as _synth_launcher,
+        _synth_image_evidence as _synth_image_evidence,
+        _synth_pid_diagnostics as _synth_pid_diagnostics,
+        _synth_image_args_diagnostics as _synth_image_args_diagnostics,
+        _SynthInputs as _SynthInputs,
+        _synth_inputs as _synth_inputs,
+        preflight_synthesize_vol3_plugin as preflight_synthesize_vol3_plugin,
+        synthesize_vol3_plugin as synthesize_vol3_plugin,
+    )
+else:
+    def __getattr__(name: str) -> Any:
+        if name in _VOL3_SYNTH_NAMES:
+            from . import vol3_synth
+
+            return getattr(vol3_synth, name)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    def __dir__() -> List[str]:
+        return sorted(set(globals()) | _VOL3_SYNTH_NAMES)

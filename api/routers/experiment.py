@@ -135,16 +135,14 @@ def _default_capture_output(request: CaptureRequest) -> str:
 
 def _confine_capture_output(output: str) -> None:
     """Sandbox ON: a client-chosen dump path must lie in the write roots (OFF: as before)."""
-    from memdiver.api.path_safety import write_denial_detail
     from memdiver.api.read_roots import sandbox_roots, write_roots
     from memdiver.core import path_sandbox
 
     if not sandbox_roots():
         return
-    roots = write_roots()
-    if not path_sandbox.within(Path(output).expanduser().resolve(strict=False), roots):
-        raise HTTPException(status_code=403, detail=write_denial_detail(
-            "output path", output, roots, "out/result", "MemDiver home + upload dir"))
+    path_sandbox.contain_write_target(
+        output, write_roots(), field="output path", example_name="out/result",
+        where="MemDiver home + upload dir")
 
 
 @router.post("/capture")

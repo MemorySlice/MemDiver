@@ -88,7 +88,7 @@ import { IsfBuilder } from "@/components/isf/IsfBuilder";
 import { ObjectModelPanel } from "@/components/semantic/ObjectModelPanel";
 import { AgentChatPanel } from "@/components/agent/AgentChatPanel";
 import { useKeyFinderStore } from "@/stores/keyfinder-store";
-import { isMdview } from "@/components/image/open-view-in-workspace";
+import { isMdview, isMslImage } from "@/components/image/open-view-in-workspace";
 import { useImageStore } from "@/stores/image-store";
 import { useHeapModeLayer } from "@/hooks/useHeapModeLayer";
 
@@ -179,7 +179,10 @@ function Sidebar() {
   const [sideTab, setSideTab] = useState<SideTab>(
     imagePath ? "image" : mode === "heap" ? "heap" : "bookmarks");
   const baseTabs = mode === "heap" ? HEAP_SIDE_TABS : BASE_SIDE_TABS;
-  const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const, "isf" as const] : baseTabs;
+  // An open `.msl` runs under stock vol, so it gets the Volatility 3 panel alone.
+  const showVol3Only = !showImageTab && isMslImage(activeViewPath);
+  const withImage = showImageTab ? [...baseTabs, "image" as const, "vol3" as const, "isf" as const]
+    : showVol3Only ? [...baseTabs, "vol3" as const] : baseTabs;
   // Key finders scan any open dump, so the tab follows the dump, not the image.
   const sideTabs = activeViewPath ? [...withImage, "keyfinders" as const, "yara" as const, "object" as const] : withImage;
   // Entering heap mode opens its overview; leaving it drops a tab that no
@@ -196,7 +199,8 @@ function Sidebar() {
     setPrevImagePath(imagePath);
     if (imagePath) setSideTab("image");
   }
-  if ((sideTab === "image" || sideTab === "vol3" || sideTab === "isf") && !showImageTab) setSideTab("bookmarks");
+  if ((sideTab === "image" || sideTab === "vol3" || sideTab === "isf") && !showImageTab
+    && !(sideTab === "vol3" && showVol3Only)) setSideTab("bookmarks");
   if ((sideTab === "keyfinders" || sideTab === "yara" || sideTab === "object") && !activeViewPath) setSideTab("bookmarks");
   const activeDump = useActiveDump();
   const dumpPath = activeDump?.path ?? "";

@@ -32,6 +32,13 @@ Contract (see the plan's B5 task):
   so a working oracle and a broken one scored identically.
 * ``DELETE /api/oracles/{id}``     — remove the file and the registry
   entry. The oracle's ``__pycache__/`` is purged too.
+* ``GET  /api/oracles/formats``    — the shipped format oracles (kind,
+  candidate lengths, cost per call, the evidence they need, ``unique``).
+* ``POST /api/oracles/formats/suggest`` — which format oracle fits a dump,
+  with the sample derived from its run when possible and always the reason.
+* ``POST /api/oracles/formats/{kind}`` — register a first-party format oracle
+  as an UNARMED entry; arm / dry-run / smoke-test then work unchanged. Needs
+  no oracle dir: nothing is written.
 * ``GET  /api/oracles/status``     — is the oracle dir enabled, where, and
   who decided (env var vs the user's own opt-in). Always 200.
 * ``POST /api/oracles/enable``     — the user's explicit consent to store and
@@ -71,6 +78,10 @@ from memdiver.api.services.oracle_registry import (
     OracleShaMismatch,
 )
 from memdiver.app.oracle_autoconfig import suggest_example_config
+from memdiver.app.tools_format_oracle import (
+    list_format_oracles_result,
+    suggest_format_oracle_result,
+)
 
 logger = logging.getLogger("memdiver.api.routers.oracles")
 
@@ -126,6 +137,26 @@ class SuggestConfigRequest(BaseModel):
     """
 
     source_paths: List[str] = Field(default_factory=list)
+
+
+class AddFormatOracleRequest(BaseModel):
+    """Body for ``POST /api/oracles/formats/{kind}``: the evidence, one of two ways.
+
+    ``oracle_sample_path`` is a READ path (sandbox-checked by name): a ready
+    sample blob, or the artefact it is packed from (a gocryptfs vault file or
+    directory, a raw LUKS header). ``sample_b64`` is the blob itself.
+    """
+
+    oracle_sample_path: Optional[str] = None
+    sample_b64: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    description: Optional[str] = None
+
+
+class SuggestFormatOracleRequest(BaseModel):
+    """Body for ``POST /api/oracles/formats/suggest``."""
+
+    dump_path: str = Field(..., min_length=1)
 
 
 class DryRunRequest(BaseModel):
@@ -338,6 +369,36 @@ def suggest_example_config_endpoint(
         request.source_paths if request is not None else [],
     )
     return asdict(suggestion)
+
+
+@router.get("/formats")
+def list_format_oracles():
+    """The shipped format oracles with their static facts."""
+    return list_format_oracles_result().payload
+
+
+@router.post("/formats/suggest")
+def suggest_format_oracle_endpoint(request: SuggestFormatOracleRequest):
+    """Which format oracle fits ``dump_path``, and why (``suggestion`` may be null)."""
+    return suggest_format_oracle_result(request.dump_path).payload
+
+
+@router.post("/formats/{kind}")
+def add_format_oracle(kind: str, request: Optional[AddFormatOracleRequest] = None):
+    """Register format oracle ``kind`` as an unarmed entry (see the module doc)."""
+    registry = _registry()
+    body = request or AddFormatOracleRequest()
+    try:
+        entry = registry.add_format(
+            kind,
+            params=body.params,
+            sample_path=body.oracle_sample_path,
+            sample_b64=body.sample_b64,
+            description=body.description,
+        )
+    except OracleRegistryError as exc:
+        raise _map_registry_error(exc)
+    return entry.to_dict()
 
 
 @router.get("")

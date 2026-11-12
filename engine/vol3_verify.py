@@ -48,13 +48,14 @@ by ``tests/test_architecture_invariants.py``). No ``print``/stdout here --
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from memdiver.core.install_hints import missing_package_message
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
@@ -107,6 +108,17 @@ _COL_KEY_ENTROPY = "KeyEntropy"
 _COL_KEY_LENGTH = "KeyLength"
 _COL_PATTERN_OFFSET = "PatternOffset"
 _COL_STATIC_RATIO = "StaticRatio"
+#: OPTIONAL column, emitted only by recipe-v2 plugins
+#: (``architect/templates/vol3_plugin_v2.py.tmpl``): the per-candidate oracle
+#: verdict, ``oracle:<kind>`` | ``rejected`` | ``unverified`` | ``error:<short>``.
+#: Read when present; a v1 plugin (no such column) reports ``proven=None``.
+_COL_PROVEN = "Proven"
+#: OPTIONAL column, emitted by recipe-v2 plugins after ``Detail``: where the
+#: key was read (``process:<pid>`` | ``msl:<pid>`` | ``physical``). Read when
+#: present; older plugins (no such column) report ``scope=None``.
+_COL_SCOPE = "Scope"
+#: The prefix of a ``Proven`` cell that means "an oracle proved this key".
+PROVEN_PREFIX = "oracle:"
 
 _MIB = 1024 * 1024
 
@@ -136,6 +148,16 @@ class Vol3Hit:
     key_hex: str
     key_entropy: float
     static_ratio: float
+    #: The row's ``Proven`` cell (recipe-v2 plugins only); ``None`` when the
+    #: plugin declares no such column, which is every v1 plugin.
+    proven: Optional[str] = None
+    #: The row's ``Scope`` cell (recipe-v2 plugins that declare it); ``None`` otherwise.
+    scope: Optional[str] = None
+
+    @property
+    def is_proven(self) -> bool:
+        """True iff an oracle proved this row's key (``Proven = oracle:<kind>``)."""
+        return bool(self.proven) and str(self.proven).startswith(PROVEN_PREFIX)
 
     @property
     def key_absolute_offset(self) -> int:
@@ -168,6 +190,9 @@ class Vol3VerifyReport:
     anchor_bytes: int
     anchor_distinct_bytes: int
     matches_per_mib: float
+    #: Rows whose ``Proven`` cell is ``oracle:<kind>`` (over ALL rows, not only
+    #: the retained ``hits``). Always 0 for a v1 plugin, which has no oracle.
+    proven_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -182,6 +207,7 @@ class Vol3VerifyReport:
             "anchor_bytes": self.anchor_bytes,
             "anchor_distinct_bytes": self.anchor_distinct_bytes,
             "matches_per_mib": self.matches_per_mib,
+            "proven_count": self.proven_count,
         }
 
 
@@ -330,18 +356,25 @@ def _run_plugin(
     layer_name: str,
     *,
     extra_config: Optional[Mapping[str, Any]] = None,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> Any:
     """Construct and run *plugin_cls* against *layer_name*.
 
     Construction is where Volatility3 runs ``unsatisfied()``, so a requirement
     the emitted template gets wrong raises here -- which is the point.
+
+    *progress_callback* is Volatility3's own ``(percent, description)`` hook,
+    called by the layer scanner once per chunk. An exception it raises aborts
+    the scan (``TreeGrid.populate`` re-raises), which is how a caller stops a
+    long in-process run (e.g. ``engine.progress.Cancelled``). The grid is lazy:
+    the scan -- and so the callback -- runs when the grid is populated.
     """
     config_path = f"plugins.{plugin_cls.__name__}"
     context.config[f"{config_path}.primary"] = layer_name
     context.config[f"{config_path}.full_scan"] = True
     for key, value in (extra_config or {}).items():
         context.config[f"{config_path}.{key}"] = value
-    plugin = plugin_cls(context, config_path)
+    plugin = plugin_cls(context, config_path, progress_callback=progress_callback)
     return plugin.run()
 
 
@@ -373,8 +406,14 @@ def _build_report(
     rows = _rows(grid)
     hits: List[Vol3Hit] = []
     reported = False
+    proven_count = 0
     for row in rows:
         hit = _hit_from_row(row, index, window_length)
+        if _COL_PROVEN in index:
+            hit = dataclasses.replace(hit, proven=str(row[index[_COL_PROVEN]]))
+            proven_count += hit.is_proven
+        if _COL_SCOPE in index:
+            hit = dataclasses.replace(hit, scope=str(row[index[_COL_SCOPE]]))
         if expected_offset is not None and hit.key_absolute_offset == expected_offset:
             reported = True
         if len(hits) < max_hits:
@@ -394,6 +433,7 @@ def _build_report(
         anchor_bytes=anchor_bytes,
         anchor_distinct_bytes=anchor_distinct,
         matches_per_mib=per_mib,
+        proven_count=proven_count,
     )
     logger.info(
         "vol3 %s scanned %d bytes of layer %r: %d matches (%.1f/MiB), "
@@ -438,6 +478,7 @@ def run_over_file(
     module_name: Optional[str] = None,
     extra_config: Optional[Mapping[str, Any]] = None,
     max_hits: int = DEFAULT_MAX_HITS,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> Vol3VerifyReport:
     """Run the emitted plugin in *source* over the dump at *path*.
 
@@ -446,6 +487,7 @@ def run_over_file(
     dumps carry an ELF header, so the stacker wraps them in an ``Elf64Layer``
     whose sections have no size, and the scan then sees nothing at all. This
     module measures the emitted *pattern*, so it scans the bytes on disk.
+    *progress_callback*: see :func:`_run_plugin` (raising from it stops the scan).
     """
     _require_volatility3()
     dump_path = Path(path)
@@ -454,7 +496,8 @@ def run_over_file(
     context.config["base.location"] = dump_path.resolve().as_uri()
     layer = vol3_physical.FileLayer(context, "base", FLAT_LAYER_NAME)
     context.add_layer(layer)
-    grid = _run_plugin(plugin_cls, context, FLAT_LAYER_NAME, extra_config=extra_config)
+    grid = _run_plugin(plugin_cls, context, FLAT_LAYER_NAME, extra_config=extra_config,
+                       progress_callback=progress_callback)
     return _build_report(
         source=source, plugin_cls=plugin_cls, grid=grid,
         layer_name=FLAT_LAYER_NAME, layer_bytes=dump_path.stat().st_size,

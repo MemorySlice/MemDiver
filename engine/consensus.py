@@ -12,7 +12,7 @@ import bisect
 import heapq
 import logging
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Sequence, Tuple, Union
 
@@ -22,6 +22,7 @@ from memdiver.core.region_align import (
     ALIGNMENT_FILE_OFFSET,
     ALIGNMENT_METHODS,
     ALIGNMENT_MODULE_OFFSET,
+    ALIGNMENT_MODULE_RELATIVE,
     ALIGNMENT_VIRTUAL_ADDRESS,
     AlignmentCoverage,
 )
@@ -40,6 +41,7 @@ from memdiver.core.variance import (
     count_classifications,
     WelfordVariance,
 )
+from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.core.memory_budget import (
     MemoryBudget,
     MemoryEstimate,
@@ -55,6 +57,13 @@ from memdiver.core.slab_variance import (
 )
 from .consensus_va import supports_va_alignment
 from .results import StaticRegion
+
+#: ``alignment=`` choices of :meth:`ConsensusVector.build_from_sources` and
+#: ``consensus_service.build_consensus``: the automatic choice, or an explicit
+#: VA regime for VA-capable sources.
+ALIGNMENT_AUTO = "auto"
+ALIGNMENT_CHOICES = (ALIGNMENT_AUTO, ALIGNMENT_VIRTUAL_ADDRESS,
+                     ALIGNMENT_MODULE_RELATIVE)
 
 if TYPE_CHECKING:  # runtime import would pull the heap layer into every build
     from .consensus_heap import ConsensusHeap
@@ -123,7 +132,11 @@ __all__ = [
     "WindowProjection",
     "ALIGNMENT_METHODS",
     "ALIGNMENT_MODULE_OFFSET",
+    "ALIGNMENT_MODULE_RELATIVE",
     "ALIGNMENT_VIRTUAL_ADDRESS",
+    "ALIGNMENT_AUTO",
+    "ALIGNMENT_CHOICES",
+    "validate_alignment_choice",
     "ALIGNMENT_FILE_OFFSET",
     "MAX_CONSENSUS_WINDOW",
     "flat_alignment_report",
@@ -529,6 +542,7 @@ class ConsensusVector:
     def build_from_sources(
         self, sources: List, normalize: bool = False, *,
         force: bool = False, budget: MemoryBudgetLike = None,
+        alignment: str = ALIGNMENT_AUTO, frames: str = "all",
     ) -> None:
         """Build consensus from DumpSource objects.
 
@@ -536,8 +550,11 @@ class ConsensusVector:
         which one that was in :attr:`alignment_report`:
 
         * every source a native ``.msl`` -> ASLR-invariant module+offset;
-        * every source carrying a VA map (gcore, regioned raw) -> virtual
-          address;
+        * every source carrying a VA map (gcore, regioned raw, image views,
+          image-extracted ``.msl``) -> virtual address, or ``module_relative``
+          when every source is a process view (or image-extracted ``.msl``)
+          and their module bases differ (independently launched processes,
+          see :func:`choose_alignment`);
         * anything else — raw, mixed, imported ``.msl`` — -> the flat-offset
           fallback, unchanged.
 
@@ -549,10 +566,33 @@ class ConsensusVector:
         ``force`` / ``budget`` gate the memory estimate of whichever path
         runs (see :meth:`build`): the flat fallback and both aligned paths
         stream position slabs and check their predicted peak first.
+
+        ``alignment`` overrides the automatic choice for VA-capable sources:
+        ``"auto"`` (default, the behaviour above), ``"virtual_address"`` or
+        ``"module_relative"``. An unknown value, or one the sources cannot
+        supply, raises ``CapabilityError`` before anything is read.
+
+        ``frames``: ``"all"`` (default, unchanged) or ``"private"`` -- every
+        source a process view of ONE image; the views are classified together
+        (:mod:`memdiver.core.image.private_frames`) and only bytes in frames
+        private to one member are compared. Shared frames cannot hold a
+        per-instance value; their bytes and classes are reported in a
+        ``consensus_private_frames`` diagnostic (they are excluded BEFORE
+        alignment, so they are not part of ``bytes_discarded``). Sources that
+        cannot be classified raise ``CapabilityError``
+        ``consensus.frames_unavailable``.
         """
+        validate_alignment_choice(alignment)
+        from memdiver.core.image.private_frames import (
+            FRAMES_PRIVATE, restrict_to_private_frames, validate_frames_choice)
+        validate_frames_choice(frames)
         if len(sources) < 2:
             logger.warning("Need >= 2 dumps for consensus, got %d", len(sources))
             return
+        frames_report = None
+        if frames == FRAMES_PRIVATE:
+            sources, frames_report = restrict_to_private_frames(sources)
+        method = choose_alignment(sources, alignment)
         self.num_dumps = len(sources)
         # Record the source order + reset any prior VA index so the overlay can
         # map a viewed dump's path -> index -> VA layout for this build.
@@ -561,18 +601,23 @@ class ConsensusVector:
         self._va_index_cache = {}
         self._va_starts_cache = {}
         self._slab_starts_cache = None
-        if all(_is_native_msl(s) for s in sources):
+        if method == ALIGNMENT_MODULE_OFFSET:
             from .consensus_msl import build_msl_consensus_result
             result = build_msl_consensus_result(sources, force=force,
                                                 budget=budget)
             self._adopt_aligned(result, ALIGNMENT_MODULE_OFFSET)
-        elif _aligns_by_va(sources):
+        elif method in (ALIGNMENT_VIRTUAL_ADDRESS, ALIGNMENT_MODULE_RELATIVE):
             from .consensus_va import build_va_consensus
-            result = build_va_consensus(sources, force=force, budget=budget)
-            self._adopt_aligned(result, ALIGNMENT_VIRTUAL_ADDRESS)
+            va_result = build_va_consensus(sources, force=force, budget=budget,
+                                           keying=method)
+            self._adopt_aligned(va_result, method)
         else:
             self.msl_layout = None
             self._build_raw(sources, force=force, budget=budget)
+        if frames_report is not None:
+            report = self.alignment_report
+            self.alignment_report = replace(
+                report, diagnostics=report.diagnostics + (frames_report.diagnostic(),))
         self._set_classifications(classify_variance(self.variance, self.thresholds))
 
     def _adopt_aligned(self, result, method: str) -> None:
@@ -1449,6 +1494,67 @@ def sources_region_filter_note(sources: List) -> Union[str, None]:
     return None
 
 
+def validate_alignment_choice(alignment: str) -> None:
+    """Reject an ``alignment=`` value outside :data:`ALIGNMENT_CHOICES`."""
+    if alignment not in ALIGNMENT_CHOICES:
+        raise CapabilityError(
+            f"unknown alignment {alignment!r}; expected one of "
+            f"{', '.join(ALIGNMENT_CHOICES)}",
+            category=ErrorCategory.INVALID_INPUT,
+            code="consensus.unknown_alignment")
+
+
+def choose_alignment(sources, alignment: str = ALIGNMENT_AUTO) -> str:
+    """The :data:`ALIGNMENT_METHODS` member a build over *sources* will use.
+
+    ``"auto"``: native ``.msl`` -> module_offset; VA-capable -> the VA regime
+    (:func:`_va_regime`); otherwise file_offset. An explicit
+    ``virtual_address`` / ``module_relative`` is honoured when the sources can
+    supply it and refused (``CapabilityError``) when they cannot -- an
+    override that silently fell back would report a method the caller did not
+    get.
+    """
+    validate_alignment_choice(alignment)
+    if alignment == ALIGNMENT_AUTO:
+        if all(_is_native_msl(s) for s in sources):
+            return ALIGNMENT_MODULE_OFFSET
+        if _aligns_by_va(sources):
+            return _va_regime(sources)
+        return ALIGNMENT_FILE_OFFSET
+    ok = (_all_have_vmas(sources) if alignment == ALIGNMENT_MODULE_RELATIVE
+          else _aligns_by_va(sources))
+    if not ok:
+        raise CapabilityError(
+            f"alignment {alignment!r} is not available for these dumps"
+            + (": every dump must be a process image view or an "
+               "image-extracted .msl"
+               if alignment == ALIGNMENT_MODULE_RELATIVE else ""),
+            category=ErrorCategory.UNSUPPORTED,
+            code="consensus.alignment_unavailable")
+    return alignment
+
+
+def _all_have_vmas(sources) -> bool:
+    from memdiver.core.module_relative import alignment_vmas
+    return all(alignment_vmas(s) for s in sources)
+
+
+def _va_regime(sources) -> str:
+    """``module_relative`` for independent processes, else ``virtual_address``.
+
+    Only when EVERY source offers a VMA listing (process view / image-extracted
+    ``.msl``) and some module common to all of them sits at different bases
+    -- separately launched processes under ASLR. Identical layouts (forked
+    siblings, a view beside its own extraction) keep absolute VA, which also
+    aligns their anonymous memory.
+    """
+    from memdiver.core.module_relative import alignment_vmas, layouts_differ
+    listings = [alignment_vmas(s) for s in sources]
+    if all(listings) and layouts_differ(listings):  # type: ignore[arg-type]
+        return ALIGNMENT_MODULE_RELATIVE
+    return ALIGNMENT_VIRTUAL_ADDRESS
+
+
 def _aligns_by_va(sources) -> bool:
     """Every source VA-alignable; an ``.msl`` joins only beside an image view.
 
@@ -1457,15 +1563,30 @@ def _aligns_by_va(sources) -> bool:
     ``.msl``: the one ``image extract`` writes from that very view is imported
     by definition (MSL spec: image-derived), and comparing it with its view is
     the workspace's main use. A native-``.msl``-only set never reaches here
-    (module+offset runs first) and an imported ``.msl`` WITHOUT an image view
-    keeps its flat fallback.
+    (module+offset runs first). An image-EXTRACTED ``.msl`` is VA-capable on
+    its own (:func:`_va_capable`); any other imported ``.msl`` WITHOUT an
+    image view keeps its flat fallback.
     """
-    if all(supports_va_alignment(s) for s in sources):
+    if all(_va_capable(s) for s in sources):
         return True
     has_image = any(callable(getattr(s, "layer_runs", None))
                     and supports_va_alignment(s) for s in sources)
     return has_image and all(
         supports_va_alignment(s) or _is_msl(s) for s in sources)
+
+
+def _va_capable(source) -> bool:
+    """Declares VA alignment, or is an ``.msl`` extracted from an image view.
+
+    The extracted ``.msl`` carries the view's VAS map and captured-run table
+    (``core.region_align._aligns_by_run_table`` reads it through ``"vas"``),
+    so it aligns by address on its own too -- without this it fell to the
+    flat file-offset fallback whenever no image view sat beside it.
+    """
+    if supports_va_alignment(source):
+        return True
+    from memdiver.core.module_relative import is_image_extracted_msl
+    return is_image_extracted_msl(source)
 
 
 def _is_msl(source) -> bool:

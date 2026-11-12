@@ -70,7 +70,7 @@ def test_resource_templates_listed(server):
 
 
 def test_tool_count_unchanged(server):
-    assert len(asyncio.run(server.list_tools())) == 120
+    assert len(asyncio.run(server.list_tools())) == 127  # +3 format-oracle tools (C1), +image_siblings (S2)
 
 
 @pytest.mark.parametrize("name", sorted(PROMPTS))

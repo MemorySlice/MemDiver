@@ -1,6 +1,6 @@
 # MCP tool reference
 
-MemDiver exposes **120 tools** (plus 8 prompts and 4 resources, below) to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
+MemDiver exposes **127 tools** (plus 8 prompts and 4 resources, below) to MCP-speaking agents. All tools are thin wrappers around the same pure functions used internally by the engine, so responses are identical whether you invoke them over MCP, through the CLI, or through the FastAPI backend.
 
 ```{admonition} Analysis-time region filter (`region_filter`)
 :class: note
@@ -133,6 +133,8 @@ Tabular results live as Parquet tables in a case directory, queryable with read-
 
 ## Memory images
 
+Note: pakunoda is a separate third-party tool, not part of MemDiver. MemDiver integrates with it optionally: it is installed only with the `image` extra (`pip install "memdiver[image]"`), is imported lazily, and is never vendored in the MemDiver wheel. Without it, the features that use it report that it is not installed.
+
 Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip install "memdiver[image]"`). A view is a small `.mdview` descriptor file that opens like any dump. The MCP server has no job queue, so slow steps (image hashing, pakunoda) block the call; the REST API runs them as tasks.
 
 | Tool | Purpose |
@@ -142,6 +144,7 @@ Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip 
 | `image_open_view` | Write a `.mdview` for a `physical`, `kernel` or `process` (needs `pid`) view. |
 | `image_processes` | `pslist` of a kernel or process view (pid, ppid, comm, uid, has_mm, `kernel_va` Location); zero tasks is an error. |
 | `image_extract_process` | Extract a process view into an `.msl` file. |
+| `image_siblings` | Sibling groups of one image (processes of one binary by ELF build-id): shape, roles, per-member frame accounting; optional `.mdview` per member. |
 | `vol3_plugins` | Bundled Volatility 3 plugins of an OS family. |
 | `vol3_describe` | A plugin's user requirements (bundled name, or `source` text). |
 | `vol3_run` | Run a plugin over a `.mdview` inline (blocks; no TaskManager in the stdio process); `case_dir` registers the table `vol3__<os>_<plugin>`. `limit`, `timeout_s`, `max_rows`, `column_map`. `source` plugins run **unsandboxed in-process** (SHA-256 logged). |
@@ -152,11 +155,14 @@ Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip 
 | `vol3_import` | Register an external vol3 output (Parquet/CSV/JSON) as a run of a `vol3__*` table. |
 | `vol3_write_config` | Write a `vol` `config.json` reproducing the view's layer stack. |
 | `vol3_source_list` | Stored user plugin sources of a case (name, sha256, size, updated, version). |
-| `vol3_source_get` | One stored plugin source; `modified_externally` flags a hand edit. |
+| `vol3_source_get` | One stored plugin source; `modified_externally` flags a hand edit. Optional `origin` (`user` / `synthesized`) picks one when both share a name. |
 | `vol3_source_put` | Store plugin source as `<case>/plugins/<name>.py` (previous version kept in `plugins/history`) and return the `vol3_check` outcome. `vol3_run`/`vol3_describe`/`vol3_check` accept `source_name` + `case_dir` instead of `source`. |
 | `vol3_fixture_put` | Store a plugin fixture (plugin or stored source, view, args, row predicates) under `<case>/fixtures/vol3/`. |
 | `vol3_fixture_list` | Stored plugin fixtures of a case. |
 | `vol3_fixture_run` | Run a fixture: verdict `pass`/`fail`/`indeterminate` with per-predicate results, filed as a `fixture_verdict` annotation. |
+| `vol3_plugin_dir` | The installed `memdiver/vol3plugins` directory (the `vol -p` directory for `.msl` and the secrets plugins). |
+| `synthesize_vol3_plugin` | A key located in N dumps -> a standalone vol3 plugin with its oracle inlined, stored in an existing case's `vol3/plugins` and RUN (in-process on each `.msl`, optionally stock `vol` on a `full_image`); read `proven`. At most 16 dumps; a full-image run must fit a 3600 s worst-case vol budget. The key is never echoed. |
+| `vol3_exec` | Run a plugin by NAME under the stock `vol` launcher (`-p memdiver/vol3plugins;plugin_dirs`, `-s symbol_dirs`, args after the name). A `-p` holding `vol3/history`, `;` in paths and vol GLOBAL options in `args` (`-p`, `--log`, any single-dash flag) are refused; `timeout_s` is 1..900. Path arguments a plugin itself takes (e.g. `--oracle-sample <dir>`) are NOT checked against the read sandbox. A failing plugin is `ok: false` with `stderr_tail`. |
 
 ## Format conversion
 
@@ -197,6 +203,16 @@ Full-image views of a memory image (LiME, ELF core, ...) via Volatility 3 (`pip 
 | `n_sweep` | N-curve sweep with convergence reporting. |
 | `auto_floor` | Automated oracle-arbitrated variance-floor selection → verdict. |
 | `emit_plugin` | Synthesize a Volatility3 plugin from a verified hit. |
+
+## Format oracles
+
+The shipped format oracles (`gocryptfs-gcm`, `luks`, `xts-fsmagic`, `aead-generic`, `ssh-kdf-consistency`, `x25519-pubkey`, `x25519-dh-consistency`) as a BYO-oracle source.
+
+| Tool | Purpose |
+|---|---|
+| `format_oracles` | List them: candidate key lengths, cost per verify, the evidence each needs, `unique`. |
+| `suggest_format_oracle` | Which one fits a dump, and why (gocryptfs vault in `meta.json`, `.msl` KEY_HINT, process / module names); `suggestion` may be null. |
+| `format_oracle_spec` | Build one from its evidence (sample blob, gocryptfs vault file/dir, raw LUKS header) and return the `oracle_path` + `oracle_config` that `brute_force` / `n_sweep` take; grades `candidates_hex` without echoing them. |
 
 ## Verification &amp; experiments
 

@@ -112,6 +112,20 @@ def resolve_case_dir(dir_or_name: "str | Path") -> Path:
     return case_path(dir_or_name)
 
 
+def existing_case_dir(dir_or_name: "str | Path | None") -> Optional[str]:
+    """The directory of an EXISTING case named or located by *dir_or_name*.
+
+    Blank -> ``None`` (no case). Otherwise resolved exactly like
+    :meth:`Case.open` (a path holding ``case.json``, else a bare name under
+    ``cases_root()``), so a directory without ``case.json`` is refused with
+    ``case.not_a_case``. For surfaces handing a case to a producer that only
+    checks for a directory (``synthesize_vol3_plugin``).
+    """
+    if dir_or_name is None or not str(dir_or_name).strip():
+        return None
+    return str(Case.open(dir_or_name).dir)
+
+
 def __getattr__(name: str) -> Any:  # pragma: no cover - trivial
     if name == "CASES_ROOT":  # resolved lazily so XDG_DATA_HOME changes apply
         return cases_root()

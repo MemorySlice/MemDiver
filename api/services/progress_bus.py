@@ -128,7 +128,7 @@ class ProgressBus:
         :meth:`_close_channel`, so the two can never drift apart:
 
         * the ``list(...)`` snapshot — a subscriber removes its own queue in
-          the ``finally`` of :meth:`subscribe`, so the live list can be
+          :meth:`Subscription._detach`, so the live list can be
           mutated while we walk it;
         * the ``QueueFull`` policy — a subscriber that cannot keep up simply
           loses *item* and reconciles via replay on reconnect, because
@@ -170,12 +170,22 @@ class ProgressBus:
             return 1
         return channel.ring[0].seq
 
-    async def subscribe(self, task_id: str) -> AsyncIterator[Event]:
-        """Async iterator yielding *live* events for a task.
+    def subscribe(self, task_id: str) -> "Subscription":
+        """Register a live subscriber NOW and return its async iterator.
 
-        The caller is responsible for first replaying via :meth:`replay`
-        to catch up any missed events, then draining this iterator until
-        a terminal event (``done`` / ``error``) arrives.
+        Registration is synchronous on purpose: the queue is attached the
+        moment this returns, *before* the caller takes its :meth:`replay`
+        snapshot. An event published between the two then lands in the queue
+        as well as the ring, so a replay-then-stream consumer must skip live
+        events whose ``seq`` it already replayed (see ``api/ws/progress.py``)
+        -- but it can no longer lose one. (When this was an async generator
+        the queue only attached on the first ``__anext__``, a loop turn after
+        the replay, so a fast job's terminal ``done``/``error`` could fall
+        into that gap and the UI showed the task running forever.)
+
+        Iterating yields live events until a terminal ``done`` / ``error``
+        or the channel closes. Call :meth:`Subscription.aclose` when done
+        with it -- also when it was never iterated -- to detach the queue.
         """
 
         channel = self._channels.get(task_id)
@@ -187,29 +197,7 @@ class ProgressBus:
 
         q: "asyncio.Queue[Optional[Event]]" = asyncio.Queue(maxsize=1024)
         channel.subscribers.append(q)
-        try:
-            while True:
-                # Fast path for a channel that was already closed before we
-                # attached (or that we have now fully drained): nothing more
-                # will ever arrive, so don't park on ``get`` at all.
-                if channel.closed and q.empty():
-                    return
-                event = await q.get()
-                # ``None`` is the close sentinel from ``_close_channel``. It
-                # means the channel closed with nothing more coming, so the
-                # pre-check above can no longer save us — we are already past
-                # it, parked in ``get``. Ending here is what lets the
-                # WebSocket handler fall out of its ``async for``.
-                if event is None:
-                    return
-                yield event
-                if event.type in ("done", "error"):
-                    return
-        finally:
-            try:
-                channel.subscribers.remove(q)
-            except ValueError:
-                pass
+        return Subscription(channel, q)
 
     def close_task(self, task_id: str) -> None:
         """Mark a task channel closed; subscribers drain then exit."""
@@ -263,3 +251,52 @@ class ProgressBus:
         """Remove a task's ring buffer entirely (call once nothing will read it)."""
 
         self._channels.pop(task_id, None)
+
+
+class Subscription:
+    """An attached live subscriber of one task channel (see :meth:`ProgressBus.subscribe`)."""
+
+    def __init__(self, channel: _TaskChannel, queue: "asyncio.Queue[Optional[Event]]") -> None:
+        self._channel = channel
+        self._queue = queue
+        self._iterator = self._drain()
+
+    def __aiter__(self) -> "Subscription":
+        return self
+
+    async def __anext__(self) -> Event:
+        return await self._iterator.__anext__()
+
+    async def aclose(self) -> None:
+        """Stop iterating and detach the queue (idempotent; safe if never iterated)."""
+        await self._iterator.aclose()
+        self._detach()
+
+    def _detach(self) -> None:
+        try:
+            self._channel.subscribers.remove(self._queue)
+        except ValueError:
+            pass
+
+    async def _drain(self) -> AsyncIterator[Event]:
+        channel, q = self._channel, self._queue
+        try:
+            while True:
+                # Fast path for a channel that was already closed before we
+                # attached (or that we have now fully drained): nothing more
+                # will ever arrive, so don't park on ``get`` at all.
+                if channel.closed and q.empty():
+                    return
+                event = await q.get()
+                # ``None`` is the close sentinel from ``_close_channel``. It
+                # means the channel closed with nothing more coming, so the
+                # pre-check above can no longer save us — we are already past
+                # it, parked in ``get``. Ending here is what lets the
+                # WebSocket handler fall out of its ``async for``.
+                if event is None:
+                    return
+                yield event
+                if event.type in ("done", "error"):
+                    return
+        finally:
+            self._detach()

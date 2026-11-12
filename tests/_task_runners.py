@@ -80,3 +80,23 @@ def artifact_registering_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
 
     ctx.emit("stage_end", stage="emit", pct=1.0, msg="wrote 2 artifacts")
     return {"summary": {"ok": True}, "artifacts": artifacts}
+
+
+def interrupted_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
+    """Raise ``KeyboardInterrupt`` as a terminal Ctrl-C does inside a running worker.
+
+    The interrupt travels home as the job's exception; ``TaskManager`` must record
+    it as this task's failure instead of letting it escape the event loop (fact 5
+    in ``api.services.task_manager``).
+    """
+    ctx.emit("progress", stage="interrupted", pct=0.1, msg="about to be interrupted")
+    raise KeyboardInterrupt
+
+
+def killed_runner(params: Dict[str, Any], ctx) -> Dict[str, Any]:
+    """Die the way an OOM kill or ``kill -9`` ends a worker: abruptly, mid-job."""
+    import os
+    import signal
+
+    os.kill(os.getpid(), signal.SIGKILL)
+    return {}  # pragma: no cover - never reached

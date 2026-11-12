@@ -7,6 +7,8 @@ The web face of :mod:`memdiver.app.tools_image`:
 * ``POST /api/image/open-view``       — write a ``.mdview`` descriptor (JOB: sha256 of the image).
 * ``GET  /api/image/processes``       — task list of a kernel/process view (inline, cached context).
 * ``POST /api/image/extract-process`` — process view -> ``.msl`` (JOB).
+* ``GET  /api/image/siblings``        — sibling groups + frame accounting (inline; writes nothing).
+* ``POST /api/image/siblings``        — the same, optionally writing a ``.mdview`` per member (JOB).
 
 A job returns ``{"task_id", "status"}`` immediately; progress streams over
 ``/ws/tasks/{task_id}`` and the producer payload is the ``image_result`` artifact
@@ -58,6 +60,18 @@ class OpenViewRequest(StrictModel):
 class ExtractRequest(StrictModel):
     view_path: str
     out_path: str
+
+
+class SiblingsRequest(StrictModel):
+    image_path: str
+    isf: Optional[str] = None
+    comm: Optional[str] = None
+    min_members: int = 2
+    include_parent: bool = False
+    accounting: bool = True
+    open_views: bool = False
+    case_dir: Optional[str] = None
+    split_families: bool = True
 
 
 def _contained(path: Optional[str]) -> Optional[str]:
@@ -114,3 +128,23 @@ def extract_process(req: ExtractRequest):
     """Submit the job that extracts a process view into an ``.msl``."""
     return _submit("extract_process", {"view_path": req.view_path,
                                        "out_path": _contained(req.out_path)})
+
+
+@router.get("/siblings")
+def list_siblings(image_path: str, isf: Optional[str] = None, comm: Optional[str] = None,
+                  min_members: int = 2, include_parent: bool = False,
+                  accounting: bool = True, split_families: bool = True):
+    """Sibling groups of an image (cached context; walks the members' page tables)."""
+    return tools_image.image_siblings_result(
+        image_path, isf, comm, min_members, include_parent, accounting,
+        split_families=split_families).payload
+
+
+@router.post("/siblings")
+def siblings_job(req: SiblingsRequest):
+    """Submit the sibling job (may write one ``.mdview`` per member with ``open_views``)."""
+    return _submit("siblings", {
+        "image_path": req.image_path, "isf": req.isf, "comm": req.comm,
+        "min_members": req.min_members, "include_parent": req.include_parent,
+        "accounting": req.accounting, "open_views": req.open_views,
+        "case_dir": _case_target(req.case_dir), "split_families": req.split_families})

@@ -214,7 +214,8 @@ export function KeyFindersPanel() {
           )}
           {rows.length === 0
             ? <p data-testid="keyfinders-empty" className="md-text-muted">{t("results.empty")}</p>
-            : <KeyHitsTable rows={rows} active={active} onRowClick={click} onVerify={verify} />}
+            : <KeyHitsTable rows={rows} active={active} onRowClick={click} onVerify={verify}
+                dumpPath={result.dump_path} />}
         </section>
       )}
     </div>

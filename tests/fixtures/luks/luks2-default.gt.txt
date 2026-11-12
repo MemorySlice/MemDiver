@@ -1,0 +1,5 @@
+# ground truth for luks2-default.hdr.bin (see README.md); plain key=value, '#' comments
+luks_version=2
+header_bytes=32768
+volume_key_hex=272a8deb001cf0893f6cc9c20ae1d7a6333ac498b04ac769706428a3bd4c9884414a1f32c8a844156c1a80abe7127eb0d18b44b68a420e7ec70818044a07ad97
+passphrase=memdiver-fixture-passphrase-luks2-default

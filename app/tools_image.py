@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -509,6 +510,113 @@ def image_extract_process_result(view_path: str, out_path: str) -> "ServiceResul
     return ServiceResult.ok(_extract_payload(result, path, ranges))
 
 
+# --- sibling groups (plan S2: in-image differential) ---------------------------------------
+
+#: Share classes reported per member next to the smaps-style totals.
+_SHARE_CLASS_FIELDS = ("private_file_cow", "shared_lineage", "shared_file", "shmem")
+
+
+def _profiled_context(image: Path, isf: Optional[str]) -> "tuple[ImageContext, ProfileRef]":
+    """The cached kernel context of an image (explicit ISF or the cached profile)."""
+    sha = file_sha256(image)
+    profile = _profile_for_view(image, sha, _isf_file(isf))
+    return get_image_context(image, sha, Path(profile.isf), profile.sha256), profile
+
+
+def _member_accounting(result: Any, pid: int) -> Dict[str, Any]:
+    """Post-mortem smaps of one member (bytes) + per-class bytes, private %, walk time."""
+    from memdiver.core.image.page_sharing import private_ratio
+    totals = result.accounting[pid]
+    by_class = dict.fromkeys(_SHARE_CLASS_FIELDS, 0)
+    for page in result.classification.pages:
+        if page.member == pid and page.share_class in by_class:
+            by_class[page.share_class] += page.length
+    return {"rss": totals["rss"], "private_dirty": totals["private_dirty"],
+            "private_clean": totals["private_clean"], "shared": totals["shared"],
+            **by_class, "zero": totals["zero"], "swapped": totals["swapped"],
+            "not_resident": totals["not_resident"], "smear": totals["smear_conflict"],
+            "private_pct": round(100.0 * private_ratio(totals), 3),
+            "walk_seconds": round(result.walk_seconds.get(pid, 0.0), 3)}
+
+
+def _member_row(member: Any) -> Dict[str, Any]:
+    facts = member.facts
+    start_code, mmap_base, start_stack = facts.aslr
+    return {"pid": facts.pid, "ppid": facts.ppid, "comm": facts.comm,
+            "exe_path": facts.exe_path, "build_id": facts.build_id,
+            "build_id_source": facts.build_id_source, "build_id_error": facts.build_id_error,
+            "role": member.role, "analysed": member.analysed,
+            "aslr": {"start_code": start_code, "mmap_base": mmap_base,
+                     "start_stack": start_stack},
+            "accounting": None, "view_path": None}
+
+
+def _group_row(group: Any) -> Dict[str, Any]:
+    return {"identity_kind": group.identity_kind, "identity": group.identity,
+            "family_root": group.family_root, "shape": group.shape,
+            "pair_shapes": dict(group.pair_shapes), "layout_clusters": group.layout_clusters,
+            "analysis_pids": group.analysis_pids,
+            "members": [_member_row(m) for m in group.members]}
+
+
+def _account_group(image_ctx: ImageContext, row: Dict[str, Any]) -> float:
+    """Classify the group's analysed members together (T1 within the group); seconds."""
+    from memdiver.core.image.page_sharing import classify_processes
+    started = time.perf_counter()
+    result = classify_processes(image_ctx, row["analysis_pids"])
+    for member in row["members"]:
+        if member["pid"] in result.accounting:
+            member["accounting"] = _member_accounting(result, member["pid"])
+    return time.perf_counter() - started
+
+
+def _open_member_views(image: Path, isf: Optional[str], case_dir: Optional[str],
+                       row: Dict[str, Any]) -> None:
+    for member in row["members"]:
+        if member["analysed"]:
+            member["view_path"] = image_open_view_result(
+                str(image), "process", member["pid"], isf, case_dir).payload["view_path"]
+
+
+def image_siblings_result(image_path: str, isf: Optional[str] = None,
+                          comm: Optional[str] = None, min_members: int = 2,
+                          include_parent: bool = False, accounting: bool = True,
+                          open_views: bool = False, case_dir: Optional[str] = None,
+                          split_families: bool = True) -> "ServiceResult":
+    """Sibling groups of one image: instances of one binary that can stand in for N captures.
+
+    Identity = ELF build-id (fallback exe path, then comm); one group per lineage family
+    (``split_families``); shape ``forked``/``independent``/``mixed``; role hints. The
+    listener is listed but not analysed unless ``include_parent``. ``accounting`` walks and
+    classifies every analysed member's frames within its group (post-mortem smaps, bytes).
+    ``open_views`` writes a process ``.mdview`` per analysed member (into ``case_dir``,
+    default a case named after the image) and returns the paths.
+    """
+    from memdiver.core.image.siblings import discover_siblings
+    if min_members < 1:
+        raise _invalid("min_members must be >= 1", "invalid_min_members")
+    image = _image_file(image_path)
+    image_ctx, profile = _profiled_context(image, isf)
+    found = discover_siblings(image_ctx, comm=comm or None, min_members=min_members,
+                              include_parent=include_parent, split_families=split_families)
+    groups = [_group_row(g) for g in found.groups]
+    accounting_seconds = sum(_account_group(image_ctx, row) for row in groups) \
+        if accounting else 0.0
+    if open_views:
+        for row in groups:
+            _open_member_views(image, isf, case_dir, row)
+    return ServiceResult.ok({
+        "image": str(image), "capture_id": file_sha256(image), "isf": profile.isf,
+        "profile_origin": profile.origin, "comm": comm or None, "min_members": min_members,
+        "include_parent": include_parent, "split_families": split_families,
+        "tasks_examined": found.tasks_examined,
+        "same_address_space": [{"pid": pid, "same_as": kept}
+                               for pid, kept in sorted(found.same_address_space.items())],
+        "count": len(groups), "groups": groups,
+        "timings": {"discover_seconds": round(found.seconds, 3),
+                    "accounting_seconds": round(accounting_seconds, 3)}})
+
+
 __all__ = ["DEFAULT_PROCESS_LIMIT", "PROBE_BANNER_LIMIT", "image_probe_result",
            "image_profile_result", "image_open_view_result", "image_processes_result",
-           "image_extract_process_result"]
+           "image_extract_process_result", "image_siblings_result"]

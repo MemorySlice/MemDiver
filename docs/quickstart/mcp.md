@@ -1,6 +1,6 @@
 # MCP server quickstart
 
-MemDiver ships a first-class Model Context Protocol (MCP) server. It exposes **120 tools** (list them with your client's tool picker, or `tools/list`), **8 playbook prompts** and **4 case resources** to MCP-speaking agents (Claude Code, Claude Desktop, Cursor, Continue) over stdio or SSE transports.
+MemDiver ships a first-class Model Context Protocol (MCP) server. It exposes **127 tools** (list them with your client's tool picker, or `tools/list`), **8 playbook prompts** and **4 case resources** to MCP-speaking agents (Claude Code, Claude Desktop, Cursor, Continue) over stdio or SSE transports.
 
 ## Stdio (default — recommended for Claude Desktop / Claude Code)
 

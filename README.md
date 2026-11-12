@@ -191,7 +191,7 @@ network with zero auth is refused outright. Set a token, or override with
 | Detection algorithms | **8** | [`algorithms/`](algorithms/) — `exact_match`, `entropy_scan`, `change_point`, `differential`, `constraint_validator`, `user_regex`, `pattern_match`, `structure_scan` |
 | CLI subcommands | **33** | [`cli/`](cli/) |
 | FastAPI routers | **19** + WebSocket | [`api/routers/`](api/routers/) |
-| MCP tools | **120** + 8 prompts + 4 resources | [`mcp_server/`](mcp_server/) |
+| MCP tools | **127** + 8 prompts + 4 resources | [`mcp_server/`](mcp_server/) |
 | Exporters | YARA · JSON · Volatility3 | [`architect/`](architect/) |
 | Dump backends | `memslicer` · `lldb` · `fridump` (Frida; *not* friTap) | [`core/dump_driver.py`](core/dump_driver.py) |
 | Visualization views | 4 SPA + 5 Marimo research-mode | [`frontend/`](frontend/) + [`ui/`](ui/) |
@@ -210,7 +210,7 @@ Add this block to `~/Library/Application Support/Claude/claude_desktop_config.js
 }
 ```
 
-Restart the MCP client — the 120 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
+Restart the MCP client — the 127 MemDiver tools (`scan_dataset`, `analyze_library`, `get_entropy`, `brute_force`, `emit_plugin`, …) appear in the tool picker.
 
 ## Power-user CLI
 
@@ -247,6 +247,7 @@ Newer subcommands at a glance:
 - `keys` — key finders: recognise key material by structure in a dump's captured bytes (`list`, `scan`), e.g. `memdiver keys scan dump.msl --finder aes_schedule --heap-policy annotate --case ./case`
 - `fixtures` — detector fixtures: positive controls and decoys with a pass / fail / indeterminate verdict for YARA rules and key finders (`run`, `add`, `list`, `remove`), e.g. `memdiver fixtures run --kind keyfinder aes_schedule`
 - `strings` — strings as a table with IOC badges (`table`), e.g. `memdiver strings table dump.msl --case ./case`; the `strings_iocs` saved query adds IOC columns
+- `oracle` — format oracles (gocryptfs, LUKS, XTS, AEAD, SSH, X25519) as a BYO-oracle source: list them, suggest one for a dump (always with the reason), build a spec and grade keys (`formats`, `suggest`, `spec`), e.g. `memdiver oracle spec luks --sample hdr.bin --candidate <key hex>`
 
 Run `memdiver <cmd> --help` for any of them, or see the full [CLI reference](https://memoryslice.github.io/MemDiver/user_guide/cli_reference.html).
 
@@ -275,6 +276,14 @@ Switch via **Settings → Display → Chart backend**. The preference persists p
 - **Contributing** — <https://memoryslice.github.io/MemDiver/contributing/index.html>
 - **Changelog** — [CHANGELOG.md](CHANGELOG.md)
 
+## Volatility 3 plugins
+
+MemDiver ships a suite of Volatility 3 plugins that recover secrets from Linux memory images and process captures and prove each one with a format-native oracle: `linux.dmcrypt` (LUKS1, LUKS2, VeraCrypt), `linux.wireguard`, `linux.keyring`, `linux.fscrypt`, `linux.ecryptfs`, `memdiver.ssh`, `memdiver.wireguard_go`, a `.msl` layer with `msl.*` plugins, and `memdiver vol3 synthesize`, which turns a key found in a process slice into a standalone plugin with its oracle inlined. They run under stock Volatility 3 (2.27 and 2.28): after `pip install memdiver`, use `vol -p "$(memdiver vol3 plugin-dir)" ...`. Small demo inputs are in [`samples/`](samples/README.md) and `make validate` checks every claim. See [docs/vol3/](docs/vol3/README.md) for usage, technical details, validation and compatibility.
+
+## Third-party integrations
+
+[pakunoda](https://github.com/monkeywave/pakunoda) is a separate third-party open-source tool, not part of MemDiver. MemDiver integrates with it optionally, to build Linux kernel profiles (ISF): it is installed only with the `image` extra (`pip install "memdiver[image]"`), is imported lazily, and is never vendored in the MemDiver wheel. Without it, the features that use it report that it is not installed. Volatility 3 is likewise a separate, optional tool.
+
 ## Architecture
 
 ```
@@ -287,7 +296,7 @@ algorithms/     8 algorithms auto-discovered via pkgutil registry
 harvester/      Data ingestion — DumpIngestor, SidecarParser, MetadataStore
 architect/      Pattern Architect — static checker + generator + YARA / JSON / Volatility3 exporters
 msl/            Memory Slice (.msl) v1.1.0 — hand-rolled container with BLAKE3 integrity chain
-mcp_server/     MCP server — 120 tools + 8 playbook prompts + case resources for AI assistants
+mcp_server/     MCP server — 127 tools + 8 playbook prompts + case resources for AI assistants
 ui/             Marimo research sandbox (houses the 5 deeper views)
 docs/           Sphinx site (Read the Docs theme), published to GitHub Pages via docs.yml
 ```

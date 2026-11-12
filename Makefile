@@ -1,4 +1,4 @@
-.PHONY: test test-slow test-corpus cov lint typecheck fmt security fe-install fe-test fe-typecheck fe-lint fe-check check
+.PHONY: test test-slow test-corpus validate cov lint typecheck fmt security fe-install fe-test fe-typecheck fe-lint fe-check check
 
 # ---------------------------------------------------------------------------
 # Corpus environment variables (read by tests/_paths.py + tests/fixtures/
@@ -47,6 +47,34 @@ test-slow:
 test-corpus:
 	MEMDIVER_DATASET_ROOT="$(CORPUS)" MEMDIVER_TLS_DUMPS_DIR="$(CORPUS)" \
 		python -m pytest -q -m requires_dataset -v
+
+# The Volatility 3 plugin claim gate (tests/test_vol3plugins_corpus_gate.py): one test per
+# claim ID, a claim table (claim, vol version, result, seconds) at the end. The in-repo sample
+# claims (samples/) need nothing; the rest skip cleanly unless pointed at their inputs:
+#
+#   MEMDIVER_VOL3_VOL         stock `vol` (or a vol.py); default: the vol beside `python`
+#   MEMDIVER_VOL3_ALT_VOL_PY  a second volatility3 tree's vol.py (e.g. 2.28.2): every claim reruns
+#   MEMDIVER_VOL3_BARE_VOL    a `vol` with neither MemDiver nor a crypto library (claim C-SYN2)
+#   MEMDIVER_SECRETS_CORPUS   absolute dir of the x86_64 acquired-secrets captures (DM/WG/KR/FS/EC/LA57)
+#
+# Fetch the public capture corpus first (scripts/fetch_contest_corpus.py: download or local
+# mirror, SHA256SUMS verified, .xz decompressed) and run the gate against it:
+#
+#   make validate CORPUS_FETCH=1 CORPUS_RECORD=<zenodo id|URL|DOI> [CORPUS_DIR=/path]
+#   make validate CORPUS_FETCH=1 CORPUS_MIRROR=/local/copy/of/record [CORPUS_DIR=/path]
+#
+# VALIDATE_ARGS is passed to pytest (e.g. VALIDATE_ARGS='-k "C_DM1 or C_LA57"').
+CORPUS_DIR ?= $(HOME)/.cache/memdiver/contest_corpus
+VALIDATE_ARGS ?=
+validate:
+ifeq ($(CORPUS_FETCH),1)
+	python scripts/fetch_contest_corpus.py --target "$(CORPUS_DIR)" \
+		$(if $(CORPUS_MIRROR),--mirror "$(CORPUS_MIRROR)",--record "$(CORPUS_RECORD)")
+	MEMDIVER_SECRETS_CORPUS="$(CORPUS_DIR)" \
+		python -m pytest -q -p no:cacheprovider -rs tests/test_vol3plugins_corpus_gate.py $(VALIDATE_ARGS)
+else
+	python -m pytest -q -p no:cacheprovider -rs tests/test_vol3plugins_corpus_gate.py $(VALIDATE_ARGS)
+endif
 
 cov:
 	python -m pytest -q --ignore-glob='tests/e2e_*_test.py' --cov --cov-report=term-missing --cov-fail-under=82

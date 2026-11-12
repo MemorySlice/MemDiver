@@ -13,6 +13,7 @@ import {
 import type { AutoExportResult } from "@/api/types";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ArchitectIcon } from "@/components/common/Icons";
+import { LocatedKeysSection } from "./LocatedKeysSection";
 
 const BTN = "px-2 py-1 rounded border border-[var(--md-border)] hover:bg-[var(--md-bg-hover)] text-xs";
 const BTN_ACCENT = "px-2 py-1 rounded text-xs bg-[var(--md-accent-blue)] md-text-on-accent";
@@ -170,13 +171,19 @@ export function ArchitectPlaceholder() {
 
   if (!hasDumps) {
     return (
-      <EmptyState
-        icon={<ArchitectIcon />}
-        title={t("research.emptyTitle")}
-        description={t("research.emptyDescription")}
-        secondary={{ label: t("research.emptySecondaryLabel"), doc: "visualizations/architect.md" }}
-        data-testid="architect-empty"
-      />
+      <>
+        <EmptyState
+          icon={<ArchitectIcon />}
+          title={t("research.emptyTitle")}
+          description={t("research.emptyDescription")}
+          secondary={{ label: t("research.emptySecondaryLabel"), doc: "visualizations/architect.md" }}
+          data-testid="architect-empty"
+        />
+        {/* Locating a known key needs only ONE dump, unlike the comparisons above. */}
+        {dumpPaths.length > 0 && (
+          <div className="md-panel p-2"><LocatedKeysSection dumpPaths={dumpPaths} /></div>
+        )}
+      </>
     );
   }
 
@@ -398,6 +405,8 @@ export function ArchitectPlaceholder() {
           )}
         </div>
       )}
+
+      <LocatedKeysSection dumpPaths={dumpPaths} />
     </div>
   );
 }

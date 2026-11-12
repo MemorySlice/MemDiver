@@ -72,6 +72,33 @@ class TestSSH2KDF:
         encoded = SSH2KDF._encode_mpint(b"")
         assert encoded == b"\x00\x00\x00\x00"
 
+    def test_mpint_strips_leading_zero_bytes(self):
+        """RFC 4251 s5: no unnecessary leading zero bytes."""
+        assert SSH2KDF._encode_mpint(b"\x00\x00\x01\x02") == b"\x00\x00\x00\x02\x01\x02"
+
+    def test_mpint_leading_zero_then_high_bit_keeps_one_zero(self):
+        """Stripped, then re-padded once because the next byte has its top bit set."""
+        assert SSH2KDF._encode_mpint(b"\x00\x00\x80\x01") == b"\x00\x00\x00\x03\x00\x80\x01"
+        assert SSH2KDF._encode_mpint(b"\x00\x80") == b"\x00\x00\x00\x02\x00\x80"
+
+    def test_mpint_zero_is_the_empty_string(self):
+        assert SSH2KDF._encode_mpint(b"\x00") == b"\x00\x00\x00\x00"
+        assert SSH2KDF._encode_mpint(b"\x00\x00\x00") == b"\x00\x00\x00\x00"
+
+    def test_mpint_matches_the_vol3_plugin_encoder(self):
+        """core and vol3plugins ssh_kdf encode every K identically."""
+        from memdiver.vol3plugins.linux.secrets import ssh_kdf
+
+        for value in (b"", b"\x00", b"\x01", b"\x7f", b"\x80", b"\xff" * 32, b"\x00\xff\x01",
+                      b"\x00" * 5 + b"\x7f", b"\x00\x00\x80" + b"\x11" * 31):
+            assert SSH2KDF._encode_mpint(value) == ssh_kdf.encode_mpint(value), value
+
+    def test_derive_key_uses_the_minimal_mpint(self):
+        """A K with leading zeros derives the same keys as the same K without them."""
+        _K, H, sid = self._sample_inputs()
+        k = b"\x11" * 31
+        assert SSH2KDF.derive_key(b"\x00\x00" + k, H, "A", sid, 32) == SSH2KDF.derive_key(k, H, "A", sid, 32)
+
     def test_derive_key_different_hash_algo(self):
         """SHA-384 produces longer initial hash (48 bytes)."""
         K, H, sid = self._sample_inputs()

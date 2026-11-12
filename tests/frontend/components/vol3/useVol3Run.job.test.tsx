@@ -76,12 +76,14 @@ describe("useVol3Run cancel", () => {
     expect(hook.result.current.state.status).toBe("cancelled");
   });
 
-  it("stays cancelling when the cancel request fails, and a late done still ends it", async () => {
+  it("stays cancelling when the cancel request fails; a late done is a success and wins", async () => {
     api.cancelVol3Job.mockRejectedValue(new Error("gone"));
+    reply(`{"task_id":"t1","result":{},"payload":${doc}}`);
     const hook = await startJob();
     await act(async () => { await hook.result.current.cancel(); });
     expect(hook.result.current.state.status).toBe("cancelling");
     act(() => ws.cbs.onDone({}));
-    expect(hook.result.current.state.status).toBe("cancelled");
+    await waitFor(() => expect(hook.result.current.state.status).toBe("done"));
+    expect(hook.result.current.state.result!.rows[0].values[0]).toBe(KVA);
   });
 });

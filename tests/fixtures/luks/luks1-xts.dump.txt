@@ -1,0 +1,27 @@
+LUKS header information for luks1-xts.img
+
+Version:       	1
+Cipher name:   	aes
+Cipher mode:   	xts-plain64
+Hash spec:     	sha256
+Payload offset:	4096
+MK bits:       	512
+MK digest:     	1a 69 19 94 25 1c 79 8d 3f c6 65 ec e0 5e d4 9f d6 aa 53 96 
+MK salt:       	4c 61 d4 ce 96 d9 c7 88 aa 18 bb 33 24 31 1e 0e 
+               	e4 5a fd 82 8e 58 a4 2a 29 45 06 f5 60 f1 c2 15 
+MK iterations: 	154931
+UUID:          	ef37cd61-582c-4060-953a-eb50fc63e4e3
+
+Key Slot 0: ENABLED
+	Iterations:         	2487724
+	Salt:               	27 17 15 15 ec fa 37 86 37 6e 97 d4 f0 7b 16 3c 
+	                      	74 37 84 78 8d 7b be 93 95 0f 4d 9d 78 25 af 56 
+	Key material offset:	8
+	AF stripes:            	4000
+Key Slot 1: DISABLED
+Key Slot 2: DISABLED
+Key Slot 3: DISABLED
+Key Slot 4: DISABLED
+Key Slot 5: DISABLED
+Key Slot 6: DISABLED
+Key Slot 7: DISABLED

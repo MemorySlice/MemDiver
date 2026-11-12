@@ -245,8 +245,6 @@ def test_blank_case_keeps_the_producer_error(client, env):
 
 
 def test_image_case_target_and_contained(env):
-    from fastapi import HTTPException
-
     from memdiver.api.routers.image import _case_target, _contained
     assert _case_target(None) is None and _case_target("") is None
     assert _case_target("plain") == "plain"
@@ -254,6 +252,6 @@ def test_image_case_target_and_contained(env):
     inside = env["uploads"] / "out.json"
     assert _contained(str(inside)) == str(inside.resolve())
     for bad in REFUSED:
-        with pytest.raises(HTTPException) as ei:
+        with pytest.raises(CapabilityError) as ei:
             _case_target(bad)
-        assert ei.value.status_code == 403
+        assert ei.value.status == 403 and ei.value.code == "path.outside_sandbox"

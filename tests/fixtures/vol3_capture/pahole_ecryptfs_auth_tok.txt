@@ -1,0 +1,16 @@
+struct ecryptfs_auth_tok {
+	u16                        version;              /*     0     2 */
+	u16                        token_type;           /*     2     2 */
+	u32                        flags;                /*     4     4 */
+	struct ecryptfs_session_key session_key;         /*     8   588 */
+	/* --- cacheline 9 boundary (576 bytes) was 20 bytes ago --- */
+	u8                         reserved[32];         /*   596    32 */
+	union {
+		struct ecryptfs_password password;       /*   628   112 */
+		struct ecryptfs_private_key private_key; /*   628    44 */
+	} token;                                         /*   628   112 */
+
+	/* size: 740, cachelines: 12, members: 6 */
+	/* last cacheline: 36 bytes */
+};
+

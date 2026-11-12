@@ -1,0 +1,77 @@
+{
+ "class_name": "MemDiverSynthGocryptfs",
+ "decoder": {
+  "candidate_layout": "single",
+  "cipher": null,
+  "fields": [],
+  "key_length": 32,
+  "key_offset": 64
+ },
+ "description": "Secret located by MemDiver (32-byte key)",
+ "exporter": {
+  "formats": [
+   "json"
+  ]
+ },
+ "locators": [
+  {
+   "kind": "anchor_regex",
+   "params": {
+    "alignment": 1,
+    "max_hits": 4096,
+    "pattern": "20 00 00 00 00 00 00 00 60 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ad de 54 f4 4f 21 25 97 a0 f2 da 90 ea 28 12 df 0f 75 e5 64 81 41 92 a3 2b 93 4a 82 32 4e e0 f8 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20 00 00 00 00 00 00 00 60 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    "static_ratio": 0.8
+   }
+  },
+  {
+   "kind": "entropy",
+   "params": {
+    "max_candidates": 500000,
+    "mode": "fallback",
+    "step": 8,
+    "threshold": 4.5
+   }
+  }
+ ],
+ "name": "memdiver_gocryptfs",
+ "oracle": {
+  "kind": "gocryptfs-gcm",
+  "params": {},
+  "sample": {
+   "inline_b64": "TURHT0NGUzEAl3siY2lwaGVyIjpudWxsLCJjb25mX3ZlcnNpb24iOjIsImNyZWF0b3IiOiJnb2NyeXB0ZnMgMi40LjAiLCJmZWF0dXJlX2ZsYWdzIjpbIkhLREYiLCJHQ01JVjEyOCIsIkRpcklWIiwiRU1FTmFtZXMiLCJMb25nTmFtZXMiLCJSYXc2NCJdLCJmaWxlX3NpemUiOjE4M30AAhwNqWMWRF4GUcl+SwFzkL6/2xoIyZVSdHkYfn/CWIpDgQ2XFlFhcYo3xr95LYHYe7A77Ck+JWBmnizQTO7F00QOLBL5fWp1LLqAcngo/DTy7X6nIkSiDV4KoLWJkanJEHdwkU5iA/rVQnmsaw6u6p+DTaKHf0o1X0szPlFCre+ReQ9Ftlo73HDa+sVy/TiLvZck9iufBN7yNN78AvixTSmd9PQwuv/jS+D2EgE1ws6FzfCy5Uw=",
+   "path": null,
+   "sha256": "d98a8adec194e294ed4cd63334ab7af35a90cbc2936e0ec0195d78d478961428"
+  }
+ },
+ "provenance": {
+  "context": 64,
+  "dumps": [
+   {
+    "name": "gocryptfs_aes.msl",
+    "offsets": [
+     770592,
+     771232
+    ],
+    "sha256": "f0adcddf4f7acac3dd1441d326af18115e71e602d361b1209ebff157bc17ae39"
+   },
+   {
+    "name": "gocryptfs_xchacha.msl",
+    "offsets": [
+     115360,
+     116000
+    ],
+    "sha256": "1775474088861a57148c49f11762fab3788c00e877711139db248416ea77eef4"
+   }
+  ],
+  "generator": "memdiver.architect.vol3_recipe.recipe_from_located_key",
+  "key_length": 32,
+  "key_sha256": [
+   "200dc781c6e9912bd83f5cb7abb854d08ec714460391b3c72f0297de27667c5a",
+   "6ae1df4aecfe749feac0fc53be456f0f52ef8bf3e1189fe2fa7e9c1f61a7022f"
+  ],
+  "mask_windows": 4,
+  "pad_left": 64,
+  "view": "default"
+ },
+ "schema": "memdiver-vol3-recipe/2"
+}

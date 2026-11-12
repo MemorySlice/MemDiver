@@ -456,6 +456,7 @@ def locate_key_across_dumps(
     max_offsets: int = DEFAULT_MAX_KEY_OFFSETS,
     on_source: Optional[Callable[[Any], None]] = None,
     allocator: str = "auto",
+    opener: Optional[Callable[..., Any]] = None,
 ) -> KeyLocationResult:
     """Locate *needle* in every dump in *dump_paths*, honestly.
 
@@ -480,6 +481,11 @@ def locate_key_across_dumps(
             value, or ``"off"``). Unless ``"off"``, every dump WITH hits is
             heap-parsed once (cached) and each returned offset gains a
             ``heap`` entry (see :mod:`memdiver.engine.heap_hits`).
+        opener: Called as ``opener(path, **key_material)`` in place of
+            :func:`core.dump_source.open_dump` and used as a context manager
+            (default ``open_dump``). A run that reads the same dumps again
+            passes a pool's opener (``app.key_material.KeyedSources.opener``)
+            so an encrypted dump is decrypted once, not once per step.
 
     Returns:
         A :class:`KeyLocationResult` whose per-dump rows distinguish "searched
@@ -513,7 +519,7 @@ def locate_key_across_dumps(
         format_name = ""
         size = 0
         try:
-            with open_dump(path, **(key_material or {})) as source:
+            with (opener or open_dump)(path, **(key_material or {})) as source:
                 # FIRST, before any read: the caller's gate (e.g. the app
                 # layer's encrypted-container lock check) must run before this
                 # function can produce any row at all for this dump.

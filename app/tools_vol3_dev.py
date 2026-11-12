@@ -13,6 +13,8 @@ that return a :class:`ServiceResult` with a plain-JSON payload and RAISE a
   ``vol -c`` reproduce MemDiver's kernel stack outside MemDiver.
 * :func:`vol3_import_parquet_result` — an external vol3 table (Parquet / CSV /
   vol3's JSON / JSONL renderer output) into a ``vol3__*`` case table.
+* :func:`vol3_exec_result` — run a plugin by NAME under the stock ``vol``
+  launcher (a subprocess), e.g. ``msl.info`` or a synthesized plugin.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.core.service_result import ServiceResult
+
+from .tools_vol3_sources import SYNTHESIZED_HISTORY_DIR
 
 #: Layer-class module prefix that stock ``vol`` cannot import on its own.
 _MEMDIVER_LAYER_PREFIX = "memdiver."
@@ -466,5 +470,242 @@ def _file_stem(path: Path) -> str:
     return stem[:128]
 
 
+# -- exec: run a plugin by name under stock vol ----------------------------------
+
+#: Default wall-clock ceiling and echoed-row cap of :func:`vol3_exec_result`.
+DEFAULT_EXEC_TIMEOUT_S = 900
+DEFAULT_EXEC_MAX_ROWS = 1000
+#: stderr bytes echoed in the payload (the engine keeps a longer tail).
+EXEC_STDERR_ECHO = 16 * 1024
+#: Where replaced synthesized plugins are archived (``tools_vol3_sources.SYNTHESIZED_HISTORY_DIR``).
+#: vol imports EVERY ``.py`` beneath a ``-p`` directory, so an archive under
+#: one would load stale plugin versions; such a ``-p`` is refused. Compared
+#: casefolded (macOS / Windows file systems are case-insensitive).
+_HISTORY_PARTS = tuple(SYNTHESIZED_HISTORY_DIR.casefold().split("/"))
+#: Bounds on the history walk of one ``-p`` directory; beyond either the
+#: directory is refused rather than passed to vol unchecked.
+HISTORY_WALK_MAX_DIRS = 20_000
+HISTORY_WALK_MAX_DEPTH = 32
+
+
+def _not_found(what: str, path: Path) -> CapabilityError:
+    return CapabilityError(f"{what} not found: {path}", category=ErrorCategory.NOT_FOUND,
+                           code="vol3.exec.not_found")
+
+
+def _is_history_path(parts: Tuple[str, ...]) -> bool:
+    folded = tuple(p.casefold() for p in parts)
+    return any(folded[i:i + 2] == _HISTORY_PARTS for i in range(len(folded) - 1))
+
+
+def _holds_history(directory: Path) -> bool:
+    """True when *directory* is, is inside, or contains a ``vol3/history`` archive.
+
+    Follows symlinks like vol's own import walk does (a link to a history dir
+    counts), with a visited ``(st_dev, st_ino)`` set against link loops.
+    Raises :class:`CapabilityError` when the walk exceeds
+    :data:`HISTORY_WALK_MAX_DIRS` directories or :data:`HISTORY_WALK_MAX_DEPTH` levels.
+    """
+    import os
+
+    if _is_history_path(directory.parts):
+        return True
+    visited = set()
+    base_depth = len(directory.parts)
+    for root, dirs, _files in os.walk(directory, followlinks=True):
+        here = Path(root)
+        stat = here.stat()
+        if (stat.st_dev, stat.st_ino) in visited:
+            dirs[:] = []
+            continue
+        visited.add((stat.st_dev, stat.st_ino))
+        if len(visited) > HISTORY_WALK_MAX_DIRS or len(here.parts) - base_depth > HISTORY_WALK_MAX_DEPTH:
+            raise _invalid(f"plugin directory {directory} is too large to check for a "
+                           f"vol3/history archive (> {HISTORY_WALK_MAX_DIRS} directories or "
+                           f"> {HISTORY_WALK_MAX_DEPTH} levels); pass a narrower directory",
+                           "vol3.exec.plugin_dir_too_large")
+        if _is_history_path(here.parts) or _is_history_path(here.resolve().parts):
+            return True
+    return False
+
+
+def _exec_dirs(values: Any, what: str, *, plugin_dirs: bool) -> List[Path]:
+    """Existing, absolute, ``;``-free directories (``-p`` ones also history-free)."""
+    from memdiver.engine.vol3_subproc import semicolon_paths
+
+    items = [values] if isinstance(values, (str, Path)) else list(values or ())
+    dirs: List[Path] = []
+    for item in items:
+        directory = Path(item).expanduser().resolve()
+        if semicolon_paths([directory]):
+            raise _invalid(f"{what} may not contain ';' (vol separates -p / -s "
+                           f"directories with it): {directory}", "vol3.exec.semicolon_in_path")
+        if not directory.is_dir():
+            raise _not_found(what, directory)
+        if plugin_dirs and _holds_history(directory):
+            raise _invalid(f"{what} {directory} is or contains a vol3/history archive of "
+                           "replaced plugins; pass <case>/vol3/plugins instead",
+                           "vol3.exec.history_dir")
+        dirs.append(directory)
+    return dirs
+
+
+def require_launcher(vol_bin: Optional[str], vol_python: Optional[str], *,
+                     purpose: str, code: str) -> Any:
+    """The stock ``vol`` launcher, else UNSUPPORTED: "<purpose> needs a stock vol launcher: ..."."""
+    from memdiver.engine import vol3_subproc
+
+    launcher = vol3_subproc.resolve_launcher(vol_bin=vol_bin, vol_python=vol_python)
+    if launcher is None:
+        raise CapabilityError(
+            f"{purpose} needs a stock vol launcher: "
+            + vol3_subproc.launcher_report(vol_bin=vol_bin, vol_python=vol_python),
+            category=ErrorCategory.UNSUPPORTED, code=code)
+    return launcher
+
+
+def _exec_args(args: Any) -> List[str]:
+    """Plugin arguments as strings; vol GLOBAL options (``-p``, ``--log=``...) are refused."""
+    from memdiver.engine.vol3_subproc import refuse_global_options
+
+    if args is None:
+        return []
+    if isinstance(args, str) or not all(isinstance(a, (str, int, float)) for a in args):
+        raise _invalid("args must be a list of strings (vol plugin arguments)",
+                       "vol3.exec.bad_args")
+    values = [str(a) for a in args]
+    try:
+        refuse_global_options(values)
+    except ValueError as exc:
+        raise _invalid(str(exc), "vol3.exec.global_option") from exc
+    return values
+
+
+def _dir_state(directory: Path) -> Dict[str, Tuple[int, int]]:
+    """``name -> (mtime_ns, size)`` of every entry directly in *directory*."""
+    state: Dict[str, Tuple[int, int]] = {}
+    for entry in directory.iterdir():
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        state[entry.name] = (st.st_mtime_ns, st.st_size)
+    return state
+
+
+def _written_since(directory: Path, before: Dict[str, Tuple[int, int]]) -> List[str]:
+    """Entries of *directory* that are new or changed (mtime/size) since *before*.
+
+    A user-supplied ``out_dir`` may already hold files from earlier runs: those are
+    not this run's output and must not be reported as such.
+    """
+    return sorted(name for name, state in _dir_state(directory).items()
+                  if before.get(name) != state)
+
+
+def _exec_run(launcher: Any, plugin: str, image: Path, *, out_dir: Path,
+              timeout_s: int, **kwargs: Any) -> Any:
+    import subprocess  # nosec B404 - only for TimeoutExpired
+
+    from memdiver.engine import vol3_subproc
+
+    try:
+        return vol3_subproc.run_named_plugin(launcher, plugin, image, output_dir=out_dir,
+                                             timeout=int(timeout_s), **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise CapabilityError(f"vol {plugin} exceeded {timeout_s} s", status=504,
+                              category=ErrorCategory.PRECONDITION,
+                              code="vol3.exec.timeout") from exc
+    except (RuntimeError, ValueError) as exc:  # bad name, ';', output cap, bad JSON
+        raise _invalid(f"vol3 exec {plugin}: {exc}", "vol3.exec.failed") from exc
+
+
+def _exec_command(plugin: str, image: Path, dirs: List[Path],
+                  symbols: List[Path], plugin_args: List[str], out_dir: Optional[Path]) -> str:
+    """The copy-pasteable ``vol`` line (no ``-o`` for the discarded scratch directory).
+
+    The same :class:`~memdiver.engine.vol3_subproc.VolSpec` the run is built
+    from, rendered by its ``display_command`` (a bare ``vol``, no launcher path).
+    """
+    from memdiver.engine import vol3_subproc
+
+    return vol3_subproc.named_plugin_spec(
+        plugin, image, plugin_dirs=dirs, symbol_dirs=symbols, plugin_args=plugin_args,
+        output_dir=out_dir).display_command()
+
+
+def vol3_exec_result(plugin: str, image_path: str, *, plugin_dirs: Any = (),
+                     symbol_dirs: Any = (), args: Optional[List[str]] = None,
+                     include_memdiver_plugins: bool = True,
+                     timeout_s: int = DEFAULT_EXEC_TIMEOUT_S,
+                     max_rows: int = DEFAULT_EXEC_MAX_ROWS,
+                     vol_bin: Optional[str] = None, vol_python: Optional[str] = None,
+                     out_dir: Optional[str] = None) -> ServiceResult:
+    """Run a Volatility 3 plugin by NAME under the stock ``vol`` launcher.
+
+    ``vol -q -r json [-s <symbol_dirs> --offline] -p <dirs> [-o <out_dir>]
+    -f <image_path> <plugin> <args...>`` in a subprocess
+    (:func:`memdiver.engine.vol3_subproc.run_named_plugin`): the same command
+    an analyst types, e.g. ``msl.info`` over an ``.msl`` or a synthesized
+    plugin from ``<case>/vol3/plugins``. With *include_memdiver_plugins* the
+    installed ``memdiver/vol3plugins`` directory (``.msl`` layer, ``msl.*``,
+    ``linux.*`` secrets plugins) is the first ``-p`` directory. A plugin
+    directory that is or contains ``vol3/history`` is refused (vol would
+    import every archived version), as is ``;`` in any ``-p`` / ``-s`` path.
+    *out_dir* receives files a plugin writes; without it they go to a
+    temporary directory that is discarded. *args* follow the plugin name;
+    vol GLOBAL options there (any single-dash option, any ``--name`` that
+    abbreviates a global such as ``--plugin-dirs`` / ``--log``) are refused,
+    because vol reads globals from the whole command line. Path arguments a
+    PLUGIN itself takes (``--oracle-sample <dir>``, ``--dump-dir``...) are NOT
+    checked against the server's read sandbox: they are opaque plugin values. The launcher and its interpreter
+    come from *vol_bin* / *vol_python*, else ``MEMDIVER_VOL3_BIN`` /
+    ``MEMDIVER_VOL3_PYTHON``, else ``vol`` on ``PATH``.
+
+    A plugin that FAILS is a finding, not an exception: ``ok: false`` with
+    ``returncode`` and ``stderr_tail``. Raises :class:`CapabilityError` for bad
+    input (NOT_FOUND paths, ``;`` / history dirs, a malformed plugin name, a
+    vol global option in *args*),
+    no launcher (UNSUPPORTED) and a timeout (504).
+    """
+    import tempfile
+
+    if not plugin or not str(plugin).strip():
+        raise _invalid("plugin is required (a vol plugin name, e.g. msl.info)",
+                       "vol3.exec.plugin_required")
+    image = Path(image_path).expanduser().resolve()
+    if not image.is_file():
+        raise _not_found("image", image)
+    dirs = _exec_dirs(plugin_dirs, "plugin directory", plugin_dirs=True)
+    if include_memdiver_plugins:
+        from memdiver.app.tools_pipeline import vol3_plugin_dir
+        package_dir = Path(vol3_plugin_dir()["path"])
+        dirs = [package_dir] + [d for d in dirs if d != package_dir]
+    symbols = _exec_dirs(symbol_dirs, "symbol directory", plugin_dirs=False)
+    plugin_args = _exec_args(args)
+    launcher = require_launcher(vol_bin, vol_python, purpose="vol3 exec",
+                                code="vol3.exec.no_launcher")
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="memdiver_vol3_exec_") as scratch:
+        target = Path(out_dir).expanduser().resolve() if out_dir else Path(scratch)
+        target.mkdir(parents=True, exist_ok=True)
+        before = _dir_state(target)
+        run = _exec_run(launcher, plugin, image, out_dir=target, timeout_s=timeout_s,
+                        plugin_dirs=dirs, symbol_dirs=symbols, plugin_args=plugin_args)
+        output_files = _written_since(target, before)
+    cap = max(0, int(max_rows))
+    return ServiceResult.ok({
+        "ok": run.returncode == 0, "returncode": run.returncode, "plugin": plugin,
+        "image_path": str(image), "plugin_dirs": [str(d) for d in dirs],
+        "symbol_dirs": [str(d) for d in symbols], "args": plugin_args,
+        "rows": run.rows[:cap], "row_count": len(run.rows), "truncated": len(run.rows) > cap,
+        "stderr_tail": run.stderr_tail[-EXEC_STDERR_ECHO:], "framework": run.framework,
+        "vol_command": _exec_command(plugin, image, dirs, symbols, plugin_args,
+                                     target if out_dir else None),
+        "launcher": launcher.describe(), "elapsed_s": round(time.monotonic() - started, 3),
+        "out_dir": str(target) if out_dir else None, "output_files": output_files,
+    })
+
+
 __all__ = ["SHIM_FILE", "vol3_scaffold_result", "vol3_check_result",
-           "vol3_write_config_result", "vol3_import_parquet_result"]
+           "vol3_write_config_result", "vol3_import_parquet_result", "vol3_exec_result"]

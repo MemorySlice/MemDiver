@@ -3,7 +3,7 @@
 import json
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger("memdiver.mcp_server")
 
@@ -59,10 +59,13 @@ def create_server():
         DEFAULT_INCLUDE_HITS,
         DEFAULT_INCLUDE_MATCHES,
         DEFAULT_RESOURCE_TYPE,
+        SYNTH_DEFAULT_CONTEXT,
+        SYNTH_VERIFY_TARGETS,
         VOL3_MAX_HITS,
         VOL3_MODE_AUTO,
         VOL3_SUBPROC_TIMEOUT_S,
     )
+    from memdiver.app.tools_vol3_dev import DEFAULT_EXEC_MAX_ROWS, DEFAULT_EXEC_TIMEOUT_S
     # Same reason: the key-location tool defaults must be the engine's numbers.
     from memdiver.engine.key_location import (
         DEFAULT_KEY_CONTEXT,
@@ -91,6 +94,7 @@ def create_server():
         tools_annotations, tools_case, tools_code_evidence, tools_detector_fixtures, tools_disasm, tools_heap, tools_image,
         tools_isf, tools_keyfinders, tools_strings,
         tools_yara, tools_yara_rules, tools_vol3, tools_vol3_dev, tools_vol3_fixtures, tools_vol3_sources,
+        tools_format_oracle,
     )
     # Rows land in the model's context window: a smaller default than REST/CLI.
     MCP_KEYFINDER_LIMIT = 200
@@ -1041,6 +1045,26 @@ def create_server():
         """Extract the process of a process ``.mdview`` into an ``.msl`` file."""
         return tools_image.image_extract_process_result(view_path, out_path)
 
+    @mcp.tool()
+    def image_siblings(image_path: str, isf: Optional[str] = None, comm: Optional[str] = None,
+                       min_members: int = 2, include_parent: bool = False,
+                       accounting: bool = True, open_views: bool = False,
+                       case_dir: Optional[str] = None, split_families: bool = True) -> str:
+        """Sibling groups of one image: several processes of one binary (ELF build-id,
+        fallback exe path / comm) that can stand in for the N captures of a differential.
+
+        Per group: shape (``forked``/``independent``/``mixed``), lineage family root, role
+        hints (the ``listener`` is listed but not analysed unless ``include_parent``) and,
+        with ``accounting``, per-member frame accounting classified within the group (rss,
+        private_dirty/clean, shared_lineage/file, shmem, zero, swapped, private_pct, smear;
+        bytes). Walks every analysed member's page tables (seconds per process). Needs a
+        profile (``image_profile`` first, or ``isf``). ``open_views`` writes one process
+        ``.mdview`` per analysed member into ``case_dir`` and returns the paths.
+        """
+        return tools_image.image_siblings_result(
+            image_path, isf, comm, min_members, include_parent, accounting, open_views,
+            case_dir, split_families)
+
     # -- vol3.* : Volatility 3 plugins over a .mdview. Runs inline and blocks
     # (no TaskManager in this stdio process). A ``source`` plugin runs
     # UNSANDBOXED in this process (D7); its sha256 is logged.
@@ -1171,9 +1195,13 @@ def create_server():
         return tools_vol3_sources.vol3_source_list_result(case_dir)
 
     @mcp.tool()
-    def vol3_source_get(case_dir: str, name: str) -> str:
-        """One stored plugin source with its metadata; ``modified_externally`` flags a hand edit."""
-        return tools_vol3_sources.vol3_source_get_result(case_dir, name)
+    def vol3_source_get(case_dir: str, name: str, origin: Optional[str] = None) -> str:
+        """One stored plugin source with its metadata; ``modified_externally`` flags a hand edit.
+
+        ``origin`` ("user" / "synthesized") picks one when a user source and a
+        synthesized plugin share ``name``; omitted, the user source wins.
+        """
+        return tools_vol3_sources.vol3_source_get_result(case_dir, name, origin)
 
     @mcp.tool()
     def vol3_source_put(case_dir: str, name: str, source: str,
@@ -1223,6 +1251,132 @@ def create_server():
         return tools_vol3_fixtures.vol3_fixture_run_result(
             case_dir, name, view_path=view_path, limit=limit, timeout_s=timeout_s,
             register_run=register_run)
+
+    @mcp.tool()
+    def vol3_plugin_dir() -> str:
+        """The installed ``memdiver/vol3plugins`` directory: the ``vol -p`` dir for ``.msl`` + secrets plugins."""
+        return json.dumps(tools_pipeline.vol3_plugin_dir())
+
+    @mcp.tool()
+    def synthesize_vol3_plugin(
+        dump_paths: List[str], name: str, oracle_kind: str,
+        key_hex: Union[str, List[str]] = "", hit: Optional[dict] = None,
+        oracle_sample_path: Union[str, List[str]] = "",
+        oracle_params: Optional[dict] = None, context: int = SYNTH_DEFAULT_CONTEXT,
+        case_dir: Optional[str] = None,
+        verify_on: List[str] = list(SYNTH_VERIFY_TARGETS),  # noqa: B006 - never mutated
+        full_image: Optional[str] = None, pid: Optional[int] = None,
+        vol_bin: Optional[str] = None, vol_python: Optional[str] = None,
+        key_file: Optional[str] = None, passphrase: Optional[str] = None,
+        kem_key_file: Optional[str] = None, allow_high_entropy_context: bool = False,
+        full_image_sample: Optional[str] = None, full_image_key_hex: str = "",
+        symbol_dirs: Optional[List[str]] = None,
+    ) -> str:
+        """A key located in N dumps -> a standalone Volatility 3 plugin, RUN and judged by ``Proven``.
+
+        Locates the key (``key_hex``: one for all dumps or one per dump; or a
+        located ``hit``), builds a recipe, emits the plugin with the
+        ``oracle_kind`` oracle inlined (evidence: ``oracle_sample_path``, e.g. a
+        gocryptfs cipher dir, one for all or one per dump) and runs it on every
+        ``verify_on`` target (``"msl"`` = in-process on each ``.msl``; ``[]``
+        skips). ``full_image`` (+ ``pid``, ``symbol_dirs``, the image's own
+        ``full_image_sample`` / ground-truth ``full_image_key_hex``) also runs it
+        under stock ``vol``. ``case_dir`` must be an EXISTING case (name or
+        path); the plugin is stored in ``<case>/vol3/plugins``.
+
+        Read ``proven`` (every target proved the key) and each verdict's
+        ``status``; ``vol_command`` is the copy-pasteable stock ``vol`` line
+        (run it with ``vol3_exec``), and each verdict's ``exec`` holds the same
+        command as ``vol3_exec`` arguments (``plugin``, ``image_path``,
+        ``plugin_dirs``, ``symbol_dirs``, ``args``). The key never appears in the reply.
+        ``key_file`` / ``passphrase`` / ``kem_key_file`` decrypt encrypted ``.msl``.
+        """
+        from memdiver.analysis.case import existing_case_dir
+        from memdiver.app.vol3_surface_limits import check_synth_request
+
+        check_synth_request(dump_paths, full_image, full_image_sample)
+        return json.dumps(tools_pipeline.synthesize_vol3_plugin(
+            dump_paths=dump_paths, name=name, key_hex=key_hex, hit=hit,
+            oracle_kind=oracle_kind, oracle_sample_path=oracle_sample_path or None,
+            oracle_params=oracle_params, context=context,
+            case_dir=existing_case_dir(case_dir), verify_on=tuple(verify_on),
+            full_image=full_image, pid=pid, vol_bin=vol_bin, vol_python=vol_python,
+            key_file=key_file, passphrase=passphrase, kem_key_file=kem_key_file,
+            allow_high_entropy_context=allow_high_entropy_context,
+            full_image_sample=full_image_sample, full_image_key_hex=full_image_key_hex,
+            symbol_dirs=list(symbol_dirs or [])))
+
+    # -- format oracles as a BYO-oracle source (C1) ---------------------------
+    @mcp.tool()
+    def format_oracles() -> str:
+        """The shipped format oracles: kind, candidate key lengths, cost per verify (us),
+        the evidence (sample) each needs, and ``unique`` (one sample admits one key).
+
+        A kind is what ``synthesize_vol3_plugin(oracle_kind=...)`` and
+        ``format_oracle_spec`` take.
+        """
+        return tools_format_oracle.list_format_oracles_result()
+
+    @mcp.tool()
+    def suggest_format_oracle(dump_path: str) -> str:
+        """Which format oracle fits ``dump_path``, and WHY (``suggestion`` may be null).
+
+        Signals, strongest first: the run's meta.json gocryptfs vault (the sample
+        is one of the vault's own files), an ``.msl`` KEY_HINT, the process
+        exe / module list (e.g. ``libssh.so`` -> ssh-kdf-consistency). Read
+        ``reason`` before using it; ``sample_needed`` says what evidence to find
+        when no sample could be derived.
+        """
+        return tools_format_oracle.suggest_format_oracle_result(dump_path)
+
+    @mcp.tool()
+    def format_oracle_spec(
+        kind: str, oracle_sample_path: Optional[str] = None,
+        sample_b64: Optional[str] = None, params: Optional[dict] = None,
+        candidates_hex: Optional[List[str]] = None,
+    ) -> str:
+        """Build format oracle ``kind`` from its evidence and return the BYO-oracle spec.
+
+        ``oracle_sample_path`` is a ready sample or the artefact it is packed from
+        (a gocryptfs vault file/dir, a raw LUKS header); ``sample_b64`` the blob
+        itself. The reply's ``oracle_path`` + ``oracle_config`` go straight into
+        ``brute_force`` / ``n_sweep``. ``candidates_hex`` (max 64) are graded
+        (proven / rejected / error + detail) and never echoed back.
+        """
+        return tools_format_oracle.format_oracle_spec_result(
+            kind, oracle_sample_path=oracle_sample_path, sample_b64=sample_b64,
+            params=params, candidates_hex=candidates_hex)
+
+    @mcp.tool()
+    def vol3_exec(
+        plugin: str, image_path: str, plugin_dirs: Optional[List[str]] = None,
+        symbol_dirs: Optional[List[str]] = None, args: Optional[List[str]] = None,
+        include_memdiver_plugins: bool = True, timeout_s: int = DEFAULT_EXEC_TIMEOUT_S,
+        max_rows: int = DEFAULT_EXEC_MAX_ROWS, vol_bin: Optional[str] = None,
+        vol_python: Optional[str] = None, out_dir: Optional[str] = None,
+    ) -> str:
+        """Run a Volatility 3 plugin by NAME under the stock ``vol`` launcher (a subprocess).
+
+        ``vol -q -r json [-s symbol_dirs --offline] -p <memdiver/vol3plugins;plugin_dirs>
+        -f image_path plugin args...``: e.g. ``plugin="msl.info"`` over an ``.msl``,
+        or a synthesized plugin (``plugin_dirs=["<case>/vol3/plugins"]``). ``args``
+        go after the plugin name (``["--pid", "42"]``). Code in every ``-p``
+        directory is IMPORTED by vol; a directory holding ``vol3/history`` and
+        ``;`` in any path are refused. A failing plugin is ``ok: false`` with
+        ``returncode`` and ``stderr_tail``; ``rows`` holds at most ``max_rows``
+        (``row_count`` is the total). ``out_dir`` keeps files a plugin writes.
+        ``timeout_s`` is 1..900. vol GLOBAL options in ``args`` (``-p``, ``--log``,
+        any single-dash flag) are refused; path arguments a plugin itself takes
+        are NOT checked against the read sandbox.
+        """
+        from memdiver.app.vol3_surface_limits import check_exec_timeout
+
+        check_exec_timeout(timeout_s)
+        return tools_vol3_dev.vol3_exec_result(
+            plugin, image_path, plugin_dirs=plugin_dirs or [], symbol_dirs=symbol_dirs or [],
+            args=args, include_memdiver_plugins=include_memdiver_plugins,
+            timeout_s=timeout_s, max_rows=max_rows, vol_bin=vol_bin, vol_python=vol_python,
+            out_dir=out_dir)
 
     # The case_schema resource moved to mcp_server/resources.py (T6.1): resources
     # bypass guard_tool, so it now runs behind the read sandbox with its siblings.

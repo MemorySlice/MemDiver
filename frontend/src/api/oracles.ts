@@ -6,7 +6,7 @@
  * so it bypasses the shared JSON request() helper.
  */
 
-import { ApiError, request } from "./client";
+import { ApiError, postJson, request } from "./client";
 
 /**
  * Repo-relative directory the bundled example oracles are served from.
@@ -72,6 +72,8 @@ export interface OracleEntry {
    * fixture can describe an entry without restating an empty object.
    */
   config?: Record<string, unknown>;
+  /** Set for a built-in format oracle (`filename` is `format:<kind>`); null for an uploaded file. */
+  format_kind?: string | null;
 }
 
 /**
@@ -408,3 +410,10 @@ export const deleteOracle = (oracleId: string) =>
     `/api/oracles/${encodeURIComponent(oracleId)}`,
     { method: "DELETE" },
   );
+
+/** Register a built-in format oracle (unarmed) from a sample path: `POST /api/oracles/formats/{kind}`. */
+export const addFormatOracle = (kind: string, oracleSamplePath: string, description?: string) =>
+  postJson<OracleEntry>(`/api/oracles/formats/${encodeURIComponent(kind)}`, {
+    oracle_sample_path: oracleSamplePath || undefined,
+    description: description || undefined,
+  });

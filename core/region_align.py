@@ -11,6 +11,10 @@ Two key schemes share the one intersection routine (:func:`align_dumps`):
 * ``va:`` keys from :func:`build_va_page_index` — absolute virtual address,
   available whenever the dump carries a VA map at all (an ELF core's PT_LOAD
   table, a regioned raw dump's ``/proc/<pid>/maps`` sidecar).
+* ``mod:``/``heap:`` page keys from :func:`build_va_page_index` with
+  ``keying=module_relative`` — module-relative offsets derived from a process
+  view's VMA list (:mod:`core.module_relative`), for independently launched
+  processes whose ASLR bases differ.
 
 :class:`AlignmentCoverage` reports what either scheme (or the flat-offset
 fallback that uses neither) actually managed to compare.
@@ -27,6 +31,16 @@ logger = logging.getLogger("memdiver.core.region_align")
 #: ASLR-invariant module+offset alignment (:func:`align_dumps` below): the
 #: strongest correspondence, available when every source carries a module map.
 ALIGNMENT_MODULE_OFFSET = "module_offset"
+
+#: ASLR-invariant alignment of PROCESS VIEWS by module-relative page keys
+#: (:mod:`core.module_relative`): file pages by module+offset, ``.bss`` and
+#: ``[heap]`` by offset from their own start, derived from the view's VMA list.
+#: Ranked below :data:`ALIGNMENT_MODULE_OFFSET` because its keys are DERIVED
+#: from VMA names (no capture-time module table) and it drops non-heap
+#: anonymous memory; above :data:`ALIGNMENT_VIRTUAL_ADDRESS` because it stays
+#: correct when the processes were launched independently (different ASLR),
+#: where absolute addresses correspond only by accident.
+ALIGNMENT_MODULE_RELATIVE = "module_relative"
 
 #: Alignment by absolute virtual address, from a source that exposes a VA map
 #: (an ELF core's PT_LOAD table, a regioned raw dump's ``.maps`` sidecar).
@@ -48,6 +62,7 @@ ALIGNMENT_FILE_OFFSET = "file_offset"
 #: either place is a vocabulary that agrees today and drifts later.
 ALIGNMENT_METHODS = (
     ALIGNMENT_MODULE_OFFSET,
+    ALIGNMENT_MODULE_RELATIVE,
     ALIGNMENT_VIRTUAL_ADDRESS,
     ALIGNMENT_FILE_OFFSET,
 )
@@ -786,17 +801,30 @@ class AlignmentCoverage:
     @classmethod
     def from_alignment(
         cls, region_maps: List[DumpRegionMap], slices: List[AlignedSlice],
+        *, unkeyed_bytes: Sequence[int] = (),
     ) -> "AlignmentCoverage":
         """Coverage for an :func:`align_dumps` result.
 
         Works for both key schemes and for metadata-only region maps (whose
         page bytes are empty), because the byte count comes from the page
         *count* times the page size rather than from the page data.
+
+        :param unkeyed_bytes: Per dump, captured bytes the key scheme gave no
+            key (``module_relative``'s dropped anonymous memory). Counted as
+            available, so they show up in ``bytes_discarded`` instead of
+            vanishing from the arithmetic; empty for every other scheme.
         """
+        extra = list(unkeyed_bytes) or [0] * len(region_maps)
+        diagnostics = alignment_diagnostics(region_maps)
+        if unkeyed_bytes:
+            from memdiver.core.module_relative import unkeyed_diagnostic
+            note = unkeyed_diagnostic(unkeyed_bytes)
+            diagnostics += () if note is None else (note,)
         return cls(
             bytes_compared=sum(s.page_size for s in slices),
-            bytes_available=tuple(captured_byte_count(rm) for rm in region_maps),
-            diagnostics=alignment_diagnostics(region_maps),
+            bytes_available=tuple(captured_byte_count(rm) + int(n)
+                                  for rm, n in zip(region_maps, extra)),
+            diagnostics=diagnostics,
         )
 
 
@@ -833,6 +861,8 @@ class VaPageIndex:
 
     region_map: DumpRegionMap
     file_offsets: Dict[str, int]
+    #: Captured bytes the key scheme had no key for (always 0 for ``va:``).
+    unkeyed_bytes: int = 0
 
 
 def va_page_key(page_va: int) -> str:
@@ -872,6 +902,7 @@ def build_va_page_index(
     dump_index: int, source: Any, *,
     page_size: int = VA_PAGE_SIZE, view: str = "vas",
     region_filter: Optional[Any] = None,
+    keying: str = ALIGNMENT_VIRTUAL_ADDRESS,
 ) -> VaPageIndex:
     """Index one dump's mapped VA pages for cross-dump alignment.
 
@@ -891,6 +922,11 @@ def build_va_page_index(
         (``MslDumpSource(region_filter=...)``) already yields only included
         ranges from ``iter_ranges``. Accepted so callers can pass it through
         uniformly; an active filter on an unfiltering source is logged.
+    :param keying: :data:`ALIGNMENT_VIRTUAL_ADDRESS` (``va:`` keys, the
+        default) or :data:`ALIGNMENT_MODULE_RELATIVE` (module-relative keys
+        from the source's VMA listing, see :mod:`core.module_relative`; pages
+        with no key are skipped and counted in ``unkeyed_bytes``). Either way
+        ``source_base_addr`` stays the page's real VA in this dump.
     :returns: The dump's :class:`VaPageIndex`.
     """
     from memdiver.core.region_view_filter import is_active
@@ -903,8 +939,10 @@ def build_va_page_index(
         )
     regions: Dict[str, NormalizedRegion] = {}
     file_offsets: Dict[str, int] = {}
+    key_for = _page_keyer(source, keying)
     ranges, read_view = _va_alignment_ranges(source, view)
     pages = _VaPageData(source, file_offsets, read_view)
+    unkeyed = 0
 
     for start_va, end_va, file_offset in ranges:
         start_va, end_va, file_offset = int(start_va), int(end_va), int(file_offset)
@@ -914,8 +952,10 @@ def build_va_page_index(
             # mid-page contributes a short leading page rather than shifting
             # every page after it out of correspondence.
             chunk_end = min(end_va, va - (va % page_size) + page_size)
-            key = va_page_key(va)
-            if key not in regions:
+            key = key_for(va)
+            if key is None:
+                unkeyed += chunk_end - va
+            elif key not in regions:
                 regions[key] = NormalizedRegion(
                     key=key,
                     captured_pages={0: b""},
@@ -930,7 +970,23 @@ def build_va_page_index(
     rmap = DumpRegionMap(dump_index=dump_index, regions=regions)
     if not regions:
         logger.warning("Dump %d exposes no mapped VA ranges", dump_index)
-    return VaPageIndex(region_map=rmap, file_offsets=file_offsets)
+    return VaPageIndex(region_map=rmap, file_offsets=file_offsets,
+                       unkeyed_bytes=unkeyed)
+
+
+def _page_keyer(source: Any, keying: str):
+    """``va -> key | None`` for one dump under the requested key scheme."""
+    if keying == ALIGNMENT_VIRTUAL_ADDRESS:
+        return va_page_key
+    if keying != ALIGNMENT_MODULE_RELATIVE:
+        raise ValueError(f"unknown VA page keying {keying!r}")
+    from memdiver.core.module_relative import ModuleRelativeKeyer, alignment_vmas
+    vmas = alignment_vmas(source)
+    if not vmas:
+        raise ValueError(
+            f"{type(source).__name__} has no VMA listing; module_relative "
+            f"alignment needs a process image view or an image-extracted .msl")
+    return ModuleRelativeKeyer(vmas)
 
 
 def read_va_slab(

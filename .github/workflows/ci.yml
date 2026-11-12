@@ -326,6 +326,56 @@ jobs:
       - name: Run post-quantum KEM tests
         run: python -m pytest -q tests/test_msl_crypto.py tests/test_msl_encryption.py
 
+  # "Must work with the latest Volatility": run the vol3 plugin suites and the
+  # `make validate` claim gate (in-repo samples only; no corpus env vars exist
+  # on a runner, so the capture claims skip) against the floor (2.27.0), the
+  # newest PyPI release at the time of writing (pinned, 2.28.2), the newest
+  # release at run time (`latest`, catches a release newer than the pin) and
+  # upstream `develop` (advisory: continue-on-error, upstream may break). A
+  # second, MemDiver-free venv holding ONLY volatility3 feeds the gate's bare
+  # claims (C-SYN2, C-MSL4 bare) via MEMDIVER_VOL3_BARE_VOL.
+  vol3-matrix:
+    name: vol3-matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: floor-2.27.0, spec: 'volatility3==2.27.0', experimental: false}
+          - {name: pinned-2.28.2, spec: 'volatility3==2.28.2', experimental: false}
+          - {name: latest, spec: '--upgrade volatility3', experimental: false}
+          - {name: develop, spec: 'git+https://github.com/volatilityfoundation/volatility3@develop', experimental: true}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install memdiver (dev + vol) then force this cell's volatility3
+        run: |
+          # paramiko / pycryptodome only turn skipped SSH + AEAD-oracle tests into runs.
+          python -m pip install -e '.[dev,vol]' paramiko pycryptodome
+          python -m pip install ${{ matrix.spec }}
+      - name: Bare venv with ONLY volatility3 (no memdiver, no crypto library)
+        run: |
+          python -m venv "$RUNNER_TEMP/barevenv"
+          "$RUNNER_TEMP/barevenv/bin/python" -m pip install ${{ matrix.spec }}
+      - name: Report the volatility3 versions under test
+        run: |
+          "$(dirname "$(command -v python)")/vol" --help | head -n 1
+          "$RUNNER_TEMP/barevenv/bin/vol" --help | head -n 1
+          python -m pip list 2>/dev/null | grep -i volatility3
+      - name: vol3 plugin and oracle tests
+        run: |
+          export MEMDIVER_VOL3_VOL="$(dirname "$(command -v python)")/vol"
+          python -m pytest -q -n auto -rs -p no:cacheprovider tests/test_vol3plugins_*.py tests/test_oracles_*.py
+      - name: make validate (in-repo samples; bare claims via the bare venv)
+        run: |
+          export MEMDIVER_VOL3_VOL="$(dirname "$(command -v python)")/vol"
+          export MEMDIVER_VOL3_BARE_VOL="$RUNNER_TEMP/barevenv/bin/vol"
+          make validate
+
   # Browser e2e (tests/e2e_*_test.py). Excluded from the main `test` job
   # because they need Playwright + a built frontend + a live backend. The
   # `live_backend` conftest fixture auto-starts uvicorn on 127.0.0.1:8080;

@@ -1056,6 +1056,10 @@ _MCP_TOOL_PRODUCERS = {
     # resolved key_material dict and the on_source hook, both in
     # _INTERNAL_PRODUCER_PARAMS), so it needs no _MCP_ALLOWED_OMISSIONS entry.
     "verify_vol3_plugin": "verify_vol3_plugin",
+    # T3's plugin synthesis. Mirrors its producer 1:1 (every param but the
+    # resolved key_material dict and the on_source hook), so it needs no
+    # _MCP_ALLOWED_OMISSIONS entry.
+    "synthesize_vol3_plugin": "synthesize_vol3_plugin",
     # The N-dump aligned window. NOT a pipeline producer (it lives in
     # app.tools_consensus -- see the producer_modules map below), but it is
     # held to the same signature parity for the same reason: a window whose

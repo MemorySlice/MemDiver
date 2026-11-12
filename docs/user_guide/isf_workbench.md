@@ -6,6 +6,10 @@ myst:
 
 # The ISF workbench
 
+```{note}
+pakunoda is a separate third-party tool, not part of MemDiver. MemDiver integrates with it optionally: it is installed only with the `image` extra (`pip install "memdiver[image]"`), is imported lazily, and is never vendored in the MemDiver wheel. Without it, the features that use it report that it is not installed.
+```
+
 An ISF is the kernel profile Volatility 3 needs to read structures such as
 `task_struct`. Normally [the profile chain](vol3.md#the-profile-chain)
 (cache, pakunoda) produces one. The workbench is for the kernels where it

@@ -26,6 +26,7 @@ from typing import Any, List, NamedTuple, Optional, Tuple
 import numpy as np
 
 from memdiver.core.region_align import (
+    ALIGNMENT_VIRTUAL_ADDRESS,
     VA_INDEX_BYTES_PER_PAGE,
     AlignedLayout,
     AlignmentCoverage,
@@ -71,6 +72,7 @@ def supports_va_alignment(source: Any) -> bool:
 def build_va_consensus(
     sources: List, region_filter=None, *,
     force: bool = False, budget=None, chunk_positions: Optional[int] = None,
+    keying: str = ALIGNMENT_VIRTUAL_ADDRESS,
 ) -> VaConsensusResult:
     """Align N VA-mapped dumps by virtual address and compute their variance.
 
@@ -96,19 +98,28 @@ def build_va_consensus(
     :param force: proceed even when the estimate exceeds the budget.
     :param budget: ``MemoryBudget`` / byte count; ``None`` resolves the host.
     :param chunk_positions: force the slab width (tests).
+    :param keying: page key scheme forwarded to
+        :func:`~memdiver.core.region_align.build_va_page_index`: absolute VA
+        (default) or ``module_relative`` for independently launched process
+        views. The slab then runs in key order, and each dump's layout row
+        still carries that dump's own VA.
     :returns: The :class:`VaConsensusResult`; empty (with a warning logged and
         ``coverage`` still populated) when the dumps share no mapped page.
     """
-    indexes = [build_va_page_index(i, src, region_filter=region_filter)
+    indexes = [build_va_page_index(i, src, region_filter=region_filter,
+                                   keying=keying)
                for i, src in enumerate(sources)]
     region_maps = [ix.region_map for ix in indexes]
     slices = align_dumps(region_maps)
-    coverage = AlignmentCoverage.from_alignment(region_maps, slices)
+    by_va = keying == ALIGNMENT_VIRTUAL_ADDRESS
+    coverage = AlignmentCoverage.from_alignment(
+        region_maps, slices,
+        unkeyed_bytes=() if by_va else [ix.unkeyed_bytes for ix in indexes])
 
     if not slices:
         logger.warning(
-            "No VA-aligned pages across %d dumps — no page is mapped at the "
-            "same address in every dump", len(sources),
+            "No %s-aligned pages across %d dumps — no page has the same key "
+            "in every dump", keying, len(sources),
         )
         return VaConsensusResult(np.array([], dtype=np.float32), 0, b"", [], coverage)
 
@@ -124,7 +135,7 @@ def build_va_consensus(
     va_layout = layout.va_layout(slices)
 
     logger.info(
-        "VA consensus: %d bytes across %d aligned pages (%d dumps)",
-        total_bytes, len(slices), len(sources),
+        "VA consensus (%s): %d bytes across %d aligned pages (%d dumps)",
+        keying, total_bytes, len(slices), len(sources),
     )
     return VaConsensusResult(variance, total_bytes, reference, va_layout, coverage)

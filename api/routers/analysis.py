@@ -38,7 +38,7 @@ from memdiver.api.services.consensus_session import (
 )
 from memdiver.api.config import Settings
 from memdiver.api.dependencies import get_api_settings, upload_dir_or_409
-from memdiver.api.path_safety import ensure_within, safe_filename, write_denial_detail
+from memdiver.api.path_safety import ensure_within, safe_filename, write_denial
 from memdiver.api.region_filter_resolution import request_region_filter
 from memdiver.api.services.key_material import decode_key_material
 from memdiver.core.service_errors import CapabilityError
@@ -292,12 +292,10 @@ def _contained_output_dir(output_dir: str | None, name: str) -> str | None:
     try:
         resolved = ensure_within(upload_dir_or_409(), Path(output_dir))
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=write_denial_detail(
-                "output_dir", output_dir, [upload_dir_or_409()], "exports",
-                "upload directory"),
-        ) from exc
+        # 400 (not the sandbox's 403): these routes have always answered 400.
+        raise write_denial(
+            "output_dir", output_dir, [upload_dir_or_409()], "exports",
+            "upload directory", status=400) from exc
     try:
         safe_filename(resolved, name)
     except ValueError as exc:
@@ -1076,12 +1074,9 @@ def export_keylog(
                 ensure_within(upload_dir_or_409(), Path(req.output_path))
             )
         except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=write_denial_detail(
-                    "output_path", req.output_path, [upload_dir_or_409()],
-                    "keylog.txt", "upload directory"),
-            ) from exc
+            raise write_denial(
+                "output_path", req.output_path, [upload_dir_or_409()],
+                "keylog.txt", "upload directory", status=400) from exc
 
     try:
         return keylog_result(

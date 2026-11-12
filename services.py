@@ -104,6 +104,8 @@ from memdiver.app.tools_pipeline import (
     verify_vol3_plugin,
 )
 from memdiver.app.tools_pipeline_android import search_reduce_android
+# A7 -- a located key -> a standalone, oracle-proven vol3 plugin (+ the -p dir).
+from memdiver.app.tools_pipeline import synthesize_vol3_plugin, vol3_plugin_dir
 
 # --- dataset / analysis -----------------------------------------------------
 from memdiver.app.tools import (
@@ -171,6 +173,7 @@ from memdiver.app.tools_image import (
     image_probe_result,
     image_processes_result,
     image_profile_result,
+    image_siblings_result,
 )
 
 # --- key finders (structure-based key recognition over captured bytes) --------
@@ -227,6 +230,7 @@ from memdiver.app.tools_vol3 import (
 )
 from memdiver.app.tools_vol3_dev import (
     vol3_check_result,
+    vol3_exec_result,
     vol3_import_parquet_result,
     vol3_scaffold_result,
     vol3_write_config_result,
@@ -240,6 +244,11 @@ from memdiver.app.tools_vol3_sources import (
     vol3_source_get_result,
     vol3_source_list_result,
     vol3_source_put_result,
+)
+from memdiver.app.tools_format_oracle import (
+    format_oracle_spec_result,
+    list_format_oracles_result,
+    suggest_format_oracle_result,
 )
 
 __all__ = [
@@ -295,6 +304,12 @@ __all__ = [
     # and the RESOLVED framework version that produced it, because three
     # Volatility3 trees commonly coexist on one machine and they disagree.
     "verify_vol3_plugin",
+    # A7 -- SYNTHESIZE a standalone Volatility 3 plugin from a located key: the
+    # recipe-v2 template with the oracle source inlined, verified by RUNNING it
+    # and reading its ``Proven`` column. ``vol3_plugin_dir`` is the ``vol -p``
+    # directory (``memdiver/vol3plugins``) its ``vol_command`` names.
+    "synthesize_vol3_plugin",
+    "vol3_plugin_dir",
     "keylog_result",
     "inspect_pcap",
     # consensus — one window, read in every dump at the address the consensus
@@ -359,6 +374,7 @@ __all__ = [
     "image_open_view_result",
     "image_processes_result",
     "image_extract_process_result",
+    "image_siblings_result",
     # Volatility 3 — plugins over a .mdview into a case, saved queries, dev tools.
     "keyfinders_list_result",
     "keyfinders_scan_result",
@@ -396,6 +412,7 @@ __all__ = [
     "vol3_scaffold_result",
     "vol3_check_result",
     "vol3_import_parquet_result",
+    "vol3_exec_result",
     "vol3_write_config_result",
     "vol3_source_list_result",
     "vol3_source_get_result",
@@ -403,4 +420,8 @@ __all__ = [
     "vol3_fixture_put_result",
     "vol3_fixture_list_result",
     "vol3_fixture_run_result",
+    # format oracles as a BYO-oracle source (C1)
+    "list_format_oracles_result",
+    "suggest_format_oracle_result",
+    "format_oracle_spec_result",
 ]

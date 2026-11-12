@@ -1,0 +1,57 @@
+struct wg_device {
+	struct net_device *        dev;                  /*     0     8 */
+
+	/* XXX 56 bytes hole, try to pack */
+
+	/* --- cacheline 1 boundary (64 bytes) --- */
+	struct crypt_queue         encrypt_queue __attribute__((__aligned__(64))); /*    64   256 */
+
+	/* XXX last struct has 52 bytes of padding */
+
+	/* --- cacheline 5 boundary (320 bytes) --- */
+	struct crypt_queue         decrypt_queue;        /*   320   256 */
+
+	/* XXX last struct has 52 bytes of padding */
+
+	/* --- cacheline 9 boundary (576 bytes) --- */
+	struct crypt_queue         handshake_queue;      /*   576   256 */
+
+	/* XXX last struct has 52 bytes of padding */
+
+	/* --- cacheline 13 boundary (832 bytes) --- */
+	struct sock *              sock4;                /*   832     8 */
+	struct sock *              sock6;                /*   840     8 */
+	struct net *               creating_net;         /*   848     8 */
+	struct noise_static_identity static_identity;    /*   856   112 */
+
+	/* XXX last struct has 7 bytes of padding */
+
+	/* --- cacheline 15 boundary (960 bytes) was 8 bytes ago --- */
+	struct workqueue_struct *  packet_crypt_wq;      /*   968     8 */
+	struct workqueue_struct *  handshake_receive_wq; /*   976     8 */
+	struct workqueue_struct *  handshake_send_wq;    /*   984     8 */
+	struct cookie_checker      cookie_checker;       /*   992   152 */
+	/* --- cacheline 17 boundary (1088 bytes) was 56 bytes ago --- */
+	struct pubkey_hashtable *  peer_hashtable;       /*  1144     8 */
+	/* --- cacheline 18 boundary (1152 bytes) --- */
+	struct index_hashtable *   index_hashtable;      /*  1152     8 */
+	struct allowedips          peer_allowedips;      /*  1160    24 */
+	struct mutex               device_update_lock;   /*  1184    32 */
+	/* --- cacheline 19 boundary (1216 bytes) --- */
+	struct mutex               socket_update_lock;   /*  1216    32 */
+	struct list_head           device_list;          /*  1248    16 */
+	struct list_head           peer_list;            /*  1264    16 */
+	/* --- cacheline 20 boundary (1280 bytes) --- */
+	atomic_t                   handshake_queue_len;  /*  1280     4 */
+	unsigned int               num_peers;            /*  1284     4 */
+	unsigned int               device_update_gen;    /*  1288     4 */
+	u32                        fwmark;               /*  1292     4 */
+	u16                        incoming_port;        /*  1296     2 */
+
+	/* size: 1344, cachelines: 21, members: 24 */
+	/* sum members: 1242, holes: 1, sum holes: 56 */
+	/* padding: 46 */
+	/* paddings: 4, sum paddings: 163 */
+	/* forced alignments: 1, forced holes: 1, sum forced holes: 56 */
+} __attribute__((__aligned__(64)));
+

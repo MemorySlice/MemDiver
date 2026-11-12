@@ -1,0 +1,92 @@
+{
+  "exec_args_with_equals_and_negative": {
+    "display_command": "vol -q -r json -p /p_q -f /i.raw windows.pslist.PsList --pid=4 -1 ''",
+    "exec_request": {
+      "args": [
+        "--pid=4",
+        "-1",
+        ""
+      ],
+      "image_path": "/i.raw",
+      "plugin": "windows.pslist.PsList",
+      "plugin_dirs": [
+        "/p_q"
+      ],
+      "symbol_dirs": []
+    }
+  },
+  "exec_bare": {
+    "display_command": "vol -q -r json -f /d.msl msl.info",
+    "exec_request": {
+      "args": [],
+      "image_path": "/d.msl",
+      "plugin": "msl.info",
+      "plugin_dirs": [],
+      "symbol_dirs": []
+    }
+  },
+  "exec_quiet_json_out_dir": {
+    "display_command": "vol -q -r json -s '/Users/a b/My \"Dumps\"/it'\"'\"'s here/sym' --offline -p /opt/memdiver/vol3plugins -o '/Users/a b/My \"Dumps\"/it'\"'\"'s here/out' -f '/Users/a b/My \"Dumps\"/it'\"'\"'s here/img.lime' linux.pslist",
+    "exec_request": {
+      "args": [],
+      "image_path": "/Users/a b/My \"Dumps\"/it's here/img.lime",
+      "plugin": "linux.pslist",
+      "plugin_dirs": [
+        "/opt/memdiver/vol3plugins"
+      ],
+      "symbol_dirs": [
+        "/Users/a b/My \"Dumps\"/it's here/sym"
+      ]
+    }
+  },
+  "synth_full_image_pid_symbols": {
+    "display_command": "vol -s '/Users/a b/My \"Dumps\"/it'\"'\"'s here/sym a;/sym/b' --offline -p '/opt/memdiver/vol3plugins;/Users/a b/My \"Dumps\"/it'\"'\"'s here/case/vol3/plugins' -f '/Users/a b/My \"Dumps\"/it'\"'\"'s here/img 4level.lime' memdiver_gocryptfs.MemDiverSynthGocryptfs --pid 9878 --oracle-sample '/Users/a b/My \"Dumps\"/it'\"'\"'s here/vault'",
+    "exec_request": {
+      "args": [
+        "--pid",
+        "9878",
+        "--oracle-sample",
+        "/Users/a b/My \"Dumps\"/it's here/vault"
+      ],
+      "image_path": "/Users/a b/My \"Dumps\"/it's here/img 4level.lime",
+      "plugin": "memdiver_gocryptfs.MemDiverSynthGocryptfs",
+      "plugin_dirs": [
+        "/opt/memdiver/vol3plugins",
+        "/Users/a b/My \"Dumps\"/it's here/case/vol3/plugins"
+      ],
+      "symbol_dirs": [
+        "/Users/a b/My \"Dumps\"/it's here/sym a",
+        "/sym/b"
+      ]
+    }
+  },
+  "synth_msl_dump0": {
+    "display_command": "vol -p '/opt/memdiver/vol3plugins;/Users/a b/My \"Dumps\"/it'\"'\"'s here/case/vol3/plugins' -f '/Users/a b/My \"Dumps\"/it'\"'\"'s here/run_0001/memslicer.msl' memdiver_gocryptfs.MemDiverSynthGocryptfs",
+    "exec_request": {
+      "args": [],
+      "image_path": "/Users/a b/My \"Dumps\"/it's here/run_0001/memslicer.msl",
+      "plugin": "memdiver_gocryptfs.MemDiverSynthGocryptfs",
+      "plugin_dirs": [
+        "/opt/memdiver/vol3plugins",
+        "/Users/a b/My \"Dumps\"/it's here/case/vol3/plugins"
+      ],
+      "symbol_dirs": []
+    }
+  },
+  "synth_msl_oracle_sample": {
+    "display_command": "vol -p '/opt/memdiver/vol3plugins;/Users/a b/My \"Dumps\"/it'\"'\"'s here/case/vol3/plugins' -f '/Users/a b/My \"Dumps\"/it'\"'\"'s here/run_0002/memslicer.msl' memdiver_gocryptfs.MemDiverSynthGocryptfs --oracle-sample '/Users/a b/My \"Dumps\"/it'\"'\"'s here/run_0002/cipher dir'",
+    "exec_request": {
+      "args": [
+        "--oracle-sample",
+        "/Users/a b/My \"Dumps\"/it's here/run_0002/cipher dir"
+      ],
+      "image_path": "/Users/a b/My \"Dumps\"/it's here/run_0002/memslicer.msl",
+      "plugin": "memdiver_gocryptfs.MemDiverSynthGocryptfs",
+      "plugin_dirs": [
+        "/opt/memdiver/vol3plugins",
+        "/Users/a b/My \"Dumps\"/it's here/case/vol3/plugins"
+      ],
+      "symbol_dirs": []
+    }
+  }
+}

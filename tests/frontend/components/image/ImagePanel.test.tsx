@@ -116,7 +116,7 @@ describe("ImagePanel", () => {
     api.startProfileJob.mockResolvedValue({ task_id: "tp", status: "pending" });
     render(<ImagePanel />);
     await screen.findByTestId("probe-format");
-    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    fireEvent.click(screen.getByRole("button", { name: "Extract profile with pakunoda" }));
     await waitFor(() => expect(screen.getByTestId("profile-progress")).toBeInTheDocument());
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tp")).toBe(true));
     act(() => task("tp").onProgress(0.5, "mapping", {}));
@@ -125,11 +125,55 @@ describe("ImagePanel", () => {
     expect(await screen.findByTestId("profile-done")).toHaveTextContent("/cache/k.json");
   });
 
+  describe("pakunoda third-party link", () => {
+    const PAKUNODA_REPO = "https://github.com/monkeywave/pakunoda";
+    const profileButton = () => screen.getByRole("button", { name: "Extract profile with pakunoda" });
+
+    it("links the pakunoda repo in a new tab, with a third-party hover note", async () => {
+      render(<ImagePanel />);
+      await screen.findByTestId("probe-format");
+      const link = screen.getByTestId("pakunoda-link");
+      expect(link).toHaveAttribute("href", PAKUNODA_REPO);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(link.getAttribute("title")).toContain("third-party");
+      expect(link).toHaveTextContent("pakunoda");
+      expect(screen.getByRole("link", { name: "pakunoda" })).toBe(link);
+    });
+
+    it("keeps the visible label inside the accessible name of the button", async () => {
+      render(<ImagePanel />);
+      await screen.findByTestId("probe-format");
+      expect(profileButton()).toHaveTextContent("Extract profile");
+      expect(profileButton()).toHaveAccessibleName(expect.stringContaining("Extract profile"));
+    });
+
+    it("places the link beside the button, never inside it", async () => {
+      render(<ImagePanel />);
+      await screen.findByTestId("probe-format");
+      const link = screen.getByTestId("pakunoda-link");
+      expect(profileButton().contains(link)).toBe(false);
+      expect(link.closest("button")).toBeNull();
+      expect(profileButton().parentElement?.contains(link)).toBe(true);
+    });
+
+    it("clicking the link does not start the profile job; the button still does", async () => {
+      api.startProfileJob.mockResolvedValue({ task_id: "tl", status: "pending" });
+      render(<ImagePanel />);
+      await screen.findByTestId("probe-format");
+      fireEvent.click(screen.getByTestId("pakunoda-link"));
+      expect(api.startProfileJob).not.toHaveBeenCalled();
+      fireEvent.click(profileButton());
+      await waitFor(() => expect(api.startProfileJob).toHaveBeenCalledTimes(1));
+      expect(api.startProfileJob).toHaveBeenCalledWith("/img.lime", undefined);
+    });
+  });
+
   it("shows the pakunoda stage and elapsed time on an indeterminate bar", async () => {
     api.startProfileJob.mockResolvedValue({ task_id: "ts", status: "pending" });
     render(<ImagePanel />);
     await screen.findByTestId("probe-format");
-    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    fireEvent.click(screen.getByRole("button", { name: "Extract profile with pakunoda" }));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "ts")).toBe(true));
     act(() => task("ts").onProgress(0, "symbols", { extra: { pakunoda_stage: "symbols", elapsed_s: 4.26 } }));
     expect(screen.getByTestId("profile-progress-text")).toHaveTextContent("Stage: symbols · 4.3 s");
@@ -143,21 +187,21 @@ describe("ImagePanel", () => {
     api.cancelImageJob.mockResolvedValue({ task_id: "tc", cancelled: true });
     render(<ImagePanel />);
     await screen.findByTestId("probe-format");
-    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    fireEvent.click(screen.getByRole("button", { name: "Extract profile with pakunoda" }));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "tc")).toBe(true));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     await waitFor(() => expect(api.cancelImageJob).toHaveBeenCalledWith("tc"));
     expect(await screen.findByTestId("profile-cancelled")).toHaveTextContent("Profile extraction cancelled");
     expect(screen.queryByTestId("image-error")).toBeNull();
-    expect(screen.getByText("Extract profile with pakunoda")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Extract profile with pakunoda" })).toBeEnabled();
   });
 
   it("treats a terminal 'cancelled' error event as cancelled, not failed", async () => {
     api.startProfileJob.mockResolvedValue({ task_id: "te", status: "pending" });
     render(<ImagePanel />);
     await screen.findByTestId("probe-format");
-    fireEvent.click(screen.getByText("Extract profile with pakunoda"));
+    fireEvent.click(screen.getByRole("button", { name: "Extract profile with pakunoda" }));
     await waitFor(() => expect(ws.calls.some((c) => c.taskId === "te")).toBe(true));
     act(() => task("te").onError("cancelled", {}));
     expect(await screen.findByTestId("profile-cancelled")).toBeInTheDocument();

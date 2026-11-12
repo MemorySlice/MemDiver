@@ -1,0 +1,28 @@
+struct noise_handshake {
+	struct index_hashtable_entry entry;              /*     0    32 */
+	enum noise_handshake_state state;                /*    32     4 */
+
+	/* XXX 4 bytes hole, try to pack */
+
+	u64                        last_initiation_consumption; /*    40     8 */
+	struct noise_static_identity * static_identity;  /*    48     8 */
+	u8                         ephemeral_private[32]; /*    56    32 */
+	/* --- cacheline 1 boundary (64 bytes) was 24 bytes ago --- */
+	u8                         remote_static[32];    /*    88    32 */
+	u8                         remote_ephemeral[32]; /*   120    32 */
+	/* --- cacheline 2 boundary (128 bytes) was 24 bytes ago --- */
+	u8                         precomputed_static_static[32]; /*   152    32 */
+	u8                         preshared_key[32];    /*   184    32 */
+	/* --- cacheline 3 boundary (192 bytes) was 24 bytes ago --- */
+	u8                         hash[32];             /*   216    32 */
+	u8                         chaining_key[32];     /*   248    32 */
+	/* --- cacheline 4 boundary (256 bytes) was 24 bytes ago --- */
+	u8                         latest_timestamp[12]; /*   280    12 */
+	__le32                     remote_index;         /*   292     4 */
+	struct rw_semaphore        lock;                 /*   296    40 */
+
+	/* size: 336, cachelines: 6, members: 14 */
+	/* sum members: 332, holes: 1, sum holes: 4 */
+	/* last cacheline: 16 bytes */
+};
+

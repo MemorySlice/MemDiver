@@ -1,0 +1,69 @@
+struct crypt_config {
+	struct dm_dev *            dev;                  /*     0     8 */
+	sector_t                   start;                /*     8     8 */
+	struct percpu_counter      n_allocated_pages;    /*    16    40 */
+	struct workqueue_struct *  io_queue;             /*    56     8 */
+	/* --- cacheline 1 boundary (64 bytes) --- */
+	struct workqueue_struct *  crypt_queue;          /*    64     8 */
+	spinlock_t                 write_thread_lock;    /*    72     4 */
+
+	/* XXX 4 bytes hole, try to pack */
+
+	struct task_struct *       write_thread;         /*    80     8 */
+	struct rb_root             write_tree;           /*    88     8 */
+	char *                     cipher_string;        /*    96     8 */
+	char *                     cipher_auth;          /*   104     8 */
+	char *                     key_string;           /*   112     8 */
+	const struct crypt_iv_operations  * iv_gen_ops;  /*   120     8 */
+	/* --- cacheline 2 boundary (128 bytes) --- */
+	union {
+		struct iv_benbi_private benbi;           /*   128     4 */
+		struct iv_lmk_private lmk;               /*   128    16 */
+		struct iv_tcw_private tcw;               /*   128    24 */
+		struct iv_elephant_private elephant;     /*   128     8 */
+	} iv_gen_private;                                /*   128    24 */
+	u64                        iv_offset;            /*   152     8 */
+	unsigned int               iv_size;              /*   160     4 */
+	short unsigned int         sector_size;          /*   164     2 */
+	unsigned char              sector_shift;         /*   166     1 */
+
+	/* XXX 1 byte hole, try to pack */
+
+	union {
+		struct crypto_skcipher * * tfms;         /*   168     8 */
+		struct crypto_aead * * tfms_aead;        /*   168     8 */
+	} cipher_tfm;                                    /*   168     8 */
+	unsigned int               tfms_count;           /*   176     4 */
+
+	/* XXX 4 bytes hole, try to pack */
+
+	long unsigned int          cipher_flags;         /*   184     8 */
+	/* --- cacheline 3 boundary (192 bytes) --- */
+	unsigned int               dmreq_start;          /*   192     4 */
+	unsigned int               per_bio_data_size;    /*   196     4 */
+	long unsigned int          flags;                /*   200     8 */
+	unsigned int               key_size;             /*   208     4 */
+	unsigned int               key_parts;            /*   212     4 */
+	unsigned int               key_extra_size;       /*   216     4 */
+	unsigned int               key_mac_size;         /*   220     4 */
+	unsigned int               integrity_tag_size;   /*   224     4 */
+	unsigned int               integrity_iv_size;    /*   228     4 */
+	unsigned int               on_disk_tag_size;     /*   232     4 */
+	unsigned int               tag_pool_max_sectors; /*   236     4 */
+	mempool_t                  tag_pool;             /*   240    72 */
+	/* --- cacheline 4 boundary (256 bytes) was 56 bytes ago --- */
+	mempool_t                  req_pool;             /*   312    72 */
+	/* --- cacheline 6 boundary (384 bytes) --- */
+	mempool_t                  page_pool;            /*   384    72 */
+	/* --- cacheline 7 boundary (448 bytes) was 8 bytes ago --- */
+	struct bio_set             bs;                   /*   456   392 */
+	/* --- cacheline 13 boundary (832 bytes) was 16 bytes ago --- */
+	struct mutex               bio_alloc_lock;       /*   848    32 */
+	u8 *                       authenc_key;          /*   880     8 */
+	u8                         key[];                /*   888     0 */
+
+	/* size: 888, cachelines: 14, members: 38 */
+	/* sum members: 879, holes: 3, sum holes: 9 */
+	/* last cacheline: 56 bytes */
+};
+

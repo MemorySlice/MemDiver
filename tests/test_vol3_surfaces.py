@@ -37,7 +37,7 @@ def test_cli_registers_every_action():
     from memdiver.cli.vol3 import _VOL3_HANDLERS
     assert set(_VOL3_HANDLERS) == {"list", "describe", "run", "query", "annotate",
                                    "scaffold", "check", "import", "write-config",
-                                   "source", "fixture"}
+                                   "source", "fixture", "plugin-dir", "synthesize", "exec"}
 
 
 def test_cli_without_action_prints_choices(capsys):
@@ -369,3 +369,29 @@ def test_case_open_still_refuses_an_unknown_bare_name():
     from memdiver.core.service_errors import CapabilityError
     with pytest.raises(CapabilityError):
         Case.open("no_such_case")
+
+
+def test_source_get_origin_on_rest_cli_and_mcp(client, capsys, tmp_path):
+    """A user source and a synthesized plugin sharing a name: every surface can
+    open either one via ``origin`` (default unchanged: the user source)."""
+    from memdiver.analysis.case import Case
+    from memdiver.analysis.plugin_store import PluginStore
+    case = Case.init("clash_case")
+    PluginStore(case.dir).put("synth_key", "# user\n")
+    (case.dir / "vol3" / "plugins").mkdir(parents=True)
+    (case.dir / "vol3" / "plugins" / "synth_key.py").write_text("# synthesized\n")
+    url, params = "/api/vol3/sources/synth_key", {"case_dir": "clash_case"}
+    default = client.get(url, params=params)
+    assert default.status_code == 200, default.text
+    assert default.json()["origin"] == "user"
+    got = client.get(url, params={**params, "origin": "synthesized"})
+    assert got.status_code == 200 and got.json()["source"] == "# synthesized\n"
+    assert client.get(url, params={**params, "origin": "x"}).status_code == 400
+    rc, out = _cli(["source", "get", "synth_key", "--case", str(case.dir),
+                    "--origin", "synthesized"], capsys)
+    assert rc == 0 and json.loads(out)["origin"] == "synthesized"
+    import inspect
+
+    from memdiver.mcp_server import server
+    assert ("def vol3_source_get(case_dir: str, name: str, origin: Optional[str] = None)"
+            in inspect.getsource(server))

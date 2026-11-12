@@ -1,4 +1,4 @@
-"""Volatility 3 CLI: ``memdiver vol3 {list,describe,run,query,annotate,scaffold,check,import,write-config,source,fixture}``.
+"""Volatility 3 CLI: ``memdiver vol3 {list,describe,run,query,annotate,scaffold,check,import,write-config,source,fixture,plugin-dir,synthesize,exec}``.
 
 Thin adapters over the ``vol3.*`` producers in :mod:`memdiver.app.tools_vol3` and
 :mod:`memdiver.app.tools_vol3_dev` (the same functions behind the REST routes and
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from ._shared import emit, output_parent_parser
+from ._shared import _decrypt_parent_parser, _warn_tag_status, emit, output_parent_parser
 
 
 def _json_or_string(text: str) -> Any:
@@ -59,6 +59,7 @@ def add_vol3_parser(sub) -> None:
     _add_query_annotate(actions)
     _add_dev(actions)
     _add_source_fixture(actions)
+    _add_synth_exec(actions)
 
 
 def _add_list_describe(actions) -> None:
@@ -152,6 +153,8 @@ def _add_source_fixture(actions) -> None:
     get = src_actions.add_parser("get", parents=[output_parent_parser()], help="One stored source")
     get.add_argument("name")
     get.add_argument("--case", required=True, dest="case_dir")
+    get.add_argument("--origin", choices=("user", "synthesized"),
+                     help="Pick the user source or the synthesized plugin when both share NAME")
     lst = src_actions.add_parser("list", parents=[output_parent_parser()], help="Stored sources")
     lst.add_argument("--case", required=True, dest="case_dir")
     fix = actions.add_parser("fixture", help="Plugin fixtures of a case: put|list|run")
@@ -254,7 +257,8 @@ def _cmd_vol3_source(args: argparse.Namespace) -> int:
         return emit(args, sources.vol3_source_put_result(
             args.case_dir, args.name, _read_source(args.file) or "", args.view).payload)
     if action == "get":
-        return emit(args, sources.vol3_source_get_result(args.case_dir, args.name).payload)
+        return emit(args, sources.vol3_source_get_result(
+            args.case_dir, args.name, getattr(args, "origin", None)).payload)
     if action == "list":
         return emit(args, sources.vol3_source_list_result(args.case_dir).payload)
     print("memdiver vol3 source: pick an action: put, get, list", file=sys.stderr)
@@ -279,12 +283,193 @@ def _cmd_vol3_fixture(args: argparse.Namespace) -> int:
     return 1
 
 
+def _add_synth_exec(actions) -> None:
+    actions.add_parser("plugin-dir", parents=[output_parent_parser()],
+                       help="The installed memdiver/vol3plugins directory (for vol -p)")
+    _add_synthesize(actions)
+    exe = actions.add_parser(
+        "exec", parents=[output_parent_parser()],
+        help="Run a plugin by NAME under the stock vol launcher (a subprocess)",
+        description="Options go BEFORE the plugin name; everything after it is "
+                    "passed to the plugin, e.g. `vol3 exec --image x.msl msl.info` "
+                    "or `vol3 exec --image img.lime -p <case>/vol3/plugins "
+                    "mymod.MyPlugin --pid 42`. vol GLOBAL options after the name "
+                    "(-p, --log, any single-dash flag) are refused; path arguments "
+                    "the plugin itself takes are passed through unchecked.")
+    exe.add_argument("--image", required=True, dest="image_path",
+                     help="Memory image / .msl for vol -f")
+    exe.add_argument("-p", "--plugin-dir", action="append", dest="plugin_dirs", default=[],
+                     metavar="DIR", help="Extra vol -p directory (repeatable; no ';', "
+                                         "never one holding vol3/history)")
+    exe.add_argument("-s", "--symbol-dir", action="append", dest="symbol_dirs", default=[],
+                     metavar="DIR", help="ISF directory for vol -s (repeatable; adds --offline)")
+    exe.add_argument("--no-memdiver-plugins", action="store_false",
+                     dest="include_memdiver_plugins",
+                     help="Do not put memdiver/vol3plugins first on -p")
+    exe.add_argument("--timeout", type=int, default=900, help="Seconds before stopping")
+    exe.add_argument("--max-rows", type=int, default=1000, help="Rows echoed in the output")
+    exe.add_argument("--out-dir", dest="out_dir",
+                     help="Directory for files the plugin writes (default: discarded)")
+    _add_launcher(exe)
+    exe.add_argument("plugin", help="vol plugin name, e.g. msl.info or linux.pslist.PsList")
+    exe.add_argument("plugin_args", nargs=argparse.REMAINDER,
+                     help="Arguments passed to the plugin (after its name)")
+
+
+def _add_launcher(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--vol-bin", dest="vol_bin",
+                   help="vol / vol.py launcher (default: MEMDIVER_VOL3_BIN, else PATH)")
+    p.add_argument("--vol-python", dest="vol_python",
+                   help="Interpreter owning that launcher's volatility3")
+
+
+def _add_synthesize(actions) -> None:
+    syn = actions.add_parser(
+        "synthesize", parents=[output_parent_parser(), _decrypt_parent_parser()],
+        help="Located key in N dumps -> a standalone vol3 plugin, verified by its oracle",
+        description="Keys are secrets: prefer --key-hex-file FILE (or '-' for stdin, "
+                    "one hex key per line, one per dump or one for all) over --key-hex, "
+                    "which is visible in the process list. No key is echoed. Exit 0 "
+                    "when every verify target proved the key (or none ran), 3 otherwise.")
+    syn.add_argument("dumps", nargs="+", help="Captures holding the key (.msl or raw)")
+    syn.add_argument("--name", required=True, help="Plugin name (a Python identifier)")
+    syn.add_argument("--oracle-kind", required=True, dest="oracle_kind",
+                     help="memdiver.oracles format that decides Proven, e.g. gocryptfs-gcm")
+    form = syn.add_mutually_exclusive_group(required=True)
+    form.add_argument("--key-hex", action="append", dest="key_hex", metavar="HEX",
+                      help="The key as hex (repeatable: one per dump)")
+    form.add_argument("--key-hex-file", dest="key_hex_file", metavar="FILE",
+                      help="File ('-' = stdin) with one hex key per line")
+    form.add_argument("--hit", type=_json_object,
+                      help='A located key: {"offset", "length"} or {"key_hex"} (+ dump_path)')
+    syn.add_argument("--oracle-sample", action="append", dest="oracle_samples", default=[],
+                     metavar="PATH", help="Oracle evidence, e.g. a gocryptfs cipher dir "
+                                          "(once for all dumps, or once per dump)")
+    syn.add_argument("--oracle-param", action="append", type=_key_value, dest="oracle_params",
+                     metavar="KEY=VALUE", help="Oracle parameter (repeatable; JSON values)")
+    syn.add_argument("--context", type=int, default=None,
+                     help="Bytes either side of the key the anchor is measured over")
+    syn.add_argument("--case", dest="case_dir",
+                     help="Existing case (name or directory) to store the plugin in")
+    syn.add_argument("--verify-on", action="append", dest="verify_on", metavar="TARGET",
+                     help="Verify target (repeatable; default: msl)")
+    syn.add_argument("--no-verify", action="store_true", dest="no_verify",
+                     help="Skip the in-process verification")
+    syn.add_argument("--allow-high-entropy-context", action="store_true",
+                     dest="allow_high_entropy_context")
+    img = syn.add_argument_group("full-image verification under stock vol")
+    img.add_argument("--full-image", dest="full_image", help="Full memory image to run it on")
+    img.add_argument("--pid", type=int, help="Process the plugin is narrowed to (--pid)")
+    img.add_argument("--full-image-sample", dest="full_image_sample", metavar="PATH",
+                     help="The image's OWN oracle evidence (another session's vault)")
+    img_key = img.add_mutually_exclusive_group()
+    img_key.add_argument("--full-image-key-hex", dest="full_image_key_hex", metavar="HEX",
+                         help="Ground-truth key of the image (never echoed)")
+    img_key.add_argument("--full-image-key-hex-file", dest="full_image_key_hex_file",
+                         metavar="FILE", help="File ('-' = stdin) holding that key")
+    img.add_argument("-s", "--symbol-dir", action="append", dest="symbol_dirs", default=[],
+                     metavar="DIR", help="ISF directory for the image (repeatable)")
+    _add_launcher(syn)
+
+
+def _cli_invalid(message: str) -> Exception:
+    from memdiver.core.service_errors import CapabilityError, ErrorCategory
+    return CapabilityError(message, category=ErrorCategory.INVALID_INPUT,
+                           code="synth.vol3_plugin.cli_key_input")
+
+
+def _read_secret_lines(path: str) -> List[str]:
+    """Non-empty, stripped lines of FILE or stdin (``-``); never echoed."""
+    text = sys.stdin.read() if path == "-" else Path(path).expanduser().read_text(
+        encoding="utf-8")
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _synth_key_hex(args: argparse.Namespace) -> Any:
+    keys = _read_secret_lines(args.key_hex_file) if args.key_hex_file else (args.key_hex or [])
+    if args.key_hex_file and not keys:
+        raise _cli_invalid("--key-hex-file holds no key")
+    return keys[0] if len(keys) == 1 else keys
+
+
+def _synth_image_key_hex(args: argparse.Namespace) -> str:
+    if not args.full_image_key_hex_file:
+        return args.full_image_key_hex or ""
+    if args.full_image_key_hex_file == "-" and args.key_hex_file == "-":
+        raise _cli_invalid("only one of --key-hex-file / --full-image-key-hex-file can be '-'")
+    lines = _read_secret_lines(args.full_image_key_hex_file)
+    return lines[0] if lines else ""
+
+
+def _synth_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
+    """Producer kwargs; the producer's defaults stay where a flag was not given."""
+    from memdiver.analysis.case import existing_case_dir
+
+    samples = args.oracle_samples
+    kwargs: Dict[str, Any] = {
+        "dump_paths": list(args.dumps), "name": args.name, "oracle_kind": args.oracle_kind,
+        "key_hex": "" if args.hit else _synth_key_hex(args), "hit": args.hit,
+        "oracle_sample_path": samples[0] if len(samples) == 1 else (samples or None),
+        "oracle_params": dict(args.oracle_params) if args.oracle_params else None,
+        "case_dir": existing_case_dir(args.case_dir),
+        "full_image": args.full_image, "pid": args.pid,
+        "full_image_sample": args.full_image_sample,
+        "full_image_key_hex": _synth_image_key_hex(args),
+        "symbol_dirs": list(args.symbol_dirs), "vol_bin": args.vol_bin,
+        "vol_python": args.vol_python, "key_file": args.key_file,
+        "passphrase": args.passphrase, "kem_key_file": args.kem_key_file,
+        "allow_high_entropy_context": args.allow_high_entropy_context,
+        "on_source": _warn_tag_status,
+    }
+    if args.context is not None:
+        kwargs["context"] = args.context
+    if args.no_verify:
+        kwargs["verify_on"] = ()
+    elif args.verify_on:
+        kwargs["verify_on"] = tuple(args.verify_on)
+    return kwargs
+
+
+def _cmd_vol3_plugin_dir(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_pipeline import vol3_plugin_dir
+    return emit(args, vol3_plugin_dir())
+
+
+def _cmd_vol3_synthesize(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_pipeline import synthesize_vol3_plugin
+    payload = synthesize_vol3_plugin(**_synth_kwargs(args))
+    verdicts = payload["verdicts"]
+    print(f"memdiver: proven={payload['proven']} proven_hits={payload['proven_hits']} "
+          f"targets={[v['target'] + ':' + v['status'] for v in verdicts]}", file=sys.stderr)
+    for diagnostic in payload["diagnostics"]:
+        print(f"memdiver: {diagnostic.get('message', diagnostic)}", file=sys.stderr)
+    emit(args, payload)
+    return 0 if payload["proven"] or not verdicts else 3
+
+
+def _cmd_vol3_exec(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_vol3_dev import vol3_exec_result
+    payload = vol3_exec_result(
+        args.plugin, args.image_path, plugin_dirs=args.plugin_dirs,
+        symbol_dirs=args.symbol_dirs, args=list(args.plugin_args or []),
+        include_memdiver_plugins=args.include_memdiver_plugins, timeout_s=args.timeout,
+        max_rows=args.max_rows, vol_bin=args.vol_bin, vol_python=args.vol_python,
+        out_dir=args.out_dir).payload
+    if not payload["ok"]:
+        print(f"memdiver: vol exited {payload['returncode']}: "
+              f"{payload['stderr_tail'].strip()[-2000:]}", file=sys.stderr)
+    emit(args, payload)
+    return 0 if payload["ok"] else 1
+
+
 _VOL3_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "list": _cmd_vol3_list, "describe": _cmd_vol3_describe, "run": _cmd_vol3_run,
     "query": _cmd_vol3_query, "annotate": _cmd_vol3_annotate,
     "scaffold": _cmd_vol3_scaffold, "check": _cmd_vol3_check,
     "import": _cmd_vol3_import, "write-config": _cmd_vol3_write_config,
     "source": _cmd_vol3_source, "fixture": _cmd_vol3_fixture,
+    "plugin-dir": _cmd_vol3_plugin_dir, "synthesize": _cmd_vol3_synthesize,
+    "exec": _cmd_vol3_exec,
 }
 
 

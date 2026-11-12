@@ -122,12 +122,16 @@ EXPECTED_TOOLS = {
     # T1.7: memory-image views (probe/profile/open/processes/extract).
     "image_probe", "image_profile", "image_open_view", "image_processes",
     "image_extract_process",
+    # S2: sibling groups of one image (in-image differential).
+    "image_siblings",
     # T2.2: Volatility 3 plugins over a .mdview, run into a case.
     "vol3_plugins", "vol3_describe", "vol3_run", "vol3_query", "vol3_annotate",
     "vol3_scaffold", "vol3_check", "vol3_import", "vol3_write_config",
     # T2.5/T2.8: stored plugin sources and plugin fixtures.
     "vol3_source_list", "vol3_source_get", "vol3_source_put",
     "vol3_fixture_put", "vol3_fixture_list", "vol3_fixture_run",
+    # T3 (vol3 contest): the vol -p directory, plugin synthesis, run-by-name.
+    "vol3_plugin_dir", "synthesize_vol3_plugin", "vol3_exec",
     # T3.3: key finders (structure-based key recognition) over captured bytes.
     "keyfinders_list", "keyfinders_scan",
     # YARA editor: compile-check + captured-bytes scan of one dump.
@@ -143,11 +147,13 @@ EXPECTED_TOOLS = {
     "detector_fixtures_remove",
     # T3.6: strings as a table with IOC badges.
     "strings_table",
+    # C1: format oracles as a BYO-oracle source.
+    "format_oracles", "suggest_format_oracle", "format_oracle_spec",
 }
 
 #: The exact registered-tool count, pinned on its own so the docs' "N tools"
 #: claims have one number to agree with.
-EXPECTED_TOOL_COUNT = 120
+EXPECTED_TOOL_COUNT = 127
 
 
 def _registered_tool_names(server) -> set:

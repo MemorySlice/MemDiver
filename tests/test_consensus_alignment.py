@@ -39,6 +39,7 @@ from memdiver.engine.consensus import (
     ALIGNMENT_FILE_OFFSET,
     ALIGNMENT_METHODS,
     ALIGNMENT_MODULE_OFFSET,
+    ALIGNMENT_MODULE_RELATIVE,
     ALIGNMENT_VIRTUAL_ADDRESS,
     AlignmentReport,
     ConsensusVector,
@@ -157,9 +158,11 @@ def test_to_dict_is_json_ready_and_uses_the_closed_vocabulary():
     assert report.method in ALIGNMENT_METHODS
 
 
-def test_the_vocabulary_is_exactly_three_methods():
+def test_the_vocabulary_is_exactly_four_methods_strongest_first():
+    """module_relative (S4) ranks between module_offset and virtual_address."""
     assert ALIGNMENT_METHODS == (
-        ALIGNMENT_MODULE_OFFSET, ALIGNMENT_VIRTUAL_ADDRESS, ALIGNMENT_FILE_OFFSET,
+        ALIGNMENT_MODULE_OFFSET, ALIGNMENT_MODULE_RELATIVE,
+        ALIGNMENT_VIRTUAL_ADDRESS, ALIGNMENT_FILE_OFFSET,
     )
 
 

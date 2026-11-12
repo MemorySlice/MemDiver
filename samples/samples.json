@@ -1,0 +1,278 @@
+{
+  "schema": "memdiver-samples/1",
+  "slices": {
+    "aes": {
+      "file": "gocryptfs_aes.msl.gz",
+      "msl": "gocryptfs_aes.msl",
+      "msl_sha256": "f0adcddf4f7acac3dd1441d326af18115e71e602d361b1209ebff157bc17ae39",
+      "oracle_sample": "gocryptfs_aes.oracle",
+      "cipher": "aes",
+      "pid": 65219,
+      "master_key_hex": "ee2813d66ee64fd0a1eb7b2efa58b92f5315fd27e6017d81693e552bf57859a2",
+      "key_vas": [
+        "0xc0000bc220",
+        "0xc0000bc4a0"
+      ],
+      "source": {
+        "corpus_run": "run_0001",
+        "file": "memslicer.msl",
+        "bytes": 220079200,
+        "sha256": "393d56c79dc8bd7a5dde0ea4bf22419a7e4fbec4641cf0c4a4a99fe1ca304920",
+        "capture_tool": "memslicer",
+        "program": "gocryptfs (Go, /usr/bin/gocryptfs) on Linux x86_64"
+      },
+      "kept_regions": [
+        {
+          "base": "0xc000000000",
+          "size": 71303168,
+          "category": "heap"
+        }
+      ],
+      "selection": "regions=key-holding(0xc0000bc220,0xc0000bc4a0)"
+    },
+    "xchacha": {
+      "file": "gocryptfs_xchacha.msl.gz",
+      "msl": "gocryptfs_xchacha.msl",
+      "msl_sha256": "1775474088861a57148c49f11762fab3788c00e877711139db248416ea77eef4",
+      "oracle_sample": "gocryptfs_xchacha.oracle",
+      "cipher": "xchacha",
+      "pid": 65361,
+      "master_key_hex": "b543ae0f4605f03ad252ec5953e6ad9a434676dec4e16daffa0a29b9785afd62",
+      "key_vas": [
+        "0xc00001c2a0",
+        "0xc00001c520"
+      ],
+      "source": {
+        "corpus_run": "run_0002",
+        "file": "memslicer.msl",
+        "bytes": 211554664,
+        "sha256": "8a8fce9673e3709d34f00511e43742310561aa12666c23ee3ec0ae09de172f8b",
+        "capture_tool": "memslicer",
+        "program": "gocryptfs (Go, /usr/bin/gocryptfs) on Linux x86_64"
+      },
+      "kept_regions": [
+        {
+          "base": "0xc000000000",
+          "size": 71303168,
+          "category": "heap"
+        }
+      ],
+      "selection": "regions=key-holding(0xc00001c2a0,0xc00001c520)"
+    }
+  },
+  "tampered": {
+    "file": "gocryptfs_aes_tampered.msl.gz",
+    "msl": "gocryptfs_aes_tampered.msl",
+    "msl_sha256": "ae118a3d4bb9efb6de8da89812841b8f7f794dd89a6e6960c8cde8f83fee5410",
+    "derived_from": "gocryptfs_aes.msl",
+    "flipped_file_offset": 778208,
+    "xor": "0x01",
+    "flipped_va": "0xc0000bc220",
+    "intact_key_va": "0xc0000bc4a0"
+  },
+  "encrypted": {
+    "file": "gocryptfs_aes_encrypted.msl",
+    "key_file": "gocryptfs_aes_encrypted.msl.key",
+    "derived_from": "gocryptfs_aes.msl",
+    "encryption": "AES-256-GCM, raw 32-byte key (public demo key)",
+    "compression": "zstd"
+  },
+  "plugin": {
+    "file": "plugins/memdiver_gocryptfs.py",
+    "recipe": "plugins/memdiver_gocryptfs.recipe.json",
+    "vol_plugin": "memdiver_gocryptfs.MemDiverSynthGocryptfs",
+    "trained_on": [
+      "gocryptfs_aes.msl",
+      "gocryptfs_xchacha.msl"
+    ],
+    "oracle_kind": "gocryptfs-gcm"
+  },
+  "ssh": {
+    "libssh": {
+      "file": "ssh_libssh_client.msl.gz",
+      "msl": "ssh_libssh_client.msl",
+      "msl_sha256": "56aa2eca3b044780858162055b9b190df573e28f5d8b1adc086c35253142440c",
+      "implementation": "libssh",
+      "version": "0.10.6/openssl/zlib (Debian bookworm libssh-dev)",
+      "role": "client",
+      "pid": 15,
+      "kex": "curve25519-sha256@libssh.org",
+      "cipher": "aes256-ctr",
+      "mac": "hmac-sha2-256",
+      "keys": {
+        "A": "ed3d7bcaa6e9e3cb2c558315beddf4b5",
+        "B": "6ede34f9bb3d315df8473d5eb4cd94cd",
+        "C": "58e02233f5c510ff659932c0e01318211e18b3e590b3ea75af49999258e740ad",
+        "D": "7a2e7c9fe4bf17c4fbdffa05fe0b884a330aa17dab82a2a8d97983b8c11a7bde",
+        "E": "1b50e0a2d1b59a35dce6c6d0356281e9ba3b89d778f814a882699889c6f1d249",
+        "F": "dae136078a6fa3d18e09e649f1f282e22787ef46c3b7ef9603bcc11e71d8aea2"
+      },
+      "expected_tier": "A",
+      "expected_letters": "ABCDEF",
+      "ground_truth": "keys logged by the paramiko peer server's _compute_key hook for the same session",
+      "source": "docker rig (arm64), memslicer 0.5.2 acquire -b gdb --scope heap,stack, client idle after one exec"
+    },
+    "wolfssh": {
+      "file": "ssh_wolfssh_client.msl.gz",
+      "msl": "ssh_wolfssh_client.msl",
+      "msl_sha256": "9d37dd79a08ff3cd18f477cefb7871f14130a795815395ec40e5be3e35b290a3",
+      "implementation": "wolfssh",
+      "version": "1.4.20 (wolfSSL 5.7.6-stable, built from source)",
+      "role": "client",
+      "pid": 15,
+      "kex": "curve25519-sha256",
+      "cipher": "aes256-ctr",
+      "mac": "hmac-sha2-256",
+      "keys": {
+        "A": "83ab92f6f3187314ae4e367ab0db236a",
+        "B": "858a21be622554d0912513982aefde53",
+        "C": "45326aac82f0cc0e4afffab91421bf00f4bd545075c0a1c6320329a0257928f2",
+        "D": "f075684991d7ba8b4ade986b754cc1797ea8e8bd4555a28ff451f62f829c81e2",
+        "E": "540eedec65b5d1acf117f847fba06af9ce089b1fc9a5f80213b29143858d1fff",
+        "F": "b8603228c21f3f35508a5c39ab8df16e96dd915f049aaba84391384a14c1d57a"
+      },
+      "expected_tier": "A",
+      "expected_letters": "ABCDEF",
+      "ground_truth": "keys logged by the paramiko peer server's _compute_key hook for the same session",
+      "source": "docker rig (arm64), memslicer 0.5.2 acquire -b gdb --scope heap,stack, client idle after one exec"
+    }
+  },
+  "ssh_plugin": {
+    "vol_plugin": "memdiver.ssh.SSHKeys",
+    "plugin_dir": "vol3plugins",
+    "oracle_kind": "ssh-kdf-consistency"
+  },
+  "wireguard_go": {
+    "file": "wireguard_go_initiator.msl.gz",
+    "msl": "wireguard_go_initiator.msl",
+    "msl_sha256": "8ff2d5518ebc8096f6c15d48bac10ead930354e74c98737a0a91108665760e9c",
+    "pid": 42,
+    "implementation": "wireguard-go 0.0.20250522 (f333402), Go 1.25, linux/arm64",
+    "role": "initiator",
+    "phase": "post_rekey_start",
+    "handshake_state": "initiationCreated",
+    "keys": {
+      "static_private": "5040cd752c0ca08174bdd2df0e8587cba13bdaf7da73b95bb1b9a14856f2fd6d",
+      "static_public": "e15da1e129657f64d6144d9e15f11fd3d3eefc92e28480fea93fd32268ef4d11",
+      "peer_public": "50997df154c14a8bbe274c99cc8bb28a3f7f1f637b2cdc97756e55700b82304f",
+      "ephemeral_private": "008c9411eac299aaf3218e49467ddd9d546d000c0f8a7b1aec1087b17f15a67e",
+      "send": "2968175979b9528b62bc93d4a21ffc2e87d352e7141e512d6fdef0da8dec1519",
+      "receive": "5d44c761826db29232e18ce2ec19a4d2a9b2670930865e19f153ed5c18bdde86"
+    },
+    "expected": {
+      "ephemeral-private": {
+        "proven": "oracle:noise-chaining-key",
+        "addresses": [
+          "0x400017e0c0"
+        ]
+      },
+      "peer-public": {
+        "proven": "oracle:x25519-dh-consistency",
+        "addresses": [
+          "0x400017e0e8"
+        ]
+      },
+      "receive": {
+        "proven": "unverified",
+        "addresses": [
+          "0x400050c2a0"
+        ]
+      },
+      "send": {
+        "proven": "unverified",
+        "addresses": [
+          "0x400050c280"
+        ]
+      },
+      "static-private": {
+        "proven": "oracle:x25519-pubkey",
+        "addresses": [
+          "0x400044a090"
+        ]
+      }
+    },
+    "ground_truth": "keylog written from inside the traced wireguard-go process (Delve breakpoints); ephemeral and transport keys are in the same keylog",
+    "source": {
+      "corpus_run": "run_20260808_125548",
+      "file": "initiator/dumps/20260808_125754_100024_post_rekey_start.dump",
+      "bytes": 75616256,
+      "sha256": "c01254dfa3f836e6f82008c34972222ed2280b692ace7a228a901656b9b95f97",
+      "capture_tool": "Delve-driven flat dump + maps sidecar (rig harness 1.0.0)"
+    },
+    "kept_regions": [
+      {
+        "base": "0x4000000000",
+        "size": 33554432,
+        "category": "heap"
+      }
+    ],
+    "selection": "regions=key-holding(0x400017e0c0,0x400017e0e8,0x400044a090,0x400050c280,0x400050c2a0)"
+  },
+  "wireguard_go_plugin": {
+    "vol_plugin": "memdiver.wireguard_go.WireGuardGo",
+    "plugin_dir": "vol3plugins",
+    "oracle_kinds": [
+      "x25519-pubkey",
+      "x25519-dh-consistency"
+    ]
+  },
+  "wireguard_go_psk": {
+    "file": "wireguard_go_psk.msl.gz",
+    "msl": "wireguard_go_psk.msl",
+    "msl_sha256": "7ffd9637d4893ea094884009e4eb094c46bf7a8ed377b4cd0c1345fa34fe874d",
+    "pid": 42,
+    "implementation": "wireguard-go 0.0.20250522 (f333402), Go 1.25, linux/arm64",
+    "role": "responder",
+    "phase": "pre_keys_installed",
+    "handshake_state": "responseCreated",
+    "keys": {
+      "static_private": "88b06609e13d1218175ad5103437d4498ed01b735ced53de329d9f8413c04d61",
+      "static_public": "42fdfbe0ef4940728b6bddea71dda2d3cc6809346ba26f917e125e0587f35f6f",
+      "peer_public": "bb732717b389f7bb296ee53925cd69cb9976265178ff1a264944ffdef9e7a277",
+      "ephemeral_private": "18a1178a976ec5064f64a30f47681dab7b88a5dc59c3c0705e44e07cfd5e2957",
+      "preshared": "337e59e693ef3ce5ab09ce8b4ee149d9d4c619108b30558d80bf9f3dc1514946"
+    },
+    "expected": {
+      "ephemeral-private": {
+        "proven": "oracle:noise-chaining-key",
+        "addresses": [
+          "0x40004880c0"
+        ]
+      },
+      "peer-public": {
+        "proven": "oracle:x25519-dh-consistency",
+        "addresses": [
+          "0x40004880e8"
+        ]
+      },
+      "preshared": {
+        "proven": "oracle:noise-chaining-key",
+        "addresses": [
+          "0x40004880a0"
+        ]
+      },
+      "static-private": {
+        "proven": "oracle:x25519-pubkey",
+        "addresses": [
+          "0x40003c4090"
+        ]
+      }
+    },
+    "ground_truth": "keylog written from inside the traced wireguard-go process (Delve breakpoints), incl. its WG_PRESHARED_KEY line; the PSK was generated with openssl rand and configured on both peers",
+    "source": {
+      "corpus_run": "run_20261112_124707_psk",
+      "file": "responder/dumps/20261112_124708_865166_pre_keys_installed.dump",
+      "bytes": 75620352,
+      "sha256": "d7825ae343b3c95dbee65fa07b54976ef3189c574996b6cb141b094d262ce55e",
+      "capture_tool": "Delve-driven flat dump + maps sidecar (rig harness 1.0.0)"
+    },
+    "kept_regions": [
+      {
+        "base": "0x4000000000",
+        "size": 33554432,
+        "category": "heap"
+      }
+    ],
+    "selection": "regions=key-holding(0x40003c4090,0x40004880a0,0x40004880c0,0x40004880e8)"
+  }
+}

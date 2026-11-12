@@ -21,6 +21,32 @@ The web face of :mod:`memdiver.app.tools_vol3` and :mod:`memdiver.app.tools_vol3
 * ``GET  /api/vol3/fixtures``     — stored plugin fixtures of a case.
 * ``PUT  /api/vol3/fixtures/{name}`` — store a fixture (plugin/source, view, predicates).
 * ``POST /api/vol3/fixtures/{name}/run`` — run it; verdict pass|fail|indeterminate.
+* ``GET  /api/vol3/plugin-dir``   — the installed ``memdiver/vol3plugins`` (``vol -p``).
+* ``POST /api/vol3/synthesize``   — located key -> standalone plugin, verified by its
+  oracle (``synthesize_vol3_plugin``). The key to synthesize for arrives as
+  ``secret_hex`` (and the full image's ground truth as ``full_image_secret_hex``);
+  ``key_hex`` / ``passphrase`` / ``kem_key_hex`` decrypt an encrypted ``.msl``
+  (see ``api.models.KeyMaterialFields``). No key is echoed. ``case_dir`` must be
+  an EXISTING case. At most 16 dumps, and a full-image run must fit a 3600 s
+  worst-case vol budget (``app.vol3_surface_limits``). INLINE without
+  ``full_image`` and ``async``; with either it is a JOB (kind ``vol3_synth``)
+  answering ``{"task_id", "status"}``. Before the job exists the router runs
+  the request bounds, the key-material decode, the case resolution and the
+  producer's own pre-flight (``preflight_synthesize_vol3_plugin``: oracle,
+  verify targets, the vol launcher, image / sample paths, ``;`` in paths, key
+  form, hex and per-dump lengths, a hit's shape, then the dumps: each must
+  exist and an encrypted ``.msl``'s key is probed on block 0 -- one key
+  derivation, no dump opened or decrypted on the request thread), so a bad
+  request is the same 4xx as inline. Only a ciphertext tampered beyond block 0
+  and a hit outside its dump need the full read: those are a 202 whose job
+  fails with the inline ``code`` on its ``error`` event; progress
+  streams over ``/ws/tasks/{task_id}``, ``DELETE /api/tasks/{id}`` cancels it
+  (killing a running vol), and the payload -- what the inline call returns -- is
+  the ``vol3_synth_result`` artifact (``GET /api/tasks/{id}/result``).
+* ``POST /api/vol3/exec``         — run a plugin by NAME under stock ``vol`` (a
+  subprocess; ``vol3_exec_result``). Synchronous within ``timeout_s`` (<= 900).
+  vol GLOBAL options in ``args`` are refused; plugin-specific path arguments are
+  NOT checked against the read sandbox.
 
 ``source_name`` + ``case_dir`` stand in for raw ``source`` on describe/run/check.
 
@@ -33,16 +59,24 @@ the opt-in read sandbox; every path the server WRITES (``out_path``, ``out_dir``
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter
 from pydantic import Field
 
 from memdiver.api.dependencies import task_manager_or_503
+from memdiver.api.models import KeyMaterialFields
 from memdiver.api.routers._common import StrictModel, submit_job
 from memdiver.api.routers.image import _case_target, _contained
+from memdiver.api.services.key_material import decode_key_material
+from memdiver.app.vol3_surface_limits import (
+    MAX_EXEC_TIMEOUT_S,
+    SYNTH_MAX_DUMPS,
+    check_synth_request,
+)
 from memdiver.app import (
     tools_case,
+    tools_pipeline,
     tools_vol3,
     tools_vol3_dev,
     tools_vol3_fixtures,
@@ -52,6 +86,9 @@ from memdiver.app import (
 router = APIRouter()
 
 _RUNNER = "memdiver.app.pipeline.vol3_task_runner.run_vol3_job"
+_SYNTH_RUNNER = "memdiver.app.pipeline.vol3_synth_task_runner.run_synth_job"
+#: Job kind of a background synthesis; its artifact is ``vol3_synth_result``.
+SYNTH_JOB_KIND = "vol3_synth"
 #: A run within both bounds is answered inline; beyond either it becomes a job.
 SYNC_MAX_TIMEOUT_S = 30.0
 SYNC_MAX_LIMIT = 10_000
@@ -247,9 +284,9 @@ def list_sources(case_dir: str):
 
 
 @router.get("/sources/{name}")
-def get_source(name: str, case_dir: str):
-    """One stored plugin source with its metadata."""
-    return tools_vol3_sources.vol3_source_get_result(_case(case_dir), name).payload
+def get_source(name: str, case_dir: str, origin: Optional[str] = None):
+    """One stored plugin source with its metadata (``origin`` picks a side on a name clash)."""
+    return tools_vol3_sources.vol3_source_get_result(_case(case_dir), name, origin).payload
 
 
 @router.put("/sources/{name}")
@@ -279,3 +316,110 @@ def run_fixture(name: str, req: FixtureRunRequest):
     return tools_vol3_fixtures.vol3_fixture_run_result(
         _case(req.case_dir), name, view_path=req.view_path, limit=req.limit,
         timeout_s=req.timeout_s, register_run=req.register_run).payload
+
+
+class SynthesizeRequest(StrictModel, KeyMaterialFields):
+    """Body of ``POST /synthesize``: ``synthesize_vol3_plugin``'s parameters.
+
+    ``secret_hex`` is the producer's ``key_hex`` (one for all dumps or one per
+    dump) and ``full_image_secret_hex`` its ``full_image_key_hex``: the inherited
+    ``key_hex`` keeps its container-decryption meaning (KeyMaterialFields).
+    """
+
+    dump_paths: List[str] = Field(min_length=1, max_length=SYNTH_MAX_DUMPS)
+    name: str
+    oracle_kind: str
+    secret_hex: Union[str, List[str]] = ""
+    hit: Optional[Dict[str, Any]] = None
+    oracle_sample_path: Union[None, str, List[Optional[str]]] = None
+    oracle_params: Optional[Dict[str, Any]] = None
+    context: int = tools_pipeline.SYNTH_DEFAULT_CONTEXT
+    case_dir: Optional[str] = None
+    verify_on: List[str] = Field(default_factory=lambda: list(tools_pipeline.SYNTH_VERIFY_TARGETS))
+    full_image: Optional[str] = None
+    pid: Optional[int] = None
+    full_image_sample: Optional[str] = None
+    full_image_secret_hex: str = ""
+    symbol_dirs: List[str] = Field(default_factory=list)
+    vol_bin: Optional[str] = None
+    vol_python: Optional[str] = None
+    allow_high_entropy_context: bool = False
+    async_: bool = Field(default=False, alias="async")
+
+
+class ExecRequest(StrictModel):
+    plugin: str
+    image_path: str
+    plugin_dirs: List[str] = Field(default_factory=list)
+    symbol_dirs: List[str] = Field(default_factory=list)
+    args: List[str] = Field(default_factory=list)
+    include_memdiver_plugins: bool = True
+    timeout_s: int = Field(default=tools_vol3_dev.DEFAULT_EXEC_TIMEOUT_S, ge=1,
+                           le=MAX_EXEC_TIMEOUT_S)
+    max_rows: int = tools_vol3_dev.DEFAULT_EXEC_MAX_ROWS
+    vol_bin: Optional[str] = None
+    vol_python: Optional[str] = None
+    out_dir: Optional[str] = None
+
+
+@router.get("/plugin-dir")
+def plugin_dir():
+    """The installed ``memdiver/vol3plugins`` directory, for ``vol -p``."""
+    return tools_pipeline.vol3_plugin_dir()
+
+
+def _synth_kwargs(req: SynthesizeRequest) -> Dict[str, Any]:
+    """The producer's kwargs (no container key material), the case resolved.
+
+    ``existing_case_dir`` refuses a missing case HERE, so a job is never
+    submitted for a request that could only fail.
+    """
+    from memdiver.analysis.case import existing_case_dir
+
+    return {"dump_paths": list(req.dump_paths), "name": req.name, "key_hex": req.secret_hex,
+            "hit": req.hit, "oracle_kind": req.oracle_kind,
+            "oracle_sample_path": req.oracle_sample_path, "oracle_params": req.oracle_params,
+            "context": req.context, "case_dir": existing_case_dir(_case_target(req.case_dir)),
+            "verify_on": tuple(req.verify_on), "full_image": req.full_image, "pid": req.pid,
+            "vol_bin": req.vol_bin, "vol_python": req.vol_python,
+            "allow_high_entropy_context": req.allow_high_entropy_context,
+            "full_image_sample": req.full_image_sample,
+            "full_image_key_hex": req.full_image_secret_hex,
+            "symbol_dirs": list(req.symbol_dirs)}
+
+
+def _is_synth_job(req: SynthesizeRequest) -> bool:
+    """A full-image run (minutes of vol) or an explicit ``async`` is a job."""
+    return req.async_ or bool(req.full_image)
+
+
+@router.post("/synthesize")
+def synthesize_plugin(req: SynthesizeRequest):
+    """A key located in N dumps -> a standalone vol3 plugin, RUN and judged by ``Proven``.
+
+    Inline, or a job for ``async: true`` / a ``full_image`` (see the module
+    docstring). ``case_dir`` (name or path) must be an existing case; a path is
+    contained like every case write. The key never reaches the response, and a
+    job's persisted record has every secret redacted (``TaskManager.submit``).
+    """
+    check_synth_request(req.dump_paths, req.full_image, req.full_image_sample)
+    wire_km = {"passphrase": req.passphrase, "key_hex": req.key_hex,
+               "kem_key_hex": req.kem_key_hex}
+    km = decode_key_material(**wire_km) or {}  # malformed hex: a 400 now, not a failed job
+    kwargs = _synth_kwargs(req)
+    if _is_synth_job(req):
+        tools_pipeline.preflight_synthesize_vol3_plugin(**kwargs, key_material=km)
+        return submit_job(task_manager_or_503(), SYNTH_JOB_KIND, _SYNTH_RUNNER,
+                          {"kwargs": kwargs, "key_material_hex": wire_km})
+    return tools_pipeline.synthesize_vol3_plugin(**kwargs, key_material=km)
+
+
+@router.post("/exec")
+def exec_plugin(req: ExecRequest):
+    """Run a plugin by NAME under the stock ``vol`` launcher; a failing plugin is ``ok: false``."""
+    return tools_vol3_dev.vol3_exec_result(
+        req.plugin, req.image_path, plugin_dirs=req.plugin_dirs,
+        symbol_dirs=req.symbol_dirs, args=req.args,
+        include_memdiver_plugins=req.include_memdiver_plugins, timeout_s=req.timeout_s,
+        max_rows=req.max_rows, vol_bin=req.vol_bin, vol_python=req.vol_python,
+        out_dir=_contained(req.out_dir)).payload

@@ -15,7 +15,7 @@
  * and the producer payload arrives as the terminal `done` event's `extra`.
  */
 
-import { ApiError, compact, postJson as post, request } from "./client";
+import { ApiError, apiErrorCode, compact, postJson as post, readableFailure, request } from "./client";
 import type { PageStatesResponse } from "./types";
 import { getTaskPayload, parseJsonLossless, postLossless } from "./lossless-json";
 import { hasKey } from "./guards";
@@ -232,7 +232,14 @@ export interface Vol3SourceMeta {
   version: number | null;
   path: string;
   modified_externally?: boolean;
+  /** "user" for a source saved from the editor, "synthesized" for one `synthesize_vol3_plugin` wrote. */
+  origin?: Vol3SourceOrigin;
+  description?: string | null;
+  oracle_kind?: string | null;
+  recipe_path?: string | null;
 }
+
+export type Vol3SourceOrigin = "user" | "synthesized";
 
 export interface Vol3SourceDocument extends Vol3SourceMeta {
   source: string;
@@ -254,9 +261,12 @@ export const listVol3Sources = (caseDir: string) =>
   request<{ sources: Vol3SourceMeta[]; count: number }>(
     `/api/vol3/sources?case_dir=${encodeURIComponent(caseDir)}`);
 
-export const getVol3Source = (caseDir: string, name: string) =>
+/** `origin` picks the user source or the synthesized plugin when both share `name`;
+ *  omitted, the server returns the user source first. */
+export const getVol3Source = (caseDir: string, name: string, origin?: Vol3SourceOrigin) =>
   request<Vol3SourceDocument>(
-    `/api/vol3/sources/${encodeURIComponent(name)}?case_dir=${encodeURIComponent(caseDir)}`);
+    `/api/vol3/sources/${encodeURIComponent(name)}?case_dir=${encodeURIComponent(caseDir)}`
+    + (origin ? `&origin=${origin}` : ""));
 
 export const putVol3Source = (
   caseDir: string, name: string, source: string, viewPath?: string,
@@ -344,3 +354,227 @@ export const listVol3SavedQueries = (caseDir: string) =>
 /** Lossless: `addr` columns of a case table are uint64. */
 export const runVol3Query = (caseDir: string, body: { sql?: string; saved?: string; limit?: number }) =>
   postLossless<Vol3QueryResult>("/api/vol3/query", compact({ case_dir: caseDir, ...body }));
+
+// -- synthesize + exec (contest T3) ------------------------------------------
+//
+//   GET  /api/vol3/plugin-dir  — the installed `memdiver/vol3plugins` (`vol -p`)
+//   POST /api/vol3/synthesize  — located key -> standalone plugin, verified by its oracle
+//   POST /api/vol3/exec        — run a plugin by NAME under stock `vol`
+//
+// `plugin-dir` and `exec` are SYNCHRONOUS. `synthesize` answers inline unless
+// the request sets `async: true` (or `full_image`): then it is a job ticket
+// `{task_id, status}` -- the job (kind `vol3_synth`) runs one at a time behind
+// other jobs, progress streams over the task WebSocket, and the exact result is
+// the task's stored payload (`getVol3SynthJobPayload`). A refused request is
+// still a synchronous 4xx before any job exists.
+//
+// On the synthesize wire `secret_hex` is the SECRET the plugin is built for;
+// `key_hex` keeps its container-decryption meaning (an encrypted `.msl`),
+// exactly like `locateKey`. No key is ever echoed back.
+
+/**
+ * Offline fallback for the `memdiver.oracles` format kinds. The live source is
+ * `GET /api/oracles/formats` (`listFormatOracles`); this list mirrors
+ * `oracles/formats/*.py` `KIND` and is used only when that listing route fails.
+ * An unknown kind is refused by the server with its list of known ones.
+ */
+export const KNOWN_ORACLE_KINDS = [
+  "gocryptfs-gcm", "luks", "xts-fsmagic", "aead-generic",
+  "x25519-pubkey", "x25519-dh-consistency", "ssh-kdf-consistency",
+] as const;
+
+/** One entry of `GET /api/oracles/formats`. */
+export interface FormatOracleInfo {
+  kind: string;
+  /** `format:<kind>` */
+  resource_type: string;
+  candidate_lengths: number[];
+  cost_us: number;
+  sample_kind: string;
+  unique: boolean;
+}
+
+export interface FormatOracleList {
+  formats: FormatOracleInfo[];
+  count: number;
+}
+
+export type FormatSuggestionConfidence = "high" | "medium" | "low";
+
+/** The server's pick of a format oracle for a dump (`POST /api/oracles/formats/suggest`). */
+export interface FormatOracleSuggestion {
+  kind: string;
+  sample_path: string | null;
+  params: Record<string, unknown>;
+  reason: string;
+  confidence: FormatSuggestionConfidence;
+  signal: "vault" | "key_hint" | "process";
+  sample_needed: string | null;
+}
+
+export interface FormatOracleSuggestResponse {
+  dump_path: string;
+  suggestion: FormatOracleSuggestion | null;
+  reason: string;
+}
+
+export const listFormatOracles = () => request<FormatOracleList>("/api/oracles/formats");
+
+export const suggestFormatOracle = (dumpPath: string) =>
+  post<FormatOracleSuggestResponse>("/api/oracles/formats/suggest", { dump_path: dumpPath });
+
+/** `SYNTH_VERIFY_TARGETS`: the in-process targets `verify_on` accepts. */
+export const SYNTH_VERIFY_TARGETS = ["msl"] as const;
+
+export interface Vol3SynthesizeRequest {
+  dump_paths: string[];
+  name: string;
+  oracle_kind: string;
+  /** The SECRET: one for every dump, or one per dump. */
+  secret_hex?: string | string[];
+  /** A located key: `{key_hex}` or `{offset, length[, dump_path, view]}`; exclusive with `secret_hex`. */
+  hit?: Record<string, unknown> | null;
+  /** Oracle evidence (e.g. a gocryptfs cipher dir), one for all dumps or one per dump. */
+  oracle_sample_path?: string | (string | null)[] | null;
+  oracle_params?: Record<string, unknown> | null;
+  context?: number;
+  /** An EXISTING case (directory or bare name); blank stores nothing durable. */
+  case_dir?: string;
+  verify_on?: string[];
+  full_image?: string;
+  pid?: number;
+  full_image_sample?: string;
+  /** Ground truth for the full image; never echoed. */
+  full_image_secret_hex?: string;
+  symbol_dirs?: string[];
+  allow_high_entropy_context?: boolean;
+  /** Run as a background job: the answer is a {@link Vol3JobTicket}. */
+  async?: boolean;
+  // container decryption of an encrypted `.msl` (KeyMaterialFields)
+  passphrase?: string | null;
+  key_hex?: string | null;
+  kem_key_hex?: string | null;
+}
+
+export type Vol3SynthStatus = "proven" | "not_proven" | "error";
+
+export interface Vol3SynthProvenHit {
+  key_offset: number;
+  pattern_offset: number;
+  proven: string;
+}
+
+export interface Vol3SynthVerdict {
+  /** `msl` or `full_image`. */
+  target: string;
+  dump_path: string;
+  name: string;
+  status: Vol3SynthStatus;
+  proven: boolean;
+  proven_hits: Vol3SynthProvenHit[];
+  rows: number;
+  framework_version?: number[] | null;
+  oracle_sample_override?: boolean;
+  /** The exact `vol` command line that reproduces this verdict. */
+  vol_command: string;
+  /**
+   * The exec request of that same command, built by the backend from the one
+   * spec `vol_command` is rendered from. Absent on verdicts stored before it.
+   */
+  exec?: Vol3ExecRequest;
+  matched_dump_index?: number | null;
+  error: string | null;
+  error_code: string | null;
+  /** `full_image` only. */
+  pid_honoured?: boolean | null;
+  pid_scope?: string | null;
+  image_sample?: boolean;
+  proven_by_image_sample?: boolean;
+}
+
+export interface Vol3SynthDiagnostic {
+  code: string;
+  message: string;
+  severity: string;
+  details?: Record<string, unknown>;
+}
+
+export interface Vol3SynthesizeResult {
+  source: string;
+  recipe: { name: string; class_name: string; description?: string; [k: string]: unknown };
+  oracle: { kind: string; sample_bytes?: number; sample_sha256?: string };
+  self_test: {
+    error: string | null; found: boolean; proven: number; rows: number;
+    expected_offset?: number | null; expected_offset_reported?: boolean;
+  } | null;
+  verdicts: Vol3SynthVerdict[];
+  /** True iff at least one target ran and every target proved the key. */
+  proven: boolean;
+  proven_hits: number;
+  export_files: string[];
+  stored: {
+    path: string; recipe_path: string; yara_path?: string | null; history_dir: string; sha256: string; versions_archived: number;
+  } | null;
+  vol_command: string;
+  plugin_dir: string;
+  diagnostics: Vol3SynthDiagnostic[];
+}
+
+export interface Vol3ExecRequest {
+  /** A plugin NAME, e.g. `memdiver_gocryptfs.MemDiverSynthGocryptfs`. */
+  plugin: string;
+  image_path: string;
+  plugin_dirs?: string[];
+  symbol_dirs?: string[];
+  /** Passed to the plugin after its name. */
+  args?: string[];
+  include_memdiver_plugins?: boolean;
+  timeout_s?: number;
+  max_rows?: number;
+  out_dir?: string;
+}
+
+/** One `vol -r json` row: column -> value, plus the tree's `__children`. */
+export type Vol3ExecRow = Record<string, unknown>;
+
+export interface Vol3ExecResult {
+  ok: boolean;
+  returncode: number | null;
+  plugin: string;
+  image_path: string;
+  plugin_dirs: string[];
+  symbol_dirs: string[];
+  args: string[];
+  rows: Vol3ExecRow[];
+  row_count: number;
+  truncated: boolean;
+  stderr_tail: string;
+  framework: string | null;
+  vol_command: string;
+  launcher: string | null;
+  elapsed_s: number;
+  out_dir: string | null;
+  output_files: string[];
+}
+
+export const getVol3PluginDir = () => request<{ path: string }>("/api/vol3/plugin-dir");
+
+/** The inline result, or a job ticket for an `async` (or `full_image`) request. */
+export const synthesizeVol3Plugin = (req: Vol3SynthesizeRequest) =>
+  post<Vol3SynthesizeResult | Vol3JobTicket>("/api/vol3/synthesize", compact(req));
+
+/** The exact result of a finished synthesize JOB (its stored task payload), or `null`. */
+export const getVol3SynthJobPayload = (taskId: string) => getTaskPayload<Vol3SynthesizeResult>(taskId);
+
+/** Lossless: a physical-layer offset in a row can exceed 2^53. */
+export const execVol3Plugin = (req: Vol3ExecRequest) =>
+  postLossless<Vol3ExecResult>("/api/vol3/exec", compact(req));
+
+/**
+ * The `code` and message of a refused request: the standard CapabilityError
+ * body is `{error, code, category}`; anything else (a 422, a proxy page) keeps
+ * the readable text and has no code.
+ */
+export function vol3ErrorOf(err: unknown): { code: string | null; message: string } {
+  return { code: apiErrorCode(err) ?? null, message: readableFailure(err) };
+}

@@ -98,6 +98,7 @@ def test_ws_manager_not_initialized_sends_error(isolated_env):
     assert frame["type"] == "error"
     assert frame["task_id"] == "whatever"
     assert "not initialized" in frame["error"]
+    assert frame["seq"] == 1 and frame["ts"] > 0
 
 
 def test_ws_unknown_task_sends_error(client):
@@ -107,6 +108,13 @@ def test_ws_unknown_task_sends_error(client):
     assert frame["type"] == "error"
     assert frame["task_id"] == "ws-unknown-task"
     assert frame["error"] == "unknown task"
+    assert frame["seq"] == 1 and frame["ts"] > 0  # same shape as every other frame
+
+
+def test_ws_unknown_task_frame_seq_follows_since(client):
+    with client.websocket_connect("/ws/tasks/ws-unknown-task-2?since=7") as ws:
+        frame = ws.receive_json()
+    assert frame["error"] == "unknown task" and frame["seq"] == 8 and frame["ts"] > 0
 
 
 def test_ws_replays_backlog_and_closes_on_terminal(client):
@@ -160,6 +168,10 @@ class _FakeWebSocket:
     async def close(self):
         self.closed = True
 
+    async def receive(self):
+        """The client never disconnects on its own (the handler races this)."""
+        await asyncio.Event().wait()
+
 
 def test_ws_live_loop_streams_subscribe_event_then_closes(client, monkeypatch):
     """Backlog replay (non-terminal) falls through to the live ``subscribe``
@@ -181,7 +193,7 @@ def test_ws_live_loop_streams_subscribe_event_then_closes(client, monkeypatch):
         # through to the live subscribe loop instead of returning early.
         bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
 
-    live_event = Event(task_id=task_id, type="done", msg="live-done")
+    live_event = Event(task_id=task_id, type="done", seq=2, msg="live-done")
 
     async def fake_subscribe(_task_id):
         yield live_event
@@ -239,7 +251,7 @@ def test_ws_disconnect_during_live_send_stops_cleanly(client, monkeypatch):
         bus = mgr.progress_bus
         bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
 
-    live_event = Event(task_id=task_id, type="done", msg="unreachable")
+    live_event = Event(task_id=task_id, type="done", seq=2, msg="unreachable")
 
     async def fake_subscribe(_task_id):
         yield live_event
@@ -300,3 +312,156 @@ def test_http_events_503_when_manager_uninitialized(isolated_env):
     c = TestClient(create_app())  # no ``with`` → lifespan never runs
     r = c.get("/api/tasks/whatever/events", params={"since": 0})
     assert r.status_code == 503
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("status, error, frame", [
+    ("failed", "backend restarted", {"type": "error", "error": "backend restarted"}),
+    ("cancelled", None, {"type": "error", "error": "cancelled"}),
+    ("succeeded", None, {"type": "done"}),
+])
+def test_ws_task_ended_in_an_earlier_server_life_gets_its_terminal_frame(
+        client, status, error, frame):
+    """A terminal record with no bus history (loaded from disk) must not park the socket.
+
+    It used to wait on ``subscribe`` forever: a UI following the job showed it
+    running for good, and the socket held the server's graceful shutdown.
+    """
+    from memdiver.api.services.task_manager import TaskRecord, TaskStatus
+    mgr = get_task_manager()
+    task_id = f"ws-earlier-life-{status}"
+    with mgr._lock:  # noqa: SLF001 — what load_from_disk installs
+        mgr._records[task_id] = TaskRecord(task_id=task_id, kind="vol3_synth",
+                                           status=TaskStatus(status), error=error)
+    with client.websocket_connect(f"/ws/tasks/{task_id}?since=3") as ws:
+        frames = _collect_until_close(ws)
+    assert len(frames) == 1 and frames[0]["task_id"] == task_id
+    assert {k: frames[0][k] for k in frame} == frame
+    # What the client's isTaskProgressEvent requires, or it drops the frame.
+    assert frames[0]["seq"] == 4 and isinstance(frames[0]["ts"], float)
+
+
+@pytest.mark.timeout(30)
+def test_ws_client_going_away_ends_a_parked_live_stream(client):
+    """A closed socket ends the handler even while its task is still running.
+
+    The handler used to park on ``subscribe`` until the task ended. uvicorn's
+    shutdown closes every WebSocket and then waits for the handlers, so one
+    open tab held the whole shutdown (and the job's cancel) for the graceful
+    timeout. Driven directly: Starlette's TestClient cancels the handler on
+    exit, which would hide the difference.
+    """
+    mgr = get_task_manager()
+    task_id = "ws-parked-live-task"
+    with mgr._lock:  # noqa: SLF001 — test-only direct publish
+        bus = mgr.progress_bus
+        bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
+
+    class _LeavingWebSocket(_FakeWebSocket):
+        async def receive(self):
+            await asyncio.sleep(0.2)  # parked on the live stream by now
+            return {"type": "websocket.disconnect", "code": 1012}
+
+    fake_ws = _LeavingWebSocket()
+    asyncio.run(asyncio.wait_for(ws_task_progress(fake_ws, task_id, since=0), timeout=5))
+    assert [f["type"] for f in fake_ws.sent] == ["stage_start"]
+    assert fake_ws.closed is False  # gone already: nothing to close
+    assert not bus._channels[task_id].subscribers  # noqa: SLF001 — unsubscribed
+
+
+def test_ws_real_terminal_event_wins_over_the_record_frame(client, monkeypatch):
+    """The task ended in THIS life between the replay and the record check: the bus's
+    own ``done`` (with the ``extra`` an image job's consumer reads) is what is sent."""
+    from memdiver.api.services.task_manager import TaskRecord, TaskStatus
+    mgr = get_task_manager()
+    task_id = "ws-ended-mid-handshake"
+    with mgr._lock:  # noqa: SLF001
+        mgr._records[task_id] = TaskRecord(task_id=task_id, kind="image",
+                                           status=TaskStatus.SUCCEEDED)
+        bus = mgr.progress_bus
+        bus.publish(Event(task_id=task_id, type="stage_start", stage="image"))
+        bus.publish(Event(task_id=task_id, type="done", extra={"rows": [1, 2]}))
+    real_replay, calls = bus.replay, []
+
+    def late_replay(tid, since_seq=0):
+        calls.append(since_seq)
+        return [] if len(calls) == 1 else real_replay(tid, since_seq=since_seq)
+    monkeypatch.setattr(bus, "replay", late_replay)
+
+    fake_ws = _FakeWebSocket()
+    asyncio.run(ws_task_progress(fake_ws, task_id, since=0))
+    assert [f["type"] for f in fake_ws.sent] == ["stage_start", "done"]
+    assert fake_ws.sent[-1]["extra"] == {"rows": [1, 2]} and fake_ws.closed
+
+
+def test_ws_cancelled_handler_cancels_its_stream_children(client):
+    """A handler cancelled from outside (graceful-shutdown timeout) must not leave the
+    live stream parked on the bus."""
+    mgr = get_task_manager()
+    task_id = "ws-cancelled-handler"
+    with mgr._lock:  # noqa: SLF001
+        bus = mgr.progress_bus
+        bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
+
+    async def scenario():
+        handler = asyncio.ensure_future(ws_task_progress(_FakeWebSocket(), task_id, since=0))
+        await asyncio.sleep(0.2)
+        assert bus._channels[task_id].subscribers  # noqa: SLF001 — parked live
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        await asyncio.sleep(0)
+        return list(bus._channels[task_id].subscribers)  # noqa: SLF001
+    assert asyncio.run(scenario()) == []
+
+
+def test_ws_event_published_between_snapshot_and_stream_is_sent_once(client, monkeypatch):
+    """Events published after the replay snapshot was taken but before the live
+    stream starts are delivered -- exactly once, with no replayed duplicate."""
+    mgr = get_task_manager()
+    task_id = "ws-gap-task"
+    with mgr._lock:  # noqa: SLF001
+        bus = mgr.progress_bus
+        bus.publish(Event(task_id=task_id, type="stage_start", stage="scan"))
+    real_replay = bus.replay
+
+    def replay_then_publish(tid, since_seq=0):
+        snapshot = real_replay(tid, since_seq=since_seq)
+        # The job races ahead right after the snapshot: a progress tick and
+        # its terminal ``done`` land in neither this snapshot nor (before the
+        # fix) any live queue.
+        if since_seq == 0 and snapshot and not any(
+                e.type == "done" for e in real_replay(tid)):
+            bus.publish(Event(task_id=tid, type="progress", pct=0.5))
+            bus.publish(Event(task_id=tid, type="done", msg="fast"))
+        return snapshot
+    monkeypatch.setattr(bus, "replay", replay_then_publish)
+
+    fake_ws = _FakeWebSocket()
+    asyncio.run(asyncio.wait_for(ws_task_progress(fake_ws, task_id, since=0), timeout=5))
+    assert [f["seq"] for f in fake_ws.sent] == [1, 2, 3]
+    assert [f["type"] for f in fake_ws.sent] == ["stage_start", "progress", "done"]
+    assert fake_ws.closed is True
+    assert not bus._channels[task_id].subscribers  # noqa: SLF001
+
+
+def test_ws_terminal_event_during_a_long_replay_arrives(client):
+    """A ``done`` published while replayed frames are still being sent arrives."""
+    mgr = get_task_manager()
+    task_id = "ws-long-replay-task"
+    with mgr._lock:  # noqa: SLF001
+        bus = mgr.progress_bus
+        for i in range(50):
+            bus.publish(Event(task_id=task_id, type="progress", pct=i / 50))
+
+    class _SlowWebSocket(_FakeWebSocket):
+        async def send_json(self, data):
+            await super().send_json(data)
+            if data["seq"] == 10:  # mid-replay: the job finishes now
+                bus.publish(Event(task_id=task_id, type="done", msg="finished"))
+            await asyncio.sleep(0)
+
+    fake_ws = _SlowWebSocket()
+    asyncio.run(asyncio.wait_for(ws_task_progress(fake_ws, task_id, since=0), timeout=5))
+    seqs = [f["seq"] for f in fake_ws.sent]
+    assert seqs == list(range(1, 52))  # 50 replayed + the live done, no dupes
+    assert fake_ws.sent[-1]["type"] == "done" and fake_ws.closed is True

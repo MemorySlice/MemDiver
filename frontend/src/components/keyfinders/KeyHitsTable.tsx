@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import type { KeyHitRow } from "@/api/keyfinders";
 import { wireIntHex as hex } from "@/api/lossless-json";
+import { ExportPluginButton } from "@/components/vol3/ExportPluginButton";
 
 const KEY_PREVIEW_CHARS = 16;
 const smallButton =
@@ -22,12 +23,16 @@ function heapText(row: KeyHitRow, t: (k: string, o?: Record<string, unknown>) =>
   return `${role} · ${hex(row.heap.chunk_va)} (${row.heap.chunk_size} B)${span}`;
 }
 
-/** The finder-hit table: one row per hit, click to navigate, button to verify. */
-export function KeyHitsTable({ rows, active, onRowClick, onVerify }: {
+/**
+ * The finder-hit table: one row per hit, click to navigate, button to verify.
+ * With `dumpPath`, a hit that carries its key also offers "Export as Volatility 3 plugin".
+ */
+export function KeyHitsTable({ rows, active, onRowClick, onVerify, dumpPath }: {
   rows: readonly KeyHitRow[];
   active: number | null;
   onRowClick: (index: number) => void;
   onVerify: (index: number) => void;
+  dumpPath?: string;
 }) {
   const { t } = useTranslation("keyfinders");
   return (
@@ -70,6 +75,10 @@ export function KeyHitsTable({ rows, active, onRowClick, onVerify }: {
                   <button type="button" className={smallButton} data-testid="keyfinders-verify"
                     aria-label={t("row.verifyAria", { addr: hex(row.addr) })}
                     onClick={(e) => { e.stopPropagation(); onVerify(i); }}>{t("row.verify")}</button>
+                  {dumpPath && keyHex && (
+                    <ExportPluginButton className={`${smallButton} ml-1`} testId="keyfinders-export"
+                      dumps={() => [dumpPath]} secretHex={() => keyHex} />
+                  )}
                 </td>
               </tr>
             );

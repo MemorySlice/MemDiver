@@ -40,3 +40,6 @@ function ensureFileWorkspace(viewPath: string): void {
 }
 
 export const isMdview = (path: string): boolean => /\.mdview$/i.test(path);
+
+/** A MemDiver `.msl` capture: stock vol reads it through MemDiver's vol3 plugins. */
+export const isMslImage = (path: string): boolean => /\.msl$/i.test(path);

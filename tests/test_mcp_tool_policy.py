@@ -49,6 +49,8 @@ REVIEWED = frozenset({
     "export_keylog",
     "export_pattern",
     "extract_strings",
+    "format_oracle_spec",
+    "format_oracles",
     "get_blocks",
     "get_connections",
     "get_cross_references",
@@ -73,6 +75,7 @@ REVIEWED = frozenset({
     "image_probe",
     "image_processes",
     "image_profile",
+    "image_siblings",
     "import_raw_dump",
     "inspect_pcap",
     "isf_draft_create",
@@ -107,16 +110,20 @@ REVIEWED = frozenset({
     "search_reduce",
     "set_region_filter",
     "strings_table",
+    "suggest_format_oracle",
+    "synthesize_vol3_plugin",
     "vas_regions",
     "verify",
     "verify_vol3_plugin",
     "vol3_annotate",
     "vol3_check",
     "vol3_describe",
+    "vol3_exec",
     "vol3_fixture_list",
     "vol3_fixture_put",
     "vol3_fixture_run",
     "vol3_import",
+    "vol3_plugin_dir",
     "vol3_plugins",
     "vol3_query",
     "vol3_run",
@@ -156,7 +163,7 @@ def test_known_reads(name):
 
 @pytest.mark.parametrize("name", [
     "annotations_add", "case_init", "isf_draft_set", "export_keylog", "capture_dump",
-    "vol3_run", "propose_layout", "artifact_model_build", "yara_rule_put",
+    "vol3_run", "propose_layout", "artifact_model_build", "yara_rule_put", "image_siblings",
 ])
 def test_known_writes(name):
     assert CLS[name].access == tp.WRITE and CLS[name].reasons
@@ -176,13 +183,13 @@ def test_set_region_filter_stays_read():
 
 def test_exact_read_write_counts():
     reads = sum(c.access == tp.READ for c in CLS.values())
-    assert (reads, len(CLS) - reads) == (65, 55)
+    assert (reads, len(CLS) - reads) == (69, 58)  # C1: +3 format-oracle READ tools; S2: +image_siblings (WRITE)
 
 
 @pytest.mark.parametrize("name", [
     "verify_vol3_plugin", "vol3_run", "vol3_check", "vol3_source_put", "brute_force",
     "n_sweep", "auto_floor", "scan_yara_rule", "yara_scan_dump", "yara_check", "yara_rule_put",
-    "artifact_model_validate", "isf_draft_import",
+    "artifact_model_validate", "isf_draft_import", "vol3_exec", "synthesize_vol3_plugin",
 ])
 def test_code_exec_tools_are_once_only(name):
     assert CLS[name].scopes == ["once"]

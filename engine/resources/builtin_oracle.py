@@ -16,6 +16,13 @@ Config keys (from the oracle TOML file or an in-process dict):
     client_random = "<hex>"      # optional: restrict to one TLS session
     max_records_per_direction = 16   # optional; must be >= 1 when present
     max_challenges = 64              # optional cap on total challenges tried; >= 1
+
+Format oracles (``memdiver.oracles.formats``) are registered as
+``resource_type = "format:<KIND>"`` (``format:luks``, ``format:gocryptfs-gcm``,
+...), lazily on first use so importing this module stays cheap; their config
+keys are documented in :mod:`memdiver.engine.resources.format_oracle`.
+:func:`build_oracle` hands their adapter back directly instead of wrapping it
+in a TLS-shaped :class:`ResourceOracle`.
 """
 
 from __future__ import annotations
@@ -105,6 +112,7 @@ def is_first_party_resource_type(name: str) -> bool:
     raises the unknown-type ``ValueError`` on its own.
     """
     _load_entry_point_oracles_once()
+    _register_format_types_for(name)
     return RESOURCE_TYPE_PROVENANCE.get(name) == PROVENANCE_FIRST_PARTY
 
 
@@ -132,6 +140,7 @@ def is_registered_resource_type(name: str) -> bool:
     here and False there, and both answers are correct.
     """
     _load_entry_point_oracles_once()
+    _register_format_types_for(name)
     return name in RESOURCE_FACTORIES
 
 
@@ -216,6 +225,44 @@ def _tls_pcap_factory(config: dict) -> Any:
 register_resource_type("tls-pcap", _tls_pcap_factory)
 
 
+#: Guards the one-time registration of the ``format:<KIND>`` resource types.
+_FORMAT_TYPES_REGISTERED = False
+
+
+def register_format_resource_types() -> Tuple[str, ...]:
+    """Register ``format:<KIND>`` for every format oracle; returns the type names.
+
+    Lazy (first use, not import) because discovering the formats imports every
+    module under ``memdiver.oracles.formats``. First-party by construction: the
+    format modules ship in this repository. A name an entry-point package has
+    already claimed is left alone, so this can never silently promote an
+    out-of-tree factory to first-party (nor demote it).
+    """
+    global _FORMAT_TYPES_REGISTERED  # noqa: PLW0603
+    from memdiver.engine.resources.format_oracle import (
+        format_resource_factory,
+        list_format_kinds,
+        resource_type_for,
+    )
+
+    kinds = list_format_kinds()
+    names = tuple(resource_type_for(kind) for kind in kinds)
+    if not _FORMAT_TYPES_REGISTERED:
+        _FORMAT_TYPES_REGISTERED = True
+        for kind, name in zip(kinds, names):
+            if name not in RESOURCE_FACTORIES:
+                register_resource_type(name, format_resource_factory(kind))
+    return names
+
+
+def _register_format_types_for(name: Any) -> None:
+    """Register the format types when *name* asks for one (``format:`` prefix)."""
+    from memdiver.engine.resources.format_oracle import kind_of
+
+    if kind_of(name) is not None and name not in RESOURCE_FACTORIES:
+        register_format_resource_types()
+
+
 #: Entry-point group under which out-of-tree packages advertise verification
 #: resources. Each advertised entry point is a module (imported for its
 #: ``register_resource_type`` side effects) or a callable (invoked to
@@ -265,6 +312,7 @@ def build_resource(config: Optional[dict]) -> Any:
     _load_entry_point_oracles_once()
     config = config or {}
     rtype = config.get("resource_type", "tls-pcap")
+    _register_format_types_for(rtype)
     factory = RESOURCE_FACTORIES.get(rtype)
     if factory is None:
         raise ValueError(
@@ -273,10 +321,20 @@ def build_resource(config: Optional[dict]) -> Any:
     return factory(config)
 
 
-def build_oracle(config: Optional[dict]) -> ResourceOracle:
-    """Oracle-loader Shape-2 entry point: config -> ResourceOracle."""
+def build_oracle(config: Optional[dict]) -> Any:
+    """Oracle-loader Shape-2 entry point: config -> ResourceOracle.
+
+    A ``format:<KIND>`` resource already IS a Shape-2 oracle (a
+    :class:`~memdiver.engine.resources.format_oracle.FormatOracleAdapter` with a
+    boolean ``verify``), so it is returned directly; the TLS-shaped
+    :class:`ResourceOracle` (challenges, record keys) has nothing to add to it.
+    """
     config = config or {}
     resource = build_resource(config)
+    from memdiver.engine.resources.format_oracle import FormatOracleAdapter
+
+    if isinstance(resource, FormatOracleAdapter):
+        return resource
     # Both caps are rejected below 1, by the same helper, for the same reason --
     # see :func:`_require_positive_cap`. The record cap is checked inside the
     # tls-pcap factory (it is a resource parameter); this one is checked here

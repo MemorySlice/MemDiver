@@ -57,6 +57,14 @@ env/
 !/tests/e2e/fixtures/gcore_planted/planted.json
 !/tests/e2e/fixtures/glibc_heap_msl/expected.json
 !/tests/fixtures/tshark/secrets.json
+# The in-repo Volatility 3 samples: samples.json is the provenance/ground-truth manifest and
+# the recipe sits beside the committed plugin; `make validate` reads both (and SHA256SUMS
+# lists them), so an ignored copy passes locally and fails everywhere else.
+!/samples/samples.json
+!/samples/plugins/*.recipe.json
+# VolSpec display_command <-> exec_request golden, read by BOTH pytest (test_vol_spec.py) and
+# vitest (vol-spec-golden.test.ts): ignored, both suites would fail on a fresh checkout.
+!/tests/fixtures/vol3_spec/exec_request_golden.json
 .DS_Store
 .dSYM/
 *.dSYM/

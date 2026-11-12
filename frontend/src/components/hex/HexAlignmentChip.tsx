@@ -34,6 +34,7 @@ export interface HexAlignmentChipProps {
 const METHOD_KEY = {
   virtual_address: "alignment.virtual_address",
   module_offset: "alignment.module_offset",
+  module_relative: "alignment.module_relative",
   file_offset: "alignment.file_offset",
 } as const;
 

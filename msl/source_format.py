@@ -102,3 +102,23 @@ def strip_origin_fields(note: Optional[str]) -> str:
             continue
         kept.append(segment)
     return ";".join(kept)
+
+
+#: Note prefix ``msl.image_extract`` writes into its IMPORT_PROVENANCE. A
+#: region-filtered copy (``msl.materialize``) keeps the original provenance
+#: block, so the marker survives the rewrite.
+IMAGE_EXTRACT_NOTE_MARKER = "physical-image extraction"
+
+
+def reader_is_image_extracted(reader) -> bool:
+    """True for an imported ``.msl`` that MemDiver extracted from a memory image.
+
+    Such a file was written from a process view's VMA list, so it carries a
+    faithful VAS map and aligns by address like the view it came from. Other
+    imports (ELF core, minidump, regioned raw) keep their flat fallback.
+    """
+    if not reader.file_header.imported:
+        return False
+    return any(_is_memdiver(p.tool_name)
+               and IMAGE_EXTRACT_NOTE_MARKER in (p.note or "")
+               for p in reader.collect_import_provenance())

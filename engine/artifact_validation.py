@@ -156,10 +156,33 @@ def verdict(results: Sequence[HeldOutResult], scanned_runs: Mapping[str, int]) -
     return "indeterminate" if "indeterminate" in each else "pass"
 
 
+def capture_identity(path: str) -> Tuple[Any, ...]:
+    """What a capture IS, for the held-out leak check.
+
+    ``.mdview`` descriptors: ``("view", image sha256 (else resolved image path),
+    view kind, pid)`` - two descriptor files on the same image+pid are ONE
+    capture, different pids of one image are different captures. Anything else
+    (or an unreadable descriptor): ``("path", resolved path)``."""
+    from pathlib import Path
+
+    p = Path(path).expanduser()
+    resolved = str(p.resolve(strict=False))
+    if p.suffix == ".mdview" and p.is_file():
+        try:
+            from memdiver.core.image.view_descriptor import ViewDescriptor
+            d = ViewDescriptor.read(p)
+            image = d.image_sha256 or str(d.image_path(p).resolve(strict=False))
+            return ("view", image, d.view.value, d.pid)
+        except (ValueError, KeyError, TypeError, OSError):
+            pass
+    return ("path", resolved)
+
+
 def validation_record(learned_on: Sequence[str], results: Sequence[HeldOutResult],
                       scanned_runs: Mapping[str, int]) -> Validation:
     held = {r.capture for r in results}
-    leaked = held & set(learned_on)
+    learned_ids = {capture_identity(p) for p in learned_on}
+    leaked = {c for c in held if c in set(learned_on) or capture_identity(c) in learned_ids}
     if leaked:
         raise ValueError(f"held-out captures were used for learning: {sorted(leaked)}")
     return Validation(learned_on=tuple(learned_on), held_out=tuple(results),

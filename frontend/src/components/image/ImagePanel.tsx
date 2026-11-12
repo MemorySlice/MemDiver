@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { readableFailure } from "@/api/client";
 import {
@@ -20,6 +20,7 @@ import { failureCode } from "./failure-details";
 import { ProcessTable } from "./ProcessTable";
 import { isMdview, openViewInWorkspace } from "./open-view-in-workspace";
 import { processListGate } from "./process-list-gate";
+import { PAKUNODA_REPO_URL } from "./third-party";
 import { useImageJob } from "./useImageJob";
 
 /** The image path is typed key by key: only a path that has rested is probed. */
@@ -151,11 +152,28 @@ export function ImagePanel() {
       {error && <ImageError message={error} />}
 
       <div className="space-y-1">
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
+          {/* aria-label keeps the full name ("... with pakunoda"); it contains the visible text (WCAG 2.5.3). */}
           <button disabled={!hasImage || profileJob.state.status === "running"} className={buttonClass}
+            aria-label={t("profile.extract")}
             onClick={() => void profileJob.start(() => startProfileJob(imagePath.trim(), isfPath || undefined))}>
-            {t("profile.extract")}
+            {t("profile.extractAction")}
           </button>
+          {/*
+            pakunoda is a third-party open-source project (https://github.com/monkeywave/pakunoda)
+            that MemDiver integrates optionally to build Linux kernel profiles (ISF). It is not part
+            of MemDiver and is never vendored. The link is a sibling of the button, never inside it:
+            an <a> in a <button> is invalid HTML and clicking it would start the job.
+            The i18n tag is <repo>, not <link>: <link> is an HTML void element and Trans would
+            render the text outside the anchor.
+          */}
+          <span className="md-text-secondary whitespace-nowrap">
+            <Trans t={t} i18nKey="profile.extractWith" components={{
+              repo: <a href={PAKUNODA_REPO_URL} target="_blank" rel="noopener noreferrer"
+                title={t("profile.pakunodaNote")} data-testid="pakunoda-link"
+                className="text-xs px-2 py-1 rounded hover:bg-[var(--md-bg-hover)] transition-colors md-text-secondary" />,
+            }} />
+          </span>
         </div>
         <JobStatus state={profileJob.state} label={t("profile.running")} testId="profile-progress"
           onCancel={() => void profileJob.cancel()} />

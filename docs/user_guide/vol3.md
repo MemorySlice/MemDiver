@@ -11,6 +11,10 @@ as a table in a *case*. The same operations exist in the web UI, the CLI
 (`memdiver image …`, `memdiver vol3 …`, `memdiver case …`) and MCP. For the
 five-minute version, see [Memory images in five minutes](../quickstart/image.md).
 
+```{note}
+pakunoda is a separate third-party tool, not part of MemDiver. MemDiver integrates with it optionally: it is installed only with the `image` extra (`pip install "memdiver[image]"`), is imported lazily, and is never vendored in the MemDiver wheel. Without it, the features that use it report that it is not installed.
+```
+
 Install the extra first: `pip install "memdiver[image]"`.
 
 ## Cases
@@ -192,6 +196,55 @@ memdiver vol3 write-config --view kernel.mdview --out config.json \
 including the 5-level paging fix. Pass it to the stock `vol` CLI with `-c`.
 For a plugin emitted by MemDiver, the reference run reproduced the same key
 offset from stock `vol` as the `.msl` had.
+
+### SSH session keys: `memdiver.ssh.SSHKeys`
+
+```bash
+vol -p vol3plugins -f client.msl memdiver.ssh.SSHKeys
+vol -p vol3plugins -f image.lime memdiver.ssh.SSHKeys --pid 9929 --export json
+```
+
+It runs on a `.msl` process slice (no MemDiver needed) or, with `--pid`, on a Linux
+image (default: every `ssh`, `sshd`, `dropbear` process). Each row names its proof tier:
+
+| Tier | Implementations | What is checked | `Proven` |
+|---|---|---|---|
+| A | Go x/crypto/ssh, Paramiko, libssh, wolfSSH, any process whose encoded K is still resident | K, H and session_id found in memory; at least two of the RFC 4253 keys A–F derived from them are found in the same memory | `oracle:ssh-kdf-consistency` |
+| B | OpenSSH | `newkeys` → `sshenc` name, cipher and lengths agree; direction from `newkeys[MODE_MAX]` | `unverified` (OpenSSH wipes K) |
+| C | Dropbear, libssh2 | a ChaCha20 state pair or an AES schedule re-expands from the key | `unverified` |
+
+`rejected` appears only when a trusted Tier A struct (K and its own key buffers) does not
+derive its keys. One matching key is never called a proof. `--export keylog` writes
+the OpenSSH keylog-patch `NEWKEYS` lines (proven keys only unless `--export-unverified`).
+The wolfSSH layout is checked on captures of wolfSSH 1.4.20 only.
+
+### WireGuard keys of userspace WireGuard: `memdiver.wireguard_go.WireGuardGo`
+
+```bash
+vol -p vol3plugins -f wg.msl memdiver.wireguard_go.WireGuardGo --export keylog
+vol -p vol3plugins -f image.lime memdiver.wireguard_go.WireGuardGo --pid 812 --export showconf
+```
+
+For every program built on wireguard-go's `device` package: the `wireguard-go` daemon,
+Tailscale, wireguard-android and wireguard-apple. It runs on a `.msl` process slice (no
+MemDiver needed) or, with `--pid`, on a Linux image (default: `wireguard-go`, `tailscaled`,
+`com.wireguard*`). Everything is proven from the process's own memory:
+
+| Kind | What is checked | `Proven` |
+|---|---|---|
+| `static-private` | a clamped key whose X25519 public key is stored right after it (`Device.staticIdentity`) | `oracle:x25519-pubkey` |
+| `peer-public` | X25519(static private, `remoteStatic`) == `precomputedStaticStatic` of the peer's handshake | `oracle:x25519-dh-consistency` |
+| `ephemeral-private` | the Noise chaining key of a handshake in flight is recomputed from it | `oracle:noise-chaining-key`, else `unverified` |
+| `preshared` | no oracle: bound to a proven peer of a trusted handshake (`Peer.device` back-pointer + the peer's mac1 key) | `bound:peer-handshake`, else `unverified` |
+| `send`, `receive` | transport keys, with slot and indices | always `unverified` |
+
+`rejected` comes only from a trusted structure that contradicts its own proof. When no
+`Peer.device` back-pointer reaches the identity (a fork with another `Device` layout), a
+layout-free search still proves peer keys, but then the PSK stays `unverified`. Exports
+(`json`, `showconf`, `keylog` in the `linux.wireguard` grammar) hold proven or bound material
+only, unless `--export-unverified`. The layout is checked on wireguard-go 0.0.20250522 (Go 1.25,
+arm64): on all 112 dumps of the 4 corpus runs the static and peer keys are proven and equal the
+in-process keylog.
 
 ## Extracting a process
 

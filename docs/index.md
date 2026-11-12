@@ -104,6 +104,14 @@ user_guide/configuration
 
 ```{toctree}
 :maxdepth: 2
+:caption: Volatility 3 plugins
+:hidden:
+
+vol3/index
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Architecture
 :hidden:
 

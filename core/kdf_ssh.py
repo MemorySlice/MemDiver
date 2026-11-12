@@ -33,9 +33,13 @@ class SSH2KDF:
     def _encode_mpint(value: bytes) -> bytes:
         """Encode raw bytes as an SSH mpint (RFC 4251 Section 5).
 
-        Prepends a 4-byte big-endian length. If the high bit of the first
-        byte is set, a leading \\x00 is inserted to keep the value positive.
+        The mpint is the minimal two's-complement form: leading \\x00 bytes are
+        stripped (RFC 4251: "MUST NOT include unnecessary leading bytes"),
+        then one \\x00 is put back when the high bit of the first remaining
+        byte is set so the value stays positive. A 4-byte big-endian length
+        is prepended; zero (or empty) encodes as the empty string.
         """
+        value = bytes(value).lstrip(b"\x00")
         if value and (value[0] & 0x80):
             value = b"\x00" + value
         return struct.pack(">I", len(value)) + value

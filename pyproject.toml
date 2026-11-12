@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memdiver"
-version = "1.0.7"
+version = "1.1.0"
 description = "Interactive platform for identifying and analyzing data structures in memory dumps"
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -171,7 +171,9 @@ marimo = ["marimo>=0.23.9", "pymdown-extensions>=11.0.1"]
 #     package plus its transitives.
 vol = ["volatility3>=2.27,<3"]
 # Memory-image views (core/image): volatility3 as above plus pakunoda, which
-# extracts a kernel ISF straight from a Linux image. pakunoda is Apache-2.0 and
+# extracts a kernel ISF straight from a Linux image. pakunoda is a separate
+# third-party open-source project (https://github.com/monkeywave/pakunoda),
+# not part of MemDiver. It is Apache-2.0 and
 # optional exactly like vol3 -- lazy-imported, never vendored in the wheel.
 image = ["pakunoda", "volatility3>=2.27,<3"]
 # Disassembly helper (app/tools_disasm.py): capstone, lazy-imported behind an
@@ -302,6 +304,15 @@ packages = [
     "memdiver.isf",
     "memdiver.heap",
     "memdiver.heap.allocators",
+    # Volatility 3 plugin-contest entry: the `vol -p` plugin directory and the
+    # self-contained format oracles that synthesized plugins source-inline.
+    "memdiver.vol3plugins",
+    "memdiver.vol3plugins.linux",
+    "memdiver.vol3plugins.linux.secrets",
+    "memdiver.vol3plugins.memdiver",
+    "memdiver.vol3plugins.msl",
+    "memdiver.oracles",
+    "memdiver.oracles.formats",
 ]
 
 [tool.pytest.ini_options]
@@ -661,7 +672,9 @@ exclude_lines = [
 # ---------------------------------------------------------------------------
 [tool.bandit]
 exclude_dirs = ["tests", "docs", "scripts", "tools", "frontend", "build", "misc",
-                "env", "venv", ".venv", "node_modules"]
+                "env", "venv", ".venv", "node_modules",
+                # samples/plugins holds GENERATED demo plugins (reviewed at generation).
+                "samples"]
 # The four virtualenv/dependency dirs are git-ignored but bandit does not read
 # .gitignore, so without them a local `make security` scans pip's vendored code
 # and reports ~450 findings from site-packages -- none of them MemDiver's. A
@@ -687,5 +700,13 @@ memdiver = [
     # gocryptfs.toml is the config template its example oracle needs.
     "docs/**/*.py",
     "docs/**/*.toml",
+    # Volatility 3 recipe-v2 plugin template read by architect/vol3_recipe.py.
+    "architect/templates/*.tmpl",
     "frontend/dist/**/*",
 ]
+
+# docs/dev holds the maintainers' working notes (progress logs, handoffs, contest drafts);
+# the `docs/**/*.md` glob above would otherwise ship them in a wheel. MANIFEST.in prunes the
+# same directory from the sdist. Guarded by tests/test_packaging_excludes_docs_dev.py.
+[tool.setuptools.exclude-package-data]
+memdiver = ["docs/dev/*", "docs/dev/**/*"]

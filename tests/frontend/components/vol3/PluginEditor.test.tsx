@@ -78,8 +78,9 @@ describe("PluginEditor source area", () => {
     mount();
     const select = await screen.findByTestId("editor-load");
     await waitFor(() => expect(select).not.toBeDisabled());
-    fireEvent.change(select, { target: { value: "stored" } });
+    fireEvent.change(select, { target: { value: "user:stored" } });
     await waitFor(() => expect(textarea().value).toBe("x = 1"));
+    expect(api.getVol3Source).toHaveBeenCalledWith(CASE, "stored", "user");
     expect(screen.getByTestId("external-edit-notice")).toBeInTheDocument();
     expect((screen.getByTestId("editor-name") as HTMLInputElement).value).toBe("stored");
   });
@@ -223,5 +224,45 @@ describe("PluginEditor fixtures", () => {
     const details = within(item).getByTestId("fixture-details");
     if (verdict === "indeterminate") expect(details).toHaveTextContent("timeout");
     else expect(within(details).getByTestId("fixture-predicate")).toHaveAttribute("data-ok", String(verdict === "pass"));
+  });
+});
+
+describe("PluginEditor synthesized sources", () => {
+  it("labels a synthesized stored source through i18n and keeps user sources as before", async () => {
+    api.listVol3Sources.mockResolvedValue({
+      count: 2,
+      sources: [
+        { name: "mine", sha256: "a", size: 1, created: null, updated: null, version: 3, path: "/c/plugins/mine.py", origin: "user" },
+        { name: "synth_one", sha256: "b", size: 1, created: null, updated: null, version: null, path: "/c/vol3/plugins/synth_one.py", origin: "synthesized", description: "d" },
+      ],
+    });
+    mount();
+    const select = await screen.findByTestId("editor-load");
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(3));
+    expect(within(select).getByText("mine (v3)")).toBeInTheDocument();
+    expect(within(select).getByText("synth_one (synthesized)")).toBeInTheDocument();
+  });
+
+  it("opens the synthesized plugin when a user source has the same name", async () => {
+    api.listVol3Sources.mockResolvedValue({
+      count: 2,
+      sources: [
+        { name: "dup", sha256: "a", size: 1, created: null, updated: null, version: 1, path: "/c/plugins/dup.py", origin: "user" },
+        { name: "dup", sha256: "b", size: 1, created: null, updated: null, version: null, path: "/c/vol3/plugins/dup.py", origin: "synthesized" },
+      ],
+    });
+    api.getVol3Source.mockResolvedValue({ name: "dup", source: "# synthesized", origin: "synthesized", version: null });
+    mount();
+    const select = await screen.findByTestId("editor-load");
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(3));
+    const values = within(select).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(["", "user:dup", "synthesized:dup"]);
+    fireEvent.change(select, { target: { value: "synthesized:dup" } });
+    await waitFor(() => expect(textarea().value).toBe("# synthesized"));
+    expect(api.getVol3Source).toHaveBeenCalledWith(CASE, "dup", "synthesized");
+    // Run by NAME would resolve to the user source: the shadowed plugin runs as its text.
+    fireEvent.click(screen.getByTestId("editor-run"));
+    expect(onRun).toHaveBeenCalledWith(expect.objectContaining({ source: "# synthesized" }));
+    expect(onRun.mock.calls[0][0].source_name).toBeUndefined();
   });
 });

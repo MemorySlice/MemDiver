@@ -6,7 +6,7 @@ import {
   describeVol3Plugin, listVol3Plugins, type Vol3Plugin, type Vol3PluginDescription, type Vol3QueryResult,
   type Vol3Requirement, type Vol3RunResult,
 } from "@/api/vol3";
-import { isMdview } from "@/components/image/open-view-in-workspace";
+import { isMdview, isMslImage } from "@/components/image/open-view-in-workspace";
 import { useActiveDump } from "@/hooks/useActiveDump";
 import { useHexStore } from "@/stores/hex-store";
 import { useImageStore } from "@/stores/image-store";
@@ -24,6 +24,7 @@ import { useTableRules } from "./useTableRules";
 import type { ColumnOverrides } from "./vol3-columns";
 import { RunSummary } from "./RunSummary";
 import { useVol3Run } from "./useVol3Run";
+import { Vol3ExecForm } from "./Vol3ExecForm";
 import { useViewContext } from "./useViewContext";
 import { buildArgs, initialDraft, type ArgDraft, type ArgErrors } from "./vol3-args";
 import {
@@ -49,6 +50,8 @@ export function Vol3Panel() {
   const { t } = useTranslation("vol3");
   const activePath = useActiveDump()?.path ?? "";
   const viewPath = isMdview(activePath) ? activePath : "";
+  /** A `.msl` runs under stock vol (`-f x.msl`), not through the in-process `.mdview` runner. */
+  const mslPath = isMslImage(activePath) ? activePath : "";
   const caseDir = useImageStore((s) => s.caseDir);
   const [plugins, setPlugins] = useState<Vol3Plugin[]>([]);
   const [selected, setSelected] = useState("");
@@ -190,7 +193,8 @@ export function Vol3Panel() {
       {mode === "query" && (
         <QueryBox caseDir={caseDir} note={queryNote} onSendToHighlights={(q) => void sendQueryToHighlights(q)} />
       )}
-      {mode === "run" && (
+      {/* The in-process runner needs an `.mdview`; an `.msl` gets the stock-vol form below instead. */}
+      {mode === "run" && !mslPath && (
         <>
           <PluginPicker plugins={plugins} selected={selected} onSelect={choose} />
           {description && (
@@ -216,7 +220,8 @@ export function Vol3Panel() {
           </div>
         </>
       )}
-      {mode === "run" && !viewPath && <p className="md-text-muted" data-testid="needs-view">{t("run.needView")}</p>}
+      {mode === "run" && !viewPath && !mslPath && <p className="md-text-muted" data-testid="needs-view">{t("run.needView")}</p>}
+      {mode === "run" && mslPath && <Vol3ExecForm imagePath={mslPath} caseDir={caseDir} />}
       {running && (
         <p role="status" data-testid="vol3-progress">
           {state.msg ?? t("run.running")}{pct !== null && ` ${t("run.progress", { pct })}`}</p>

@@ -15,6 +15,7 @@ from memdiver.msl.enums import (
     ArchType, OSType, PageState, Protection, RegionType, SourceFormat, VasNameSource,
 )
 from memdiver.msl.importer import _looks_like_image
+from memdiver.msl.source_format import IMAGE_EXTRACT_NOTE_MARKER
 from memdiver.msl.types import MslVasEntry, PhysicalRange
 from memdiver.msl.writer import ModuleEntrySpec, MslWriter
 
@@ -201,5 +202,5 @@ def _note(note_fields: Dict[str, str], layer: Dict[str, Any], pid: int) -> str:
         fields.setdefault("comm", str(layer["comm"]))
     if "process_dtb" in layer:
         fields.setdefault("dtb", f"{int(layer['process_dtb']):#x}")
-    return "physical-image extraction; " + "; ".join(
+    return f"{IMAGE_EXTRACT_NOTE_MARKER}; " + "; ".join(
         f"{k}={v}" for k, v in fields.items())

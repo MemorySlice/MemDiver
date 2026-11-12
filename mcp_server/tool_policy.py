@@ -34,10 +34,11 @@ CASE_KEYS = frozenset({"case_dir", "case"})
 #: in-process or by ``vol``; oracle_path = unsandboxed oracle module;
 #: source_name = a stored plugin selected for execution; vol_bin/vol_python =
 #: the launcher binary; rule_source/rule_paths/rules = YARA rules compiled with
-#: ``include`` support (can probe files outside the path sandbox).
+#: ``include`` support (can probe files outside the path sandbox);
+#: plugin_dirs = ``vol -p`` directories whose every ``.py`` vol imports (vol3_exec).
 CODE_EXEC_KEYS = frozenset({
     "source", "plugin_path", "plugin_source", "oracle_path", "source_name",
-    "vol_bin", "vol_python", "rule_source", "rule_paths", "rules",
+    "vol_bin", "vol_python", "rule_source", "rule_paths", "rules", "plugin_dirs",
 })
 
 SCOPE_ONCE = "once"
@@ -54,6 +55,10 @@ WRITE_TOOLS_EXTRA: Dict[str, str] = {
         "(core/image/profiles.py)"
     ),
     "analyze_candidates": "writes the candidates into the project database",
+    "image_siblings": (
+        "open_views=true writes one process .mdview per member (default: a case named "
+        "after the image)"
+    ),
 }
 
 #: Tools too dangerous to hand to an agent even with per-call approval.

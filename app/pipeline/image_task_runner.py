@@ -20,7 +20,7 @@ from memdiver.app.pipeline.artifact_paths import task_result_artifact
 
 STAGE = "image"
 JOBS = ("profile", "open_view", "extract_process", "case_export", "isf_probe", "isf_try",
-        "code_evidence")
+        "code_evidence", "siblings")
 
 
 def _pakunoda_progress(ctx):
@@ -46,6 +46,7 @@ def _call_producer(job: str, args: Dict[str, Any], **controls: Any) -> Dict[str,
 "profile": tools_image.image_profile_result,
                  "open_view": tools_image.image_open_view_result,
                  "extract_process": tools_image.image_extract_process_result,
+                 "siblings": tools_image.image_siblings_result,
                  "case_export": tools_case.case_export_result,
                  "isf_probe": tools_isf.isf_probe_result,
                  "isf_try": tools_isf.isf_try_result}

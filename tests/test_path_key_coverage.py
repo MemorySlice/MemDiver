@@ -52,6 +52,13 @@ NOT_A_PATH = {
     "plugin": "vol3 plugin NAME", "plugin_name": "name",
     "image_sha256": "hash", "oracle_id": "registry id",
     "num_dumps": "count", "dump_count": "count", "dump_labels": "labels",
+    # synthesize_vol3_plugin / vol3_exec (T3)
+    "oracle_kind": "memdiver.oracles format name", "oracle_params": "inline oracle parameters",
+    "full_image_key_hex": "hex key (ground truth), not a file",
+    "full_image_secret_hex": "hex key (ground truth), not a file",
+    "candidates_hex": "hex candidate keys graded by a format oracle, not files",
+    "open_views": "bool: write a .mdview per sibling member (into the sandboxed case_dir)",
+    "include_memdiver_plugins": "flag",
     # dict-valued containers: the walker recurses, so the INNER path keys
     # (anchor_path, keylog_path, key_file, ...) are the ones checked
     "anchors": "list of dicts (anchor_path inside)", "keylog": "dict (keylog_path inside)",

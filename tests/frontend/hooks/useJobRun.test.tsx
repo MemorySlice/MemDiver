@@ -124,6 +124,30 @@ describe("useJobRun", () => {
     expect(getPayload).not.toHaveBeenCalled();
   });
 
+  it("a Cancel after `done` (payload still loading) does nothing: the result wins", async () => {
+    const onResult = vi.fn();
+    let resolve: (v: Res) => void = () => undefined;
+    getPayload.mockReturnValue(new Promise<Res>((r) => { resolve = r; }));
+    const hook = await startJob({ cancelMode: "awaitTerminal", onResult });
+    act(() => ws.cbs.onDone({}));
+    await act(async () => { await hook.result.current.cancel(); });
+    expect(cancelJob).not.toHaveBeenCalled();
+    await act(async () => { resolve({ value: 5 }); });
+    expect(hook.result.current.state).toMatchObject({ status: "done", result: { value: 5 } });
+    expect(onResult).toHaveBeenCalledWith({ value: 5 });
+  });
+
+  it("a job that succeeds despite an awaitTerminal Cancel shows its result", async () => {
+    const onResult = vi.fn();
+    getPayload.mockResolvedValue({ value: 9 });
+    const hook = await startJob({ cancelMode: "awaitTerminal", onResult });
+    await act(async () => { await hook.result.current.cancel(); });
+    expect(hook.result.current.state.status).toBe("cancelling");
+    await act(async () => { ws.cbs.onDone({}); });
+    expect(hook.result.current.state).toMatchObject({ status: "done", result: { value: 9 } });
+    expect(onResult).toHaveBeenCalledWith({ value: 9 });
+  });
+
   it("cancel without a job does nothing", async () => {
     const hook = mount();
     await act(async () => { await hook.result.current.cancel(); });
@@ -145,6 +169,22 @@ describe("useJobRun", () => {
     expect(hook.result.current.state.status).toBe("idle");
     expect(cancelJob).toHaveBeenCalledWith("stale");
     expect(onResult).not.toHaveBeenCalled();
+  });
+
+  it("forwards every raw task event to onEvent, the state shape unchanged", async () => {
+    const onEvent = vi.fn();
+    const hook = await startJob({ onEvent });
+    const admitted = { type: "stage_start", stage: "vol3_synth", msg: "task started" };
+    const failed = { type: "error", error: "no oracle sample", extra: { code: "oracle.sample_missing" } };
+    act(() => ws.cbs.onEvent(admitted));
+    act(() => ws.cbs.onEvent(failed));
+    expect(onEvent.mock.calls).toEqual([[admitted], [failed]]);
+    expect(Object.keys(hook.result.current.state).sort())
+      .toEqual(["error", "msg", "pct", "result", "status", "taskId"]);
+
+    const without = await startJob();
+    expect(ws.cbs.onEvent).toBeUndefined();
+    expect(without.result.current.state).toMatchObject({ status: "running", taskId: "t1" });
   });
 
   it("reset cancels a running job at the server", async () => {

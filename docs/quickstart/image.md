@@ -14,8 +14,10 @@ and [The ISF workbench](../user_guide/isf_workbench.md).
 
 ## Install
 
-Image support is an optional extra. It adds Volatility 3 and pakunoda, which
-reconstructs a kernel profile (an ISF) straight from the image.
+Image support is an optional extra. It adds Volatility 3 and
+[pakunoda](https://github.com/monkeywave/pakunoda), a third-party open-source
+project (not part of MemDiver) that reconstructs a kernel profile (an ISF)
+straight from the image.
 
 ```bash
 pip install "memdiver[image]"
@@ -91,6 +93,23 @@ Every command prints a JSON payload, or writes it with `-o FILE`.
    The `.msl` is a normal capture. Pages the process never had in RAM are
    recorded as not captured. They are never invented as zeros. Continue with
    the heap and key-finder tools as for any other dump.
+
+8. **Find sibling instances.** One image often holds several processes of
+   one binary (SSH sessions, encrypted-filesystem daemons, forked workers).
+   They can stand in for the N captures of a differential.
+
+   ```bash
+   memdiver image siblings memory.lime --comm dropbear
+   ```
+
+   Members are grouped by ELF build-id (fallback: executable path, then
+   `comm`), one group per process family. Each group has a shape: `forked`,
+   `independent` (separate ASLR) or `mixed`. The listener is listed but
+   not analysed unless you pass `--include-parent`. Each analysed member
+   gets frame accounting within its group: `rss`, `private_dirty`,
+   `shared_lineage` and so on, in bytes. `--open-views --case demo` also
+   writes one process `.mdview` per member. The same capability is
+   `GET /api/image/siblings` and the MCP tool `image_siblings`.
 
 :::{note}
 `vol3 run` blocks until the plugin finishes. Check `truncated` and

@@ -9,7 +9,10 @@ kept on the provider (``last_reason``) and in the chain's ``attempts`` so a
 total miss produces one diagnosable error instead of silence.
 
 pakunoda (Apache-2.0) and volatility3 are the optional ``memdiver[image]``
-extra and are imported lazily, inside ``resolve``.
+extra and are imported lazily, inside ``resolve``. pakunoda is a third-party
+open-source project (https://github.com/monkeywave/pakunoda) that MemDiver
+integrates optionally to build Linux kernel profiles (ISF). It is not part of
+MemDiver and is never vendored.
 
 Cache layout: ``<cache_dir()>/<image sha256>/<name>.isf.json`` plus a
 ``provenance.json`` sidecar naming the file and its origin.
@@ -162,7 +165,13 @@ class DraftProvider(_ReasonMixin):
 
 
 class PakunodaLinuxProvider(_ReasonMixin):
-    """Extract an ISF from the Linux image itself with pakunoda."""
+    """Extract an ISF from the Linux image itself with pakunoda.
+
+    pakunoda is a third-party open-source project
+    (https://github.com/monkeywave/pakunoda) that MemDiver integrates
+    optionally to build Linux kernel profiles (ISF). It is not part of
+    MemDiver and is never vendored; it is imported lazily inside ``resolve``.
+    """
 
     name = "pakunoda"
 

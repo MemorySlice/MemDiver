@@ -305,6 +305,15 @@
       "sizeError": "Oracle file is {{size}} bytes; the server cap is {{cap}}.",
       "errorPrefix": "Could not upload this oracle: {{error}}",
       "processing": "Processing upload…",
+      "format": {
+        "heading": "Add a built-in format oracle",
+        "kind": "Format",
+        "samplePath": "Sample path (e.g. a vault or cipher directory)",
+        "samplePlaceholder": "/path/to/sample",
+        "add": "Add format oracle",
+        "adding": "Adding…",
+        "error": "Could not add this format oracle: {{error}}"
+      },
       "uploadedHeading": "Uploaded oracles",
       "shape": "Shape {{shape}}",
       "armed": "Armed",

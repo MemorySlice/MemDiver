@@ -1,0 +1,5 @@
+# ground truth for luks2-4k.hdr.bin (see README.md); plain key=value, '#' comments
+luks_version=2
+header_bytes=32768
+volume_key_hex=afbef50d0f2c099eb64a8ba973e80d39b00f1b4de57386e4a0b178a2bade74c2755dfec0ee24481b6d47306b980a116535160ba68e1e7934df3748f4227cead7
+passphrase=memdiver-fixture-passphrase-luks2-4k

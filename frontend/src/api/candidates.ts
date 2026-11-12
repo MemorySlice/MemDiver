@@ -57,6 +57,7 @@ export const DEFAULT_CANDIDATE_CLASSES: readonly ByteClassName[] =
 
 export type AlignmentMethod =
   | "module_offset"
+  | "module_relative"
   | "virtual_address"
   | "file_offset";
 

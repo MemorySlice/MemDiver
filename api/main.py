@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -16,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from memdiver import __version__ as _MEMDIVER_VERSION
 from memdiver.api.config import get_settings
 from memdiver.core.install_hints import missing_package_message
+from memdiver.core.path_sandbox import OUTSIDE_SANDBOX
 from memdiver.core.service_errors import CapabilityError, ErrorCategory
 from memdiver.api.dependencies import get_tool_session
 from memdiver.api.memory_budget_errors import (
@@ -62,7 +65,25 @@ def _capability_error_handler(request: Request, exc: CapabilityError) -> JSONRes
             status_code=MEMORY_BUDGET_HTTP_STATUS,
             content=memory_budget_error_body(exc),
         )
-    return JSONResponse(status_code=exc.status, content=exc.to_dict())
+    body = exc.to_dict()
+    if exc.code == OUTSIDE_SANDBOX:
+        # Web clients and pre-envelope callers read a path denial's text from
+        # FastAPI's ``detail`` key; keep it beside ``error``/``code``/``category``.
+        body["detail"] = exc.message
+    return JSONResponse(status_code=exc.status, content=body)
+
+
+#: Keys of a pydantic error entry that may ECHO the submitted value (``input``)
+#: or a constraint context derived from it (``ctx``). A request body can carry
+#: secrets (``secret_hex``, ``passphrase``, key hex), so a 422 must never quote it.
+_VALIDATION_ECHO_KEYS = frozenset({"input", "ctx"})
+
+
+def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422 body (``{"detail": [...]}``) minus each error's ``input`` and ``ctx``."""
+    errors = [{k: v for k, v in error.items() if k not in _VALIDATION_ECHO_KEYS}
+              for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 @asynccontextmanager
@@ -168,6 +189,8 @@ def create_app() -> FastAPI:
     # CapabilityError: any propagating core/service error becomes a structured
     # HTTP response here, so those layers never raise fastapi.HTTPException.
     app.add_exception_handler(CapabilityError, _capability_error_handler)
+    # A 422 keeps FastAPI's shape but never echoes the submitted values (secrets).
+    app.add_exception_handler(RequestValidationError, _validation_error_handler)
 
     # --- Layered localhost trust model -----------------------------------
     # MemDiver is a LOCAL forensic workbench: the API binds to 127.0.0.1 and

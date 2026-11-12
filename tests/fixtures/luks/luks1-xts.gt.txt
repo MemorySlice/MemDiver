@@ -1,0 +1,5 @@
+# ground truth for luks1-xts.hdr.bin (see README.md); plain key=value, '#' comments
+luks_version=1
+header_bytes=4096
+volume_key_hex=594efc0395e3b35e732bfa98b6c42d79458c52b1bd31740028c87d8f822b9db96ca38b94fe276231b6b86db5bc40fbc25e4df4aa7fbf100cecc17daa39819248
+passphrase=memdiver-fixture-passphrase-luks1-xts

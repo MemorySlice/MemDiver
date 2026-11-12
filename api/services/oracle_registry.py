@@ -116,6 +116,14 @@ class OracleEntry:
     # re-arm to run" instead.
     armed_at: Optional[float] = None
     previously_armed: bool = False
+    # Set for a first-party FORMAT oracle (``add_format``): the entry's path is
+    # the shipped builtin oracle module, not a file in the oracle dir, so it is
+    # never written, purged, persisted or deleted -- only the entry is.
+    format_kind: Optional[str] = None
+
+    @property
+    def is_format(self) -> bool:
+        return self.format_kind is not None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -130,6 +138,7 @@ class OracleEntry:
             "previously_armed": self.previously_armed,
             "description": self.description,
             "config": dict(self.config),
+            "format_kind": self.format_kind,
         }
 
 
@@ -448,6 +457,30 @@ def _smoke_verdict(
     return "never_accepts"
 
 
+class FormatVerdictError(RuntimeError):
+    """A format oracle returned ``error``: no verdict on this candidate."""
+
+
+def _surface_format_errors(verify: Callable[[bytes], bool]) -> Callable[[bytes], bool]:
+    """Make a format oracle's ``error`` verdict an exception for grading.
+
+    The adapter's boolean ``verify`` folds ``error`` ("could not judge") into
+    ``False`` for the hot loop. :func:`_grade_samples` must not: counted as a
+    rejection, a decoy the oracle could not even evaluate would turn a smoke
+    test green. Raising makes it an ``error`` row, which never counts as either.
+    """
+    adapter = getattr(verify, "__self__", None)
+
+    def graded(candidate: bytes) -> bool:
+        ok = bool(verify(candidate))
+        verdict = getattr(adapter, "last_verdict", None)
+        if verdict is not None and verdict.status == "error":
+            raise FormatVerdictError(verdict.detail or "format oracle error")
+        return ok
+
+    return graded
+
+
 class OracleRegistry:
     """Per-process in-memory oracle catalog backed by a whitelisted dir."""
 
@@ -708,6 +741,60 @@ class OracleRegistry:
             config=config,
         )
 
+    def add_format(
+        self,
+        kind: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        sample_path: Optional[str] = None,
+        sample_b64: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> OracleEntry:
+        """Register a first-party format oracle (``format:<kind>``), UNARMED.
+
+        The entry points at the shipped builtin oracle module with config
+        ``{resource_type: "format:<kind>", sample_b64, params}``, so arm /
+        dry-run / smoke-test / the pipeline run treat it exactly like an
+        uploaded Shape-2 oracle -- including the sha echo and the strict
+        sandboxed replay at :meth:`arm`. Nothing is written to the oracle dir,
+        so this works before oracle execution has been enabled.
+
+        *sample_path* goes through the read-path sandbox (a coded
+        ``path.outside_sandbox`` denial) before it is read; the sample is then
+        packed once and stored inline, so the armed config cannot change under
+        the user if the file does. Format entries are memory-only: they are not
+        persisted across a restart (re-adding one is a single call).
+        """
+        from memdiver.api.path_policy import admit_read_path
+        from memdiver.app.tools_format_oracle import format_oracle_spec_result
+        from memdiver.core.service_errors import CapabilityError
+
+        if sample_path:
+            sample_path = str(admit_read_path(sample_path))
+        try:
+            spec = format_oracle_spec_result(
+                kind, oracle_sample_path=sample_path, sample_b64=sample_b64, params=params,
+            ).payload
+        except CapabilityError as exc:
+            raise OracleConfigInvalid(str(exc)) from exc
+        config = spec["oracle_config"]
+        path = Path(spec["oracle_path"])
+        entry = OracleEntry(
+            oracle_id=uuid.uuid4().hex,
+            filename=f"format:{kind}",
+            path=path,
+            sha256=_sha256_file(path),
+            size=path.stat().st_size,
+            shape=2,
+            head_lines=_read_head(path),
+            description=description,
+            config=config,
+            format_kind=kind,
+        )
+        with self._lock:
+            self._entries[entry.oracle_id] = entry
+        return entry
+
     def get(self, oracle_id: str) -> OracleEntry:
         _assert_safe_id(oracle_id)
         with self._lock:
@@ -766,7 +853,8 @@ class OracleRegistry:
         surfacing as a bare "No such file or directory".
         """
         entry = self.get(oracle_id)
-        _purge_pycache(entry.path)
+        if not entry.is_format:  # a shipped module's own cache is not ours to purge
+            _purge_pycache(entry.path)
         current_sha = _sha256_file(entry.path)
         if current_sha != entry.sha256:
             raise OracleShaMismatch(
@@ -820,6 +908,10 @@ class OracleRegistry:
         entry = self.get(oracle_id)
         with self._lock:
             self._entries.pop(oracle_id, None)
+        if entry.is_format:
+            # The path is the SHIPPED builtin oracle module, shared by every
+            # format entry and the pcap oracle: only the entry goes.
+            return
         try:
             entry.path.unlink(missing_ok=True)
         except OSError:  # pragma: no cover
@@ -844,7 +936,12 @@ class OracleRegistry:
         may name absolute filesystem paths or, for a third-party oracle, a
         passphrase. The mode is applied to the tmp file *before* the atomic
         replace, so the final path never exists world-readable.
+
+        Format entries are skipped: their path is the shipped builtin module,
+        so a sidecar "beside it" would land inside the installed package.
         """
+        if entry.is_format:
+            return
         try:
             atomic_write_text(
                 _sidecar_path(entry.path),
@@ -1002,7 +1099,8 @@ class OracleRegistry:
         :meth:`smoke_test` so both report a misconfigured oracle with the
         same sentence instead of one of them 500-ing.
         """
-        _purge_pycache(entry.path)
+        if not entry.is_format:
+            _purge_pycache(entry.path)
         # Before load_oracle, for the same reason arm() checks before its
         # sandbox: dereferencing a placeholder produces a true-but-useless
         # FileNotFoundError, and dry_run is the surface users reach FIRST.
@@ -1027,6 +1125,8 @@ class OracleRegistry:
                 f"oracle {entry.filename} could not be loaded with the supplied "
                 f"configuration ({supplied}): {exc!r}"
             ) from exc
+        if entry.is_format:
+            return _surface_format_errors(verify)
         return verify
 
     def dry_run(

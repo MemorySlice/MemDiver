@@ -107,7 +107,7 @@ export interface AlignedWindowRequest {
 }
 
 export interface AlignedWindowAlignment {
-  method: "module_offset" | "virtual_address" | "file_offset";
+  method: "module_offset" | "module_relative" | "virtual_address" | "file_offset";
   bytes_compared: number;
   bytes_discarded: number;
   sizes_differed: boolean;

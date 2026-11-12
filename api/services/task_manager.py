@@ -32,7 +32,7 @@ the full story.
 
 Shutdown
 --------
-Four facts make teardown harder than it looks. They are stated here once;
+Five facts make teardown harder than it looks. They are stated here once;
 everything below points back at this section rather than restating them.
 
 1. **Python 3.11 joins the default executor with no timeout.** uvicorn serves
@@ -55,10 +55,33 @@ everything below points back at this section rather than restating them.
    ``force_exit`` it skips the lifespan shutdown entirely. So this class cannot
    assume it will be given a chance to run at all; ``cli/dataset.py`` keeps a
    ``finally`` backstop for that case.
+5. **A terminal Ctrl-C interrupts the WORKERS too.** It goes to the whole
+   foreground process group, and a worker interrupted mid-job returns the
+   ``KeyboardInterrupt`` as that job's exception. ``wrap_future`` re-raises it
+   inside the event loop, where -- a ``BaseException`` -- it escaped
+   ``_gated_submit`` and aborted uvicorn before any lifespan shutdown ran
+   (measured: a traceback and no teardown on every Ctrl-C during a job).
+   :meth:`TaskManager._gated_submit` therefore records it as that task's
+   failure; the server's own SIGINT is uvicorn's signal handler, never this.
 
 Failing any of these produced the defect this design exists to prevent: a server
 that could not be shut down, leaving ``kill -9`` as the only exit — which skips
 every ``atexit`` handler and leaks the pool's 5 POSIX semaphores.
+
+A worker's own children are the runner's business, with one consequence of
+fact 2 worth stating here: the SIGTERM/SIGKILL escalation of
+:func:`_reap_workers` ends the WORKER, not a subprocess it started in its own
+session. A runner that spawns one (``vol3_synth``'s ``vol`` over a full image)
+must therefore kill it on cancel -- the cooperative path, which is also what
+frees the one-job gate promptly -- and when the worker itself dies:
+``engine.vol3_subproc.run_cancellable`` (its lifeline).
+
+Secrets
+-------
+``params`` reach the worker verbatim, but the RECORD -- persisted to
+``record.json`` and served by ``GET /api/tasks`` -- keeps a copy with every
+:data:`SECRET_PARAM_KEYS` value redacted at any depth (key material of an
+encrypted dump, a located secret, a full image's ground truth).
 """
 
 from __future__ import annotations
@@ -121,6 +144,52 @@ SHUTDOWN_GRACE_S = 5.0
 # Escalation window applied to ALL workers at once: SIGTERM, wait, SIGKILL,
 # wait. Bounded because of fact 2 above.
 WORKER_TERM_TIMEOUT_S = 2.0
+
+#: Param keys whose VALUES are secrets, redacted at any depth in a task RECORD
+#: (never in the params the worker receives). The wire key material of an
+#: encrypted ``.msl`` (``api.models.KeyMaterialFields``) and its decoded forms;
+#: a secret to locate or synthesize for (``secret_hex``, the producers'
+#: ``key_hex``); a full image's ground truth; keylog material.
+SECRET_PARAM_KEYS = frozenset({
+    "passphrase", "key_hex", "kem_key_hex",
+    "key_material", "key_material_by_path", "key_material_hex", "kem_private_key",
+    "secret_hex", "secret", "secrets",
+    "full_image_key_hex", "full_image_secret_hex",
+    "keylog", "keylog_line",
+})
+#: What a redacted value is replaced with.
+REDACTED = "<redacted>"
+
+# How long a CANCELLED task's worker may keep holding the one-job gate -- for
+# the kinds in EARLY_GATE_RELEASE_KINDS only. A runner that polls
+# ``WorkerContext.is_cancelled`` returns well inside it (``vol3_synth`` kills
+# its vol and returns in < 1 s), and the gate is then freed by the normal exit
+# path. This is the backstop for one stuck in uninterruptible work: after the
+# grace the queued jobs may start; the stuck worker finishes in the background
+# and its result is discarded (the record is already CANCELLED).
+CANCEL_GATE_GRACE_S = 10.0
+
+# Kinds whose cancelled worker may release the gate early. OPT-IN: the gate
+# exists so two pipelines never run their inner process pools side by side, and
+# a cancelled brute_force / pipeline job that takes a while to unwind must keep
+# holding it. ``vol3_synth``'s heavy part is a vol subprocess its cancel kills;
+# what it may still be finishing is in-process and pool-free.
+EARLY_GATE_RELEASE_KINDS = frozenset({"vol3_synth"})
+
+
+def redact_secret_params(value: Any) -> Any:
+    """A copy of *value* with every :data:`SECRET_PARAM_KEYS` value redacted, at any depth.
+
+    Dicts are walked into, lists and tuples element by element; an empty value
+    (``None``, ``""``, ``[]``...) is kept, so the record still says "none given".
+    """
+    if isinstance(value, dict):
+        return {key: (REDACTED if key in SECRET_PARAM_KEYS and item else
+                      redact_secret_params(item))
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_secret_params(item) for item in value]
+    return value
 
 
 class TaskStatus(str, Enum):
@@ -236,11 +305,14 @@ def _task_failure(exc: BaseException) -> tuple[str, Optional[Dict[str, Any]]]:
     """``(message, error_info)`` for a worker exception.
 
     A memory-budget refusal keeps its human message (not ``repr``) plus its
-    code / estimate / budget; every other failure keeps the historical
-    ``repr(exc)`` with no structured info.
+    code / estimate / budget; a worker's ``KeyboardInterrupt`` is
+    ``"interrupted"``; every other failure keeps the historical ``repr(exc)``
+    with no structured info.
     """
     if is_memory_budget_error(exc):
         return exc.message, memory_budget_fields(exc)  # type: ignore[attr-defined]
+    if isinstance(exc, KeyboardInterrupt):  # a Ctrl-C reached the worker (fact 5)
+        return "interrupted", None
     return repr(exc), None
 
 
@@ -319,6 +391,38 @@ class WorkerContext:
             return False
 
 
+class _ReleasableGate:
+    """``async with`` over the one-job semaphore whose release is idempotent.
+
+    Lets :meth:`TaskManager.cancel` free the gate EARLY (after
+    :data:`CANCEL_GATE_GRACE_S`) while the normal exit still releases it -- once.
+    Touched only on the event loop.
+    """
+
+    def __init__(self, lock: asyncio.Semaphore) -> None:
+        self._lock = lock
+        self._held = False
+
+    async def __aenter__(self) -> "_ReleasableGate":
+        await self._lock.acquire()
+        self._held = True
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        self.release()
+
+    def release(self) -> None:
+        if self._held:
+            self._held = False
+            self._lock.release()
+
+
+def _interrupted_worker(future: Future) -> bool:
+    """True when *future* holds a worker's ``KeyboardInterrupt`` (fact 5 of the module docstring)."""
+    return (future.done() and not future.cancelled()
+            and isinstance(future.exception(timeout=0), KeyboardInterrupt))
+
+
 def _await_exit(workers: List[Any], timeout_s: float) -> None:
     """Block until every worker has exited, or ``timeout_s`` elapses."""
     deadline = time.monotonic() + timeout_s
@@ -386,6 +490,9 @@ class TaskManager:
         # flush sentinel. Touched only from the event loop (the drain task and
         # ``_gated_submit`` both run there), so it needs no lock.
         self._flush_barriers: Dict[str, asyncio.Event] = {}
+        # task_id -> the gate a DISPATCHED task holds, so ``cancel`` can free it
+        # early. Written on the loop, read by ``cancel`` under ``_lock``.
+        self._gates: Dict[str, _ReleasableGate] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -403,11 +510,7 @@ class TaskManager:
         # not a daemon process and ``Server.serve_forever`` has no parent
         # check), stranding its unix socket and ``pymp-*`` temp dir. See
         # core/process_guard.py.
-        self._pool = ProcessPoolExecutor(
-            max_workers=self._max_workers,
-            mp_context=ctx,
-            initializer=guard_child_process,
-        )
+        self._pool = self._new_pool()
         self._mp_manager = start_guarded_sync_manager(ctx)
         self._drain_queue = self._mp_manager.Queue()
         # A drain thread we OWN. Borrowing asyncio's default executor is what
@@ -419,6 +522,30 @@ class TaskManager:
         )
         self._drain_task = loop.create_task(self._drain_progress())
         self.load_from_disk()
+
+    def _new_pool(self) -> ProcessPoolExecutor:
+        return ProcessPoolExecutor(
+            max_workers=self._max_workers,
+            mp_context=mp.get_context("spawn"),
+            initializer=guard_child_process,
+        )
+
+    def _usable_pool(self) -> ProcessPoolExecutor:
+        """The pool, replaced first if a worker death broke it.
+
+        A worker that dies abruptly (SIGKILL, OOM / jetsam) marks the WHOLE
+        ``ProcessPoolExecutor`` broken: every later ``submit`` raises
+        ``BrokenProcessPool``, so one killed job left every following job stuck
+        RUNNING. CPython has already terminated the broken pool's workers; the
+        old pool is shut down without waiting and a fresh one takes its place.
+        """
+        pool = self._pool
+        assert pool is not None
+        if getattr(pool, "_broken", False):
+            logger.warning("process pool broken by a dead worker; starting a fresh pool")
+            pool.shutdown(wait=False, cancel_futures=True)
+            pool = self._pool = self._new_pool()
+        return pool
 
     def shutdown(self, *, grace_s: float = SHUTDOWN_GRACE_S) -> None:
         """Bounded, ordered teardown of cancel events, drain, pool, manager.
@@ -572,7 +699,9 @@ class TaskManager:
         record = TaskRecord(
             task_id=task_id,
             kind=kind,
-            params=dict(params),
+            # The record is persisted and served: secrets redacted. The worker
+            # gets the real ``params`` (``_gated_submit`` below).
+            params=redact_secret_params(params),
             stages=[StageRecord(name=n) for n in (stage_names or [])],
         )
         with self._lock:
@@ -598,7 +727,8 @@ class TaskManager:
         cancel_event: Any,
     ) -> None:
         assert self._run_lock is not None and self._pool is not None
-        async with self._run_lock:
+        gate = _ReleasableGate(self._run_lock)
+        async with gate:
             # Re-read the pool INSIDE the lock. The assert above runs before we
             # queue on the gate, so a submit that waited there across a shutdown
             # would otherwise reach ``None.submit`` on a tearing-down loop. A
@@ -623,6 +753,7 @@ class TaskManager:
             # otherwise a very fast task could flush before we are listening.
             self._flush_barriers[task_id] = asyncio.Event()
 
+            pool = self._usable_pool()
             future = pool.submit(
                 _worker_entry,
                 runner_dotted,
@@ -633,6 +764,7 @@ class TaskManager:
             )
             with self._lock:
                 self._futures[task_id] = future
+                self._gates[task_id] = gate
 
             loop = asyncio.get_running_loop()
             try:
@@ -650,7 +782,9 @@ class TaskManager:
                     result = await asyncio.wrap_future(future, loop=loop)
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # noqa: BLE001
+                except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001
+                    if isinstance(exc, KeyboardInterrupt) and not _interrupted_worker(future):
+                        raise  # not a job result (fact 5): leave it alone
                     await self._drain_barrier(task_id)
                     message, info = _task_failure(exc)
                     self._on_error(task_id, message, info=info)
@@ -662,6 +796,8 @@ class TaskManager:
                     self._on_success(task_id, result or {})
             finally:
                 self._flush_barriers.pop(task_id, None)
+                with self._lock:
+                    self._gates.pop(task_id, None)
 
     # ------------------------------------------------------------------
     # terminal transitions
@@ -746,10 +882,19 @@ class TaskManager:
                 return False
             future = self._futures.get(task_id)
             event = self._cancel_events.get(task_id)
+            # Early release is opt-in per kind (EARLY_GATE_RELEASE_KINDS).
+            gate = (self._gates.get(task_id)
+                    if record.kind in EARLY_GATE_RELEASE_KINDS else None)
             if event is not None:
                 event.set()
             if future is not None:
                 future.cancel()
+        if gate is not None and self._loop is not None:
+            # A cooperative worker returns long before this and frees the gate
+            # itself; see CANCEL_GATE_GRACE_S for the stuck one.
+            with contextlib.suppress(RuntimeError):  # loop already closed: nothing queued
+                self._loop.call_soon_threadsafe(
+                    self._loop.call_later, CANCEL_GATE_GRACE_S, gate.release)
         self._finalize(
             task_id,
             status=TaskStatus.CANCELLED,
@@ -816,7 +961,8 @@ class TaskManager:
         """Rebuild in-memory records and mark orphan RUNNING as FAILED.
 
         Called from :meth:`startup`. Stray ``record.json.tmp`` files from
-        interrupted writes are removed.
+        interrupted writes are removed, and a record persisted before secret
+        redaction existed is rewritten redacted.
         """
         if not self._task_root.is_dir():
             return
@@ -840,10 +986,15 @@ class TaskManager:
                 logger.warning("skipping unreadable task record %s: %s",
                                record_path, exc)
                 continue
+            redacted = redact_secret_params(record.params)
+            rewrite = redacted != record.params  # written before redaction existed
+            record.params = redacted
             if record.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
                 record.status = TaskStatus.FAILED
                 record.error = "backend restarted"
                 record.ended_at = time.time()
+                rewrite = True
+            if rewrite:
                 try:
                     self._persist(record)
                 except OSError:

@@ -4,9 +4,10 @@ import { useTranslation } from "react-i18next";
 import { readableFailure } from "@/api/client";
 import {
   checkVol3Source, getVol3Source, listVol3Sources, putVol3Source, scaffoldVol3Plugin,
-  type Vol3CheckOutcome, type Vol3RunRequest, type Vol3SourceMeta,
+  type Vol3CheckOutcome, type Vol3RunRequest, type Vol3SourceMeta, type Vol3SourceOrigin,
 } from "@/api/vol3";
 import { CheckResultView } from "./CheckResultView";
+import { ExportPluginButton } from "./ExportPluginButton";
 import { FixturesSection } from "./FixturesSection";
 import { SourceEditor } from "./SourceEditor";
 
@@ -18,6 +19,14 @@ const buttonClass =
 /** The editor highlights the failing line only when the failure names one. */
 const errorLineOf = (outcome: Vol3CheckOutcome | null) =>
   outcome && !outcome.ok ? outcome.error.line : null;
+
+/** A user source and a synthesized plugin may share a name: the option value carries both. */
+const originOf = (s: Vol3SourceMeta): Vol3SourceOrigin => s.origin ?? "user";
+const optionValueOf = (s: Vol3SourceMeta) => `${originOf(s)}:${s.name}`;
+const parseOptionValue = (value: string) => {
+  const at = value.indexOf(":");
+  return { origin: value.slice(0, at) as Vol3SourceOrigin, name: value.slice(at + 1) };
+};
 
 /**
  * Write, check, save and run a user plugin (T2.5), and keep fixtures for it (T2.8).
@@ -33,8 +42,8 @@ export function PluginEditor({ viewPath, caseDir, running, onRun }: {
   const [name, setName] = useState("");
   const [perProcess, setPerProcess] = useState(true);
   const [source, setSource] = useState("");
-  /** Name and text as last stored in the case; null while the source was never saved. */
-  const [saved, setSaved] = useState<{ name: string; source: string } | null>(null);
+  /** Name, text and origin as last stored in the case; null while the source was never saved. */
+  const [saved, setSaved] = useState<{ name: string; source: string; origin: Vol3SourceOrigin } | null>(null);
   const [storedAll, setStored] = useState<Vol3SourceMeta[]>([]);
   const [outcome, setOutcome] = useState<Vol3CheckOutcome | null>(null);
   const [external, setExternal] = useState(false);
@@ -62,18 +71,19 @@ export function PluginEditor({ viewPath, caseDir, running, onRun }: {
     setExternal(false);
   });
 
-  const load = (storedName: string) => guarded(async () => {
-    const doc = await getVol3Source(case_, storedName);
+  const load = (optionValue: string) => guarded(async () => {
+    const { origin, name: storedName } = parseOptionValue(optionValue);
+    const doc = await getVol3Source(case_, storedName, origin);
     setName(doc.name);
     setSource(doc.source);
-    setSaved({ name: doc.name, source: doc.source });
+    setSaved({ name: doc.name, source: doc.source, origin: doc.origin ?? origin });
     setExternal(doc.modified_externally === true);
     setOutcome(null);
   })();
 
   const save = guarded(async () => {
     const answer = await putVol3Source(case_, name.trim(), source, viewPath || undefined);
-    setSaved({ name: answer.stored.name, source });
+    setSaved({ name: answer.stored.name, source, origin: "user" });
     setOutcome(answer.check);
     setExternal(false);
     refreshStored();
@@ -84,9 +94,14 @@ export function PluginEditor({ viewPath, caseDir, running, onRun }: {
   });
 
   const dirty = saved === null || saved.source !== source;
+  // The server resolves a name user-first: a synthesized plugin shadowed by a user
+  // source of the same name must not run (or get fixtures) by that name.
+  const shadowed = saved?.origin === "synthesized"
+    && stored.some((s) => originOf(s) === "user" && s.name === saved.name);
+  const byName = saved !== null && !dirty && !shadowed;
   const run = () => {
     // A stored, unchanged source runs by name; anything else runs as raw text.
-    if (saved && !dirty) onRun({ view_path: viewPath, source_name: saved.name, case_dir: case_ });
+    if (saved && byName) onRun({ view_path: viewPath, source_name: saved.name, case_dir: case_ });
     else onRun({ view_path: viewPath, source, case_dir: case_ || undefined });
   };
 
@@ -113,7 +128,14 @@ export function PluginEditor({ viewPath, caseDir, running, onRun }: {
         <select value="" aria-label={t("editor.load")} data-testid="editor-load" className={inputClass}
           disabled={!hasCase || stored.length === 0} onChange={(e) => e.target.value && load(e.target.value)}>
           <option value="">{stored.length === 0 ? t("editor.noStored") : t("editor.load")}</option>
-          {stored.map((s) => <option key={s.name} value={s.name}>{`${s.name} (v${s.version ?? "?"})`}</option>)}
+          {stored.map((s) => (
+            <option key={optionValueOf(s)} value={optionValueOf(s)}
+              title={s.description ?? undefined}>
+              {s.origin === "synthesized"
+                ? `${s.name} (${t("editor.synthesized")})`
+                : `${s.name} (v${s.version ?? "?"})`}
+            </option>
+          ))}
         </select>
       </div>
       <SourceEditor value={source} onChange={setSource} errorLine={errorLineOf(outcome)} />
@@ -124,12 +146,13 @@ export function PluginEditor({ viewPath, caseDir, running, onRun }: {
           disabled={!hasSource} onClick={() => void check()}>{t("editor.check.button")}</button>
         <button type="button" className={buttonClass} data-testid="editor-run"
           disabled={!viewPath || !hasSource || running} onClick={run}>{t("editor.run")}</button>
+        <ExportPluginButton caseDir={caseDir} onSynthesized={refreshStored} testId="editor-export-plugin" />
       </div>
       {!hasCase && <p className="md-text-muted" data-testid="editor-needs-case">{t("editor.needCase")}</p>}
       {!viewPath && <p className="md-text-muted" data-testid="editor-needs-view">{t("run.needView")}</p>}
       {saved && dirty && hasSource && <p className="md-text-muted" data-testid="editor-unsaved">{t("editor.unsaved")}</p>}
       {outcome && <CheckResultView outcome={outcome} />}
-      <FixturesSection caseDir={caseDir} viewPath={viewPath} sourceName={saved && !dirty ? saved.name : null} />
+      <FixturesSection caseDir={caseDir} viewPath={viewPath} sourceName={saved && byName ? saved.name : null} />
     </div>
   );
 }

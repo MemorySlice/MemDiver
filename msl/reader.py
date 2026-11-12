@@ -241,18 +241,90 @@ class MslReader:
         self._sealed_cache = None
 
     def open(self) -> None:
-        self._file = open(self.path, "rb")
-        size = self.path.stat().st_size
-        if size < FILE_HEADER_SIZE:
-            raise MslParseError(f"File too small: {size} bytes")
-        self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
-        self._file_header = self._parse_file_header()
+        self._map_file()
         if self._file_header.encrypted:
             self._setup_decryption()  # sets tag_status, _plaintext, _buf
         else:
             self.tag_status = TagStatus.NOT_ENCRYPTED
             self._buf = self._mmap
             self._buf_base = self._file_header.header_size
+
+    def _map_file(self) -> None:
+        """Open and map the file and parse its file header (no decryption)."""
+        self._file = open(self.path, "rb")
+        size = self.path.stat().st_size
+        if size < FILE_HEADER_SIZE:
+            raise MslParseError(f"File too small: {size} bytes")
+        self._mmap = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+        self._file_header = self._parse_file_header()
+
+    def probe_key(self) -> TagStatus:
+        """Check the supplied key material WITHOUT the whole-file tag pass.
+
+        For a caller that must refuse a missing or wrong key up front and
+        cheaply (the preflight of a background job). Same header checks and
+        key derivation as :meth:`open`, then only the first cipher bytes are
+        decrypted and compared with :data:`BLOCK_MAGIC` (block 0 starts the
+        plaintext). Returns the :class:`TagStatus` :meth:`open` would set,
+        within these LIMITS: nothing is authenticated, so a container
+        tampered anywhere but block 0's magic -- ciphertext or header (the
+        AAD) -- is NOT detected (``VALID`` here, ``CORRUPTED`` on a full
+        open), and a wrong key passes with a ~2^-32 chance. Header errors
+        raise exactly as :meth:`open` raises them.
+
+        Never builds a :class:`DecryptedView` and never calls
+        ``verify_tag_streaming``; its ``bytearray`` copy of the content key is wiped
+        afterwards (the derived ``bytes`` object, as in :meth:`open`, lives until GC). Run it
+        on an unopened reader, which it leaves closed; an opened reader
+        already holds the full answer, its :attr:`tag_status`.
+        """
+        if self._mmap is not None:
+            return self.tag_status
+        try:
+            self._map_file()
+            if not self._file_header.encrypted:
+                return TagStatus.NOT_ENCRYPTED
+            ep, kem_ct = self._read_enc_header()
+            if not self._has_key_material(ep):
+                return TagStatus.MISSING_KEY
+            try:
+                self._probe_block0(ep, kem_ct)
+            except ValueError as exc:
+                return self._failure_status(exc)
+            return TagStatus.VALID
+        finally:
+            self.close()
+
+    def _probe_block0(self, ep: MslEncryptionParams, kem_ct: bytes) -> None:
+        """Raise ``MslAuthError`` unless block 0 decrypts to the block magic.
+
+        Keeps :meth:`_setup_decryption`'s legacy retry: a container whose
+        header stores weak Argon2id params is tried once more with the CEK
+        derived from the clamped params.
+        """
+        if self._block0_has_magic(ep, kem_ct, enforce_minimum=False):
+            return
+        if (self._weak_argon2id_params(ep)
+                and self._block0_has_magic(ep, kem_ct, enforce_minimum=True)):
+            return
+        raise MslAuthError("block 0 does not decrypt to the block magic "
+                           "(wrong key or corrupt container)")
+
+    def _block0_has_magic(self, ep: MslEncryptionParams, kem_ct: bytes, *,
+                          enforce_minimum: bool) -> bool:
+        """Derive the CEK and decrypt only the first ``len(BLOCK_MAGIC)`` cipher bytes."""
+        cek = bytearray(self._derive_cek(ep, kem_ct, enforce_minimum=enforce_minimum))
+        try:
+            algo = EncAlgo(ep.enc_algo)
+            decryptor = SeekableDecryptor(algo, cek, nonce_for_cipher(algo, ep.nonce))
+            try:
+                start = self._ciphertext_start()
+                end = min(self._ciphertext_end(), start + len(BLOCK_MAGIC))
+                return decryptor.decrypt(bytes(self._mmap[start:end]), 0) == BLOCK_MAGIC
+            finally:
+                decryptor.wipe()
+        finally:
+            cek[:] = bytes(len(cek))
 
     def close(self) -> None:
         for attr in self._CACHE_ATTRS:
@@ -387,19 +459,7 @@ class MslReader:
         """Parse the encryption extension and attempt to decrypt the block
         stream (spec §10). Sets ``tag_status`` and, on success, populates the
         decrypted ``_buf`` that all block iteration reads from."""
-        hs = self._file_header.header_size
-        # Spec §14.2 rule 15: an encrypted file MUST declare HeaderSize=128.
-        if hs != FILE_HEADER_ENC_SIZE:
-            raise MslParseError(
-                f"Encrypted MSL file must have HeaderSize=128, got {hs} "
-                f"(MSL Specification v1.0.0 §3.2, §14.2)"
-            )
-        if self._mmap is None or len(self._mmap) < FILE_HEADER_ENC_SIZE:
-            raise MslParseError("Encrypted MSL file truncated before extension header")
-        ep = self._parse_enc_extension()
-        self._enc_params = ep
-        buf = self._mmap
-        kem_ct = bytes(buf[hs:hs + ep.kem_ct_len])
+        ep, kem_ct = self._read_enc_header()
 
         if not self._has_key_material(ep):
             self.tag_status = TagStatus.MISSING_KEY
@@ -429,22 +489,44 @@ class MslReader:
             self._buf_base = 0
             if self._rewrap is None:
                 self._rewrap = self._build_rewrap(ep, cek, kem_ct)
-        # NOTE: MslAuthError and MslCryptoError both subclass ValueError, so
-        # they MUST be caught before the bare ValueError clause. On any
-        # failure path no plaintext is exposed (_buf/_plaintext stay None).
-        except MslAuthError:
-            # Wrong key or tampered ciphertext.
-            self.tag_status = TagStatus.CORRUPTED
+        # NOTE: MslAuthError and MslCryptoError both subclass ValueError;
+        # _failure_status tells them apart. On any failure path no plaintext
+        # is exposed (_buf/_plaintext stay None).
+        except ValueError as exc:
+            self.tag_status = self._failure_status(exc)
             self._drop_decryption_state()
-        except MslCryptoError:
-            # Unsupported algorithm or missing optional library (e.g. ML-KEM).
-            self.tag_status = TagStatus.MISSING_KEY
-            self._drop_decryption_state()
-        except ValueError:
-            # Malformed header declaring an unknown cipher/KEM/KDF code
-            # (attacker-supplied bytes through KeyEncap()/KdfType()/EncAlgo()).
-            self.tag_status = TagStatus.CORRUPTED
-            self._drop_decryption_state()
+
+    def _read_enc_header(self) -> Tuple[MslEncryptionParams, bytes]:
+        """Check the encrypted header and parse its extension: ``(params, KEM ct)``.
+
+        Sets ``_enc_params`` (the ciphertext bounds are derived from it).
+        """
+        hs = self._file_header.header_size
+        # Spec §14.2 rule 15: an encrypted file MUST declare HeaderSize=128.
+        if hs != FILE_HEADER_ENC_SIZE:
+            raise MslParseError(
+                f"Encrypted MSL file must have HeaderSize=128, got {hs} "
+                f"(MSL Specification v1.0.0 §3.2, §14.2)"
+            )
+        if self._mmap is None or len(self._mmap) < FILE_HEADER_ENC_SIZE:
+            raise MslParseError("Encrypted MSL file truncated before extension header")
+        ep = self._parse_enc_extension()
+        self._enc_params = ep
+        return ep, bytes(self._mmap[hs:hs + ep.kem_ct_len])
+
+    @staticmethod
+    def _failure_status(exc: ValueError) -> TagStatus:
+        """The :class:`TagStatus` of a failed key attempt (decrypt or probe).
+
+        ``MslCryptoError``: unsupported algorithm or missing optional library
+        (e.g. ML-KEM) -> MISSING_KEY. ``MslAuthError`` (wrong key or tampered
+        ciphertext) and any other ``ValueError`` (a malformed header declaring
+        an unknown cipher/KEM/KDF code, attacker-supplied bytes through
+        KeyEncap()/KdfType()/EncAlgo()) -> CORRUPTED.
+        """
+        if isinstance(exc, MslCryptoError):
+            return TagStatus.MISSING_KEY
+        return TagStatus.CORRUPTED
 
     def _derive_cek(self, ep: MslEncryptionParams, kem_ct: bytes, *,
                     enforce_minimum: bool) -> bytes:
@@ -1345,3 +1427,15 @@ class MslReader:
         """
         maps = self.collect_vas_map() + self.collect_extension_vas_maps()
         return maps[-1] if maps else None
+
+
+def probe_key(path, *, key: Optional[bytes] = None,
+              passphrase: Optional[bytes] = None,
+              kem_private_key: Optional[bytes] = None) -> TagStatus:
+    """:meth:`MslReader.probe_key` for *path*: the key checked on block 0 only.
+
+    NOT_ENCRYPTED / VALID / MISSING_KEY / CORRUPTED, with the limits that
+    method documents (a ciphertext tampered beyond block 0 is not detected).
+    """
+    return MslReader(Path(path), key=key, passphrase=passphrase,
+                     kem_private_key=kem_private_key).probe_key()

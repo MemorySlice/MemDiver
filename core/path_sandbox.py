@@ -36,6 +36,14 @@ READ_PATH_KEYS = frozenset({
     # ``dumps`` (aligned-window / consensus) holds paths (ints are indices and
     # are skipped); ``state_path`` is the brute-force Welford state read.
     "reference_path", "reference_dump", "dumps", "state_path",
+    # synthesize_vol3_plugin / vol3_exec (T3): oracle evidence, the full image
+    # and its own evidence are opened; plugin_dirs are IMPORTED by ``vol -p``
+    # and symbol_dirs read by ``vol -s``.
+    "oracle_sample_path", "full_image", "full_image_sample", "symbol_dirs",
+    "plugin_dirs",
+    # The ``vol`` launcher and its interpreter are EXECUTED (verify-plugin,
+    # synthesize, vol3 exec): a sandboxed deployment confines them like reads.
+    "vol_bin", "vol_python",
 })
 
 #: Argument names that carry a filesystem path the server will WRITE. REST
@@ -67,6 +75,10 @@ ADMIT_HOW_TO = (
     "add its directory to MEMDIVER_ALLOWED_ROOTS (os.pathsep-separated), or add it "
     "as a favourite in the file browser"
 )
+
+#: The machine-readable code of EVERY path-rule denial (read sandbox, write
+#: containment). Clients key their hint text off it (``errorCodes.path.outside_sandbox``).
+OUTSIDE_SANDBOX = "path.outside_sandbox"
 
 #: Where the server process was started; captured ONCE at import (the sandbox
 #: admits it so a relative path typed in the launch directory keeps working).
@@ -110,6 +122,17 @@ def denial_message(path: str | Path, roots: Iterable[Path]) -> str:
     )
 
 
+def path_denial(message: str, status: int = 403) -> CapabilityError:
+    """The ONE coded error of a path-rule denial: PRECONDITION, ``path.outside_sandbox``.
+
+    Every refusal (read or write, REST or MCP) is built here, so they all carry
+    the same ``code``/``category``; *status* is 403 except where a route has
+    always answered 400 for an upload-directory escape.
+    """
+    return CapabilityError(message, category=ErrorCategory.PRECONDITION,
+                           status=status, code=OUTSIDE_SANDBOX)
+
+
 def admit(path: str | Path, roots: list[Path]) -> Path:
     """Return *path* resolved, or raise a 403 ``CapabilityError`` if outside *roots*.
 
@@ -120,9 +143,7 @@ def admit(path: str | Path, roots: list[Path]) -> Path:
         return candidate
     resolved = candidate.resolve(strict=False)
     if not within(resolved, roots):
-        raise CapabilityError(
-            denial_message(path, roots), category=ErrorCategory.PRECONDITION,
-            status=403, code="path.outside_sandbox")
+        raise path_denial(denial_message(path, roots))
     return resolved
 
 
@@ -158,6 +179,18 @@ def write_denial_detail(field: str, candidate: str | Path, roots: Iterable[Path]
     )
 
 
+def write_denial(field: str, candidate: str | Path, roots: Iterable[Path],
+                 example_name: str = "output", where: str = "", *,
+                 status: int = 403) -> CapabilityError:
+    """The coded refusal of a WRITE path outside *roots* (text: :func:`write_denial_detail`).
+
+    For a router that has already decided (e.g. via ``ensure_within``) that the
+    path escapes; :func:`contain_write_target` raises the same error itself.
+    """
+    return path_denial(
+        write_denial_detail(field, candidate, roots, example_name, where), status)
+
+
 def contain_write_target(value: str | Path, roots: Iterable[Path], *,
                          field: str = "output path", example_name: str = "out/result",
                          where: str = "") -> str:
@@ -171,10 +204,7 @@ def contain_write_target(value: str | Path, roots: Iterable[Path], *,
     admitted = [Path(r).resolve() for r in roots]
     resolved = Path(value).expanduser().resolve(strict=False)
     if not within(resolved, admitted):
-        raise CapabilityError(
-            write_denial_detail(field, value, admitted, example_name, where),
-            category=ErrorCategory.PRECONDITION, status=403,
-            code="path.outside_sandbox")
+        raise write_denial(field, value, admitted, example_name, where)
     return str(resolved)
 
 

@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 # Moved DOWN into core (the MCP guard shares it); re-exported for old imports.
-from memdiver.core.path_sandbox import write_denial_detail
+from memdiver.core.path_sandbox import write_denial, write_denial_detail
 
-__all__ = ["ensure_within", "safe_filename", "write_denial_detail"]
+__all__ = ["ensure_within", "safe_filename", "write_denial", "write_denial_detail"]
 
 
 def ensure_within(base: Path, candidate: Path) -> Path:

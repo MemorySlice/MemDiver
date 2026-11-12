@@ -1,4 +1,4 @@
-"""Memory-image CLI: ``memdiver image {probe,profile,open,processes,extract}``.
+"""Memory-image CLI: ``memdiver image {probe,profile,open,processes,extract,siblings}``.
 
 Thin adapters over the ``image.*`` producers in :mod:`memdiver.app.tools_image`
 (the same functions behind the REST routes and the MCP tools). Unlike REST, the
@@ -57,6 +57,28 @@ def add_image_parser(sub) -> None:
                              help="Extract a process .mdview into an .msl file")
     ext.add_argument("view", metavar="VIEW", help="process .mdview descriptor")
     ext.add_argument("--out", required=True, dest="out_path", help="Output .msl path")
+    _add_siblings_parser(actions)
+
+
+def _add_siblings_parser(actions) -> None:
+    sib = actions.add_parser(
+        "siblings", parents=[output_parent_parser()],
+        help="Sibling groups: processes of one binary in the image (N captures in one image)")
+    sib.add_argument("image", metavar="IMAGE", help="Memory image file")
+    sib.add_argument("--isf", help="Use this ISF file instead of the cached profile")
+    sib.add_argument("--comm", help="Only tasks with this comm")
+    sib.add_argument("--min-members", type=int, default=2,
+                     help="Keep groups with at least this many analysed members")
+    sib.add_argument("--include-parent", action="store_true",
+                     help="Also analyse the listener (parent) of a forked group")
+    sib.add_argument("--no-accounting", action="store_true",
+                     help="Skip the per-member frame walk (grouping only)")
+    sib.add_argument("--no-split-families", action="store_true",
+                     help="One group per binary, not per lineage family")
+    sib.add_argument("--open-views", action="store_true",
+                     help="Write a process .mdview per analysed member")
+    sib.add_argument("--case", dest="case_dir",
+                     help="Case directory or bare name for --open-views")
 
 
 def _cmd_image_probe(args: argparse.Namespace) -> int:
@@ -102,9 +124,18 @@ def _cmd_image_extract(args: argparse.Namespace) -> int:
     return emit(args, image_extract_process_result(args.view, args.out_path).payload)
 
 
+def _cmd_image_siblings(args: argparse.Namespace) -> int:
+    from memdiver.app.tools_image import image_siblings_result
+    return emit(args, image_siblings_result(
+        args.image, args.isf, args.comm, args.min_members, args.include_parent,
+        not args.no_accounting, args.open_views, args.case_dir,
+        not args.no_split_families).payload)
+
+
 _IMAGE_HANDLERS: Dict[str, Callable[[argparse.Namespace], int]] = {
     "probe": _cmd_image_probe, "profile": _cmd_image_profile, "open": _cmd_image_open,
     "processes": _cmd_image_processes, "extract": _cmd_image_extract,
+    "siblings": _cmd_image_siblings,
 }
 
 

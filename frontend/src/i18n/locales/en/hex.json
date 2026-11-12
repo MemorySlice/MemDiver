@@ -168,6 +168,7 @@
     "label": "Alignment",
     "virtual_address": "Aligned by virtual address",
     "module_offset": "Aligned by module offset",
+    "module_relative": "Aligned by module-relative offset (per-process)",
     "file_offset": "Aligned by file offset",
     "unknown": "Alignment unknown",
     "pending": "Aligning…",

@@ -30,6 +30,8 @@ PAGE_SHIFT = 12
 UNRESOLVED_NAME = "<unresolved>"
 #: Direct-map base when the profile has no ``page_offset_base`` (no KASLR of it).
 DEFAULT_PAGE_OFFSET = {48: 0xFFFF888000000000, 57: 0xFF11000000000000}
+#: ``vm_area_struct.vm_flags`` bit of a MAP_SHARED / shmem mapping.
+VM_SHARED = 0x8
 
 
 #: How an untranslated stretch inside a known range is labelled: a constant
@@ -179,6 +181,12 @@ class Vma:
     protection: str      # "rwx"-style, from vol3
     is_heap: bool        # overlaps mm.start_brk .. mm.brk (vol3 does not label it)
     file_backed: bool = False   # vm_file set: absent pages have content in the file
+    vm_flags: int = 0           # raw vm_area_struct.vm_flags (VM_SHARED = 0x8, VM_WRITE = 0x2)
+
+    @property
+    def shared(self) -> bool:
+        """VM_SHARED: a MAP_SHARED / shmem mapping (its frames are shared by design)."""
+        return bool(self.vm_flags & VM_SHARED)
 
 
 def _vma_gap_policy(vma: Vma) -> GapPolicy:
@@ -197,12 +205,30 @@ class ProcessAdapter(_LayerReader):
         super().__init__(image_ctx, layer_name)
         self._pid = pid
         self._vmas: Optional[List[Vma]] = None
+        self._frames: Optional[List[Tuple[Vma, Any]]] = None
 
     def vmas(self) -> List[Vma]:
         with self._ctx.lock:
             if self._vmas is None:
                 self._vmas = list(_iter_vmas(self._ctx, self._task))
             return self._vmas
+
+    def page_frames(self) -> List[Tuple[Vma, Any]]:
+        """``(vma, PageFrame)`` for every 4 KiB page of every VMA: PFN + raw PTE, one walk.
+
+        Cached beside the VMAs (never in ``LayerRun``: run merging would drop the PFNs).
+        See :mod:`memdiver.core.image.page_sharing` for the classification.
+        """
+        from memdiver.vol3plugins.memdiver.frames import member_frames
+        with self._ctx.lock:
+            if self._frames is None:
+                self._frames = list(member_frames(self._layer, self.vmas()))
+            return self._frames
+
+    def mm_address(self) -> int:
+        """The task's ``mm_struct`` address: equal for tasks sharing one address space."""
+        with self._ctx.lock:
+            return int(self._task.mm)
 
     def runs(self) -> Sequence[LayerRun]:
         with self._ctx.lock:
@@ -234,7 +260,15 @@ def _iter_vmas(image_ctx: ImageContext, task: Any) -> Iterator[Vma]:
         start, end = int(vma.vm_start), int(vma.vm_end)
         is_heap = brk[0] < brk[1] and start < brk[1] and brk[0] < end
         name = "[heap]" if is_heap else _vma_name(image_ctx, vma, task)
-        yield Vma(start, end, name, vma.get_protection(), is_heap, _is_file_backed(vma))
+        yield Vma(start, end, name, vma.get_protection(), is_heap, _is_file_backed(vma),
+                  _vm_flags(vma))
+
+
+def _vm_flags(vma: Any) -> int:
+    try:
+        return int(vma.vm_flags)
+    except Exception:  # noqa: BLE001 - unreadable flags: report none (never claims VM_SHARED)
+        return 0
 
 
 def _is_file_backed(vma: Any) -> bool:

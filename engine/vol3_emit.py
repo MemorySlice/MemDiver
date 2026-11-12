@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Mapping, NamedTuple, Optional, Union
 
 from memdiver.architect.pattern_generator import PatternGenerator
 from memdiver.architect.volatility3_exporter import Volatility3Exporter
@@ -118,30 +118,25 @@ def _log_structure_summary(fields: List[dict], name: str) -> None:
         )
 
 
-def emit_plugin_for_hit(
-    hit: dict,
-    reference_data: bytes,
-    name: str,
-    output_path: Path,
-    *,
-    description: Optional[str] = None,
-    min_static_ratio: float = 0.3,
-    variance_threshold: Optional[float] = None,
-    progress_callback: ProgressFn = noop_progress,
-) -> Path:
-    """Emit a vol3 plugin anchored on the neighborhood around a brute-force hit.
+class _Neighborhood(NamedTuple):
+    """A hit's validated neighborhood window and its static-byte mask."""
 
-    Writes TWO files and returns the first: ``output_path`` (the Volatility 3
-    plugin) and a sibling ``<stem>.yar`` holding the same YARA rule the plugin
-    embeds, so the rule is loadable by ``yara.compile`` /
-    :func:`engine.yara_scan.compile_rules` and not only readable inside the
-    generated Python. The return value is unchanged (the plugin path) because
-    the plugin is still the primary artifact.
+    start: int
+    end: int
+    variance: List[float]
+    threshold: float
+    static_mask: List[bool]
+
+
+def _neighborhood(
+    hit: dict, reference_data: bytes, variance_threshold: Optional[float],
+) -> _Neighborhood:
+    """Validate ``hit``'s neighborhood against ``reference_data`` and mask it.
+
+    Shared by the v1 and v2 emit branches. Raises ``ValueError`` when the hit
+    carries no neighborhood variance, or when the window runs past the end of
+    the reference dump (checked in that order).
     """
-    safe_emit(
-        progress_callback,
-        ProgressEvent(stage="emit_plugin:load", pct=0.0, msg=f"plugin={name}"),
-    )
     nb_start = int(hit["neighborhood_start"])
     nb_variance: List[float] = hit.get("neighborhood_variance") or []
     if not nb_variance:
@@ -158,9 +153,58 @@ def emit_plugin_for_hit(
             f"neighborhood [{nb_start}:{nb_end}] exceeds reference dump "
             f"length {len(reference_data)}"
         )
-    window = reference_data[nb_start:nb_end]
     thresh = resolve_variance_threshold(variance_threshold)
     static_mask = _static_mask_from_variance(nb_variance, threshold=thresh)
+    return _Neighborhood(nb_start, nb_end, nb_variance, thresh, static_mask)
+
+
+def emit_plugin_for_hit(
+    hit: dict,
+    reference_data: bytes,
+    name: str,
+    output_path: Path,
+    *,
+    description: Optional[str] = None,
+    min_static_ratio: float = 0.3,
+    variance_threshold: Optional[float] = None,
+    progress_callback: ProgressFn = noop_progress,
+    template: str = "v1",
+    oracle: Optional[Union[Mapping[str, Any], Any]] = None,
+) -> Path:
+    """Emit a vol3 plugin anchored on the neighborhood around a brute-force hit.
+
+    ``template="v2"`` (opt-in; ``"v1"`` is the default and unchanged) renders a
+    recipe-v2 plugin (``architect.vol3_recipe``) instead: same anchor, plus an
+    entropy locator and, when ``oracle`` is given (an ``OracleSpec`` or its
+    dict form), a source-inlined format oracle that PROVES each candidate.
+    With an oracle a degenerate anchor is only a diagnostic (the oracle is the
+    filter); without one it is refused. The ``.yar`` sidecar is written too.
+
+    Writes TWO files and returns the first: ``output_path`` (the Volatility 3
+    plugin) and a sibling ``<stem>.yar`` holding the same YARA rule the plugin
+    embeds, so the rule is loadable by ``yara.compile`` /
+    :func:`engine.yara_scan.compile_rules` and not only readable inside the
+    generated Python. The return value is unchanged (the plugin path) because
+    the plugin is still the primary artifact.
+    """
+    if template not in ("v1", "v2"):
+        raise ValueError(f"template must be 'v1' or 'v2', not {template!r}")
+    if oracle is not None and template != "v2":
+        raise ValueError("an oracle needs template='v2'")
+    safe_emit(
+        progress_callback,
+        ProgressEvent(stage="emit_plugin:load", pct=0.0, msg=f"plugin={name}"),
+    )
+    if template == "v2":
+        return _emit_v2_plugin_for_hit(
+            hit, reference_data, name, output_path,
+            description=description, min_static_ratio=min_static_ratio,
+            variance_threshold=variance_threshold, oracle=oracle,
+            progress_callback=progress_callback,
+        )
+    nb_start, nb_end, nb_variance, thresh, static_mask = _neighborhood(
+        hit, reference_data, variance_threshold)
+    window = reference_data[nb_start:nb_end]
 
     # Compute key position within the neighborhood window.
     key_offset_in_window = int(hit["offset"]) - nb_start
@@ -259,6 +303,70 @@ def emit_plugin_for_hit(
         ),
     )
     return output_path
+
+
+def _emit_v2_plugin_for_hit(
+    hit: dict,
+    reference_data: bytes,
+    name: str,
+    output_path: Path,
+    *,
+    description: Optional[str],
+    min_static_ratio: float,
+    variance_threshold: Optional[float],
+    oracle: Optional[Union[Mapping[str, Any], Any]],
+    progress_callback: ProgressFn,
+) -> Path:
+    """The ``template="v2"`` branch of :func:`emit_plugin_for_hit`."""
+    from memdiver.architect import vol3_recipe
+
+    nb_start, nb_end, _, _, static_mask = _neighborhood(
+        hit, reference_data, variance_threshold)
+    key_offset = int(hit["offset"]) - nb_start
+    key_length = int(hit["length"])
+    for index in range(key_offset, min(key_offset + key_length, len(static_mask))):
+        static_mask[index] = False  # the key is what the plugin extracts, never an anchor
+    pattern = PatternGenerator.generate(
+        reference_data[nb_start:nb_end], static_mask, name=name,
+        min_static_ratio=min_static_ratio,
+    )
+    if pattern is None:
+        raise RuntimeError(
+            f"insufficient static bytes in neighborhood for {name} "
+            f"(need >= {min_static_ratio:.1%}); widen --neighborhood-pad"
+        )
+    if oracle is not None and not isinstance(oracle, vol3_recipe.OracleSpec):
+        oracle = vol3_recipe.OracleSpec.from_dict(oracle)
+    output_path = Path(output_path)
+    recipe = vol3_recipe.PluginRecipe(
+        name=output_path.stem if output_path.suffix == ".py" else name,
+        class_name=vol3_recipe._class_name_for(name),
+        description=description or f"MemDiver brute-force hit {name}",
+        locators=(
+            vol3_recipe.Locator("anchor_regex", {
+                "pattern": pattern["wildcard_pattern"],
+                "static_ratio": pattern["static_ratio"],
+                "max_hits": vol3_recipe.DEFAULT_MAX_ANCHOR_HITS, "alignment": 1}),
+            vol3_recipe.Locator("entropy", {
+                "threshold": vol3_recipe.DEFAULT_ENTROPY_THRESHOLD, "mode": "fallback",
+                "max_candidates": vol3_recipe.DEFAULT_MAX_ENTROPY_CANDIDATES}),
+        ),
+        decoder=vol3_recipe.Decoder(key_offset, key_length),
+        oracle=oracle,
+        provenance={"generator": "memdiver.engine.vol3_emit.emit_plugin_for_hit",
+                    "hit_offset": int(hit["offset"]), "neighborhood_start": nb_start},
+    )
+    result = vol3_recipe.emit(recipe, None, output_path, strict_anchors=oracle is None)
+    safe_emit(
+        progress_callback,
+        ProgressEvent(
+            stage="emit_plugin:write", pct=1.0, msg=f"wrote {result.path.name}",
+            extra={"path": str(result.path), "size": len(result.source),
+                   "yara_rule_path": str(result.yara_path) if result.yara_path else None,
+                   "template": "v2"},
+        ),
+    )
+    return result.path
 
 
 def extract_inferred_fields(

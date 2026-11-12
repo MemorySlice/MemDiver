@@ -108,6 +108,7 @@
     "scaffold": "New from scaffold",
     "load": "Load stored source",
     "noStored": "No stored sources",
+    "synthesized": "synthesized",
     "save": "Save to case",
     "run": "Run source",
     "needCase": "Set a case directory to save sources and fixtures.",
@@ -221,5 +222,148 @@
     "truncated": "Truncated: these rows are NOT the complete result.",
     "send": "Send rows to highlights",
     "placed": "Highlighted {{placed}} rows; {{skipped}} could not be placed in this view."
+  },
+  "synth": {
+    "button": "Export as Volatility 3 plugin",
+    "buttonAria": "Export the key located in {{name}} as a Volatility 3 plugin",
+    "title": "Export as Volatility 3 plugin",
+    "intro": "Builds a standalone plugin that finds this key, then proves every hit with the oracle on each dump. Proven means the oracle decrypted real data with the key.",
+    "submit": "Synthesize",
+    "busy": "Synthesizing…",
+    "busyHint": "Synthesizing and verifying: about 5 s for two .msl dumps, over a minute with a full image.",
+    "job": {
+      "state": {
+        "submitting": "Submitting…",
+        "queued": "Queued",
+        "running": "Running",
+        "cancelling": "Cancelling…"
+      },
+      "queuedHint": "Waiting for another job on the server to finish: synthesis starts on its own once this job is admitted.",
+      "elapsed": "Elapsed {{time}}",
+      "cancel": "Cancel job",
+      "cancelled": "Synthesis cancelled.",
+      "noPayload": "The synthesize job finished but its stored result could not be read."
+    },
+    "name": "Plugin name (Python identifier)",
+    "oracle": "Oracle",
+    "suggestion": "Suggested: {{reason}} (confidence: {{confidence}})",
+    "confidence": { "high": "high", "medium": "medium", "low": "low" },
+    "case": "Case (existing case directory or name)",
+    "casePlaceholder": "e.g. my-case",
+    "noCase": "Without a case the plugin goes to a temporary directory and is not kept.",
+    "dumps": {
+      "legend": "Dumps holding the key",
+      "path": "Dump {{n}} path",
+      "pathPlaceholder": "/path/to/capture.msl",
+      "secret": "Dump {{n}} key (hex)",
+      "secretPlaceholder": "key hex (hidden)",
+      "secretSamePlaceholder": "key hex, or blank to reuse dump 1's key",
+      "sample": "Dump {{n}} oracle sample",
+      "samplePlaceholder": "oracle sample, e.g. the run's gocryptfs cipher directory",
+      "add": "Add dump",
+      "remove": "Remove",
+      "removeAria": "Remove dump {{n}}",
+      "singleHint": "With a single dump the anchor cannot be told apart from program constants: add a second capture, or allow high-entropy context under Advanced."
+    },
+    "fullImage": {
+      "legend": "Full memory image (optional)",
+      "path": "Image path",
+      "pid": "Process id (--pid)",
+      "secret": "Expected key in the image (hex, optional)",
+      "sample": "The image's own oracle sample (optional)",
+      "symbolDirs": "Symbol (ISF) directories, one per line",
+      "slow": "A full image runs under stock vol and takes a minute or more."
+    },
+    "advanced": {
+      "legend": "Advanced",
+      "context": "Context bytes either side of the key",
+      "verifyMsl": "Verify on every dump (msl)",
+      "allowHighEntropy": "Allow high-entropy context (single dump)"
+    },
+    "error": {
+      "noDumps": "Add at least one dump.",
+      "name": "The plugin name must be a Python identifier (letters, digits, underscore).",
+      "oracle": "Choose an oracle.",
+      "secretHex": "A key must be an even number of hex digits.",
+      "secretPerDump": "Give the first dump's key (used for every dump), or one key for every dump.",
+      "context": "Context must be a whole number of bytes.",
+      "pid": "The process id must be a whole number.",
+      "imageSecretHex": "The image key must be an even number of hex digits."
+    },
+    "status": {
+      "proven": "proven",
+      "not_proven": "not proven",
+      "error": "error"
+    },
+    "target": {
+      "msl": "msl dump",
+      "full_image": "full image"
+    },
+    "result": {
+      "title": "Synthesized plugin",
+      "provenHits": "Proven hits: {{n}}",
+      "stored": "Stored: {{path}}",
+      "notStored": "Not stored in a case.",
+      "selfTest": "Self-test: {{rows}} row(s), {{proven}} proven.",
+      "selfTestError": "Self-test failed: {{message}}",
+      "verdicts": "Verdict per verify target",
+      "col": {
+        "verdict": "Verdict",
+        "target": "Target",
+        "dump": "Dump",
+        "rows": "Rows",
+        "proven": "Proven",
+        "actions": "Actions"
+      },
+      "run": "Run under vol",
+      "runAria": "Run the plugin under stock vol on {{name}}",
+      "pidNotHonoured": "vol could not honour --pid on the full image: the plugin scanned the whole image instead (pass symbol directories).",
+      "diagnostics": "Diagnostics ({{n}})",
+      "download": "Download {{file}}",
+      "copyCommand": "Copy vol command",
+      "copied": "Copied.",
+      "source": "Plugin source ({{lines}} lines)"
+    }
+  },
+  "exec": {
+    "title": "Run under stock vol",
+    "mslHint": "A .msl capture runs under the stock vol launcher with MemDiver's vol3 plugins on -p.",
+    "plugin": "Plugin name",
+    "pluginDirs": "Extra plugin directories (-p), one per line",
+    "args": "Plugin arguments",
+    "run": "Run under vol",
+    "busy": "Running vol…",
+    "running": "Running the plugin under vol on {{name}}…",
+    "summary": "{{rows}} row(s), {{proven}} proven, {{elapsed}} s.",
+    "failed": "vol failed (exit {{code}}).",
+    "truncated": "Output truncated.",
+    "caption": "Rows of {{plugin}}",
+    "masked": "masked"
+  },
+  "locate": {
+    "title": "Locate a known key",
+    "hint": "Find where a key you already know lives in the loaded dumps, then export it as a Volatility 3 plugin.",
+    "secret": "Key (hex)",
+    "secretPlaceholder": "key hex (hidden)",
+    "run": "Locate",
+    "busy": "Locating…",
+    "caption": "Where the key was found, per dump",
+    "verdict": {
+      "found": "Found in {{present}} of {{searched}} searched dump(s).",
+      "absent": "Not found in any of the {{searched}} searched dump(s).",
+      "not_searched": "No dump could be searched."
+    },
+    "col": {
+      "dump": "Dump",
+      "status": "Status",
+      "hits": "Hits",
+      "offset": "First offset",
+      "actions": "Actions"
+    },
+    "presence": {
+      "found": "found",
+      "absent": "absent",
+      "unknown": "unknown"
+    }
   }
 }

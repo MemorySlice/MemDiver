@@ -452,6 +452,55 @@ class TestReadRangeValid:
             for start, run_len in runs
         )
 
+    def test_truncated_run_keeps_vas_read_range_find_all_and_size_in_agreement(
+        self, abutting_msl_path,
+    ):
+        """A truncated run must not skew ``"vas"`` offsets after it.
+
+        ``read_all``/``find_all`` count the bytes each run really holds
+        (``avail``); ``read_range``/``size``/``va_to_vas_offset`` used to count
+        the NOMINAL ``length``. With run 0 cut to half a page, the second run's
+        hit was reported at ``half`` but ``read_range(half, ...)`` answered
+        from nominal offset ``PAGE_SIZE`` and returned nothing.
+        """
+        half = PAGE_SIZE // 2
+        needle = bytes([0xB2]) * 16
+        with MslDumpSource(abutting_msl_path) as src:
+            real = src._run_index()
+            assert real is not None and len(real.runs) == 2
+            runs = (real.runs[0]._replace(avail=half),) + real.runs[1:]
+            patched = real._replace(
+                runs=runs, by_va=runs,
+                va_starts=tuple(r.va_start for r in runs),
+                vas_starts=tuple(r.vas_offset for r in runs),
+            )
+            src._reader.captured_run_index = lambda: patched
+
+            whole = src.read_all()
+            assert len(whole) == half + PAGE_SIZE
+            assert src.size_for("vas") == len(whole)
+            assert src.read_range(0, len(whole) + 99) == whole
+            assert src.read_range(half, 32) == bytes([0xB2]) * 32
+            hits = src.find_all(needle)
+            assert hits and hits[0] == half
+            assert src.find_first(needle) == hits[0]
+            for hit in hits:
+                assert src.read_range(hit, len(needle)) == needle
+            assert src.captured_runs() == (
+                (real.runs[0].va_start, half, 0),
+                (real.runs[1].va_start, PAGE_SIZE, half),
+            )
+            second_va = real.runs[1].va_start
+            assert src.va_to_vas_offset(second_va + 5) == half + 5
+            # The truncated tail of run 0 is not captured at all.
+            assert src.va_to_vas_offset(real.runs[0].va_start + half) is None
+
+    def test_untruncated_container_keeps_the_readers_run_index_object(
+        self, abutting_msl_path,
+    ):
+        with MslDumpSource(abutting_msl_path) as src:
+            assert src._run_index() is src._reader.captured_run_index()
+
     def test_read_range_valid_on_vas_and_raw_covers_the_returned_length(
         self, msl_path,
     ):

@@ -39,6 +39,103 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The `heap_policy='mask'` precondition error names the unavailable status and its
   cause (`no_va_coordinate`, `unsupported_allocator`, ...).
 
+## [1.1.0] — 2026-11-08
+
+### Added
+- `vol3plugins/`: a Volatility 3 plugin suite that runs under stock volatility3 2.27 and
+  2.28 without importing memdiver at module level (import rules are tested):
+  - `linux.dmcrypt` (dm-crypt volume keys for LUKS1, LUKS2 and VeraCrypt, checked against
+    the LUKS digest or the key schedule, `dmsetup` export);
+  - `linux.wireguard` (interface identities, peers, preshared keys, `showconf` export);
+  - `linux.keyring` (key_serial_tree walk, cross-proofs, `keyctl` export);
+  - `linux.fscrypt` and `linux.ecryptfs` (master and per-file keys proven against the
+    kernel's own identifiers and key schedules);
+  - `linux.btf_layouts` (struct layouts read from the kernel's in-memory BTF, trusted only
+    when the symbol walk and all cross-checks pass);
+  - an `msl.*` layer (`.msl` as a Volatility 3 layer, `msl.info`, `msl.vasmap`);
+  - a LA57 (5-level paging) stacker that steps aside when upstream support exists.
+  Every row carries a proof status; an unverified or guessed offset is never reported as
+  proven. 59 exact x86_64 WireGuard layout entries were added from distro module BTF.
+- `memdiver.ssh.SSHKeys` (SSH session keys of OpenSSH, Dropbear, libssh, wolfSSH, Paramiko and
+  Go, in proof tiers A/B/C; Tier A is proven by the `ssh-kdf-consistency` oracle, which
+  re-derives the RFC 4253 keys A-F from K, H and the session id and finds them in the same
+  memory; negotiated algorithms are read from memory for libssh and OpenSSH) and
+  `memdiver.wireguard_go.WireGuardGo` (static key, peers, ephemerals and preshared key of
+  wireguard-go, proven by the `x25519-pubkey`, `x25519-dh-consistency` and chaining-key
+  oracles; transport keys stay `unverified`). Neither needs MemDiver or a crypto library.
+- Seven format oracles for synthesis (`oracles/formats`): `gocryptfs-gcm`, `luks`,
+  `xts-fsmagic`, `aead-generic`, `x25519-pubkey`, `x25519-dh-consistency` and
+  `ssh-kdf-consistency`; `xts-fsmagic` (filesystem structure of a decrypted data area),
+  `luks` (LUKS1/LUKS2 header digest) and `aead-generic` are new in this release.
+  The format oracles are listed in the BYO oracle stage as `format:<kind>` resource types.
+- `linux.dmcrypt` page-cache proof `O3` (ciphertext pages of the backing device decrypt to the
+  resident plaintext or a filesystem head), which proves VeraCrypt volume keys, and
+  `--export cryptsetup` (open scripts plus key files).
+- `linux.ecryptfs` tag-3 proof (the lower file's header unwraps to the FEK under the
+  keyring-proven FEKEK) and `--export fek|fekek|json`.
+- Five more `msl.*` plugins (`msl.pagemap`, `msl.modules`, `msl.keyhints`, `msl.threads`,
+  `msl.verify`) and a slim standard-library `.msl` reader, so stock Volatility without
+  MemDiver reads plaintext, uncompressed captures.
+- `samples/`: small public demo inputs (gocryptfs aes and xchacha slices with a tampered and an
+  encrypted copy, libssh and wolfSSH slices, two wireguard-go slices including one with a
+  preshared key, the synthesized plugin) with ground truth in `samples.json` and a
+  `SHA256SUMS` list.
+- `make validate` (`tests/test_vol3plugins_corpus_gate.py`): one claim ID per checked
+  statement, runs on every Volatility tree given, skips cleanly without the corpora, and
+  prints a claim table. A mount proof (`tools/vol3_capture/mount_proof.sh`, claim C-MOUNT1)
+  opens the capture's real LUKS1/LUKS2/VeraCrypt, fscrypt, eCryptfs and gocryptfs containers
+  with only plugin-exported keys: 12 methods across 7 targets, 28 of 28 files match.
+- An oracle cost budget for synthesized plugins (`--oracle-budget`, default 120 s): leftover
+  candidates are `unverified`, never `rejected`.
+- Documentation of the suite in `docs/vol3/`.
+- Synthesized standalone Volatility 3 plugins: MemDiver emits a plugin that locates a known
+  key and proves it with an oracle inlined into the plugin and hash-checked on load. The
+  oracle backend is cryptography, then pycryptodome, then pure Python, each passing a
+  known-answer self-test, so the plugin needs no extra crypto library. Supports gocryptfs
+  (AES-GCM, XChaCha, AES-SIV). The key is never written into the plugin, only its SHA-256.
+- `memdiver vol3 plugin-dir | synthesize | exec` (CLI), the matching REST endpoints and MCP
+  tools (`vol3.plugin_dir`, `synth.vol3_plugin`, `vol3.exec`; MCP 120 to 123 tools).
+  Synthesis targets `.msl` captures or a full image (`--pid`); the result reports whether
+  `--pid` was honoured.
+- Synthesis runs as a background job (`POST /api/vol3/synthesize` with `async: true` or
+  `full_image`): progress, elapsed time and Cancel in the dialog; cancel kills vol's process
+  group.
+- Synthesized plugins are listed in the Vol3 source list (`origin: "synthesized"`).
+- Frontend: "Export as Volatility 3 plugin" (Architect locate-a-key section, Key Finders
+  rows, plugin editor) and a Vol3 side tab for `.msl` with a stock-vol exec form.
+- Tools to capture secret-bearing reference images (`tools/vol3_capture/`).
+
+### Changed
+- Every REST sandbox denial answers `{"detail", "error", "code": "path.outside_sandbox",
+  "category": "PRECONDITION"}`; `detail` is kept for older clients. The UI shows a hint for
+  the code.
+- `vol3.exec` refuses the plugin history directory and `;` in paths, bounds its output and
+  timeout (1 to 900 s), and writes no bytecode. Synthesis is capped at 16 dumps and a
+  3600 s full-image vol budget.
+- Packaging: `memdiver.vol3plugins*` and `memdiver.oracles*` packages and
+  `architect/templates/*.tmpl` ship in the wheel.
+
+### Fixed
+- Ctrl-C no longer crashes the server (a worker `KeyboardInterrupt` escaped the loop), and
+  SIGINT no longer waits about 10 s on a parked progress WebSocket; exit takes under 1 s
+  and leaves no vol process behind.
+- A full-image synthesis target could not prove an image from another session; `--pid` used
+  to fall back silently to a raw scan.
+
+### Security
+- `/api/analysis/run-file` persisted passphrases and key hex in the task `record.json`.
+  Task records now redact secret parameters at any depth, in persisted and served records,
+  and records written earlier are scrubbed at boot.
+- `vol3.exec` plugin arguments could smuggle Volatility 3 global options (`-p`, `-l`, `-s`,
+  `--cache-path`, ...) and so import code or write files outside the sandbox. Single-dash
+  arguments and global-option prefixes are refused (`vol3.exec.global_option`); the option
+  list is pinned and tested against 2.27.0 and 2.28.2.
+- `vol_bin` and `vol_python` are read-sandboxed on REST (this also tightens plugin
+  verification).
+- Request-validation (422) responses no longer echo the submitted input, which could
+  contain a key.
+- An invalid key is redacted in synthesis errors.
+
 ## [1.0.7] — 2026-11-04
 
 ### Fixed

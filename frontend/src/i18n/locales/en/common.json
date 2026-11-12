@@ -19,5 +19,11 @@
   "back": "Back",
   "next": "Next",
   "none": "None",
-  "emptyResponse": "The server sent an empty response where a result was expected."
+  "emptyResponse": "The server sent an empty response where a result was expected.",
+  "errorCodes": {
+    "encrypted_dump_locked": "The dump is an encrypted .msl and no working key was supplied, so it cannot be read. Give its key file, passphrase or KEM key, and check that it is the key this capture was encrypted with.",
+    "path": {
+      "outside_sandbox": "This path is outside the folders this server is allowed to use. Choose a file inside one of them, or ask the server's operator to admit its folder by adding it to MEMDIVER_ALLOWED_ROOTS."
+    }
+  }
 }

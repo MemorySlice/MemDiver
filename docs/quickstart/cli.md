@@ -164,6 +164,23 @@ separate streaming extractor.
 memdiver strings table dump.msl --min-len 6 --case ./case
 ```
 
+## Format oracles
+
+`oracle` turns the shipped format oracles (`gocryptfs-gcm`, `luks`, `xts-fsmagic`,
+`aead-generic`, `ssh-kdf-consistency`, `x25519-pubkey`, `x25519-dh-consistency`)
+into a BYO-oracle source. `formats` lists them (candidate key lengths, cost per
+call, the evidence each needs). `suggest` names the one that fits a dump and why:
+the run's gocryptfs vault, an `.msl` KEY_HINT, or the process / module list.
+`spec` builds one from its evidence (a sample blob, a gocryptfs vault file or
+directory, a raw LUKS header) and prints the `oracle_path` + `oracle_config` that
+`brute-force` / `n-sweep` take; `--candidate` grades key hex and exits 1 unless
+one is proven.
+
+```bash
+memdiver oracle suggest run_0001/memslicer.msl
+memdiver oracle spec luks --sample luks.hdr --candidate <volume key hex>
+```
+
 ## Volatility 3 plugins
 
 `vol3` runs Volatility 3 plugins over a `.mdview` (needs `pip install

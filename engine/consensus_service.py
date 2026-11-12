@@ -32,8 +32,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, List, Mapping, Optional, Sequence, Union
 
 from memdiver.core.dump_source import DumpSource, open_dump
+from memdiver.core.image.private_frames import validate_frames_choice
 from memdiver.core.service_errors import FileNotFoundServiceError
-from memdiver.engine.consensus import ConsensusVector
+from memdiver.engine.consensus import (
+    ALIGNMENT_AUTO,
+    ConsensusVector,
+    validate_alignment_choice,
+)
 
 __all__ = ["open_consensus_sources", "build_consensus", "ALLOCATOR_OFF"]
 
@@ -100,6 +105,8 @@ def build_consensus(
     force: bool = False,
     budget: Any = None,
     allocator: str = "auto",
+    alignment: str = ALIGNMENT_AUTO,
+    frames: str = "all",
 ) -> ConsensusVector:
     """Open the dumps, optionally inspect each, and build a consensus vector.
 
@@ -131,9 +138,22 @@ def build_consensus(
         raises ``ValueError`` before any dump is opened; a failure while
         annotating is recorded in ``cm.heap.report`` and never affects the
         consensus itself.
+    :param alignment: ``"auto"`` (default: the strongest method the sources
+        supply), or an explicit ``"virtual_address"`` / ``"module_relative"``
+        regime for VA-capable sources; see
+        :meth:`~memdiver.engine.consensus.ConsensusVector.build_from_sources`.
+        An unknown value raises ``CapabilityError`` before any dump is opened.
+    :param frames: ``"all"`` (default, byte-identical to before) or
+        ``"private"``: compare only bytes in physical frames private to one
+        member of a set of process views of ONE image (see
+        :mod:`memdiver.core.image.private_frames`); other sources raise
+        ``CapabilityError`` ``consensus.frames_unavailable``. An unknown value
+        raises before any dump is opened.
     :returns: The built :class:`~memdiver.engine.consensus.ConsensusVector`.
     """
     _validate_allocator(allocator)
+    validate_alignment_choice(alignment)
+    validate_frames_choice(frames)
     with open_consensus_sources(
         dump_paths, key_material=key_material, region_filter=region_filter,
     ) as sources:
@@ -142,7 +162,8 @@ def build_consensus(
                 on_source(src)
         cm = ConsensusVector()
         cm.build_from_sources(sources, normalize=normalize,
-                              force=force, budget=budget)
+                              force=force, budget=budget, alignment=alignment,
+                              frames=frames)
         if allocator != ALLOCATOR_OFF:
             cm.heap = _annotate_heap(cm, sources, allocator)
     return cm

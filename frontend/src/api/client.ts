@@ -93,6 +93,32 @@ export function readableFailure(err: unknown): string {
   return raw;
 }
 
+/**
+ * The machine-readable error code of a failed `request`, if the body carries one.
+ *
+ * The backend's `CapabilityError` envelope is `{error, code, category}` (a path
+ * denial also keeps FastAPI's `detail`); a FastAPI `detail` may itself be a
+ * `{code, message}` object. Reads `code` from the top level first, then from an
+ * object-valued `detail`. Never throws: anything that is not an `ApiError`
+ * with a JSON-object body (a network error, a proxy page, a 422 list) has no
+ * code and yields `undefined`. Pair with `ApiErrorHint` to explain it.
+ */
+export function apiErrorCode(err: unknown): string | undefined {
+  if (!(err instanceof ApiError)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const { code, detail } = parsed as { code?: unknown; detail?: unknown };
+    const nested = detail && typeof detail === "object" ? (detail as { code?: unknown }).code : undefined;
+    for (const candidate of [code, nested]) {
+      if (typeof candidate === "string" && candidate !== "") return candidate;
+    }
+  } catch {
+    // Not JSON: no code.
+  }
+  return undefined;
+}
+
 /** Decodes a non-empty response body (default `JSON.parse`). */
 export type BodyParser = (text: string) => unknown;
 

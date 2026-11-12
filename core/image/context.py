@@ -281,14 +281,18 @@ def get_image_context(image_path: Path, image_sha: str, isf_path: Optional[Path]
         key, lambda: ImageContext.build(image_path, isf_path, va_bits_hint, dtb))
 
 
-def adapter_for(descriptor: Any, descriptor_path: Path) -> Any:
-    """Layer adapter for a ``.mdview`` descriptor (default factory of Vol3LayerSource)."""
-    from memdiver.core.image.adapters import adapter_for_view
+def image_context_for(descriptor: Any, descriptor_path: Path) -> ImageContext:
+    """The cached :class:`ImageContext` a ``.mdview`` descriptor's views are read through."""
     isf = descriptor.isf_path(descriptor_path)
     paging = descriptor.paging
-    image_ctx = get_image_context(
+    return get_image_context(
         descriptor.image_path(descriptor_path), descriptor.image_sha256, isf,
         descriptor.profile.sha256 if descriptor.profile and descriptor.profile.sha256
         else (file_sha256(isf) if isf else None),
         paging.va_bits if paging else None, paging.pgd_phys if paging else None)
-    return adapter_for_view(image_ctx, descriptor)
+
+
+def adapter_for(descriptor: Any, descriptor_path: Path) -> Any:
+    """Layer adapter for a ``.mdview`` descriptor (default factory of Vol3LayerSource)."""
+    from memdiver.core.image.adapters import adapter_for_view
+    return adapter_for_view(image_context_for(descriptor, descriptor_path), descriptor)

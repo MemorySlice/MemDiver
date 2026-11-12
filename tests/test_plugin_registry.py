@@ -194,3 +194,105 @@ def test_real_scaffold_runs_through_source_name_alma(case):
                                      source_name="kernel_tasks").payload
     assert run["row_count"] > 50
     assert json.dumps(run["columns"])
+
+
+# ---- synthesized plugins (<case>/vol3/plugins) in the source list ----
+
+def _write_synth(case, name, source="# synth\n", recipe=True):
+    plugins = case.dir / "vol3" / "plugins"
+    history = case.dir / "vol3" / "history"
+    plugins.mkdir(parents=True, exist_ok=True)
+    history.mkdir(parents=True, exist_ok=True)
+    (plugins / f"{name}.py").write_text(source)
+    if recipe:
+        (plugins / f"{name}.recipe.json").write_text(json.dumps(
+            {"name": name, "description": "finds a key", "oracle": {"kind": "gocryptfs_gcm"}}))
+    (history / f"{name}-abcdef012345.py").write_text("# archived\n")
+    return plugins, history
+
+
+def test_source_list_includes_synthesized_plugins(case):
+    PluginStore(case.dir).put("scan_one", SOURCE)
+    _write_synth(case, "synth_key")
+    rows = sources.vol3_source_list_result(str(case.dir)).payload
+    assert rows["count"] == 2
+    by_name = {r["name"]: r for r in rows["sources"]}
+    assert by_name["scan_one"]["origin"] == "user" and by_name["scan_one"]["version"] == 1
+    synth = by_name["synth_key"]
+    assert synth["origin"] == synth["kind"] == "synthesized"
+    assert synth["oracle_kind"] == "gocryptfs_gcm" and synth["description"] == "finds a key"
+    assert synth["recipe_path"].endswith("synth_key.recipe.json")
+    assert synth["path"].endswith("vol3/plugins/synth_key.py")
+
+
+def test_source_list_never_lists_history_or_recipe_files(case):
+    _write_synth(case, "synth_key", recipe=False)
+    rows = sources.vol3_source_list_result(str(case.dir)).payload["sources"]
+    assert [r["name"] for r in rows] == ["synth_key"]
+    assert rows[0]["oracle_kind"] is None and rows[0]["recipe_path"] is None
+
+
+def test_source_get_falls_back_to_synthesized(case):
+    _write_synth(case, "synth_key", source="# hello\n")
+    got = sources.vol3_source_get_result(str(case.dir), "synth_key").payload
+    assert got["source"] == "# hello\n" and got["origin"] == "synthesized"
+    with pytest.raises(CapabilityError):
+        sources.vol3_source_get_result(str(case.dir), "absent")
+
+
+def test_resolve_source_name_falls_back_to_a_synthesized_plugin(case):
+    # The editor runs a loaded, unchanged source BY NAME: a listed synthesized
+    # plugin must resolve exactly like the get it was loaded with.
+    _write_synth(case, "synth_key", source="# hello\n")
+    assert sources._resolve_source(None, "synth_key", str(case.dir)) == "# hello\n"
+    PluginStore(case.dir).put("synth_key", SOURCE)  # a user source of the same name wins
+    assert sources._resolve_source(None, "synth_key", str(case.dir)) == SOURCE
+    with pytest.raises(CapabilityError) as exc:
+        sources._resolve_source(None, "absent", str(case.dir))
+    assert _code(exc) == "plugin.not_found"
+
+
+def test_vol_plugin_dir_for_a_case_is_never_the_history_dir(case):
+    from memdiver.app import tools_pipeline
+    plugins, history = _write_synth(case, "synth_key")
+    plugin_dir = sources._synthesized_plugin_dir(str(case.dir))
+    assert Path(plugin_dir) == plugins.resolve() and Path(plugin_dir) != history.resolve()
+    assert history.resolve() not in Path(plugin_dir).parents
+    line = tools_pipeline._synth_display_spec("/pkg", Path(plugin_dir), "synth_key",
+                                              Path("/d.msl")).display_command()
+    assert "vol3/history" not in line and "vol3/plugins" in line
+    listed = {Path(r["path"]).parent for r in
+              sources.vol3_source_list_result(str(case.dir)).payload["sources"]
+              if r["origin"] == "synthesized"}
+    assert listed == {plugins.resolve()}
+
+
+def test_synthesized_plugin_dir_absent_without_plugins(case):
+    assert sources._synthesized_plugin_dir(str(case.dir)) is None
+
+
+# ---- same-name user source + synthesized plugin: ``origin`` picks a side ----
+
+def test_source_get_origin_picks_a_side_on_a_name_clash(case):
+    PluginStore(case.dir).put("synth_key", SOURCE)
+    _write_synth(case, "synth_key", source="# synthesized\n")
+    get = sources.vol3_source_get_result
+    assert get(str(case.dir), "synth_key").payload["source"] == SOURCE  # unchanged default
+    assert get(str(case.dir), "synth_key", "user").payload["origin"] == "user"
+    synth = get(str(case.dir), "synth_key", "synthesized").payload
+    assert synth["source"] == "# synthesized\n" and synth["origin"] == "synthesized"
+
+
+def test_source_get_origin_does_not_fall_back(case):
+    PluginStore(case.dir).put("only_user", SOURCE)
+    _write_synth(case, "only_synth")
+    with pytest.raises(CapabilityError) as exc:
+        sources.vol3_source_get_result(str(case.dir), "only_user", "synthesized")
+    assert _code(exc) == "plugin.not_found"
+    with pytest.raises(CapabilityError) as exc:
+        sources.vol3_source_get_result(str(case.dir), "only_synth", "user")
+    assert _code(exc) == "plugin.not_found"
+    with pytest.raises(CapabilityError) as exc:
+        sources.vol3_source_get_result(str(case.dir), "only_user", "bogus")
+    assert _code(exc) == "vol3.source_origin"
+

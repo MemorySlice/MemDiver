@@ -1,0 +1,5 @@
+# ground truth for luks2-essiv.hdr.bin (see README.md); plain key=value, '#' comments
+luks_version=2
+header_bytes=32768
+volume_key_hex=3905e57727579618d6327011781a69b4c9535639f7482c1fe118afb933aee1e9
+passphrase=memdiver-fixture-passphrase-luks2-essiv

@@ -78,6 +78,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PRODUCER_MODULE_PATTERNS: Tuple[str, ...] = (
     "app/tools*.py",
     "app/experiment_orchestration.py",
+    "app/vol3_synth.py",
 )
 
 _HTTP_METHODS: FrozenSet[str] = frozenset(
@@ -99,6 +100,18 @@ _DEPRECATED_MARKER = ".. deprecated::"
 #: it with surfaces it does NOT have would break the parity ratchet outright.
 #: So they stay out of the registry and stay visible here instead.
 EXEMPT_PRODUCERS: FrozenSet[Tuple[str, str]] = frozenset({
+    (
+        "memdiver.app.vol3_synth.preflight_synthesize_vol3_plugin",
+        "Internal helper, not a capability: the cheap up-front checks of the "
+        "registered synth.vol3_plugin, run by REST before it submits the synthesis "
+        "as a background job (same 4xx as inline; an encrypted dump's key is probed "
+        "on block 0, no dump is opened). Returns nothing, no surface of its own.",
+    ),
+    (
+        "memdiver.app.tools_vol3_dev.require_launcher",
+        "Internal helper, not a capability: resolves the vol launcher or refuses with "
+        "launcher_report, shared by the registered vol3.exec and synth.vol3_plugin.",
+    ),
     (
         "memdiver.app.tools_disasm.resolve_arch",
         "Internal helper, not a capability: it resolves the arch / ARM mode "
@@ -225,12 +238,6 @@ EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
         "above.",
     ),
     (
-        "oracles",
-        "Oracle file CRUD + arm/dry-run lifecycle (upload, list, arm, delete) "
-        "— artifact management that feeds the pipeline capabilities, not a "
-        "capability itself.",
-    ),
-    (
         "path",
         "Filesystem browse/info helpers for the file-picker UI; no compute, no "
         "producer.",
@@ -257,6 +264,13 @@ EXEMPT_ROUTERS: FrozenSet[Tuple[str, str]] = frozenset({
 })
 
 #: Individual routes in CAPABILITY-BEARING routers that are not covered.
+#: Why the oracles router's lifecycle routes are exempt one by one.
+_ORACLE_LIFECYCLE = (
+    "Oracle file CRUD + arm/dry-run lifecycle -- artifact management that "
+    "feeds the pipeline capabilities, not a capability itself. (A router-level "
+    "exemption until C1 put the oracle.format_* capabilities on this router.)"
+)
+
 EXEMPT_ROUTES: FrozenSet[Tuple[str, str]] = frozenset({
     # -- experiment router (POST /capture is covered: capture_result) ------
     (
@@ -286,6 +300,13 @@ EXEMPT_ROUTES: FrozenSet[Tuple[str, str]] = frozenset({
         "Async dispatch to image_task_runner.run_image_job (job='extract_process'): "
         "walks every VMA of the process; the worker calls "
         "tools_image.image_extract_process_result.",
+    ),
+    (
+        "image:POST /siblings",
+        "Async dispatch to image_task_runner.run_image_job (job='siblings'): walks "
+        "every member's page tables and may write one .mdview per member; the "
+        "worker calls tools_image.image_siblings_result (GET /siblings is the "
+        "inline, write-free twin and is covered directly).",
     ),
     (
         "case:POST /export",
@@ -436,6 +457,32 @@ EXEMPT_ROUTES: FrozenSet[Tuple[str, str]] = frozenset({
         "Slices the memory-mapped m2 variance array from a run's consensus "
         "state for the hex-overlay minimap; a numpy view over stored task "
         "state, not a producer call.",
+    ),
+    # -- oracles router: the BYO-oracle lifecycle (C1 made the router
+    # capability-bearing: GET /formats and POST /formats/suggest are covered) --
+    *(
+        (f"oracles:{route}", _ORACLE_LIFECYCLE)
+        for route in (
+            "GET /examples",
+            "POST /examples/{filename}/load",
+            "POST /examples/{filename}/suggest-config",
+            "GET /",
+            "DELETE /orphans",
+            "GET /status",
+            "POST /enable",
+            "POST /upload",
+            "POST /{oracle_id}/arm",
+            "POST /{oracle_id}/dry-run",
+            "POST /{oracle_id}/smoke-test",
+            "DELETE /{oracle_id}",
+        )
+    ),
+    (
+        "oracles:POST /formats/{kind}",
+        "Registers a format oracle in the stateful OracleRegistry (web-only "
+        "lifecycle: arm / dry-run / smoke-test). The compute is the registered "
+        "oracle.format_spec producer, called inside OracleRegistry.add_format, "
+        "an indirection the AST does not follow.",
     ),
 })
 

@@ -371,6 +371,40 @@ def test_on_source_runs_before_any_read(corpus):
     assert seen == [corpus[0].name, corpus[1].name]
 
 
+def test_default_opener_is_open_dump(corpus, monkeypatch):
+    """Without ``opener`` every dump goes through this module's ``open_dump``, as before."""
+    seen = []
+    real = key_location.open_dump
+
+    def counting(path, **kwargs):
+        seen.append((Path(path).name, kwargs))
+        return real(path, **kwargs)
+    monkeypatch.setattr(key_location, "open_dump", counting)
+    result = locate_key_across_dumps(corpus[:2], SECRET)
+    assert result.dumps_present == 2
+    assert seen == [(corpus[0].name, {}), (corpus[1].name, {})]
+
+
+def test_opener_replaces_open_dump_and_gets_the_key_material(corpus, monkeypatch):
+    """``opener(path, **key_material)`` opens every dump; ``open_dump`` is not called."""
+    from contextlib import contextmanager
+
+    from memdiver.core.dump_source import open_dump
+
+    monkeypatch.setattr(key_location, "open_dump", None)  # would raise if used
+    calls = []
+    km = {"key": None, "passphrase": None, "kem_private_key": None}
+
+    @contextmanager
+    def opener(path, **kwargs):
+        calls.append((Path(path).name, kwargs))
+        with open_dump(path) as source:
+            yield source
+    result = locate_key_across_dumps(corpus[:2], SECRET, key_material=km, opener=opener)
+    assert result.dumps_present == 2
+    assert calls == [(corpus[0].name, km), (corpus[1].name, km)]
+
+
 def test_a_locked_container_propagates_instead_of_becoming_unreadable(corpus):
     """A forgotten key poisons EVERY answer in the set, so it must not be
     absorbed into one ``unreadable`` row. ``EncryptedDumpLockedError`` is a

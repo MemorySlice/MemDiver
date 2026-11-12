@@ -197,3 +197,27 @@ def test_validation_record_builds_and_refuses_leak():
     assert v.verdict == "pass" and v.learned_on == ("a", "b") and len(v.held_out) == 1
     with pytest.raises(ValueError, match="'b'"):
         validation_record(["a", "b"], [_res("b")], {"b": 1})
+
+
+def _mdview(path, sha, pid):
+    from memdiver.core.image.view_descriptor import ProfileRef, ViewDescriptor, ViewKind
+    d = ViewDescriptor(image="img.lime", image_sha256=sha, view=ViewKind.PROCESS, pid=pid,
+                       profile=ProfileRef(isf="x.json"))
+    return str(d.write(path))
+
+
+def test_leak_check_uses_view_identity(tmp_path):
+    from memdiver.app.tools_semantic import _refuse_learned
+    from memdiver.core.service_errors import CapabilityError
+    a = _mdview(tmp_path / "a.mdview", "ab" * 32, 10)
+    b = _mdview(tmp_path / "b.mdview", "ab" * 32, 10)
+    c = _mdview(tmp_path / "c.mdview", "ab" * 32, 11)
+    with pytest.raises(CapabilityError) as ei:
+        _refuse_learned(b, [a])
+    assert ei.value.code == "semantic.held_out_leak"
+    assert ei.value.details["capture_identity"][0] == "view"
+    _refuse_learned(c, [a])  # other pid of the same image: allowed
+    _refuse_learned(str(tmp_path / "x.msl"), [str(tmp_path / "y.msl")])
+    with pytest.raises(ValueError):
+        validation_record([a], [_res(b)], {b: 1})
+    assert validation_record([a], [_res(c)], {c: 1})

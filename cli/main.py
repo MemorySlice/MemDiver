@@ -109,6 +109,7 @@ from .yara import _cmd_yara, add_yara_parser
 from .isf import _cmd_isf, add_isf_parser
 from .disasm import _cmd_disasm, add_disasm_parser
 from .strings import _cmd_strings, add_strings_parser
+from .oracle import _cmd_oracle, add_oracle_parser
 from .vol3 import _cmd_vol3, add_vol3_parser
 from .experiment import _cmd_experiment
 from .pipeline import (
@@ -1270,6 +1271,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # strings — the strings table over app.tools_strings (same producer as
     # /api/strings and the MCP strings_table tool).
     add_strings_parser(sub)
+    # oracle — format oracles as a BYO-oracle source over app.tools_format_oracle
+    # (same producers as /api/oracles/formats* and the MCP format_oracle* tools).
+    add_oracle_parser(sub)
     # inspect — low-level dump / structured-MSL inspection views. Nested
     # `inspect <action>` group reusing the pure tools_inspect / tools_xref
     # functions behind the HTTP `/api/inspect` endpoints and the MCP server.
@@ -1494,6 +1498,7 @@ def main():
         "disasm": _cmd_disasm,
         "fixtures": _cmd_fixtures,
         "strings": _cmd_strings,
+        "oracle": _cmd_oracle,
     }
     handler = handlers.get(args.command)
     if handler is None:

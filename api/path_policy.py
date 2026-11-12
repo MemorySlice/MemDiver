@@ -15,8 +15,9 @@ the admitted roots:
 * the server's working directory AT STARTUP (captured once at import), and
 * the system temp directory (``tempfile.gettempdir()``, ``$TMPDIR``).
 
-A denial's 403 detail names the offending path, lists the admitted roots and
-says how to admit it. The MCP server applies the same policy via
+A denial is a 403 ``CapabilityError`` (code ``path.outside_sandbox``, rendered
+by ``api/main.py`` with ``detail``/``error``/``code``/``category``); its message
+names the offending path, lists the admitted roots and says how to admit it. The MCP server applies the same policy via
 ``mcp_server/path_guard.py`` (shared logic: ``core/path_sandbox.py``).
 
 When ``allowed_roots`` is unset the policy is DISABLED and every helper here is
@@ -40,7 +41,7 @@ import logging
 from pathlib import Path
 from typing import Any, Iterator
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from memdiver.api import read_roots
 from memdiver.core import path_sandbox
@@ -103,20 +104,12 @@ def is_admitted(path: str | Path) -> bool:
 
 
 def admit_read_path(path: str | Path) -> Path:
-    """Return *path* resolved, or raise HTTP 403 if the sandbox excludes it.
+    """Return *path* resolved, or raise a 403 ``CapabilityError`` if the sandbox excludes it.
 
     A no-op pass-through (beyond ``expanduser``) when the policy is disabled,
     so callers keep their historical relative-path semantics.
     """
-    candidate = Path(path).expanduser()
-    roots = allowed_roots()
-    if not roots:
-        return candidate
-    resolved = candidate.resolve(strict=False)
-    if not _within(resolved, roots):
-        raise HTTPException(
-            status_code=403, detail=path_sandbox.denial_message(path, roots))
-    return resolved
+    return path_sandbox.admit(path, allowed_roots())
 
 
 def default_browse_root() -> Path:

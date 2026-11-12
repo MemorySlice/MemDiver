@@ -30,6 +30,7 @@ import { useTranslation } from "react-i18next";
 import type { OracleEntry, OracleStatus } from "@/api/oracles";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import { useOracleStore } from "@/stores/oracle-store";
+import { FormatOracleForm } from "./FormatOracleForm";
 
 const MAX_UPLOAD_BYTES = 1_000_000;
 
@@ -241,6 +242,7 @@ export function OracleUpload() {
             className="w-full px-2 py-1 text-xs bg-[var(--md-bg-primary)] border border-[var(--md-border)] rounded"
           />
         </div>
+        <FormatOracleForm />
         </>
       )}
 

@@ -21,14 +21,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from memdiver.api.config import get_settings
 from memdiver.app import tools_annotations
 from memdiver.core.constants import memdiver_home
 from memdiver.core.path_sandbox import contain_write_target
-from memdiver.core.service_errors import CapabilityError
 
 router = APIRouter()
 
@@ -85,15 +84,11 @@ def contained_case_dir(case_dir: str) -> str:
     """Return ``case_dir`` resolved, or raise 403 if no write root contains it.
 
     Thin REST adapter over the shared :func:`~memdiver.core.path_sandbox.contain_write_target`:
-    REST clients (the web UI) read a refusal from ``{"detail": ...}``, which the
-    global ``CapabilityError`` handler would render as ``{"error", "code", ...}``
-    instead, so the denial is re-raised as the same 403 ``HTTPException`` as before.
+    the coded ``CapabilityError`` propagates to the app's global handler, which
+    renders ``{"detail", "error", "code", "category"}`` for a path denial.
     """
-    try:
-        return contain_write_target(case_dir, _write_roots(),
-                                    field="case_dir / out_path", example_name="out/result")
-    except CapabilityError as err:
-        raise HTTPException(status_code=err.status, detail=err.message) from err
+    return contain_write_target(case_dir, _write_roots(),
+                                field="case_dir / out_path", example_name="out/result")
 
 
 @router.get("")

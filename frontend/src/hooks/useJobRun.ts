@@ -15,6 +15,10 @@
  *
  * `reset()` drops the run and any answer still in flight (a job is cancelled
  * at the server): an answer that belongs to an older epoch is ignored.
+ *
+ * `onEvent` sees every raw task event of the followed job (e.g. a queued job's
+ * first `stage_start`, or a failure's `extra.code`), before the hook's own
+ * handling; the state shape stays the same for every caller.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -56,6 +60,8 @@ export interface JobRunConfig<Req, Res, Ticket extends JobTicketLike> {
   cancelMode?: "immediate" | "awaitTerminal";
   /** Called with every result (inline or job). */
   onResult?: (result: Res) => void;
+  /** Called with every raw event of the followed job's task WebSocket, in order. */
+  onEvent?: (event: TaskProgressEvent) => void;
 }
 
 export const JOB_RUN_IDLE: JobRunState<never> = {
@@ -83,18 +89,23 @@ const settleCancel = <Res>(s: JobRunState<Res>): JobRunState<Res> =>
 
 export function useJobRun<Req, Res, Ticket extends JobTicketLike>({
   submit, isTicket, getPayload, cancelJob, noPayloadKey,
-  eventFallback = false, cancelMode = "immediate", onResult,
+  eventFallback = false, cancelMode = "immediate", onResult, onEvent,
 }: JobRunConfig<Req, Res, Ticket>) {
   const [state, setState] = useState<JobRunState<Res>>(idle);
   const cancelled = useRef(false);
+  // Set once the job's `done` arrived: a terminal success wins over a later or
+  // racing Cancel (with `awaitTerminal`, a job that succeeded despite a Cancel
+  // click shows its result instead of sticking in `cancelling`).
+  const doneSeen = useRef(false);
   // Bumped by `reset`: an answer that belongs to an older epoch is dropped.
   const epoch = useRef(0);
   const taskIdRef = useRef<string | null>(null);
   useEffect(() => { taskIdRef.current = state.taskId; }, [state.taskId]);
 
   const finishJob = (taskId: string | null, event: TaskProgressEvent) => {
+    const mine = epoch.current;
     void payloadOf(getPayload, taskId).then((exact) => {
-      if (cancelled.current) return;
+      if (mine !== epoch.current) return; // reset meanwhile: the answer is stale
       const result = exact ?? (eventFallback ? ((event.extra ?? null) as Res | null) : null);
       setState((s) => (s.taskId !== taskId ? s : {
         ...s, status: result ? "done" : "error", pct: 1, result,
@@ -105,9 +116,11 @@ export function useJobRun<Req, Res, Ticket extends JobTicketLike>({
   };
 
   useTaskProgress(state.taskId, {
+    onEvent,
     onProgress: (pct, msg) => setState((s) => (cancelled.current ? s : { ...s, pct, msg })),
     onDone: (event) => {
-      if (cancelled.current) {
+      doneSeen.current = true;
+      if (cancelled.current && cancelMode === "immediate") {
         setState(settleCancel);
         return;
       }
@@ -118,6 +131,7 @@ export function useJobRun<Req, Res, Ticket extends JobTicketLike>({
 
   const run = useCallback(async (req: Req) => {
     cancelled.current = false;
+    doneSeen.current = false;
     const mine = epoch.current;
     setState({ ...idle<Res>(), status: "running" });
     try {
@@ -140,7 +154,7 @@ export function useJobRun<Req, Res, Ticket extends JobTicketLike>({
 
   const cancel = useCallback(async () => {
     const taskId = state.taskId;
-    if (!taskId) return;
+    if (!taskId || doneSeen.current) return; // nothing left to cancel: it succeeded
     cancelled.current = true;
     setState(cancelMode === "awaitTerminal"
       ? (s) => ({ ...s, status: "cancelling", pct: null, msg: null })

@@ -505,6 +505,13 @@ class _Materializer:
         self.stats.dropped_extension_segments += 1
 
 
+# Public names for the two building blocks a caller may extend (``samples/build_samples.py`` subclasses
+# the materializer to re-write kept regions compressed). The underscore names stay: they are what the
+# module itself and its tests use.
+RegionByteSource = _RegionByteSource
+RegionMaterializer = _Materializer
+
+
 def _copyable_headers(seg) -> List[MslBlockHeader]:
     """*seg*'s blocks a copy re-emits (see ``_SEGMENT_SKIPPED_TYPES``)."""
     return [hdr for hdr in seg.headers

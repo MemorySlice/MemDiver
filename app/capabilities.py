@@ -339,6 +339,22 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("analysis.verify_plugin",
          "memdiver.app.tools_pipeline.verify_vol3_plugin",
          ("library", "cli", "web", "mcp")),
+    # -- SYNTHESIZING a standalone vol3 plugin from a located key (A7) -------
+    # The single producer behind the planned one-click "Export as Volatility 3
+    # plugin": locate -> recipe v2 -> emit with the oracle inlined -> RUN it
+    # (in-process on the .msl's VA layer stack; optionally stock ``vol`` over a
+    # full image) and read ``Proven``. ``vol3.plugin_dir`` is the ``vol -p``
+    # directory its copy-pasteable ``vol_command`` names. Library-first in A7;
+    # T3 wired CLI ``vol3 synthesize`` / ``vol3 plugin-dir``, POST
+    # /api/vol3/synthesize + GET /api/vol3/plugin-dir and the MCP tools
+    # ``synthesize_vol3_plugin`` / ``vol3_plugin_dir``. The surfaces resolve
+    # ``case_dir`` to an EXISTING case (``analysis.case.existing_case_dir``).
+    _cap("synth.vol3_plugin",
+         "memdiver.app.vol3_synth.synthesize_vol3_plugin",
+         ("library", "cli", "web", "mcp")),
+    _cap("vol3.plugin_dir",
+         "memdiver.app.vol3_synth.vol3_plugin_dir",
+         ("library", "cli", "web", "mcp")),
     # -- frontend-serving producers (Phase 9) -------------------------------
     # Field inference + algorithm-availability gating were duplicated in the
     # React frontend; they now originate here. Both are wired on the library
@@ -400,6 +416,9 @@ CAPABILITIES: Tuple[Capability, ...] = (
          ("library", "cli", "web", "mcp")),
     _cap("image.extract_process", "memdiver.app.tools_image.image_extract_process_result",
          ("library", "cli", "web", "mcp")),
+    # -- sibling groups in one image (plan S2): instances of one binary as N captures --
+    _cap("image.siblings", "memdiver.app.tools_image.image_siblings_result",
+         ("library", "cli", "web", "mcp")),
     # -- Volatility 3 plugins over a .mdview (T2.2). User plugin source runs
     # UNSANDBOXED in-process (D7; 127.0.0.1-bound, sha256 logged). vol3.run is
     # inline on CLI/MCP and a job above 30 s / 10000 rows on REST.
@@ -420,6 +439,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
     _cap("vol3.write_config", "memdiver.app.tools_vol3_dev.vol3_write_config_result",
          ("library", "cli", "web", "mcp")),
     _cap("vol3.import", "memdiver.app.tools_vol3_dev.vol3_import_parquet_result",
+         ("library", "cli", "web", "mcp")),
+    # Run a plugin by NAME under the stock ``vol`` launcher (a subprocess; T3):
+    # ``msl.info`` over an ``.msl``, a synthesized plugin from
+    # ``<case>/vol3/plugins``. Refuses a ``-p`` holding ``vol3/history`` and
+    # ``;`` in ``-p`` / ``-s`` paths. Wired on all four surfaces at once.
+    _cap("vol3.exec", "memdiver.app.tools_vol3_dev.vol3_exec_result",
          ("library", "cli", "web", "mcp")),
     # -- Stored user plugin sources (T2.5) and plugin fixtures (T2.8, D13).
     _cap("vol3.source_list", "memdiver.app.tools_vol3_sources.vol3_source_list_result",
@@ -507,6 +532,22 @@ CAPABILITIES: Tuple[Capability, ...] = (
     # -- strings as a table (T3.6): registers the ``strings`` case table; the
     # ``strings_iocs`` saved query adds IOC columns. REST runs a large scan as a job.
     _cap("strings.table", "memdiver.app.tools_strings.strings_table_result",
+         ("library", "cli", "web", "mcp")),
+    # -- format oracles as a BYO-oracle source (C1) --------------------------
+    # The shipped memdiver.oracles.formats, listed, suggested for a dump (vault /
+    # KEY_HINT / process identity, always with the reason) and built into the
+    # Shape-2 spec brute_force / n_sweep take. On web the spec lands in the
+    # oracle registry (POST /api/oracles/formats/{kind} -> OracleRegistry.
+    # add_format -> format_oracle_spec_result) as an UNARMED entry, so arm /
+    # dry-run / smoke-test apply unchanged.
+    _cap("oracle.format_list",
+         "memdiver.app.tools_format_oracle.list_format_oracles_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("oracle.format_suggest",
+         "memdiver.app.tools_format_oracle.suggest_format_oracle_result",
+         ("library", "cli", "web", "mcp")),
+    _cap("oracle.format_spec",
+         "memdiver.app.tools_format_oracle.format_oracle_spec_result",
          ("library", "cli", "web", "mcp")),
 )
 

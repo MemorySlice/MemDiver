@@ -321,3 +321,229 @@ def _is_content_file(entry: Path, exclude: Sequence[str]) -> bool:
         and not entry.name.startswith(".")
         and entry.name not in exclude
     )
+
+
+# -- Format-oracle suggestion ---------------------------------------------------
+#
+# "Which of the shipped format oracles (memdiver.oracles.formats) fits this
+# dump, and with what evidence?" Three signals, strongest first; the first one
+# that names a kind wins and its reason travels with the suggestion, so the
+# analyst always sees WHY a kind was picked. None of them is a guess: a dump
+# that matches nothing gets ``None`` plus the reason nothing matched.
+#
+# 1. the run's ``meta.json`` declares a gocryptfs vault -> gocryptfs-gcm, with
+#    one of the vault's own encrypted files as the sample (high confidence);
+# 2. an ``.msl`` KEY_HINT block names a key type / protocol / note we map;
+# 3. the process identity (exe, command line) or the module list names a
+#    program we map (the exe is empty in many real captures, so the modules --
+#    e.g. ``libssh.so.4`` -- carry most of the weight).
+
+#: Program / library basename (lower-case, version suffix stripped) -> kind.
+_PROGRAM_KINDS: Dict[str, str] = {
+    "gocryptfs": "gocryptfs-gcm",
+    "wireguard-go": "x25519-pubkey",
+    "tailscaled": "x25519-pubkey",
+    "sshd": "ssh-kdf-consistency",
+    "ssh": "ssh-kdf-consistency",
+    "dropbear": "ssh-kdf-consistency",
+    "dbclient": "ssh-kdf-consistency",
+    "libssh": "ssh-kdf-consistency",
+    "libssh2": "ssh-kdf-consistency",
+    "libwolfssh": "ssh-kdf-consistency",
+    "cryptsetup": "luks",
+    "veracrypt": "xts-fsmagic",
+}
+
+#: MSL KEY_HINT key-type / protocol names (spec Table 17) -> kind. TLS-family
+#: protocols are deliberately absent: format oracles never verify traffic keys.
+_HINT_KEY_TYPES: Dict[str, str] = {
+    "SSH_SESSION_KEY": "ssh-kdf-consistency",
+    "WIREGUARD_KEY": "x25519-pubkey",
+}
+_HINT_PROTOCOLS: Dict[str, str] = {
+    "SSH": "ssh-kdf-consistency",
+    "WIREGUARD": "x25519-pubkey",
+}
+#: Words in a KEY_HINT note -> kind (checked in this order).
+_HINT_NOTE_WORDS: Tuple[Tuple[str, str], ...] = (
+    ("gocryptfs", "gocryptfs-gcm"),
+    ("luks", "luks"),
+    ("dm-crypt", "luks"),
+    ("veracrypt", "xts-fsmagic"),
+    ("wireguard", "x25519-pubkey"),
+    ("ssh", "ssh-kdf-consistency"),
+)
+_HINT_CONFIDENCE = {0: "low", 1: "medium", 2: "high"}
+
+#: What each kind needs as evidence when no sample could be derived.
+_SAMPLE_NEEDS: Dict[str, str] = {
+    "gocryptfs-gcm": "one encrypted file of the vault (its directory holds gocryptfs.conf)",
+    "luks": "the LUKS header of the volume (the first 4 KiB for LUKS1, 32 KiB for LUKS2)",
+    "xts-fsmagic": "the first ciphertext bytes of the encrypted volume's data area",
+    "x25519-pubkey": "the 32-byte public key (optional: none when the plugin finds it)",
+}
+
+
+@dataclass
+class FormatSuggestion:
+    """A format oracle that fits a dump, and why. ``sample_path`` may be ``None``."""
+
+    kind: str
+    reason: str
+    confidence: str
+    sample_path: Optional[str] = None
+    params: Dict[str, Any] = field(default_factory=dict)
+    signal: str = ""
+    sample_needed: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "sample_path": self.sample_path,
+            "params": dict(self.params),
+            "reason": self.reason,
+            "confidence": self.confidence,
+            "signal": self.signal,
+            "sample_needed": self.sample_needed,
+        }
+
+
+def suggest_format_oracle(
+    dump_path: "str | Path",
+) -> Tuple[Optional[FormatSuggestion], str]:
+    """Suggest the format oracle for *dump_path*: ``(suggestion, reason)``.
+
+    ``suggestion`` is ``None`` when no signal names a kind; ``reason`` then
+    says what was looked at. Never raises on unreadable inputs -- each signal
+    that cannot be read is skipped and named in the reason.
+    """
+    path = Path(dump_path).expanduser()
+    looked: List[str] = []
+    for signal in (_suggest_from_vault, _suggest_from_key_hints, _suggest_from_identity):
+        try:
+            suggestion, note = signal(path)
+        except Exception as exc:  # noqa: BLE001 - one unreadable signal must not hide the next
+            logger.debug("format suggestion signal %s failed: %r", signal.__name__, exc)
+            suggestion, note = None, f"{signal.__name__.removeprefix('_suggest_from_')}: unreadable ({exc})"
+        if suggestion is not None:
+            if suggestion.sample_path is None:
+                suggestion.sample_needed = _SAMPLE_NEEDS.get(suggestion.kind)
+            return suggestion, suggestion.reason
+        looked.append(note)
+    return None, "no format oracle fits this dump: " + "; ".join(looked)
+
+
+def _suggest_from_vault(path: Path) -> Tuple[Optional[FormatSuggestion], str]:
+    meta = RunDiscovery.meta_for_dump(path)
+    if meta is None:
+        return None, "no meta.json owns this dump"
+    vault = meta.vault_dir()
+    if vault is None:
+        return None, f"{_run_label(meta)}/meta.json declares no gocryptfs vault"
+    where = f"{_run_label(meta)}/meta.json declares the gocryptfs vault {vault}"
+    content_file = _vault_content_file_for_sample(vault)
+    if content_file is None:
+        return FormatSuggestion(
+            kind="gocryptfs-gcm", confidence="medium", signal="vault",
+            reason=f"{where}, but no encrypted file in it could be packed as a sample",
+        ), ""
+    # The vault DIRECTORY is the sample: both the BYO bridge and plugin
+    # synthesis pack it with gocryptfs.conf (a lone content file would lose
+    # the FeatureFlags in the synthesis path).
+    return FormatSuggestion(
+        kind="gocryptfs-gcm", confidence="high", signal="vault",
+        sample_path=str(vault),
+        reason=(f"{where}; sample = the vault (its encrypted file "
+                f"{Path(content_file).name} + gocryptfs.conf FeatureFlags), "
+                f"cipher {meta.cipher or 'from the conf'}"),
+    ), ""
+
+
+def _vault_content_file_for_sample(vault: Path) -> Optional[str]:
+    """The content file the gocryptfs format packs from *vault*, or ``None``."""
+    from memdiver.engine.resources.format_oracle import format_module, load_format_sample
+
+    try:
+        load_format_sample("gocryptfs-gcm", vault)
+        return str(format_module("gocryptfs-gcm").find_content_file(str(vault)))
+    except (OSError, ValueError):
+        return None
+
+
+def _is_msl(path: Path) -> bool:
+    from memdiver.msl.enums import FILE_MAGIC
+
+    if not path.is_file():
+        return False
+    with path.open("rb") as handle:
+        return handle.read(len(FILE_MAGIC)) == FILE_MAGIC
+
+
+def _msl_blocks(path: Path, collector: str) -> list:
+    from memdiver.msl.reader import MslReader
+
+    with MslReader(path) as reader:
+        return list(getattr(reader, collector)())
+
+
+def _suggest_from_key_hints(path: Path) -> Tuple[Optional[FormatSuggestion], str]:
+    if not _is_msl(path):
+        return None, "not an .msl (no KEY_HINT blocks)"
+    hints = _msl_blocks(path, "collect_key_hints")
+    for hint in hints:
+        kind, why = _hint_kind(hint)
+        if kind is not None:
+            return FormatSuggestion(
+                kind=kind, signal="key_hint",
+                confidence=_HINT_CONFIDENCE.get(int(hint.confidence), "low"),
+                reason=f"KEY_HINT block: {why}",
+            ), ""
+    return None, f"{len(hints)} KEY_HINT block(s), none naming a format oracle"
+
+
+def _enum_name(enum_cls: Any, value: int) -> str:
+    try:
+        return enum_cls(int(value)).name
+    except ValueError:
+        return f"0x{int(value):04x}"
+
+
+def _hint_kind(hint: Any) -> Tuple[Optional[str], str]:
+    from memdiver.msl.enums import MslKeyType, MslProtocol
+
+    key_type = _enum_name(MslKeyType, hint.key_type)
+    if key_type in _HINT_KEY_TYPES:
+        return _HINT_KEY_TYPES[key_type], f"key_type {key_type}"
+    protocol = _enum_name(MslProtocol, hint.protocol)
+    if protocol in _HINT_PROTOCOLS:
+        return _HINT_PROTOCOLS[protocol], f"protocol {protocol}"
+    note = (hint.note or "").casefold()
+    for word, kind in _HINT_NOTE_WORDS:
+        if word in note:
+            return kind, f"note mentions {word!r}"
+    return None, ""
+
+
+def program_basename(path_or_name: str) -> str:
+    """``/lib/x/libssh.so.4`` -> ``libssh``; ``/usr/bin/gocryptfs`` -> ``gocryptfs``."""
+    name = Path(str(path_or_name).strip().split(" ", 1)[0]).name.casefold()
+    if ".so" in name:
+        name = name.split(".so", 1)[0]
+    return name
+
+
+def _suggest_from_identity(path: Path) -> Tuple[Optional[FormatSuggestion], str]:
+    if not _is_msl(path):
+        return None, "not an .msl (no process identity or module list)"
+    names: List[Tuple[str, str]] = []
+    for ident in _msl_blocks(path, "collect_process_identity"):
+        names += [("exe", ident.exe_path), ("command line", ident.cmd_line)]
+    names += [("module", module.path) for module in _msl_blocks(path, "collect_modules")]
+    for source, value in names:
+        kind = _PROGRAM_KINDS.get(program_basename(value)) if value else None
+        if kind is not None:
+            return FormatSuggestion(
+                kind=kind, signal="process", confidence="medium",
+                reason=f"the process {source} is {value!r} ({program_basename(value)} -> {kind})",
+            ), ""
+    return None, f"no known program among {len(names)} process names (exe, command line, modules)"

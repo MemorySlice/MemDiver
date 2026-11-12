@@ -32,7 +32,10 @@ The roots you configure, plus these implicit ones whenever the sandbox is ON:
 
 ## A denial and how to admit a path
 
-REST returns `403`; MCP tools and resources return the usual JSON error with `code=path.outside_sandbox`:
+REST returns `403` with the body `{"detail", "error", "code": "path.outside_sandbox", "category": "PRECONDITION"}`
+(`detail` and `error` are the same message; the web UI shows a localized hint for the code). The upload-directory
+write checks (`output_dir` / `output_path` on the import and export routes) carry the same body with their historical `400`.
+MCP tools and resources return the usual JSON error with `code=path.outside_sandbox`:
 
 ```text
 read path '/srv/x.msl' is outside the read sandbox (MEMDIVER_ALLOWED_ROOTS is set).

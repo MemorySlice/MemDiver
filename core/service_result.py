@@ -95,7 +95,17 @@ class KeyStatus:
 
     @classmethod
     def from_source(cls, reader_or_source: Any) -> "KeyStatus":
-        status = getattr(reader_or_source, "tag_status", TagStatus.NOT_ENCRYPTED)
+        return cls.from_tag_status(
+            getattr(reader_or_source, "tag_status", TagStatus.NOT_ENCRYPTED))
+
+    @classmethod
+    def from_tag_status(cls, status: TagStatus) -> "KeyStatus":
+        """The key state, and its neutral hint, of a reader's ``tag_status``.
+
+        The single home of the two hint strings: :meth:`from_source` reads a
+        source's ``tag_status`` and lands here, and so does a status that was
+        probed without opening the dump (``msl.reader.probe_key``).
+        """
         if status == TagStatus.MISSING_KEY:
             return cls(
                 status,

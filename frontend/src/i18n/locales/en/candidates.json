@@ -50,6 +50,7 @@
     "label": "Aligned by",
     "method": {
       "module_offset": "module + offset (ASLR-invariant)",
+      "module_relative": "module-relative offset (per-process instances)",
       "virtual_address": "virtual address",
       "file_offset": "flat file offset"
     },

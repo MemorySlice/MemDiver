@@ -226,3 +226,36 @@ def test_event_to_dict_drops_none_fields():
 
 def test_default_ring_size_is_512():
     assert DEFAULT_RING_SIZE == 512
+
+
+# ---------- registration happens at subscribe() time ----------
+
+
+def test_subscribe_registers_synchronously_so_no_event_falls_in_the_gap():
+    """An event published right after ``subscribe()`` returns -- before the
+    first ``__anext__`` -- must still reach the subscriber (it used to attach
+    only on the first loop turn and lose it)."""
+
+    async def scenario():
+        bus = ProgressBus()
+        sub = bus.subscribe("t1")
+        assert len(bus._channels["t1"].subscribers) == 1  # noqa: SLF001
+        bus.publish(_evt(type_="done", msg="fast"))
+        got = [ev async for ev in sub]
+        await sub.aclose()
+        return got, bus._channels["t1"].subscribers  # noqa: SLF001
+
+    got, subscribers = asyncio.run(scenario())
+    assert [e.msg for e in got] == ["fast"]
+    assert subscribers == []
+
+
+def test_aclose_detaches_a_never_iterated_subscription():
+    async def scenario():
+        bus = ProgressBus()
+        sub = bus.subscribe("t1")
+        await sub.aclose()
+        await sub.aclose()  # idempotent
+        return bus._channels["t1"].subscribers  # noqa: SLF001
+
+    assert asyncio.run(scenario()) == []
