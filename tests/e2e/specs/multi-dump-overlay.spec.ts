@@ -221,9 +221,10 @@ test.describe("multi-dump aligned overlay", () => {
  *     then clamp) is asserted instead and the test says which branch it took.
  *   - in "Memory (VAS)" the anchor's file IS the aligned build, so no cell can
  *     be absent. The VA coordinate is where the void vocabulary is reachable —
- *     at offset 0x1000 the heap's FAILED second page renders as `byte-gap`
- *     beside classified bytes — which is why the void test, and only the void
- *     test, switches coordinate.
+ *     the span starts at the lowest region (the one-page extra region at
+ *     0x10000000), so offset 0x1000 is the UNMAPPED inter-region hole, which
+ *     renders as `page-unmapped` beside classified bytes — which is why the
+ *     void test, and only the void test, switches coordinate.
  */
 test.describe("aligned overlay: browse, keyboard, render modes, rail, void", () => {
   test.describe.configure({ mode: "serial" });
@@ -242,8 +243,22 @@ test.describe("aligned overlay: browse, keyboard, render modes, rail, void", () 
     "consensus-pointer",
     "consensus-key-candidate",
   ];
-  /** The four "there is no byte here" classes, from `utils/absence-classes`. */
-  const ABSENCE_CLASSES = ["byte-gap", "byte-absent", "byte-error", "hex-loading"];
+  /**
+   * Every "there is no byte here" class, from `utils/absence-classes`
+   * (`ABSENCE_META[*].cellClass`). The three `page-*` classes are included
+   * because `resolveAbsence` ranks a non-captured page state above the plain
+   * byte absence: an absent byte on an UNMAPPED / FAILED / NOT-RESIDENT page
+   * is painted `page-*`, never `byte-gap`. A held byte never gets one.
+   */
+  const ABSENCE_CLASSES = [
+    "byte-gap",
+    "byte-absent",
+    "byte-error",
+    "hex-loading",
+    "page-unmapped",
+    "page-failed",
+    "page-not-resident",
+  ];
   /** Everything that means "this byte is a finding" — never on a void cell. */
   const PRESENCE_CLASSES = [
     "consensus-invariant",
@@ -842,8 +857,9 @@ test.describe("aligned overlay: browse, keyboard, render modes, rail, void", () 
   // Runs LAST, because it is the one test that leaves the VAS coordinate: in
   // "Memory (VAS)" the anchor's file IS the aligned build and nothing can be
   // absent, whereas the VA coordinate addresses the whole span — and at 0x1000
-  // the heap's FAILED second page (`page_state_map = 0x10` in the fixture
-  // generator) renders as `byte-gap` in the same window as classified bytes.
+  // (the span starts at the one-page extra region at 0x10000000) the UNMAPPED
+  // inter-region hole renders as `page-unmapped` in the same window as
+  // classified bytes. `resolveAbsence` ranks the page state above `byte-gap`.
   test("an absent cell carries exactly one absence class and never a class or ramp tint", async () => {
     test.setTimeout(120_000);
 

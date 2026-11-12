@@ -29,7 +29,10 @@ env:
 jobs:
   refresh:
     name: Regenerate screenshots
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: ubuntu-latest moved to 26.04, which Playwright
+    # 1.59 (and the docs job's 1.47) cannot install Chromium on. Move to a newer
+    # image together with a Playwright bump that supports it (1.65+ does).
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write

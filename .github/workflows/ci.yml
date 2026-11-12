@@ -383,7 +383,10 @@ jobs:
   # at pytest_configure (no private dataset required). Kept a separate job so a
   # browser flake can't mask core test failures (mirrors `test-crypto`/`a11y`).
   test-e2e:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: ubuntu-latest moved to 26.04, which Playwright
+    # 1.59 (and the docs job's 1.47) cannot install Chromium on. Move to a newer
+    # image together with a Playwright bump that supports it (1.65+ does).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -481,7 +484,10 @@ jobs:
               - '.github/workflows/ci.yml'
 
   a11y:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: ubuntu-latest moved to 26.04, which Playwright
+    # 1.59 (and the docs job's 1.47) cannot install Chromium on. Move to a newer
+    # image together with a Playwright bump that supports it (1.65+ does).
+    runs-on: ubuntu-24.04
     needs: changes
     if: |
       needs.changes.outputs.frontend == 'true' &&

@@ -5,41 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- `search-reduce --allocator {auto,ptmalloc2,off}` (default `auto`): the CLI reduction
-  is heap-aware. Candidate regions get `heap` annotations, `--heap-policy mask` works on
-  a `--state` session, and the payload gains a compact `heap` block (status, source,
-  report, per-dump records), `heap_status` and `thresholds.allocator`. `--allocator off`
-  keeps the historical payload; `off` with `mask` is an argument error.
-- `consensus-begin --allocator {auto,ptmalloc2,off}`: every `consensus-add` stores a
-  per-dump heap projection beside the state (`<stem>.heap/NNNN.npz`); re-beginning a
-  session removes stale projections.
-- Session-merged heap roles: `search-reduce` merges the stored projections (role
-  agreement over N dumps) and falls back to the reference dump alone for sessions
-  without them, naming the source on stderr.
-- ptmalloc2 thread arenas: non-main arenas are found through the `main_arena.next` ring
-  or, without `main_arena`, a `heap_info` scan of `HEAP_MAX_SIZE`-aligned anonymous
-  maps. Their heaps are walked as `thread_heap` regions of arenas 1..n with their
-  tcache (and, for ring discovery, their bins) decoded; coverage gains `thread_arenas`
-  and `arena_discovery`.
-- ptmalloc2 mmapped chunks: a page-granular scan of captured, writable, anonymous,
-  non-heap / non-stack regions finds `{prev_size, size|IS_MMAPPED}` headers. Each hit is
-  an in-use chunk (bin `mmapped`, region kind `mmapped_chunk`) in a pseudo arena of kind
-  `mmap`; an explicit `--regions` limits the scan; coverage gains `mmapped_chunks`.
-- Arena / segment parser interface: `HeapArena` and `HeapLayout.arenas`, `arena_id` on
-  chunks, regions and free lists, the shared `ARENA_*` / `REGION_*` kinds, and
-  `heap/segments.py` (`HeapSegment`, `ChunkBudget`, `LayoutAssembler`) with standard
-  coverage keys. `AllocatorDescriptor.reduce_ready` / `reduce_ready_kinds()` gate which
-  allocators `search-reduce` accepts (parity with the CLI choices is test-guarded). See
-  `docs/contributing/adding_allocator.md`.
-- `search-reduce` reduces Android Scudo heap dumps across cold boots: `consensus-begin --allocator scudo|auto` without `--size` collects the runs and `search-reduce --state` pairs their heap chunks by allocator signature and content. The chain ends at `brute-force`: Volatility 3 plugin generation is not supported yet with this method.
-- The web pipeline offers the same method (`POST /api/pipeline/run` with `scudo: {allocator}`, an "Android Scudo" recipe and method choice in the wizard, a per-verdict results table). It runs up to brute-force: Volatility 3 plugin generation, the N-sweep, escalation and refine need the positional consensus and are refused with a stated reason.
-
-### Changed
-- The `heap_policy='mask'` precondition error names the unavailable status and its
-  cause (`no_va_coordinate`, `unsupported_allocator`, ...).
-
-## [1.1.0] — 2026-11-08
+## [1.1.5] — 2026-11-12
 
 ### Added
 - `vol3plugins/`: a Volatility 3 plugin suite that runs under stock volatility3 2.27 and
@@ -104,6 +70,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Frontend: "Export as Volatility 3 plugin" (Architect locate-a-key section, Key Finders
   rows, plugin editor) and a Vol3 side tab for `.msl` with a stock-vol exec form.
 - Tools to capture secret-bearing reference images (`tools/vol3_capture/`).
+- `search-reduce --allocator {auto,ptmalloc2,off}` (default `auto`): the CLI reduction
+  is heap-aware. Candidate regions get `heap` annotations, `--heap-policy mask` works on
+  a `--state` session, and the payload gains a compact `heap` block (status, source,
+  report, per-dump records), `heap_status` and `thresholds.allocator`. `--allocator off`
+  keeps the historical payload; `off` with `mask` is an argument error.
+- `consensus-begin --allocator {auto,ptmalloc2,off}`: every `consensus-add` stores a
+  per-dump heap projection beside the state (`<stem>.heap/NNNN.npz`); re-beginning a
+  session removes stale projections.
+- Session-merged heap roles: `search-reduce` merges the stored projections (role
+  agreement over N dumps) and falls back to the reference dump alone for sessions
+  without them, naming the source on stderr.
+- ptmalloc2 thread arenas: non-main arenas are found through the `main_arena.next` ring
+  or, without `main_arena`, a `heap_info` scan of `HEAP_MAX_SIZE`-aligned anonymous
+  maps. Their heaps are walked as `thread_heap` regions of arenas 1..n with their
+  tcache (and, for ring discovery, their bins) decoded; coverage gains `thread_arenas`
+  and `arena_discovery`.
+- ptmalloc2 mmapped chunks: a page-granular scan of captured, writable, anonymous,
+  non-heap / non-stack regions finds `{prev_size, size|IS_MMAPPED}` headers. Each hit is
+  an in-use chunk (bin `mmapped`, region kind `mmapped_chunk`) in a pseudo arena of kind
+  `mmap`; an explicit `--regions` limits the scan; coverage gains `mmapped_chunks`.
+- Arena / segment parser interface: `HeapArena` and `HeapLayout.arenas`, `arena_id` on
+  chunks, regions and free lists, the shared `ARENA_*` / `REGION_*` kinds, and
+  `heap/segments.py` (`HeapSegment`, `ChunkBudget`, `LayoutAssembler`) with standard
+  coverage keys. `AllocatorDescriptor.reduce_ready` / `reduce_ready_kinds()` gate which
+  allocators `search-reduce` accepts (parity with the CLI choices is test-guarded). See
+  `docs/contributing/adding_allocator.md`.
+- `search-reduce` reduces Android Scudo heap dumps across cold boots: `consensus-begin --allocator scudo|auto` without `--size` collects the runs and `search-reduce --state` pairs their heap chunks by allocator signature and content. The chain ends at `brute-force`: Volatility 3 plugin generation is not supported yet with this method.
+- The web pipeline offers the same method (`POST /api/pipeline/run` with `scudo: {allocator}`, an "Android Scudo" recipe and method choice in the wizard, a per-verdict results table). It runs up to brute-force: Volatility 3 plugin generation, the N-sweep, escalation and refine need the positional consensus and are refused with a stated reason.
 
 ### Changed
 - Every REST sandbox denial answers `{"detail", "error", "code": "path.outside_sandbox",
@@ -114,6 +108,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   3600 s full-image vol budget.
 - Packaging: `memdiver.vol3plugins*` and `memdiver.oracles*` packages and
   `architect/templates/*.tmpl` ship in the wheel.
+- The `heap_policy='mask'` precondition error names the unavailable status and its
+  cause (`no_va_coordinate`, `unsupported_allocator`, ...).
 
 ### Fixed
 - Ctrl-C no longer crashes the server (a worker `KeyboardInterrupt` escaped the loop), and
@@ -121,6 +117,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and leaves no vol process behind.
 - A full-image synthesis target could not prove an image from another session; `--pid` used
   to fall back silently to a raw scan.
+- CI: the browser jobs (`a11y`, `test-e2e`, nightly docs screenshots) run on `ubuntu-24.04`.
+  `ubuntu-latest` moved to Ubuntu 26.04, where Playwright 1.59 cannot install Chromium.
 
 ### Security
 - `/api/analysis/run-file` persisted passphrases and key hex in the task `record.json`.
